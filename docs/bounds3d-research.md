@@ -161,6 +161,14 @@ Short smoke run, lower is better:
 | Load owned | PlanarXY, node 16, 100k | 558 us | 890 us | 1.59x |
 | Load view | PlanarXY, node 16, 100k | 35.9 us | 36.8 us | 1.02x |
 
+Follow-up optimization: production `encode_hilbert3` now composes two Hilbert
+levels per table lookup (24 states x 64 two-bit input groups). A short
+Criterion smoke run moved raw 3D Hilbert encoding for 262144 keys from about
+`3.509 ms` to `1.586 ms` (`~55%` faster). The same run showed small/medium 3D
+build wins where Hilbert encoding is visible: roughly `20-23%` at 1k items and
+about `6-8%` on the clearer 100k cases. Search and KNN ratios are unchanged by
+this encoder-only change.
+
 The closest apples-to-apples runtime scenario is `PlanarXY`: the same X/Y boxes
 embedded into 3D with `z = 0`, so 2D and 3D produce the same hits and nearest
 neighbors. In that case, the main 3D penalties are:

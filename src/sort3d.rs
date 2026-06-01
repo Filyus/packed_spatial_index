@@ -8,7 +8,8 @@ const MORTON_BITS_PER_AXIS: u32 = 21;
 const MORTON_AXIS_MAX: u32 = (1 << MORTON_BITS_PER_AXIS) - 1;
 const HILBERT_BITS_PER_AXIS: u32 = 16;
 const HILBERT_AXIS_MAX: u32 = (1 << HILBERT_BITS_PER_AXIS) - 1;
-const HILBERT3_LUT: [u8; 192] = build_hilbert3_lut();
+const HILBERT3_STEP_LUT: [u8; 192] = build_hilbert3_step_lut();
+const HILBERT3_PAIR_LUT: [u16; 1536] = build_hilbert3_pair_lut();
 
 /// Which key to use when sorting 3D boxes before packing the tree.
 ///
@@ -249,17 +250,19 @@ pub fn encode_hilbert3(x: u32, y: u32, z: u32) -> u64 {
     let mut index = 0u64;
     let mut state = 0usize;
 
-    for shift in (0..HILBERT_BITS_PER_AXIS).rev() {
-        let m = (((x >> shift) & 1) << 2) | (((y >> shift) & 1) << 1) | ((z >> shift) & 1);
-        let entry = HILBERT3_LUT[state * 8 + m as usize];
-        index = (index << 3) | u64::from(entry & 7);
-        state = (entry >> 3) as usize;
+    let mut shift = HILBERT_BITS_PER_AXIS;
+    while shift > 0 {
+        shift -= 2;
+        let m = (((x >> shift) & 3) << 4) | (((y >> shift) & 3) << 2) | ((z >> shift) & 3);
+        let entry = HILBERT3_PAIR_LUT[state * 64 + m as usize];
+        index = (index << 6) | u64::from(entry & 0x3f);
+        state = (entry >> 6) as usize;
     }
 
     index
 }
 
-const fn build_hilbert3_lut() -> [u8; 192] {
+const fn build_hilbert3_step_lut() -> [u8; 192] {
     let mut table = [0u8; 192];
     let mut state = 0usize;
     while state < 24 {
@@ -287,6 +290,33 @@ const fn build_hilbert3_lut() -> [u8; 192] {
             let next_n = (n + next_rotation) % 3;
             let next_state = next_n * 8 + next_c;
             table[state * 8 + m as usize] = ((next_state as u8) << 3) | (i as u8);
+            m += 1;
+        }
+        state += 1;
+    }
+    table
+}
+
+const fn build_hilbert3_pair_lut() -> [u16; 1536] {
+    let mut table = [0u16; 1536];
+    let mut state = 0usize;
+    while state < 24 {
+        let mut m = 0u32;
+        while m < 64 {
+            let x = (m >> 4) & 3;
+            let y = (m >> 2) & 3;
+            let z = m & 3;
+            let mut next_state = state;
+            let mut out = 0u32;
+            let mut bit = 2u32;
+            while bit > 0 {
+                bit -= 1;
+                let step_m = (((x >> bit) & 1) << 2) | (((y >> bit) & 1) << 1) | ((z >> bit) & 1);
+                let entry = HILBERT3_STEP_LUT[next_state * 8 + step_m as usize];
+                out = (out << 3) | ((entry & 7) as u32);
+                next_state = (entry >> 3) as usize;
+            }
+            table[state * 64 + m as usize] = ((next_state as u16) << 6) | (out as u16);
             m += 1;
         }
         state += 1;
@@ -325,4 +355,53 @@ fn split_by_3(mut value: u64) -> u64 {
     value = (value | (value << 4)) & 0x10c3_0c30_c30c_30c3;
     value = (value | (value << 2)) & 0x1249_2492_4924_9249;
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode_hilbert3_stepwise(x: u32, y: u32, z: u32) -> u64 {
+        let mut index = 0u64;
+        let mut state = 0usize;
+
+        for shift in (0..HILBERT_BITS_PER_AXIS).rev() {
+            let m = (((x >> shift) & 1) << 2) | (((y >> shift) & 1) << 1) | ((z >> shift) & 1);
+            let entry = HILBERT3_STEP_LUT[state * 8 + m as usize];
+            index = (index << 3) | u64::from(entry & 7);
+            state = (entry >> 3) as usize;
+        }
+
+        index
+    }
+
+    #[test]
+    fn paired_hilbert3_lut_matches_stepwise_encoder() {
+        for x in 0..32 {
+            for y in 0..32 {
+                for z in 0..32 {
+                    assert_eq!(
+                        encode_hilbert3(x, y, z),
+                        encode_hilbert3_stepwise(x, y, z),
+                        "dense mismatch at ({x}, {y}, {z})"
+                    );
+                }
+            }
+        }
+
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..100_000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let x = (seed & HILBERT_AXIS_MAX as u64) as u32;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let y = (seed & HILBERT_AXIS_MAX as u64) as u32;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let z = (seed & HILBERT_AXIS_MAX as u64) as u32;
+            assert_eq!(
+                encode_hilbert3(x, y, z),
+                encode_hilbert3_stepwise(x, y, z),
+                "sample mismatch at ({x}, {y}, {z})"
+            );
+        }
+    }
 }

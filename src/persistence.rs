@@ -237,28 +237,59 @@ pub(crate) fn serialized_len(level_count: usize, num_nodes: usize) -> Result<usi
         .ok_or(LoadError::IntegerOverflow)
 }
 
-pub(crate) fn push_magic(bytes: &mut Vec<u8>) {
-    bytes.extend_from_slice(FORMAT_MAGIC);
+pub(crate) struct ByteWriter {
+    bytes: Vec<u8>,
+    offset: usize,
+    len: usize,
 }
 
-pub(crate) fn push_format_version(bytes: &mut Vec<u8>) {
-    push_u64(bytes, FORMAT_VERSION);
-}
+impl ByteWriter {
+    pub(crate) fn with_len(len: usize) -> Self {
+        Self {
+            bytes: vec![0; len],
+            offset: 0,
+            len,
+        }
+    }
 
-pub(crate) fn push_header_len(bytes: &mut Vec<u8>) {
-    push_u64(bytes, FORMAT_HEADER_LEN as u64);
-}
+    pub(crate) fn write_magic(&mut self) {
+        self.write_bytes(FORMAT_MAGIC);
+    }
 
-pub(crate) fn push_flags(bytes: &mut Vec<u8>) {
-    push_u64(bytes, FORMAT_FLAGS);
-}
+    pub(crate) fn write_format_version(&mut self) {
+        self.write_u64(FORMAT_VERSION);
+    }
 
-pub(crate) fn push_u64(bytes: &mut Vec<u8>, value: u64) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
+    pub(crate) fn write_header_len(&mut self) {
+        self.write_u64(FORMAT_HEADER_LEN as u64);
+    }
 
-pub(crate) fn push_f64(bytes: &mut Vec<u8>, value: f64) {
-    bytes.extend_from_slice(&value.to_le_bytes());
+    pub(crate) fn write_flags(&mut self) {
+        self.write_u64(FORMAT_FLAGS);
+    }
+
+    #[inline]
+    pub(crate) fn write_u64(&mut self, value: u64) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    #[inline]
+    pub(crate) fn write_f64(&mut self, value: f64) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    pub(crate) fn finish(self) -> Vec<u8> {
+        debug_assert_eq!(self.offset, self.len);
+        self.bytes
+    }
+
+    #[inline]
+    fn write_bytes(&mut self, source: &[u8]) {
+        let end = self.offset + source.len();
+        debug_assert!(end <= self.len);
+        self.bytes[self.offset..end].copy_from_slice(source);
+        self.offset = end;
+    }
 }
 
 fn read_u64_at(bytes: &[u8], offset: usize) -> Result<u64, LoadError> {

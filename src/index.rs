@@ -25,8 +25,8 @@ use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACI
 use crate::geometry::{Num, Point, Rect};
 use crate::neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared};
 use crate::persistence::{
-    LoadError, parse_index_bytes, push_f64, push_flags, push_format_version, push_header_len,
-    push_magic, push_u64, read_f64_le_unchecked, read_u64_le_unchecked, serialized_len,
+    ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
+    serialized_len,
 };
 
 /// Reusable buffers for allocation-free repeated searches.
@@ -123,28 +123,28 @@ impl Index {
         let level_count = self.level_bounds.len();
         let num_nodes = self.boxes.len();
         let len = serialized_len(level_count, num_nodes).expect("serialized index is too large");
-        let mut bytes = Vec::with_capacity(len);
-        push_magic(&mut bytes);
-        push_format_version(&mut bytes);
-        push_header_len(&mut bytes);
-        push_flags(&mut bytes);
-        push_u64(&mut bytes, self.node_size as u64);
-        push_u64(&mut bytes, self.num_items as u64);
-        push_u64(&mut bytes, num_nodes as u64);
-        push_u64(&mut bytes, level_count as u64);
+        let mut bytes = ByteWriter::with_len(len);
+        bytes.write_magic();
+        bytes.write_format_version();
+        bytes.write_header_len();
+        bytes.write_flags();
+        bytes.write_u64(self.node_size as u64);
+        bytes.write_u64(self.num_items as u64);
+        bytes.write_u64(num_nodes as u64);
+        bytes.write_u64(level_count as u64);
         for &bound in &self.level_bounds {
-            push_u64(&mut bytes, bound as u64);
+            bytes.write_u64(bound as u64);
         }
         for b in &self.boxes {
-            push_f64(&mut bytes, b.min_x);
-            push_f64(&mut bytes, b.min_y);
-            push_f64(&mut bytes, b.max_x);
-            push_f64(&mut bytes, b.max_y);
+            bytes.write_f64(b.min_x);
+            bytes.write_f64(b.min_y);
+            bytes.write_f64(b.max_x);
+            bytes.write_f64(b.max_y);
         }
         for &index in &self.indices {
-            push_u64(&mut bytes, index as u64);
+            bytes.write_u64(index as u64);
         }
-        bytes
+        bytes.finish()
     }
 
     /// Load an owned index from bytes previously produced by [`Index::to_bytes`].

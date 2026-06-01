@@ -202,6 +202,21 @@ impl SimdIndex {
         self.num_items
     }
 
+    /// Return the total bounds of indexed items, or `None` for an empty index.
+    pub fn bounds(&self) -> Option<Rect> {
+        if self.num_items == 0 {
+            None
+        } else {
+            let last = self.min_xs.len() - 1;
+            Some(Rect::new(
+                self.min_xs[last],
+                self.min_ys[last],
+                self.max_xs[last],
+                self.max_ys[last],
+            ))
+        }
+    }
+
     /// Return the packed node size.
     #[doc(hidden)]
     pub fn node_size(&self) -> usize {

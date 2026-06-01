@@ -14,6 +14,24 @@ use static_aabb2d_index::StaticAABB2DIndexBuilder;
 use std::ops::ControlFlow;
 
 #[test]
+fn rect_helpers_use_inclusive_edges() {
+    let outer = Rect::new(0.0, 0.0, 10.0, 10.0);
+    let inner = Rect::new(2.0, 2.0, 4.0, 4.0);
+    let touching = Rect::new(10.0, 10.0, 12.0, 12.0);
+    let outside = Rect::new(11.0, 11.0, 12.0, 12.0);
+
+    assert!(outer.overlaps(inner));
+    assert!(outer.overlaps(touching));
+    assert!(!outer.overlaps(outside));
+
+    assert!(outer.contains(inner));
+    assert!(outer.contains(outer));
+    assert!(!outer.contains(touching));
+    assert!(outer.contains_point(packed_spatial_index::Point::new(10.0, 10.0)));
+    assert!(!outer.contains_point(packed_spatial_index::Point::new(10.1, 10.0)));
+}
+
+#[test]
 fn default_builder_uses_exported_node_size() {
     let mut builder = IndexBuilder::new(17);
     for i in 0..17 {
@@ -60,6 +78,7 @@ fn empty_and_small_indexes_behave_like_reference() {
         .unwrap();
     let empty = IndexBuilder::new(0).finish().unwrap();
     assert_eq!(empty.num_items(), 0);
+    assert_eq!(empty.bounds(), None);
     assert_eq!(
         empty.search(Rect::new(-1.0, -1.0, 1.0, 1.0)),
         reference.query(-1.0, -1.0, 1.0, 1.0)
@@ -78,6 +97,8 @@ fn empty_and_small_indexes_behave_like_reference() {
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
+
+    assert_eq!(index.bounds(), Some(Rect::new(-1.0, -1.0, 3.0, 3.0)));
 
     let query = Rect::new(-0.25, -0.25, 2.25, 2.25);
     let mut expected = reference.query(query.min_x, query.min_y, query.max_x, query.max_y);

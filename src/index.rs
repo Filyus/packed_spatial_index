@@ -107,6 +107,11 @@ impl Index {
         self.num_items
     }
 
+    /// Return the total bounds of indexed items, or `None` for an empty index.
+    pub fn bounds(&self) -> Option<Rect> {
+        self.boxes.last().copied()
+    }
+
     /// Return the packed node size.
     #[doc(hidden)]
     pub fn node_size(&self) -> usize {
@@ -705,6 +710,15 @@ impl<'a> IndexView<'a> {
     /// Return the number of indexed items.
     pub fn num_items(&self) -> usize {
         self.num_items
+    }
+
+    /// Return the total bounds of indexed items, or `None` for an empty view.
+    pub fn bounds(&self) -> Option<Rect> {
+        if self.num_items == 0 {
+            None
+        } else {
+            Some(self.box_at_unchecked(self.num_nodes - 1))
+        }
     }
 
     /// Return the packed node size.

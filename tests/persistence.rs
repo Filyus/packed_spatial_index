@@ -24,6 +24,8 @@ fn persistence_round_trip_and_view_agree() {
     assert_eq!(view.num_items(), index.num_items());
     assert_eq!(loaded.node_size(), index.node_size());
     assert_eq!(view.node_size(), index.node_size());
+    assert_eq!(loaded.bounds(), index.bounds());
+    assert_eq!(view.bounds(), index.bounds());
 
     for _ in 0..100 {
         let qx: f64 = rng.random_range(0.0..1000.0);
@@ -73,6 +75,8 @@ fn persistence_handles_edge_shapes() {
         let bytes = index.to_bytes();
         let loaded = Index::from_bytes(&bytes).unwrap();
         let view = IndexView::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded.bounds(), index.bounds());
+        assert_eq!(view.bounds(), index.bounds());
         let query = Rect::new(-100.0, -100.0, 100.0, 100.0);
         assert_eq!(index.search(query), loaded.search(query));
         assert_eq!(index.search(query), view.search(query));

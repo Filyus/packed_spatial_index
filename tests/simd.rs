@@ -16,6 +16,7 @@ use std::ops::ControlFlow;
 fn simd_empty_and_small_indexes_behave_like_aos() {
     let empty = IndexBuilder::new(0).finish_simd().unwrap();
     assert_eq!(empty.num_items(), 0);
+    assert_eq!(empty.bounds(), None);
     assert!(empty.search(Rect::new(-1.0, -1.0, 1.0, 1.0)).is_empty());
 
     let boxes = [
@@ -31,6 +32,8 @@ fn simd_empty_and_small_indexes_behave_like_aos() {
     }
     let aos = aos.finish().unwrap();
     let simd = simd.finish_simd().unwrap();
+
+    assert_eq!(simd.bounds(), aos.bounds());
 
     let query = Rect::new(-0.25, -0.25, 2.25, 2.25);
     let mut expected = aos.search(query);

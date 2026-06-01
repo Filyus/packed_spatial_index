@@ -58,7 +58,8 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 
 ## Main Types
 
-- `Rect` is the public AABB type.
+- `Rect` is the public AABB type, with inclusive `overlaps`, `contains`, and
+  `contains_point` helpers.
 - `IndexBuilder` builds either `Index` or, with `simd`, `SimdIndex`.
 - `Index` is the default read-only index.
 - `IndexView` is a zero-copy read-only view over bytes produced by `Index::to_bytes`.
@@ -69,6 +70,7 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 
 Search APIs:
 
+- `bounds()` returns the total item bounds, or `None` for an empty index.
 - `search(rect)` allocates and returns a `Vec<usize>`.
 - `search_into(rect, &mut results)` reuses a result buffer.
 - `search_with(rect, &mut workspace)` reuses result and traversal buffers.

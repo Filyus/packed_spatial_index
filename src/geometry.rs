@@ -26,14 +26,40 @@ impl Rect {
         }
     }
 
+    /// Return `true` when this rectangle overlaps `other`.
+    ///
+    /// Edges are inclusive: rectangles that only touch at an edge or corner
+    /// are considered overlapping.
     #[inline]
-    pub(crate) fn overlaps(&self, query: Rect) -> bool {
+    pub fn overlaps(&self, other: Rect) -> bool {
         // Branchless: compute all four comparisons and combine them with bitwise `&`
         // to remove hard-to-predict floating-point branches from the traversal loop.
-        (self.min_x <= query.max_x)
-            & (self.max_x >= query.min_x)
-            & (self.min_y <= query.max_y)
-            & (self.max_y >= query.min_y)
+        (self.min_x <= other.max_x)
+            & (self.max_x >= other.min_x)
+            & (self.min_y <= other.max_y)
+            & (self.max_y >= other.min_y)
+    }
+
+    /// Return `true` when this rectangle fully contains `other`.
+    ///
+    /// Edges are inclusive.
+    #[inline]
+    pub fn contains(&self, other: Rect) -> bool {
+        (self.min_x <= other.min_x)
+            & (self.min_y <= other.min_y)
+            & (self.max_x >= other.max_x)
+            & (self.max_y >= other.max_y)
+    }
+
+    /// Return `true` when this rectangle contains `point`.
+    ///
+    /// Edges are inclusive.
+    #[inline]
+    pub fn contains_point(&self, point: Point) -> bool {
+        (self.min_x <= point.x)
+            & (self.max_x >= point.x)
+            & (self.min_y <= point.y)
+            & (self.max_y >= point.y)
     }
 
     #[inline]

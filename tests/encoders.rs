@@ -1,7 +1,7 @@
 mod common;
 
 use common::{bounds, random_boxes};
-use packed_spatial_index::experimental::{ENCODERS, ExperimentalSortKey2D};
+use packed_spatial_index::experimental::{ENCODERS, ExperimentalSortKey2D, lut};
 use packed_spatial_index::{Bounds2D, Index2DBuilder, SortKey2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -30,6 +30,28 @@ fn encoders_match_reference_random() {
         let expected = hilbert_xy_to_index(x, y);
         for (name, f) in ENCODERS {
             assert_eq!(f(x, y), expected, "encoder `{name}` mismatch at ({x}, {y})");
+        }
+    }
+}
+
+#[test]
+#[ignore = "dense LUT guard; run explicitly when changing the table-driven encoder"]
+fn lut_matches_reference_on_dense_high_byte_grid() {
+    let high_bytes = [0x00u16, 0x01, 0x7F, 0x80, 0xFE, 0xFF];
+
+    for &xh in &high_bytes {
+        for &yh in &high_bytes {
+            for xl in 0..=u8::MAX {
+                for yl in 0..=u8::MAX {
+                    let x = (xh << 8) | u16::from(xl);
+                    let y = (yh << 8) | u16::from(yl);
+                    assert_eq!(
+                        lut(x, y),
+                        hilbert_xy_to_index(x, y),
+                        "LUT mismatch at ({x}, {y})"
+                    );
+                }
+            }
         }
     }
 }

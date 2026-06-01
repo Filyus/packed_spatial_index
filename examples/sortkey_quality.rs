@@ -4,7 +4,7 @@
 //! query time, and average intersection checks per query (a locality metric).
 //! Run: `cargo run --release --example sortkey_quality`
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use packed_spatial_index::experimental::ExperimentalSortKey2D;
 use packed_spatial_index::{Bounds2D, Index2DBuilder};
@@ -14,6 +14,7 @@ use rand::{RngExt, SeedableRng};
 const N: usize = 100_000;
 const NODE_SIZE: usize = 16;
 const QUERIES: usize = 2_000;
+const BUILD_REPEATS: usize = 5;
 const REPEATS: usize = 50; // repetitions for stable query timing
 
 fn main() {
@@ -44,10 +45,14 @@ fn main() {
             "Hilbert (magic_bits)",
             ExperimentalSortKey2D::HilbertMagicBits,
         ),
+        ("Hilbert (lut)", ExperimentalSortKey2D::HilbertLut),
+        ("Hilbert (loop)", ExperimentalSortKey2D::HilbertLoopRotation),
         ("Morton (Z-order)", ExperimentalSortKey2D::Morton),
     ];
 
-    println!("N={N}, node_size={NODE_SIZE}, queries={QUERIES} (x{REPEATS} repetitions)\n");
+    println!(
+        "N={N}, node_size={NODE_SIZE}, queries={QUERIES} (build best of {BUILD_REPEATS}, query x{REPEATS})\n"
+    );
     println!(
         "{:<22} | {:>10} | {:>12} | {:>16} | {:>14}",
         "Sort key", "build", "query (all)", "checks/query", "results/query"
@@ -57,15 +62,24 @@ fn main() {
     let mut baseline_visited = 0f64;
     for (i, (name, key)) in keys.iter().enumerate() {
         // build
-        let t0 = Instant::now();
-        let mut b = Index2DBuilder::new(N)
-            .node_size(NODE_SIZE)
-            .experimental_sort_key(*key);
-        for r in &boxes {
-            b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
+        let mut build_t = Duration::MAX;
+        let mut best_index = None;
+        for _ in 0..BUILD_REPEATS {
+            let t0 = Instant::now();
+            let mut b = Index2DBuilder::new(N)
+                .node_size(NODE_SIZE)
+                .experimental_sort_key(*key);
+            for r in &boxes {
+                b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
+            }
+            let candidate = b.finish().unwrap();
+            let candidate_t = t0.elapsed();
+            if candidate_t < build_t {
+                build_t = candidate_t;
+                best_index = Some(candidate);
+            }
         }
-        let index = b.finish().unwrap();
-        let build_t = t0.elapsed();
+        let index = best_index.unwrap();
 
         // quality: average check and result counts
         let mut total_visited = 0usize;

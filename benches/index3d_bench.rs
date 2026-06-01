@@ -7,9 +7,10 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use packed_spatial_index::experimental::ExperimentalSortKey3D;
+use packed_spatial_index::experimental::{self, ExperimentalSortKey2D, ExperimentalSortKey3D};
 use packed_spatial_index::{
-    Bounds3D, Index3D, Index3DBuilder, Index3DView, NeighborWorkspace, Point3D, SearchWorkspace,
+    Bounds2D, Bounds3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
+    NeighborWorkspace, Point2D, Point3D, SearchWorkspace,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -22,6 +23,7 @@ const LOADED_KNN_MAX_DISTANCE: f64 = f64::INFINITY;
 
 #[derive(Clone, Copy)]
 enum DatasetKind {
+    PlanarXY,
     Uniform,
     FlatZ,
     Clustered,
@@ -30,6 +32,7 @@ enum DatasetKind {
 impl DatasetKind {
     fn name(self) -> &'static str {
         match self {
+            DatasetKind::PlanarXY => "planar_xy",
             DatasetKind::Uniform => "uniform",
             DatasetKind::FlatZ => "flat_z",
             DatasetKind::Clustered => "clustered",
@@ -58,9 +61,28 @@ fn build_index(
     builder.finish().unwrap()
 }
 
+fn build_index2d(boxes: &[Bounds2D], node_size: usize) -> Index2D {
+    let mut builder = Index2DBuilder::new(boxes.len())
+        .node_size(node_size)
+        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+    for &bounds in boxes {
+        builder.add(bounds);
+    }
+    builder.finish().unwrap()
+}
+
 fn gen_boxes(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     match kind {
+        DatasetKind::PlanarXY => (0..n)
+            .map(|_| {
+                let x = rng.random_range(0.0..10_000.0);
+                let y = rng.random_range(0.0..10_000.0);
+                let dx = rng.random_range(1.0..40.0);
+                let dy = rng.random_range(1.0..40.0);
+                Bounds3D::new(x, y, 0.0, x + dx, y + dy, 0.0)
+            })
+            .collect(),
         DatasetKind::Uniform => (0..n)
             .map(|_| {
                 random_box(
@@ -97,6 +119,13 @@ fn gen_queries(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| match kind {
+            DatasetKind::PlanarXY => {
+                let x = rng.random_range(0.0..10_000.0);
+                let y = rng.random_range(0.0..10_000.0);
+                let dx = rng.random_range(50.0..300.0);
+                let dy = rng.random_range(50.0..300.0);
+                Bounds3D::new(x, y, 0.0, x + dx, y + dy, 0.0)
+            }
             DatasetKind::Uniform => random_box(
                 &mut rng,
                 0.0..10_000.0,
@@ -126,6 +155,11 @@ fn gen_points(kind: DatasetKind, n: usize, seed: u64) -> Vec<Point3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| match kind {
+            DatasetKind::PlanarXY => Point3D::new(
+                rng.random_range(0.0..10_000.0),
+                rng.random_range(0.0..10_000.0),
+                0.0,
+            ),
             DatasetKind::Uniform => Point3D::new(
                 rng.random_range(0.0..10_000.0),
                 rng.random_range(0.0..10_000.0),
@@ -145,6 +179,24 @@ fn gen_points(kind: DatasetKind, n: usize, seed: u64) -> Vec<Point3D> {
         .collect()
 }
 
+fn project_boxes_2d(boxes: &[Bounds3D]) -> Vec<Bounds2D> {
+    boxes
+        .iter()
+        .map(|b| Bounds2D::new(b.min_x, b.min_y, b.max_x, b.max_y))
+        .collect()
+}
+
+fn project_queries_2d(queries: &[Bounds3D]) -> Vec<Bounds2D> {
+    queries
+        .iter()
+        .map(|b| Bounds2D::new(b.min_x, b.min_y, b.max_x, b.max_y))
+        .collect()
+}
+
+fn project_points_2d(points: &[Point3D]) -> Vec<Point2D> {
+    points.iter().map(|p| Point2D::new(p.x, p.y)).collect()
+}
+
 fn random_box(
     rng: &mut StdRng,
     x_range: std::ops::Range<f64>,
@@ -159,6 +211,204 @@ fn random_box(
     let dy = rng.random_range(size_range.clone());
     let dz = rng.random_range(size_range);
     Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+}
+
+fn bench_dimension_encode(c: &mut Criterion) {
+    let n = 262_144usize;
+    let mut rng = StdRng::seed_from_u64(0x2D3D);
+    let coords2d: Vec<(u16, u16)> = (0..n)
+        .map(|_| (rng.random::<u16>(), rng.random::<u16>()))
+        .collect();
+    let coords3d: Vec<(u32, u32, u32)> = coords2d
+        .iter()
+        .map(|&(x, y)| (u32::from(x), u32::from(y), u32::from(rng.random::<u16>())))
+        .collect();
+
+    let mut group = c.benchmark_group("dimension_compare_encode");
+    group.throughput(Throughput::Elements(n as u64));
+    group.bench_function("hilbert2d_lut", |b| {
+        b.iter(|| {
+            let mut checksum = 0u64;
+            for &(x, y) in &coords2d {
+                checksum ^= u64::from(experimental::lut(black_box(x), black_box(y)));
+            }
+            black_box(checksum);
+        });
+    });
+    group.bench_function("hilbert3d_lut", |b| {
+        b.iter(|| {
+            let mut checksum = 0u64;
+            for &(x, y, z) in &coords3d {
+                checksum ^= experimental::encode_hilbert3(black_box(x), black_box(y), black_box(z));
+            }
+            black_box(checksum);
+        });
+    });
+    group.finish();
+}
+
+fn bench_dimension_build(c: &mut Criterion) {
+    let mut group = c.benchmark_group("dimension_compare_build");
+
+    for kind in [DatasetKind::PlanarXY, DatasetKind::Uniform] {
+        for &n in &[1_000usize, 100_000] {
+            let boxes3d = gen_boxes(kind, n, 0xD1B0);
+            let boxes2d = project_boxes_2d(&boxes3d);
+            group.throughput(Throughput::Elements(n as u64));
+            for &node_size in &[8usize, 16] {
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{}_2d_node{}", kind.name(), node_size), n),
+                    &boxes2d,
+                    |b, boxes| b.iter(|| black_box(build_index2d(boxes, node_size))),
+                );
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{}_3d_node{}", kind.name(), node_size), n),
+                    &boxes3d,
+                    |b, boxes| {
+                        b.iter(|| {
+                            black_box(build_index(
+                                boxes,
+                                node_size,
+                                ExperimentalSortKey3D::Hilbert,
+                                false,
+                            ));
+                        });
+                    },
+                );
+            }
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_dimension_search(c: &mut Criterion) {
+    let n = 100_000usize;
+    let mut group = c.benchmark_group("dimension_compare_search");
+
+    for kind in [DatasetKind::PlanarXY, DatasetKind::Uniform] {
+        let boxes3d = gen_boxes(kind, n, 0xD2B0);
+        let boxes2d = project_boxes_2d(&boxes3d);
+        let queries3d = gen_queries(kind, QUERY_COUNT, 0xD2B1);
+        let queries2d = project_queries_2d(&queries3d);
+        for &node_size in &[8usize, 16] {
+            let index2d = build_index2d(&boxes2d, node_size);
+            let index3d = build_index(&boxes3d, node_size, ExperimentalSortKey3D::Hilbert, false);
+            group.bench_function(format!("{}_2d_node{}", kind.name(), node_size), |b| {
+                let mut workspace = SearchWorkspace::new();
+                b.iter(|| {
+                    let mut total = 0usize;
+                    for &query in &queries2d {
+                        total += index2d.search_with(query, &mut workspace).len();
+                    }
+                    black_box(total);
+                });
+            });
+            group.bench_function(format!("{}_3d_node{}", kind.name(), node_size), |b| {
+                let mut workspace = SearchWorkspace::new();
+                b.iter(|| {
+                    let mut total = 0usize;
+                    for &query in &queries3d {
+                        total += index3d.search_with(query, &mut workspace).len();
+                    }
+                    black_box(total);
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_dimension_knn(c: &mut Criterion) {
+    let n = 100_000usize;
+    let mut group = c.benchmark_group("dimension_compare_knn");
+
+    for kind in [DatasetKind::PlanarXY, DatasetKind::Uniform] {
+        let boxes3d = gen_boxes(kind, n, 0xD3B0);
+        let boxes2d = project_boxes_2d(&boxes3d);
+        let points3d = gen_points(kind, KNN_COUNT, 0xD3B1);
+        let points2d = project_points_2d(&points3d);
+        for &node_size in &[8usize, 16] {
+            let index2d = build_index2d(&boxes2d, node_size);
+            let index3d = build_index(&boxes3d, node_size, ExperimentalSortKey3D::Hilbert, false);
+            for &(case, max_results) in &[("top_1", 1usize), ("top_10", 10usize)] {
+                group.bench_function(
+                    format!("{}_2d_{}_node{}", kind.name(), case, node_size),
+                    |b| {
+                        let mut workspace = NeighborWorkspace::new();
+                        b.iter(|| {
+                            let mut total = 0usize;
+                            for &point in &points2d {
+                                total += index2d
+                                    .neighbors_with(
+                                        point,
+                                        max_results,
+                                        f64::INFINITY,
+                                        &mut workspace,
+                                    )
+                                    .len();
+                            }
+                            black_box(total);
+                        });
+                    },
+                );
+                group.bench_function(
+                    format!("{}_3d_{}_node{}", kind.name(), case, node_size),
+                    |b| {
+                        let mut workspace = NeighborWorkspace::new();
+                        b.iter(|| {
+                            let mut total = 0usize;
+                            for &point in &points3d {
+                                total += index3d
+                                    .neighbors_with(
+                                        point,
+                                        max_results,
+                                        f64::INFINITY,
+                                        &mut workspace,
+                                    )
+                                    .len();
+                            }
+                            black_box(total);
+                        });
+                    },
+                );
+            }
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_dimension_persistence(c: &mut Criterion) {
+    let n = 100_000usize;
+    let boxes3d = gen_boxes(DatasetKind::PlanarXY, n, 0xD4B0);
+    let boxes2d = project_boxes_2d(&boxes3d);
+    let index2d = build_index2d(&boxes2d, 16);
+    let index3d = build_index(&boxes3d, 16, ExperimentalSortKey3D::Hilbert, false);
+    let bytes2d = index2d.to_bytes();
+    let bytes3d = index3d.to_bytes();
+
+    let mut group = c.benchmark_group("dimension_compare_persistence");
+    group.bench_function("2d_to_bytes_100000", |b| {
+        b.iter(|| black_box(index2d.to_bytes()))
+    });
+    group.bench_function("3d_to_bytes_100000", |b| {
+        b.iter(|| black_box(index3d.to_bytes()))
+    });
+    group.bench_function("2d_from_bytes_owned_100000", |b| {
+        b.iter(|| black_box(Index2D::from_bytes(&bytes2d).unwrap()))
+    });
+    group.bench_function("3d_from_bytes_owned_100000", |b| {
+        b.iter(|| black_box(Index3D::from_bytes(&bytes3d).unwrap()))
+    });
+    group.bench_function("2d_from_bytes_view_100000", |b| {
+        b.iter(|| black_box(Index2DView::from_bytes(&bytes2d).unwrap()))
+    });
+    group.bench_function("3d_from_bytes_view_100000", |b| {
+        b.iter(|| black_box(Index3DView::from_bytes(&bytes3d).unwrap()))
+    });
+    group.finish();
 }
 
 fn bench_build(c: &mut Criterion) {
@@ -377,6 +627,11 @@ fn bench_knn(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_dimension_encode,
+    bench_dimension_build,
+    bench_dimension_search,
+    bench_dimension_knn,
+    bench_dimension_persistence,
     bench_build,
     bench_search,
     bench_persistence,

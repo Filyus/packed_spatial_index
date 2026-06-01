@@ -131,38 +131,52 @@ around 1.7x instead of the earlier 4-7x.
 
 ## Hilbert2D vs Hilbert3D Cost
 
-The branch also has two focused comparison tests:
+The branch has two older ignored comparison tests from the prototype phase:
 
 ```bash
 cargo test --release --test bounds3d_research hilbert2d_vs_hilbert3d_encode_survey -- --ignored --nocapture --exact
 cargo test --release --test bounds3d_research hilbert2d_vs_hilbert3d_index_survey -- --ignored --nocapture --exact
 ```
 
-Raw key encoding is the largest visible gap:
+The current production comparison lives in Criterion:
 
-| Encoder | Items | Total ms | ns/key |
-| --- | ---: | ---: | ---: |
-| Hilbert2D | 262144 | 1.660 | 6.33 |
-| Hilbert3D | 262144 | 3.537 | 13.49 |
+```bash
+cargo bench --bench index3d_bench --no-default-features dimension_compare -- --sample-size 10 --warm-up-time 1 --measurement-time 1
+```
 
-This is not a pure dimension-only benchmark: `Hilbert2D` is the current optimized
-2D magic-bits encoder over 16-bit axes, while the temporary `Hilbert3D` path is a
-16-bit-per-axis 3D state-machine/LUT prototype.
+Short smoke run, lower is better:
 
-The closest apples-to-apples index scenario is `PlanarXY`: the same X/Y boxes
-embedded into 3D with `z = 0`, so 2D and 3D produce the same average hit count.
+| Area | Scenario | 2D | 3D | 3D/2D |
+| --- | --- | ---: | ---: | ---: |
+| Raw Hilbert encode | 262144 keys | 0.757 ms | 3.509 ms | 4.64x |
+| Build | PlanarXY, node 8, 100k | 2.974 ms | 6.576 ms | 2.21x |
+| Build | PlanarXY, node 16, 100k | 2.567 ms | 6.557 ms | 2.55x |
+| Build | Uniform, node 16, 100k | 2.248 ms | 6.360 ms | 2.83x |
+| Search | PlanarXY, node 16, 1k queries | 469 us | 644 us | 1.37x |
+| Search | Uniform, node 16, 1k queries | 483 us | 424 us | 0.88x |
+| KNN top-1 | PlanarXY, node 16, 1k points | 957 us | 1.218 ms | 1.27x |
+| KNN top-10 | PlanarXY, node 16, 1k points | 2.061 ms | 2.898 ms | 1.41x |
+| KNN top-10 | Uniform, node 16, 1k points | 2.072 ms | 4.586 ms | 2.21x |
+| Serialize | PlanarXY, node 16, 100k | 593 us | 894 us | 1.51x |
+| Load owned | PlanarXY, node 16, 100k | 558 us | 890 us | 1.59x |
+| Load view | PlanarXY, node 16, 100k | 35.9 us | 36.8 us | 1.02x |
 
-| Dataset | Dimension | Node size | Build ms | Search ms | Avg visited | Avg hits | KNN top-1 ms | KNN top-10 ms |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| PlanarXY | 2D | 8 | 0.297 | 0.027 | 56.94 | 2.88 | 0.118 | 0.257 |
-| PlanarXY | 3D | 8 | 0.400 | 0.037 | 72.94 | 2.88 | 0.259 | 0.363 |
-| PlanarXY | 2D | 16 | 0.299 | 0.030 | 81.62 | 2.88 | 0.121 | 0.286 |
-| PlanarXY | 3D | 16 | 0.386 | 0.037 | 102.12 | 2.88 | 0.296 | 0.420 |
+The closest apples-to-apples runtime scenario is `PlanarXY`: the same X/Y boxes
+embedded into 3D with `z = 0`, so 2D and 3D produce the same hits and nearest
+neighbors. In that case, the main 3D penalties are:
 
-Current read: `node_size = 8` matters more for the 3D path. In the planar
-same-hit-count case, 3D build is about 1.35x slower, search is about 1.37x
-slower, and KNN top-10 is about 1.4x slower than 2D at `node_size = 8`. True 3D datasets
-can look better or worse depending on how much the Z dimension prunes queries.
+- build: 3D Hilbert key generation is much more expensive, and build remains
+  about 2.2-2.8x slower after sort and packing amortize it;
+- search: roughly 1.37x slower when Z cannot prune anything;
+- KNN: about 1.3-1.4x slower for planar data, and about 2x slower on the current
+  uniform comparison;
+- persistence: owned serialization/loading tracks the larger 48-byte 3D bounds
+  record, while zero-copy view loading is almost unchanged because validation is
+  mostly tree-shape and index-pointer work.
+
+True 3D search can be faster than projected 2D search when the Z dimension
+filters candidates, as the uniform search comparison shows. KNN does not get the
+same win in this smoke run; the extra distance dimension and queue work dominate.
 
 ## External References
 

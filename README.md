@@ -158,6 +158,13 @@ The short version from the local benchmarks:
 
 See `REPORT.md` for the detailed research notes and benchmark tables.
 
+Run the focused benchmark suites with:
+
+```bash
+cargo bench --bench index_bench --no-default-features --features parallel,simd
+cargo bench --bench persistence_knn_bench --no-default-features --features simd
+```
+
 ## Status
 
 This crate is still marked `publish = false` while publishing metadata and the remaining API surface settle.

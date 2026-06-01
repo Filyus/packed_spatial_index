@@ -43,6 +43,11 @@ name = "index_bench"
 harness = false
 required-features = ["parallel", "simd"]
 
+[[bench]]
+name = "persistence_knn_bench"
+harness = false
+required-features = ["simd"]
+
 # Examples that require specific features (skipped when the feature is disabled).
 [[example]]
 name = "parallel_experiment"

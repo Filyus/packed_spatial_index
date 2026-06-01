@@ -625,17 +625,17 @@ impl Index {
 
         let mut level_bounds = Vec::with_capacity(view.level_count);
         for i in 0..view.level_count {
-            level_bounds.push(view.level_bound(i)?);
+            level_bounds.push(view.level_bound_unchecked(i));
         }
 
         let mut boxes = Vec::with_capacity(view.num_nodes);
         for i in 0..view.num_nodes {
-            boxes.push(view.box_at(i)?);
+            boxes.push(view.box_at_unchecked(i));
         }
 
         let mut indices = Vec::with_capacity(view.num_nodes);
         for i in 0..view.num_nodes {
-            indices.push(view.index_at(i)?);
+            indices.push(view.index_at_unchecked(i));
         }
 
         Ok(Self {
@@ -1208,14 +1208,14 @@ impl<'a> IndexView<'a> {
         let mut node_index = self.num_nodes - 1;
         let mut level = self.level_count - 1;
         loop {
-            let end = (node_index + self.node_size).min(self.level_bound(level).unwrap());
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
-                let b = self.box_at(pos).unwrap();
+                let b = self.box_at_unchecked(pos);
                 if !b.overlaps(rect) {
                     continue;
                 }
-                let index = self.index_at(pos).unwrap();
+                let index = self.index_at_unchecked(pos);
                 if is_leaf {
                     results.push(index);
                 } else {
@@ -1251,14 +1251,14 @@ impl<'a> IndexView<'a> {
         let mut node_index = self.num_nodes - 1;
         let mut level = self.level_count - 1;
         loop {
-            let end = (node_index + self.node_size).min(self.level_bound(level).unwrap());
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
-                let b = self.box_at(pos).unwrap();
+                let b = self.box_at_unchecked(pos);
                 if !b.overlaps(rect) {
                     continue;
                 }
-                let index = self.index_at(pos).unwrap();
+                let index = self.index_at_unchecked(pos);
                 if is_leaf {
                     visitor(index)?;
                 } else {
@@ -1298,17 +1298,17 @@ impl<'a> IndexView<'a> {
         loop {
             let upper_bound_level = self.upper_bound_level(node_index);
             let end =
-                (node_index + self.node_size).min(self.level_bound(upper_bound_level).unwrap());
+                (node_index + self.node_size).min(self.level_bound_unchecked(upper_bound_level));
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let b = self.box_at(pos).unwrap();
+                let b = self.box_at_unchecked(pos);
                 let dist = b.distance_squared_to(point);
                 if dist > max_dist_sq {
                     continue;
                 }
                 queue.push(NeighborState::new(
-                    self.index_at(pos).unwrap(),
+                    self.index_at_unchecked(pos),
                     is_leaf,
                     dist,
                 ));
@@ -1340,7 +1340,7 @@ impl<'a> IndexView<'a> {
         let mut hi = self.level_count - 1;
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if self.level_bound(mid).unwrap() > node_index {
+            if self.level_bound_unchecked(mid) > node_index {
                 hi = mid;
             } else {
                 lo = mid + 1;
@@ -1349,22 +1349,25 @@ impl<'a> IndexView<'a> {
         lo
     }
 
-    fn level_bound(&self, index: usize) -> Result<usize, LoadError> {
-        read_u64_at(self.level_bounds, index * 8).and_then(usize_from_u64)
+    #[inline]
+    fn level_bound_unchecked(&self, index: usize) -> usize {
+        read_u64_le_unchecked(self.level_bounds, index * 8) as usize
     }
 
-    fn box_at(&self, index: usize) -> Result<Rect, LoadError> {
-        let offset = index.checked_mul(32).ok_or(LoadError::IntegerOverflow)?;
-        Ok(Rect::new(
-            read_f64_at(self.boxes, offset)?,
-            read_f64_at(self.boxes, offset + 8)?,
-            read_f64_at(self.boxes, offset + 16)?,
-            read_f64_at(self.boxes, offset + 24)?,
-        ))
+    #[inline]
+    fn box_at_unchecked(&self, index: usize) -> Rect {
+        let offset = index * 32;
+        Rect::new(
+            read_f64_le_unchecked(self.boxes, offset),
+            read_f64_le_unchecked(self.boxes, offset + 8),
+            read_f64_le_unchecked(self.boxes, offset + 16),
+            read_f64_le_unchecked(self.boxes, offset + 24),
+        )
     }
 
-    fn index_at(&self, index: usize) -> Result<usize, LoadError> {
-        read_u64_at(self.indices, index * 8).and_then(usize_from_u64)
+    #[inline]
+    fn index_at_unchecked(&self, index: usize) -> usize {
+        read_u64_le_unchecked(self.indices, index * 8) as usize
     }
 }
 
@@ -1557,10 +1560,27 @@ fn read_u64_at(bytes: &[u8], offset: usize) -> Result<u64, LoadError> {
     Ok(u64::from_le_bytes(slice.try_into().unwrap()))
 }
 
-fn read_f64_at(bytes: &[u8], offset: usize) -> Result<f64, LoadError> {
-    let end = offset.checked_add(8).ok_or(LoadError::IntegerOverflow)?;
-    let slice = bytes.get(offset..end).ok_or(LoadError::Truncated)?;
-    Ok(f64::from_le_bytes(slice.try_into().unwrap()))
+#[inline]
+fn read_u64_le_unchecked(bytes: &[u8], offset: usize) -> u64 {
+    debug_assert!(offset <= bytes.len());
+    debug_assert!(bytes.len() - offset >= 8);
+
+    let mut value = 0u64;
+    // SAFETY: callers only use this for slices and offsets validated by
+    // `parse_index_bytes`; unaligned byte buffers are copied into an aligned u64.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr().add(offset),
+            (&mut value as *mut u64).cast::<u8>(),
+            8,
+        );
+    }
+    u64::from_le(value)
+}
+
+#[inline]
+fn read_f64_le_unchecked(bytes: &[u8], offset: usize) -> f64 {
+    f64::from_bits(read_u64_le_unchecked(bytes, offset))
 }
 
 fn usize_from_u64(value: u64) -> Result<usize, LoadError> {

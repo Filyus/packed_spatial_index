@@ -17,8 +17,9 @@ benchmarks.
   internal layout, mirroring `Index2D`.
 - Reuse `SearchWorkspace` and `NeighborWorkspace` if their internals remain
   dimension-agnostic.
-- Defer `SimdIndex3D`, 3D persistence, and a stable 3D file format until scalar
-  `Index3D` is proven.
+- Defer `SimdIndex3D` until scalar `Index3D` usage and benchmarks are proven.
+  3D persistence now uses the canonical `PSINDEX` format with a 3D dimension
+  flag.
 
 Hilbert3D is the recommended first serious default candidate for read-heavy 3D
 indexes. The prototype shows meaningfully better traversal quality and KNN time

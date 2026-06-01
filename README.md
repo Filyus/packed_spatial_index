@@ -53,9 +53,9 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - 2D and scalar 3D axis-aligned bounding boxes are supported.
 - Search results are item indices, not stored payloads or geometries.
 - Result ordering is not a stable API guarantee.
-- Persistence is defined for the canonical `Index2D` format. `Index3D` and
-  `SimdIndex2D` can be rebuilt from source boxes but do not have stable file
-  formats yet.
+- Persistence is defined for canonical `Index2D` and `Index3D` formats.
+  `SimdIndex2D` can be rebuilt from source boxes but does not have a stable SoA
+  file format yet.
 - Nearest-neighbor search is exact over indexed bounds; approximate KNN and dynamic
   spatial joins are out of scope for now.
 
@@ -69,7 +69,8 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - `Index3DBuilder` builds scalar `Index3D`.
 - `Index2D` is the default read-only index.
 - `Index3D` is the scalar read-only 3D index.
-- `Index2DView` is a zero-copy read-only view over bytes produced by `Index2D::to_bytes`.
+- `Index2DView` and `Index3DView` are zero-copy read-only views over bytes
+  produced by `Index2D::to_bytes` and `Index3D::to_bytes`.
 - `SimdIndex2D` is available with the `simd` feature and has the same search API.
 - `SearchWorkspace` reuses result and traversal buffers.
 - `Point2D`, `Point3D`, and `NeighborWorkspace` support nearest-neighbor searches.
@@ -143,8 +144,8 @@ assert_eq!(index.neighbors(Point3D::new(5.5, 5.5, 5.5), 1), vec![1]);
 
 ## Persistence
 
-`Index2D` can be serialized to a stable little-endian byte format and loaded back
-either as an owned index or as a zero-copy view:
+`Index2D` and `Index3D` can be serialized to stable little-endian byte formats
+and loaded back either as owned indexes or as zero-copy views:
 
 ```rust
 use packed_spatial_index::{Index2D, Index2DBuilder, Index2DView, Bounds2D};
@@ -162,7 +163,9 @@ assert_eq!(view.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`Index3D` and `SimdIndex2D` are not persisted as separate formats yet.
+3D persistence uses the same header and sections, with a dimension flag and
+six `f64` coordinates per stored bounds. `SimdIndex2D` is not persisted as a
+separate SoA format yet.
 
 The binary layout is documented in [`FORMAT.md`](FORMAT.md).
 
@@ -207,7 +210,8 @@ or query neighbors.
 Internally, the crate keeps `unsafe` limited to narrow performance-sensitive
 paths:
 
-- unaligned little-endian reads for validated `Index2DView` byte buffers;
+- unaligned little-endian reads for validated `Index2DView` and `Index3DView`
+  byte buffers;
 - x86/x86_64 prefetch intrinsics used only by hidden benchmark/experimental paths;
 - AVX-512 loads in the `simd` feature, guarded by runtime CPU feature detection.
 

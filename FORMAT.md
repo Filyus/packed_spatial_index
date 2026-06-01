@@ -1,9 +1,10 @@
 # Binary Format
 
-`Index2D::to_bytes` writes the canonical `Index2D` layout to a stable
-little-endian byte format. `Index2D::from_bytes` loads the same format into owned
-vectors, and `Index2DView::from_bytes` borrows the buffer without allocating
-during load.
+`Index2D::to_bytes` and `Index3D::to_bytes` write canonical packed layouts to a
+stable little-endian byte format. `Index2D::from_bytes` and
+`Index3D::from_bytes` load the same format into owned vectors, while
+`Index2DView::from_bytes` and `Index3DView::from_bytes` borrow the buffer
+without allocating during load.
 
 `SimdIndex2D` does not have a separate persisted SoA format.
 
@@ -24,8 +25,13 @@ It expands to:
 The binary format version is stored separately as a little-endian `u64` header
 field. The current version is `1`.
 
-`header_len` is the fixed byte length of this header. `flags` is reserved for
-future format options and must be zero in version 1.
+`header_len` is the fixed byte length of this header. `flags` currently selects
+the coordinate dimension:
+
+- `0`: 2D boxes;
+- `1`: 3D boxes.
+
+Other flag values are reserved.
 
 ## Layout
 
@@ -37,13 +43,13 @@ offset  size  field
 0       8     magic: b"PSINDEX\0"
 8       8     format_version: u64 = 1
 16      8     header_len: u64 = 64
-24      8     flags: u64 = 0
+24      8     flags: u64 = 0 for 2D, 1 for 3D
 32      8     node_size
 40      8     num_items
 48      8     num_nodes
 56      8     level_count
 64      ...   level_bounds: [u64; level_count]
-...     ...   boxes: [f64 min_x, f64 min_y, f64 max_x, f64 max_y; num_nodes]
+...     ...   boxes: [box; num_nodes]
 ...     ...   indices: [u64; num_nodes]
 ```
 
@@ -51,6 +57,13 @@ There is no padding between sections.
 
 The fixed header is 64 bytes, so every section starts on an 8-byte logical
 offset.
+
+Box records are:
+
+```text
+2D: f64 min_x, f64 min_y, f64 max_x, f64 max_y
+3D: f64 min_x, f64 min_y, f64 min_z, f64 max_x, f64 max_y, f64 max_z
+```
 
 ## Tree Storage
 
@@ -87,7 +100,7 @@ Loaders reject malformed buffers before exposing safe search APIs. Validation
 checks include:
 
 - exact magic match, supported `format_version`, supported `header_len`, and
-  zero `flags`;
+  supported `flags` for the requested loader;
 - complete header and sections;
 - exact byte length;
 - `node_size` in `2..=65535`;
@@ -102,5 +115,5 @@ offset for malformed input.
 ## Compatibility
 
 The byte format is intended for data produced by `packed_spatial_index`
-`Index2D::to_bytes`. The crate preserves the meaning of `format_version = 1`;
-incompatible changes should use a new version value.
+`Index2D::to_bytes` and `Index3D::to_bytes`. The crate preserves the meaning of
+`format_version = 1`; incompatible changes should use a new version value.

@@ -1,0 +1,219 @@
+use packed_spatial_index::{
+    Bounds2D, Bounds3D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
+    LoadError, Point3D,
+};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
+
+#[test]
+fn persistence_3d_round_trip_and_view_agree() {
+    let mut rng = StdRng::seed_from_u64(0x3D5150);
+    let boxes = random_boxes_3d(&mut rng, 500);
+    let index = build_index_3d(&boxes, 8);
+
+    let bytes = index.to_bytes();
+    assert_eq!(&bytes[..8], b"PSINDEX\0");
+    assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 1);
+    assert_eq!(u64::from_le_bytes(bytes[16..24].try_into().unwrap()), 64);
+    assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 1);
+
+    let loaded = Index3D::from_bytes(&bytes).unwrap();
+    let view = Index3DView::from_bytes(&bytes).unwrap();
+
+    assert_eq!(loaded.num_items(), index.num_items());
+    assert_eq!(view.num_items(), index.num_items());
+    assert_eq!(loaded.node_size(), index.node_size());
+    assert_eq!(view.node_size(), index.node_size());
+    assert_eq!(loaded.extent(), index.extent());
+    assert_eq!(view.extent(), index.extent());
+
+    for _ in 0..100 {
+        let qx: f64 = rng.random_range(0.0..1000.0);
+        let qy: f64 = rng.random_range(0.0..1000.0);
+        let qz: f64 = rng.random_range(0.0..1000.0);
+        let query = Bounds3D::new(qx, qy, qz, qx + 40.0, qy + 40.0, qz + 40.0);
+
+        let mut expected = index.search(query);
+        let mut owned = loaded.search(query);
+        let mut borrowed = view.search(query);
+        expected.sort_unstable();
+        owned.sort_unstable();
+        borrowed.sort_unstable();
+        assert_eq!(expected, owned);
+        assert_eq!(expected, borrowed);
+
+        let point = Point3D::new(qx, qy, qz);
+        assert_eq!(
+            index.neighbors_within(point, 12, 100.0),
+            loaded.neighbors_within(point, 12, 100.0)
+        );
+        assert_eq!(
+            index.neighbors_within(point, 12, 100.0),
+            view.neighbors_within(point, 12, 100.0)
+        );
+    }
+}
+
+#[test]
+fn persistence_3d_handles_edge_shapes() {
+    let cases: Vec<Vec<Bounds3D>> = vec![
+        Vec::new(),
+        vec![Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)],
+        vec![
+            Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+            Bounds3D::new(2.0, 2.0, 2.0, 3.0, 3.0, 3.0),
+            Bounds3D::new(4.0, 4.0, 4.0, 5.0, 5.0, 5.0),
+        ],
+        vec![
+            Bounds3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+            Bounds3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+            Bounds3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+        ],
+    ];
+
+    for boxes in cases {
+        let index = build_index_3d(&boxes, 16);
+        let bytes = index.to_bytes();
+        let loaded = Index3D::from_bytes(&bytes).unwrap();
+        let view = Index3DView::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded.extent(), index.extent());
+        assert_eq!(view.extent(), index.extent());
+        let query = Bounds3D::new(-100.0, -100.0, -100.0, 100.0, 100.0, 100.0);
+        assert_eq!(index.search(query), loaded.search(query));
+        assert_eq!(index.search(query), view.search(query));
+        assert_eq!(
+            index.neighbors(Point3D::new(0.0, 0.0, 0.0), 3),
+            loaded.neighbors(Point3D::new(0.0, 0.0, 0.0), 3)
+        );
+        assert_eq!(
+            index.neighbors(Point3D::new(0.0, 0.0, 0.0), 3),
+            view.neighbors(Point3D::new(0.0, 0.0, 0.0), 3)
+        );
+    }
+}
+
+#[test]
+fn persistence_rejects_cross_dimension_buffers() {
+    let mut builder = Index2DBuilder::new(1);
+    builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    let bytes_2d = builder.finish().unwrap().to_bytes();
+    assert!(matches!(
+        Index3DView::from_bytes(&bytes_2d),
+        Err(LoadError::UnsupportedVersion)
+    ));
+
+    let mut builder = Index3DBuilder::new(1);
+    builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    let bytes_3d = builder.finish().unwrap().to_bytes();
+    assert!(matches!(
+        Index2DView::from_bytes(&bytes_3d),
+        Err(LoadError::UnsupportedVersion)
+    ));
+}
+
+#[test]
+fn persistence_3d_rejects_malformed_buffers() {
+    let boxes: Vec<Bounds3D> = (0..40)
+        .map(|i| {
+            let x = i as f64;
+            Bounds3D::new(x, x, x, x + 0.5, x + 0.5, x + 0.5)
+        })
+        .collect();
+    let bytes = build_index_3d(&boxes, 4).to_bytes();
+
+    let mut bad_magic = bytes.clone();
+    bad_magic[0] = b'X';
+    assert!(matches!(
+        Index3DView::from_bytes(&bad_magic),
+        Err(LoadError::BadMagic)
+    ));
+
+    let mut bad_version = bytes.clone();
+    bad_version[8..16].copy_from_slice(&999u64.to_le_bytes());
+    assert!(matches!(
+        Index3DView::from_bytes(&bad_version),
+        Err(LoadError::UnsupportedVersion)
+    ));
+
+    let mut bad_header_len = bytes.clone();
+    bad_header_len[16..24].copy_from_slice(&48u64.to_le_bytes());
+    assert!(matches!(
+        Index3DView::from_bytes(&bad_header_len),
+        Err(LoadError::UnsupportedVersion)
+    ));
+
+    let mut bad_flags = bytes.clone();
+    bad_flags[24..32].copy_from_slice(&2u64.to_le_bytes());
+    assert!(matches!(
+        Index3DView::from_bytes(&bad_flags),
+        Err(LoadError::UnsupportedVersion)
+    ));
+
+    assert!(matches!(
+        Index3DView::from_bytes(&bytes[..bytes.len() - 1]),
+        Err(LoadError::Truncated)
+    ));
+
+    let mut extra = bytes.clone();
+    extra.push(0);
+    assert!(matches!(
+        Index3DView::from_bytes(&extra),
+        Err(LoadError::LengthMismatch { .. })
+    ));
+
+    let mut invalid_node_size = bytes.clone();
+    invalid_node_size[32..40].copy_from_slice(&1u64.to_le_bytes());
+    assert!(matches!(
+        Index3DView::from_bytes(&invalid_node_size),
+        Err(LoadError::InvalidNodeSize { node_size: 1 })
+    ));
+
+    let mut invalid_level_bounds = bytes.clone();
+    invalid_level_bounds[64..72].copy_from_slice(&999u64.to_le_bytes());
+    assert!(matches!(
+        Index3DView::from_bytes(&invalid_level_bounds),
+        Err(LoadError::InvalidTree)
+    ));
+
+    let num_nodes = u64::from_le_bytes(bytes[48..56].try_into().unwrap()) as usize;
+    let level_count = u64::from_le_bytes(bytes[56..64].try_into().unwrap()) as usize;
+    let indices_offset = 64 + level_count * 8 + num_nodes * 48;
+
+    let mut invalid_leaf_index = bytes.clone();
+    invalid_leaf_index[indices_offset..indices_offset + 8].copy_from_slice(&999u64.to_le_bytes());
+    assert!(matches!(
+        Index3DView::from_bytes(&invalid_leaf_index),
+        Err(LoadError::InvalidTree)
+    ));
+
+    let mut invalid_child_pointer = bytes.clone();
+    let last_index_offset = indices_offset + (num_nodes - 1) * 8;
+    invalid_child_pointer[last_index_offset..last_index_offset + 8]
+        .copy_from_slice(&999u64.to_le_bytes());
+    assert!(matches!(
+        Index3DView::from_bytes(&invalid_child_pointer),
+        Err(LoadError::InvalidTree)
+    ));
+}
+
+fn build_index_3d(boxes: &[Bounds3D], node_size: usize) -> Index3D {
+    let mut builder = Index3DBuilder::new(boxes.len()).node_size(node_size);
+    for &bounds in boxes {
+        builder.add(bounds);
+    }
+    builder.finish().unwrap()
+}
+
+fn random_boxes_3d(rng: &mut StdRng, n: usize) -> Vec<Bounds3D> {
+    (0..n)
+        .map(|_| {
+            let x: f64 = rng.random_range(0.0..1000.0);
+            let y: f64 = rng.random_range(0.0..1000.0);
+            let z: f64 = rng.random_range(0.0..1000.0);
+            let dx: f64 = rng.random_range(0.1..20.0);
+            let dy: f64 = rng.random_range(0.1..20.0);
+            let dz: f64 = rng.random_range(0.1..20.0);
+            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+        })
+        .collect()
+}

@@ -52,7 +52,8 @@ impl Error for LoadError {}
 // as a little-endian u64 in the header.
 const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
 const FORMAT_VERSION: u64 = 1;
-const FORMAT_FLAGS: u64 = 0;
+const FORMAT_FLAGS_2D: u64 = 0;
+const FORMAT_FLAGS_3D: u64 = 1;
 const FORMAT_HEADER_LEN: usize = 64;
 
 pub(crate) struct ParsedIndexBytes<'a> {
@@ -66,6 +67,18 @@ pub(crate) struct ParsedIndexBytes<'a> {
 }
 
 pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D, 2)
+}
+
+pub(crate) fn parse_index3d_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D, 3)
+}
+
+fn parse_index_bytes_with_flags(
+    bytes: &[u8],
+    expected_flags: u64,
+    dimensions: usize,
+) -> Result<ParsedIndexBytes<'_>, LoadError> {
     if bytes.len() < FORMAT_MAGIC.len() {
         return Err(LoadError::Truncated);
     }
@@ -83,7 +96,7 @@ pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, Lo
 
     let header_len = read_u64_at(bytes, 16).and_then(usize_from_u64)?;
     let flags = read_u64_at(bytes, 24)?;
-    if header_len != FORMAT_HEADER_LEN || flags != FORMAT_FLAGS {
+    if header_len != FORMAT_HEADER_LEN || flags != expected_flags {
         return Err(LoadError::UnsupportedVersion);
     }
 
@@ -101,7 +114,7 @@ pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, Lo
         return Err(LoadError::InvalidTree);
     }
 
-    let expected_len = serialized_len(level_count, num_nodes)?;
+    let expected_len = serialized_len_for_dimensions(level_count, num_nodes, dimensions)?;
     if bytes.len() < expected_len {
         return Err(LoadError::Truncated);
     }
@@ -116,7 +129,8 @@ pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, Lo
         .checked_mul(8)
         .ok_or(LoadError::IntegerOverflow)?;
     let boxes_len = num_nodes
-        .checked_mul(32)
+        .checked_mul(dimensions)
+        .and_then(|len| len.checked_mul(16))
         .ok_or(LoadError::IntegerOverflow)?;
     let indices_len = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
 
@@ -223,11 +237,24 @@ fn expected_tree_shape(num_items: usize, node_size: usize) -> Result<(usize, usi
 }
 
 pub(crate) fn serialized_len(level_count: usize, num_nodes: usize) -> Result<usize, LoadError> {
+    serialized_len_for_dimensions(level_count, num_nodes, 2)
+}
+
+pub(crate) fn serialized_len_3d(level_count: usize, num_nodes: usize) -> Result<usize, LoadError> {
+    serialized_len_for_dimensions(level_count, num_nodes, 3)
+}
+
+fn serialized_len_for_dimensions(
+    level_count: usize,
+    num_nodes: usize,
+    dimensions: usize,
+) -> Result<usize, LoadError> {
     let levels = level_count
         .checked_mul(8)
         .ok_or(LoadError::IntegerOverflow)?;
     let boxes = num_nodes
-        .checked_mul(32)
+        .checked_mul(dimensions)
+        .and_then(|len| len.checked_mul(16))
         .ok_or(LoadError::IntegerOverflow)?;
     let indices = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
     FORMAT_HEADER_LEN
@@ -265,7 +292,11 @@ impl ByteWriter {
     }
 
     pub(crate) fn write_flags(&mut self) {
-        self.write_u64(FORMAT_FLAGS);
+        self.write_u64(FORMAT_FLAGS_2D);
+    }
+
+    pub(crate) fn write_3d_flags(&mut self) {
+        self.write_u64(FORMAT_FLAGS_3D);
     }
 
     #[inline]

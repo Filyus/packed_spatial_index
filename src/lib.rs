@@ -1,11 +1,10 @@
-//! Packed static spatial index for 2D axis-aligned bounding boxes.
+//! Packed static spatial index for 2D and 3D axis-aligned bounding boxes.
 //!
 //! The canonical flow is [`Index2DBuilder`] -> [`Index2D`] -> [`Index2D::search`].
 //! With the `simd` feature, `Index2DBuilder::finish_simd` builds `SimdIndex2D`,
 //! which has the same search API backed by a SoA layout and SIMD traversal.
-//! `Index2D` can also be serialized with [`Index2D::to_bytes`] and viewed without
-//! copying through [`Index2DView`].
-//! For 3D data, use the scalar [`Index3DBuilder`] -> [`Index3D`] flow.
+//! `Index2D` and `Index3D` can also be serialized with `to_bytes` and viewed
+//! without copying through [`Index2DView`] and [`Index3DView`].
 //!
 //! # Quick Start
 //! ```
@@ -47,7 +46,7 @@ pub use geometry::{Bounds2D, Bounds3D, BoundsError, Point2D, Point3D};
 pub use index::{Index2D, Index2DView, SearchWorkspace};
 #[cfg(feature = "simd")]
 pub use index_soa::SimdIndex2D;
-pub use index3d::Index3D;
+pub use index3d::{Index3D, Index3DView};
 pub use neighbors::NeighborWorkspace;
 pub use persistence::LoadError;
 pub use sort::SortKey2D;

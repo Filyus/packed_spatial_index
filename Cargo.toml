@@ -18,7 +18,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
-static_aabb2d_index = "2"
 rayon = { version = "1", optional = true }
 wide = { version = "0.7", optional = true }
 
@@ -33,6 +32,7 @@ simd = ["dep:wide"]
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 rand = "0.8"
+static_aabb2d_index = "2"
 
 # Fair optimized-code measurements: one codegen unit + LTO.
 [profile.release]

@@ -9,11 +9,15 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 use wide::{CmpGe, CmpLe, f64x4};
 
 #[cfg(feature = "parallel")]
-use crate::index::encode_sort_parallel;
-use crate::index::{
-    BuildConfig, DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY, NeighborNodeState,
-    NeighborState, NeighborWorkspace, Point, Rect, SearchWorkspace, encode_sort_serial,
-    hilbert_coord, max_distance_squared, prefetch_read, upper_bound_level,
+use crate::sort::encode_sort_parallel;
+use crate::{
+    builder::BuildConfig,
+    index::{prefetch_read, upper_bound_level},
+    sort::{encode_sort_serial, hilbert_coord},
+    types::{
+        DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY, NeighborNodeState,
+        NeighborState, NeighborWorkspace, Point, Rect, SearchWorkspace, max_distance_squared,
+    },
 };
 
 type Num = f64;

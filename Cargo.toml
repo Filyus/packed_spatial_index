@@ -1,0 +1,57 @@
+[package]
+name = "packed_spatial_index"
+version = "0.2.0"
+edition = "2021"
+description = "Packed static spatial index for 2D AABBs with Hilbert ordering, adaptive parallel builds, and SIMD queries."
+readme = "README.md"
+keywords = ["spatial", "index", "aabb", "hilbert", "rtree"]
+categories = ["algorithms", "data-structures"]
+publish = false
+
+[dependencies]
+static_aabb2d_index = "2"
+rayon = { version = "1", optional = true }
+wide = { version = "0.7", optional = true }
+
+[features]
+# Both features are enabled by default to preserve the previous behavior.
+default = ["parallel", "simd"]
+# Adaptive parallel index builds through rayon (`IndexBuilder::parallel`).
+parallel = ["dep:rayon"]
+# SoA index with SIMD queries (`SimdIndex`, AVX2 `wide::f64x4` + AVX-512 intrinsics).
+simd = ["dep:wide"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+
+# Fair optimized-code measurements: one codegen unit + LTO.
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.bench]
+lto = true
+codegen-units = 1
+
+[[bench]]
+name = "hilbert_bench"
+harness = false
+
+[[bench]]
+name = "index_bench"
+harness = false
+required-features = ["parallel", "simd"]
+
+# Examples that require specific features (skipped when the feature is disabled).
+[[example]]
+name = "parallel_experiment"
+required-features = ["parallel"]
+
+[[example]]
+name = "soa_experiment"
+required-features = ["simd"]
+
+[[example]]
+name = "nodesize_experiment"
+required-features = ["simd"]

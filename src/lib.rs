@@ -1,0 +1,40 @@
+//! Packed static spatial index for 2D axis-aligned bounding boxes.
+//!
+//! The canonical flow is [`IndexBuilder`] -> [`Index`] -> [`Index::search`].
+//! With the `simd` feature, `IndexBuilder::finish_simd` builds `SimdIndex`,
+//! which has the same search API backed by a SoA layout and SIMD traversal.
+//!
+//! # Quick Start
+//! ```
+//! use packed_spatial_index::{IndexBuilder, Rect};
+//!
+//! let mut builder = IndexBuilder::new(2);
+//! builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+//! builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+//! let index = builder.finish().unwrap();
+//!
+//! assert_eq!(index.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+//! ```
+//!
+//! # Cargo Features
+//! * `parallel` (enabled by default): adaptive parallel builds through rayon.
+//! * `simd` (enabled by default): `SimdIndex` with SIMD searches through `wide`
+//!   and x86-64 AVX-512 intrinsics where available.
+
+mod hilbert;
+mod index;
+#[cfg(feature = "simd")]
+mod index_soa;
+
+pub use index::{BuildError, Index, IndexBuilder, Rect, SearchWorkspace, SortKey};
+#[cfg(feature = "simd")]
+pub use index_soa::SimdIndex;
+
+/// Experimental internals kept public for benchmarks and research notebooks.
+#[doc(hidden)]
+pub mod experimental {
+    pub use crate::hilbert::{
+        loop_rotation, lut, magic_bits, magic_bits_batch, morton, HilbertFn, ENCODERS,
+    };
+    pub use crate::index::{radix_sort_pairs, ExperimentalSortKey};
+}

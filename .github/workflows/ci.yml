@@ -24,6 +24,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check MSRV
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal
+          cargo +1.89.0 check --lib --all-features
+
       - name: Test default features
         run: cargo test --all-targets
 

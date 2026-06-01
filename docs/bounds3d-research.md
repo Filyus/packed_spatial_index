@@ -91,6 +91,20 @@ Local command:
 cargo test --release --test bounds3d_research -- --ignored --nocapture
 ```
 
+Production Criterion benchmarks now live in `benches/index3d_bench.rs`:
+
+```bash
+cargo bench --bench index3d_bench --no-default-features
+```
+
+For quick targeted runs, filter by group:
+
+```bash
+cargo bench --bench index3d_bench --no-default-features 100000 -- --sample-size 10
+cargo bench --bench index3d_bench --no-default-features index3d_search/uniform -- --sample-size 10
+cargo bench --bench index3d_bench --no-default-features index3d_knn/uniform -- --sample-size 10
+```
+
 Prototype output from this branch:
 
 | Dataset | Sort key | Node size | Sort ms | Search ms | Avg visited | Avg hits | KNN top-1 ms | KNN top-10 ms | KNN top-10 r80 ms |

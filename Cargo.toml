@@ -3,7 +3,7 @@ name = "packed_spatial_index"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
-description = "Packed static spatial index for 2D AABBs with Hilbert ordering, adaptive parallel builds, and SIMD queries."
+description = "Packed static spatial index for 2D and 3D AABBs with Hilbert ordering, adaptive parallel builds, and SIMD queries."
 license = "Apache-2.0"
 repository = "https://github.com/Filyus/packed_spatial_index"
 documentation = "https://docs.rs/packed_spatial_index"
@@ -57,6 +57,10 @@ required-features = ["parallel", "simd"]
 
 [[bench]]
 name = "sortkey_bench"
+harness = false
+
+[[bench]]
+name = "index3d_bench"
 harness = false
 
 [[bench]]

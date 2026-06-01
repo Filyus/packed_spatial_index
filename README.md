@@ -235,12 +235,14 @@ The short version:
 - AVX-512 is not always the fastest path in parallel workloads because CPU frequency behavior matters.
 - `flatgeobuf_bench` compares against FlatGeobuf's packed Hilbert R-tree;
 - `index_bench` compares build/search paths against `static_aabb2d_index`;
+- `index3d_bench` covers scalar 3D build/search/KNN, node sizes, and hidden Morton baseline;
 - `persistence_knn_bench` covers persistence, loaded views, and KNN.
 
 Run the focused benchmark suites with:
 
 ```bash
 cargo bench --bench index_bench --no-default-features --features parallel,simd
+cargo bench --bench index3d_bench --no-default-features
 cargo bench --bench persistence_knn_bench --no-default-features --features simd
 cargo bench --bench flatgeobuf_bench --no-default-features --features parallel,simd
 ```

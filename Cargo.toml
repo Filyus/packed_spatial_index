@@ -31,6 +31,7 @@ simd = ["dep:wide"]
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
+flatgeobuf = { version = "6.0.1", default-features = false }
 rand = "0.10.1"
 static_aabb2d_index = "2"
 
@@ -56,6 +57,11 @@ required-features = ["parallel", "simd"]
 name = "persistence_knn_bench"
 harness = false
 required-features = ["simd"]
+
+[[bench]]
+name = "flatgeobuf_bench"
+harness = false
+required-features = ["parallel", "simd"]
 
 # Examples that require specific features (skipped when the feature is disabled).
 [[example]]

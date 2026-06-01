@@ -183,6 +183,7 @@ Run the focused benchmark suites with:
 ```bash
 cargo bench --bench index_bench --no-default-features --features parallel,simd
 cargo bench --bench persistence_knn_bench --no-default-features --features simd
+cargo bench --bench flatgeobuf_bench --no-default-features --features parallel,simd
 ```
 
 ## Status

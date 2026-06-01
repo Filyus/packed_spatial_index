@@ -61,7 +61,8 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 ## Main Types
 
 - `Rect` is the public AABB type, with inclusive `overlaps`, `contains`, and
-  `contains_point` helpers.
+  `contains_point` helpers. `Rect::new` is unchecked; use `Rect::try_new` for
+  untrusted bounds.
 - `IndexBuilder` builds either `Index` or, with `simd`, `SimdIndex`.
 - `Index` is the default read-only index.
 - `IndexView` is a zero-copy read-only view over bytes produced by `Index::to_bytes`.

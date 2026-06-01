@@ -38,7 +38,7 @@ pub use builder::{BuildError, IndexBuilder};
 pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
-pub use geometry::{Point, Rect};
+pub use geometry::{Point, Rect, RectError};
 pub use index::{Index, IndexView, SearchWorkspace};
 #[cfg(feature = "simd")]
 pub use index_soa::SimdIndex;

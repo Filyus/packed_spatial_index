@@ -5,7 +5,9 @@ use common::rect;
 use packed_spatial_index::DEFAULT_PARALLEL_MIN_ITEMS;
 #[cfg(feature = "parallel")]
 use packed_spatial_index::experimental::ExperimentalSortKey;
-use packed_spatial_index::{BuildError, DEFAULT_NODE_SIZE, IndexBuilder, Rect, SearchWorkspace};
+use packed_spatial_index::{
+    BuildError, DEFAULT_NODE_SIZE, IndexBuilder, Rect, RectError, SearchWorkspace,
+};
 #[cfg(feature = "parallel")]
 use rand::rngs::StdRng;
 #[cfg(feature = "parallel")]
@@ -29,6 +31,23 @@ fn rect_helpers_use_inclusive_edges() {
     assert!(!outer.contains(touching));
     assert!(outer.contains_point(packed_spatial_index::Point::new(10.0, 10.0)));
     assert!(!outer.contains_point(packed_spatial_index::Point::new(10.1, 10.0)));
+}
+
+#[test]
+fn rect_try_new_validates_bounds() {
+    assert_eq!(
+        Rect::try_new(0.0, 0.0, 1.0, 1.0),
+        Ok(Rect::new(0.0, 0.0, 1.0, 1.0))
+    );
+
+    assert!(matches!(
+        Rect::try_new(2.0, 0.0, 1.0, 1.0),
+        Err(RectError::InvalidBounds { .. })
+    ));
+    assert!(matches!(
+        Rect::try_new(0.0, f64::NAN, 1.0, 1.0),
+        Err(RectError::InvalidBounds { .. })
+    ));
 }
 
 #[test]

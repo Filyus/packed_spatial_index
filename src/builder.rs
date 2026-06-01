@@ -26,6 +26,7 @@ use crate::{config::DEFAULT_PARALLEL_MIN_ITEMS, sort::encode_sort_parallel};
 /// let index = builder.finish().unwrap();
 /// assert_eq!(index.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 /// ```
+#[must_use = "IndexBuilder methods return an updated builder; assign the result or chain the call"]
 pub struct IndexBuilder {
     node_size: usize,
     num_items: usize,

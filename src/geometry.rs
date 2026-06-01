@@ -1,21 +1,60 @@
+use std::{error::Error, fmt};
+
 /// Index coordinates are `f64`, matching the reference default.
 pub(crate) type Num = f64;
+
+/// Error returned by [`Rect::try_new`] for inverted or unordered bounds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RectError {
+    /// Bounds do not satisfy `min_x <= max_x` and `min_y <= max_y`.
+    ///
+    /// This also covers `NaN`, because `NaN` is unordered and fails those
+    /// comparisons.
+    InvalidBounds {
+        /// Minimum x coordinate.
+        min_x: f64,
+        /// Minimum y coordinate.
+        min_y: f64,
+        /// Maximum x coordinate.
+        max_x: f64,
+        /// Maximum y coordinate.
+        max_y: f64,
+    },
+}
+
+impl fmt::Display for RectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RectError::InvalidBounds { .. } => {
+                write!(
+                    f,
+                    "rectangle bounds must satisfy min_x <= max_x and min_y <= max_y"
+                )
+            }
+        }
+    }
+}
+
+impl Error for RectError {}
 
 /// Axis-aligned rectangle bounds.
 ///
 /// Bounds are inclusive: rectangles that touch at an edge or corner overlap.
+/// [`Rect::new`] is a cheap constructor and does not validate or reorder
+/// bounds; use [`Rect::try_new`] when accepting unchecked input.
 ///
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Point, Rect};
+/// use packed_spatial_index::{Point, Rect, RectError};
 ///
 /// let a = Rect::new(0.0, 0.0, 1.0, 1.0);
-/// let b = Rect::new(1.0, 1.0, 2.0, 2.0);
+/// let b = Rect::try_new(1.0, 1.0, 2.0, 2.0)?;
 ///
 /// assert!(a.overlaps(b));
 /// assert!(a.contains_point(Point::new(0.5, 0.5)));
 /// assert!(!a.contains(b));
+/// # Ok::<(), RectError>(())
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -31,6 +70,9 @@ pub struct Rect {
 
 impl Rect {
     /// Create a rectangle from `[min_x, min_y, max_x, max_y]` bounds.
+    ///
+    /// This constructor does not validate or reorder bounds. Prefer
+    /// [`Rect::try_new`] for data that may contain inverted bounds or `NaN`.
     #[inline]
     pub const fn new(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Self {
         Self {
@@ -38,6 +80,44 @@ impl Rect {
             min_y,
             max_x,
             max_y,
+        }
+    }
+
+    /// Try to create a rectangle with validated bounds.
+    ///
+    /// Returns [`RectError::InvalidBounds`] when `min_x > max_x`, `min_y > max_y`,
+    /// or any bound is `NaN`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Rect, RectError};
+    ///
+    /// let rect = Rect::try_new(0.0, 0.0, 1.0, 1.0)?;
+    /// assert_eq!(rect, Rect::new(0.0, 0.0, 1.0, 1.0));
+    ///
+    /// assert!(matches!(
+    ///     Rect::try_new(2.0, 0.0, 1.0, 1.0),
+    ///     Err(RectError::InvalidBounds { .. })
+    /// ));
+    /// # Ok::<(), RectError>(())
+    /// ```
+    #[inline]
+    pub const fn try_new(
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+    ) -> Result<Self, RectError> {
+        if min_x <= max_x && min_y <= max_y {
+            Ok(Self::new(min_x, min_y, max_x, max_y))
+        } else {
+            Err(RectError::InvalidBounds {
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            })
         }
     }
 

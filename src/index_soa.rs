@@ -6,11 +6,11 @@
 
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
-use wide::{f64x4, CmpGe, CmpLe};
+use wide::{CmpGe, CmpLe, f64x4};
 
 use crate::index::{
-    hilbert_coord, max_distance_squared, prefetch_read, radix_sort_pairs, upper_bound_level,
     ExperimentalSortKey, NeighborState, NeighborWorkspace, Point, Rect, SearchWorkspace,
+    hilbert_coord, max_distance_squared, prefetch_read, radix_sort_pairs, upper_bound_level,
 };
 
 type Num = f64;
@@ -510,11 +510,11 @@ impl SimdIndex {
                 let mxx = load4(&self.max_xs, pos);
                 let mny = load4(&self.min_ys, pos);
                 let mxy = load4(&self.max_ys, pos);
-                let mask = mnx.cmp_le(qmxx_v)
-                    & mxx.cmp_ge(qmnx_v)
-                    & mny.cmp_le(qmxy_v)
-                    & mxy.cmp_ge(qmny_v);
-                let bits = mask.move_mask();
+                let mask = mnx.simd_le(qmxx_v)
+                    & mxx.simd_ge(qmnx_v)
+                    & mny.simd_le(qmxy_v)
+                    & mxy.simd_ge(qmny_v);
+                let bits = mask.to_bitmask();
                 if bits != 0 {
                     for k in 0..4 {
                         if bits & (1 << k) != 0 {
@@ -591,11 +591,11 @@ impl SimdIndex {
                 let mxx = load4(&self.max_xs, pos);
                 let mny = load4(&self.min_ys, pos);
                 let mxy = load4(&self.max_ys, pos);
-                let mask = mnx.cmp_le(qmxx_v)
-                    & mxx.cmp_ge(qmnx_v)
-                    & mny.cmp_le(qmxy_v)
-                    & mxy.cmp_ge(qmny_v);
-                let bits = mask.move_mask();
+                let mask = mnx.simd_le(qmxx_v)
+                    & mxx.simd_ge(qmnx_v)
+                    & mny.simd_le(qmxy_v)
+                    & mxy.simd_ge(qmny_v);
+                let bits = mask.to_bitmask();
                 if bits != 0 {
                     for k in 0..4 {
                         if bits & (1 << k) != 0 {
@@ -679,10 +679,15 @@ impl SimdIndex {
 
             let mut pos = node_index;
             while pos + 8 <= end {
-                let mnx = _mm512_loadu_pd(self.min_xs.as_ptr().add(pos));
-                let mxx = _mm512_loadu_pd(self.max_xs.as_ptr().add(pos));
-                let mny = _mm512_loadu_pd(self.min_ys.as_ptr().add(pos));
-                let mxy = _mm512_loadu_pd(self.max_ys.as_ptr().add(pos));
+                // SAFETY: `pos + 8 <= end`, and `end` is bounded by the array length.
+                let (mnx, mxx, mny, mxy) = unsafe {
+                    (
+                        _mm512_loadu_pd(self.min_xs.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.max_xs.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.min_ys.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.max_ys.as_ptr().add(pos)),
+                    )
+                };
                 let m1 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mnx, qmxx_v);
                 let m2 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxx, qmnx_v);
                 let m3 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mny, qmxy_v);

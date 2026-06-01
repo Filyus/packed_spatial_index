@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use packed_spatial_index::experimental as hilbert;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 const N: usize = 1_000_000;
 const REPS: usize = 50;
@@ -17,8 +17,8 @@ fn melem_s(elapsed_ms: f64) -> f64 {
 
 fn main() {
     let mut rng = StdRng::seed_from_u64(0x5EED);
-    let xs: Vec<u16> = (0..N).map(|_| rng.gen()).collect();
-    let ys: Vec<u16> = (0..N).map(|_| rng.gen()).collect();
+    let xs: Vec<u16> = (0..N).map(|_| rng.random()).collect();
+    let ys: Vec<u16> = (0..N).map(|_| rng.random()).collect();
     let mut out = vec![0u32; N];
 
     // scalar lut

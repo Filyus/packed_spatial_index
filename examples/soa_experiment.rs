@@ -7,7 +7,7 @@ use std::time::Instant;
 use packed_spatial_index::experimental::ExperimentalSortKey;
 use packed_spatial_index::{IndexBuilder, Rect};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 const N: usize = 100_000;
 const NODE_SIZE: usize = 16;
@@ -18,10 +18,10 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(0xB0B);
     let boxes: Vec<[f64; 4]> = (0..N)
         .map(|_| {
-            let cx: f64 = rng.gen_range(0.0..10_000.0);
-            let cy: f64 = rng.gen_range(0.0..10_000.0);
-            let w: f64 = rng.gen_range(0.1..20.0);
-            let h: f64 = rng.gen_range(0.1..20.0);
+            let cx: f64 = rng.random_range(0.0..10_000.0);
+            let cy: f64 = rng.random_range(0.0..10_000.0);
+            let w: f64 = rng.random_range(0.1..20.0);
+            let h: f64 = rng.random_range(0.1..20.0);
             [cx, cy, cx + w, cy + h]
         })
         .collect();
@@ -42,10 +42,10 @@ fn main() {
     let mut qrng = StdRng::seed_from_u64(0xACE);
     let queries: Vec<[f64; 4]> = (0..NQ)
         .map(|_| {
-            let qx: f64 = qrng.gen_range(0.0..10_000.0);
-            let qy: f64 = qrng.gen_range(0.0..10_000.0);
-            let qw: f64 = qrng.gen_range(10.0..200.0);
-            let qh: f64 = qrng.gen_range(10.0..200.0);
+            let qx: f64 = qrng.random_range(0.0..10_000.0);
+            let qy: f64 = qrng.random_range(0.0..10_000.0);
+            let qw: f64 = qrng.random_range(10.0..200.0);
+            let qh: f64 = qrng.random_range(10.0..200.0);
             [qx, qy, qx + qw, qy + qh]
         })
         .collect();

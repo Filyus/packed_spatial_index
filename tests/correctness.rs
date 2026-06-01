@@ -5,14 +5,14 @@
 
 use std::ops::ControlFlow;
 
-use packed_spatial_index::experimental::{ExperimentalSortKey, ENCODERS};
+use packed_spatial_index::experimental::{ENCODERS, ExperimentalSortKey};
 use packed_spatial_index::{
     BuildError, Index, IndexBuilder, IndexView, LoadError, NeighborWorkspace, Point, Rect,
     SearchWorkspace, SortKey,
 };
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
-use static_aabb2d_index::{hilbert_xy_to_index, StaticAABB2DIndexBuilder};
+use rand::{RngExt, SeedableRng};
+use static_aabb2d_index::{StaticAABB2DIndexBuilder, hilbert_xy_to_index};
 
 fn rect(bounds: [f64; 4]) -> Rect {
     Rect::new(bounds[0], bounds[1], bounds[2], bounds[3])
@@ -21,10 +21,10 @@ fn rect(bounds: [f64; 4]) -> Rect {
 fn random_boxes(rng: &mut StdRng, n: usize) -> Vec<[f64; 4]> {
     let mut boxes = Vec::with_capacity(n);
     for _ in 0..n {
-        let cx: f64 = rng.gen_range(0.0..1000.0);
-        let cy: f64 = rng.gen_range(0.0..1000.0);
-        let w: f64 = rng.gen_range(0.1..10.0);
-        let h: f64 = rng.gen_range(0.1..10.0);
+        let cx: f64 = rng.random_range(0.0..1000.0);
+        let cy: f64 = rng.random_range(0.0..1000.0);
+        let w: f64 = rng.random_range(0.1..10.0);
+        let h: f64 = rng.random_range(0.1..10.0);
         boxes.push([cx, cy, cx + w, cy + h]);
     }
     boxes
@@ -97,8 +97,8 @@ fn encoders_match_reference() {
 fn encoders_match_reference_random() {
     let mut rng = StdRng::seed_from_u64(0xC0FFEE);
     for _ in 0..200_000 {
-        let x: u16 = rng.gen();
-        let y: u16 = rng.gen();
+        let x: u16 = rng.random();
+        let y: u16 = rng.random();
         let expected = hilbert_xy_to_index(x, y);
         for (name, f) in ENCODERS {
             assert_eq!(f(x, y), expected, "encoder `{name}` mismatch at ({x}, {y})");
@@ -141,10 +141,10 @@ fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey) {
     let index = index.finish().unwrap();
 
     for _ in 0..500 {
-        let qx: f64 = rng.gen_range(0.0..1000.0);
-        let qy: f64 = rng.gen_range(0.0..1000.0);
-        let qw: f64 = rng.gen_range(1.0..100.0);
-        let qh: f64 = rng.gen_range(1.0..100.0);
+        let qx: f64 = rng.random_range(0.0..1000.0);
+        let qy: f64 = rng.random_range(0.0..1000.0);
+        let qw: f64 = rng.random_range(1.0..100.0);
+        let qh: f64 = rng.random_range(1.0..100.0);
         let query = Rect::new(qx, qy, qx + qw, qy + qh);
 
         let mut expected = reference.query(qx, qy, qx + qw, qy + qh);
@@ -355,8 +355,8 @@ fn persistence_round_trip_and_view_agree() {
     assert_eq!(view.node_size(), index.node_size());
 
     for _ in 0..100 {
-        let qx: f64 = rng.gen_range(0.0..1000.0);
-        let qy: f64 = rng.gen_range(0.0..1000.0);
+        let qx: f64 = rng.random_range(0.0..1000.0);
+        let qy: f64 = rng.random_range(0.0..1000.0);
         let query = Rect::new(qx, qy, qx + 40.0, qy + 40.0);
 
         let mut expected = index.search(query);
@@ -494,7 +494,7 @@ fn neighbors_match_brute_force() {
     let index = build_index(&boxes, 16);
 
     for _ in 0..200 {
-        let point = Point::new(rng.gen_range(0.0..1000.0), rng.gen_range(0.0..1000.0));
+        let point = Point::new(rng.random_range(0.0..1000.0), rng.random_range(0.0..1000.0));
         for &(limit, max_distance) in &[
             (0, f64::INFINITY),
             (1, f64::INFINITY),
@@ -600,8 +600,8 @@ fn parallel_build_matches_serial() {
     let n = 20_000usize;
     let mut boxes = Vec::with_capacity(n);
     for _ in 0..n {
-        let cx: f64 = rng.gen_range(0.0..10_000.0);
-        let cy: f64 = rng.gen_range(0.0..10_000.0);
+        let cx: f64 = rng.random_range(0.0..10_000.0);
+        let cy: f64 = rng.random_range(0.0..10_000.0);
         boxes.push([cx, cy, cx + 10.0, cy + 10.0]);
     }
 
@@ -618,8 +618,8 @@ fn parallel_build_matches_serial() {
     let parallel = parallel.finish().unwrap();
 
     for _ in 0..200 {
-        let qx: f64 = rng.gen_range(0.0..10_000.0);
-        let qy: f64 = rng.gen_range(0.0..10_000.0);
+        let qx: f64 = rng.random_range(0.0..10_000.0);
+        let qy: f64 = rng.random_range(0.0..10_000.0);
         let query = Rect::new(qx, qy, qx + 150.0, qy + 150.0);
         let mut a = serial.search(query);
         let mut b = parallel.search(query);
@@ -727,7 +727,7 @@ fn simd_neighbors_match_aos() {
     let simd = simd_builder.finish_simd().unwrap();
 
     for _ in 0..100 {
-        let point = Point::new(rng.gen_range(0.0..1000.0), rng.gen_range(0.0..1000.0));
+        let point = Point::new(rng.random_range(0.0..1000.0), rng.random_range(0.0..1000.0));
         assert_eq!(simd.neighbors(point, 16), aos.neighbors(point, 16));
         assert_eq!(
             simd.neighbors_within(point, 16, 100.0),
@@ -769,10 +769,10 @@ fn simd_index_search_matches_reference() {
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut st1, mut st2, mut st3, mut st4) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for _ in 0..500 {
-        let qx: f64 = rng.gen_range(0.0..1000.0);
-        let qy: f64 = rng.gen_range(0.0..1000.0);
-        let qw: f64 = rng.gen_range(1.0..100.0);
-        let qh: f64 = rng.gen_range(1.0..100.0);
+        let qx: f64 = rng.random_range(0.0..1000.0);
+        let qy: f64 = rng.random_range(0.0..1000.0);
+        let qw: f64 = rng.random_range(1.0..100.0);
+        let qh: f64 = rng.random_range(1.0..100.0);
         let query = Rect::new(qx, qy, qx + qw, qy + qh);
 
         let mut expected = reference.query(qx, qy, qx + qw, qy + qh);

@@ -6,11 +6,11 @@ use std::time::Instant;
 
 use packed_spatial_index::experimental::radix_sort_pairs;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
-fn gen(n: usize) -> Vec<(u32, u32)> {
+fn gen_pairs(n: usize) -> Vec<(u32, u32)> {
     let mut rng = StdRng::seed_from_u64(0x5A17);
-    (0..n).map(|i| (rng.gen::<u32>(), i as u32)).collect()
+    (0..n).map(|i| (rng.random::<u32>(), i as u32)).collect()
 }
 
 fn time<F: FnMut(&mut Vec<(u32, u32)>)>(base: &[(u32, u32)], reps: usize, mut f: F) -> f64 {
@@ -32,7 +32,7 @@ fn main() {
     );
     println!("{}", "-".repeat(66));
     for &n in &[100_000usize, 1_000_000, 5_000_000] {
-        let base = gen(n);
+        let base = gen_pairs(n);
         let reps = if n >= 1_000_000 { 15 } else { 150 };
         // correctness baseline: pdqsort-sorted data
         let mut sorted = base.clone();

@@ -39,7 +39,7 @@ pub use index_soa::SimdIndex;
 #[doc(hidden)]
 pub mod experimental {
     pub use crate::hilbert::{
-        loop_rotation, lut, magic_bits, magic_bits_batch, morton, HilbertFn, ENCODERS,
+        ENCODERS, HilbertFn, loop_rotation, lut, magic_bits, magic_bits_batch, morton,
     };
-    pub use crate::index::{radix_sort_pairs, ExperimentalSortKey};
+    pub use crate::index::{ExperimentalSortKey, radix_sort_pairs};
 }

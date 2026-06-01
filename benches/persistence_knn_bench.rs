@@ -5,13 +5,15 @@
 
 use std::ops::ControlFlow;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use packed_spatial_index::experimental::ExperimentalSortKey;
 use packed_spatial_index::{
     Index, IndexBuilder, IndexView, NeighborWorkspace, Point, Rect, SearchWorkspace,
 };
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use static_aabb2d_index::{Control, StaticAABB2DIndex, StaticAABB2DIndexBuilder};
 
 const NODE_SIZE: usize = 16;
@@ -23,10 +25,10 @@ fn gen_boxes(n: usize, seed: u64) -> Vec<[f64; 4]> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
-            let cx: f64 = rng.gen_range(0.0..10_000.0);
-            let cy: f64 = rng.gen_range(0.0..10_000.0);
-            let w: f64 = rng.gen_range(0.1..20.0);
-            let h: f64 = rng.gen_range(0.1..20.0);
+            let cx: f64 = rng.random_range(0.0..10_000.0);
+            let cy: f64 = rng.random_range(0.0..10_000.0);
+            let w: f64 = rng.random_range(0.1..20.0);
+            let h: f64 = rng.random_range(0.1..20.0);
             [cx, cy, cx + w, cy + h]
         })
         .collect()
@@ -36,10 +38,10 @@ fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
-            let qx: f64 = rng.gen_range(0.0..10_000.0);
-            let qy: f64 = rng.gen_range(0.0..10_000.0);
-            let qw: f64 = rng.gen_range(10.0..200.0);
-            let qh: f64 = rng.gen_range(10.0..200.0);
+            let qx: f64 = rng.random_range(0.0..10_000.0);
+            let qy: f64 = rng.random_range(0.0..10_000.0);
+            let qw: f64 = rng.random_range(10.0..200.0);
+            let qh: f64 = rng.random_range(10.0..200.0);
             [qx, qy, qx + qw, qy + qh]
         })
         .collect()
@@ -48,7 +50,12 @@ fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
 fn make_points(n: usize, seed: u64) -> Vec<Point> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
-        .map(|_| Point::new(rng.gen_range(0.0..10_000.0), rng.gen_range(0.0..10_000.0)))
+        .map(|_| {
+            Point::new(
+                rng.random_range(0.0..10_000.0),
+                rng.random_range(0.0..10_000.0),
+            )
+        })
         .collect()
 }
 

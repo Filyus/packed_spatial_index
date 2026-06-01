@@ -190,13 +190,13 @@ impl PartialOrd for NeighborState {
 pub(crate) fn prefetch_read<T>(ptr: *const T) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
         _mm_prefetch(ptr.cast::<i8>(), _MM_HINT_T0);
     }
 
     #[cfg(target_arch = "x86")]
     unsafe {
-        use std::arch::x86::{_mm_prefetch, _MM_HINT_T0};
+        use std::arch::x86::{_MM_HINT_T0, _mm_prefetch};
         _mm_prefetch(ptr.cast::<i8>(), _MM_HINT_T0);
     }
 

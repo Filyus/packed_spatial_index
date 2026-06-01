@@ -9,17 +9,19 @@
 //! degenerates the measurement into single-call latency (biasing the comparison toward
 //! the table-driven version). `black_box` is applied only to input and output buffers.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use std::hint::black_box;
+
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use packed_spatial_index::experimental as hilbert;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use static_aabb2d_index::hilbert_xy_to_index;
 
 const N: usize = 100_000;
 
 fn gen_points() -> Vec<(u16, u16)> {
     let mut rng = StdRng::seed_from_u64(0x5EED);
-    (0..N).map(|_| (rng.gen(), rng.gen())).collect()
+    (0..N).map(|_| (rng.random(), rng.random())).collect()
 }
 
 fn bench_hilbert(c: &mut Criterion) {

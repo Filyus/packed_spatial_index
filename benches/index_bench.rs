@@ -7,11 +7,13 @@
 //!  * For queries, the query batch itself is parallelized (read-only), so the comparison is symmetric:
 //!    both the baseline crate and `Index` benefit.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use packed_spatial_index::experimental::ExperimentalSortKey;
 use packed_spatial_index::{Index, IndexBuilder, Rect};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 use static_aabb2d_index::{StaticAABB2DIndex, StaticAABB2DIndexBuilder};
 
@@ -28,10 +30,10 @@ fn gen_boxes(n: usize, seed: u64) -> Vec<[f64; 4]> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
-            let cx: f64 = rng.gen_range(0.0..10_000.0);
-            let cy: f64 = rng.gen_range(0.0..10_000.0);
-            let w: f64 = rng.gen_range(0.1..20.0);
-            let h: f64 = rng.gen_range(0.1..20.0);
+            let cx: f64 = rng.random_range(0.0..10_000.0);
+            let cy: f64 = rng.random_range(0.0..10_000.0);
+            let w: f64 = rng.random_range(0.1..20.0);
+            let h: f64 = rng.random_range(0.1..20.0);
             [cx, cy, cx + w, cy + h]
         })
         .collect()
@@ -91,10 +93,10 @@ fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
-            let qx: f64 = rng.gen_range(0.0..10_000.0);
-            let qy: f64 = rng.gen_range(0.0..10_000.0);
-            let qw: f64 = rng.gen_range(10.0..200.0);
-            let qh: f64 = rng.gen_range(10.0..200.0);
+            let qx: f64 = rng.random_range(0.0..10_000.0);
+            let qy: f64 = rng.random_range(0.0..10_000.0);
+            let qw: f64 = rng.random_range(10.0..200.0);
+            let qh: f64 = rng.random_range(10.0..200.0);
             [qx, qy, qx + qw, qy + qh]
         })
         .collect()

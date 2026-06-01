@@ -4,10 +4,10 @@
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey;
 use packed_spatial_index::IndexBuilder;
+use packed_spatial_index::experimental::ExperimentalSortKey;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 const NODE_SIZE: usize = 16;
 
@@ -15,10 +15,10 @@ fn gen_boxes(n: usize) -> Vec<[f64; 4]> {
     let mut rng = StdRng::seed_from_u64(0xB0B);
     (0..n)
         .map(|_| {
-            let cx: f64 = rng.gen_range(0.0..10_000.0);
-            let cy: f64 = rng.gen_range(0.0..10_000.0);
-            let w: f64 = rng.gen_range(0.1..20.0);
-            let h: f64 = rng.gen_range(0.1..20.0);
+            let cx: f64 = rng.random_range(0.0..10_000.0);
+            let cy: f64 = rng.random_range(0.0..10_000.0);
+            let w: f64 = rng.random_range(0.1..20.0);
+            let h: f64 = rng.random_range(0.1..20.0);
             [cx, cy, cx + w, cy + h]
         })
         .collect()

@@ -9,13 +9,16 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use packed_spatial_index::experimental::ExperimentalSortKey3D;
 use packed_spatial_index::{
-    Bounds3D, Index3D, Index3DBuilder, NeighborWorkspace, Point3D, SearchWorkspace,
+    Bounds3D, Index3D, Index3DBuilder, Index3DView, NeighborWorkspace, Point3D, SearchWorkspace,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
 const QUERY_COUNT: usize = 1_000;
 const KNN_COUNT: usize = 1_000;
+const PERSISTENCE_NODE_SIZE: usize = 16;
+const LOADED_KNN_LIMIT: usize = 10;
+const LOADED_KNN_MAX_DISTANCE: f64 = f64::INFINITY;
 
 #[derive(Clone, Copy)]
 enum DatasetKind {
@@ -232,6 +235,110 @@ fn bench_search(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_persistence(c: &mut Criterion) {
+    let mut group = c.benchmark_group("index3d_persistence");
+
+    for &n in &[1_000usize, 100_000, 1_000_000] {
+        let boxes = gen_boxes(DatasetKind::Uniform, n, 0x3D30);
+        let index = build_index(
+            &boxes,
+            PERSISTENCE_NODE_SIZE,
+            ExperimentalSortKey3D::Hilbert,
+            false,
+        );
+        let bytes = index.to_bytes();
+
+        group.throughput(Throughput::Bytes(bytes.len() as u64));
+        group.bench_with_input(BenchmarkId::new("to_bytes", n), &index, |b, index| {
+            b.iter(|| black_box(index.to_bytes()))
+        });
+        group.bench_with_input(
+            BenchmarkId::new("from_bytes_owned", n),
+            &bytes,
+            |b, bytes| b.iter(|| black_box(Index3D::from_bytes(bytes).unwrap())),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("from_bytes_view", n),
+            &bytes,
+            |b, bytes| b.iter(|| black_box(Index3DView::from_bytes(bytes).unwrap())),
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_loaded_view(c: &mut Criterion) {
+    let n = 100_000usize;
+    let boxes = gen_boxes(DatasetKind::Uniform, n, 0x3D40);
+    let index = build_index(
+        &boxes,
+        PERSISTENCE_NODE_SIZE,
+        ExperimentalSortKey3D::Hilbert,
+        false,
+    );
+    let bytes = index.to_bytes();
+    let view = Index3DView::from_bytes(&bytes).unwrap();
+    let queries = gen_queries(DatasetKind::Uniform, QUERY_COUNT, 0x3D41);
+    let points = gen_points(DatasetKind::Uniform, KNN_COUNT, 0x3D42);
+
+    let mut group = c.benchmark_group("index3d_loaded_view");
+    group.bench_function("index_search", |b| {
+        let mut workspace = SearchWorkspace::new();
+        b.iter(|| {
+            let mut total = 0usize;
+            for &query in &queries {
+                total += index.search_with(query, &mut workspace).len();
+            }
+            black_box(total);
+        });
+    });
+    group.bench_function("view_search", |b| {
+        let mut workspace = SearchWorkspace::new();
+        b.iter(|| {
+            let mut total = 0usize;
+            for &query in &queries {
+                total += view.search_with(query, &mut workspace).len();
+            }
+            black_box(total);
+        });
+    });
+    group.bench_function("index_neighbors", |b| {
+        let mut workspace = NeighborWorkspace::new();
+        b.iter(|| {
+            let mut total = 0usize;
+            for &point in &points {
+                total += index
+                    .neighbors_with(
+                        point,
+                        LOADED_KNN_LIMIT,
+                        LOADED_KNN_MAX_DISTANCE,
+                        &mut workspace,
+                    )
+                    .len();
+            }
+            black_box(total);
+        });
+    });
+    group.bench_function("view_neighbors", |b| {
+        let mut workspace = NeighborWorkspace::new();
+        b.iter(|| {
+            let mut total = 0usize;
+            for &point in &points {
+                total += view
+                    .neighbors_with(
+                        point,
+                        LOADED_KNN_LIMIT,
+                        LOADED_KNN_MAX_DISTANCE,
+                        &mut workspace,
+                    )
+                    .len();
+            }
+            black_box(total);
+        });
+    });
+    group.finish();
+}
+
 fn bench_knn(c: &mut Criterion) {
     let n = 100_000usize;
     let mut group = c.benchmark_group("index3d_knn");
@@ -268,5 +375,12 @@ fn bench_knn(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_build, bench_search, bench_knn);
+criterion_group!(
+    benches,
+    bench_build,
+    bench_search,
+    bench_persistence,
+    bench_loaded_view,
+    bench_knn
+);
 criterion_main!(benches);

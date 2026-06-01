@@ -1,15 +1,15 @@
 # Bounds3D Notes
 
 This document records the research that led to the first scalar 3D API. The
-crate now exposes `Bounds3D`, `Point3D`, `Index3DBuilder`, and `Index3D`; the
-remaining 3D work is persistence, SIMD/SoA layout, and publication-grade
-benchmarks.
+crate now exposes `Bounds3D`, `Point3D`, `Index3DBuilder`, `Index3D`, and
+`Index3DView`; the remaining 3D work is SIMD/SoA layout and publication-grade
+real-world benchmarks.
 
 ## Decision
 
 3D support starts with a scalar, AoS, Hilbert-ordered packed R-tree:
 
-- Public shape: `Bounds3D`, `Point3D`, `Index3DBuilder`, `Index3D`, and later
+- Public shape: `Bounds3D`, `Point3D`, `Index3DBuilder`, `Index3D`, and
   `Index3DView`.
 - Keep 2D and 3D as separate public APIs instead of introducing a const-generic
   index immediately.
@@ -104,6 +104,8 @@ For quick targeted runs, filter by group:
 cargo bench --bench index3d_bench --no-default-features 100000 -- --sample-size 10
 cargo bench --bench index3d_bench --no-default-features index3d_search/uniform -- --sample-size 10
 cargo bench --bench index3d_bench --no-default-features index3d_knn/uniform -- --sample-size 10
+cargo bench --bench index3d_bench --no-default-features index3d_persistence -- --sample-size 10
+cargo bench --bench index3d_bench --no-default-features index3d_loaded_view -- --sample-size 10
 ```
 
 Prototype output from this branch:

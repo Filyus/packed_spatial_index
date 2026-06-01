@@ -43,7 +43,9 @@ quality and shake out edge cases before designing the real public API.
 Both prototype sort keys normalize box centers into `[0, 2^21 - 1]` per axis and
 produce a 63-bit `u64` key. This leaves one spare bit in `u64` and avoids
 multiword keys. Morton3D interleaves bits directly. Hilbert3D uses a compact
-Skilling-style axes-to-transpose transform before interleaving bits.
+Skilling-style axes-to-transpose transform before interleaving bits. The final
+3-axis interleave uses the same SWAR-style bit spreading as Morton3D, but there
+is not yet a 3D equivalent of the current 2D `magic_bits` Hilbert encoder.
 
 Node sizes `8`, `16`, and `32` are the initial comparison set. The current 2D
 default is `16`, but 3D has different overlap behavior, so the default should
@@ -51,6 +53,7 @@ be revalidated with 3D datasets before exposing `Index3DBuilder::new`.
 
 Datasets used by the temporary test cover:
 
+- planar XY boxes embedded into 3D with `z = 0`;
 - uniform random boxes;
 - clustered boxes;
 - nearly flat Z data;
@@ -86,19 +89,21 @@ Prototype output from this branch:
 
 | Dataset | Sort key | Node size | Sort ms | Search ms | Avg visited | Avg hits | KNN top-1 ms | KNN top-10 ms | KNN top-10 r80 ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Uniform | Morton | 8 | 0.175 | 0.040 | 87.44 | 0.05 | 0.581 | 0.932 | 0.155 |
-| Uniform | Hilbert | 8 | 1.298 | 0.028 | 50.81 | 0.05 | 0.380 | 0.657 | 0.090 |
-| Clustered | Morton | 8 | 0.159 | 0.005 | 4.16 | 0.00 | 0.277 | 0.549 | 0.020 |
-| Clustered | Hilbert | 8 | 1.231 | 0.005 | 4.16 | 0.00 | 0.270 | 0.489 | 0.018 |
-| FlatZ | Morton | 8 | 0.170 | 0.114 | 306.62 | 1.71 | 1.273 | 1.577 | 0.587 |
-| FlatZ | Hilbert | 8 | 1.300 | 0.076 | 165.06 | 1.71 | 0.691 | 0.845 | 0.297 |
-| Degenerate | Morton | 8 | 0.167 | 0.039 | 86.19 | 0.04 | 0.526 | 0.939 | 0.151 |
-| Degenerate | Hilbert | 8 | 1.281 | 0.027 | 50.25 | 0.04 | 0.349 | 0.640 | 0.085 |
+| PlanarXY | Morton | 8 | 0.177 | 0.051 | 85.31 | 2.88 | 0.299 | 0.439 | 0.135 |
+| PlanarXY | Hilbert | 8 | 0.922 | 0.039 | 68.62 | 2.88 | 0.231 | 0.351 | 0.113 |
+| Uniform | Morton | 8 | 0.156 | 0.040 | 87.44 | 0.05 | 0.483 | 0.781 | 0.152 |
+| Uniform | Hilbert | 8 | 1.138 | 0.025 | 50.81 | 0.05 | 0.294 | 0.536 | 0.083 |
+| Clustered | Morton | 8 | 0.229 | 0.006 | 4.16 | 0.00 | 0.340 | 0.657 | 0.020 |
+| Clustered | Hilbert | 8 | 1.078 | 0.004 | 4.16 | 0.00 | 0.230 | 0.436 | 0.017 |
+| FlatZ | Morton | 8 | 0.167 | 0.110 | 306.62 | 1.71 | 1.076 | 1.494 | 0.534 |
+| FlatZ | Hilbert | 8 | 1.127 | 0.076 | 165.06 | 1.71 | 0.566 | 0.795 | 0.291 |
+| Degenerate | Morton | 8 | 0.163 | 0.038 | 86.19 | 0.04 | 0.447 | 0.775 | 0.134 |
+| Degenerate | Hilbert | 8 | 1.141 | 0.026 | 50.25 | 0.04 | 0.267 | 0.518 | 0.077 |
 
 The timing columns are only prototype smoke metrics, not publication-grade
 benchmarks. The visited-bound counts are the more useful signal here: Hilbert3D
 cuts visited bounds by about 40-46% on the non-clustered datasets in this smoke
-test, while Morton3D keeps build sorting roughly 7-8x faster.
+test, while Morton3D keeps build sorting roughly 5-7x faster.
 
 ## Hilbert2D vs Hilbert3D Cost
 
@@ -113,27 +118,28 @@ Raw key encoding is the largest visible gap:
 
 | Encoder | Items | Total ms | ns/key |
 | --- | ---: | ---: | ---: |
-| Hilbert2D | 262144 | 1.863 | 7.11 |
-| Hilbert3D | 262144 | 34.624 | 132.08 |
+| Hilbert2D | 262144 | 1.816 | 6.93 |
+| Hilbert3D | 262144 | 31.754 | 121.13 |
 
 This is not a pure dimension-only benchmark: `Hilbert2D` is the current optimized
 2D magic-bits encoder over 16-bit axes, while the temporary `Hilbert3D` path is a
-compact Skilling-style 21-bit-per-axis prototype.
+compact Skilling-style 21-bit-per-axis prototype plus SWAR bit spreading for the
+final interleave.
 
 The closest apples-to-apples index scenario is `PlanarXY`: the same X/Y boxes
 embedded into 3D with `z = 0`, so 2D and 3D produce the same average hit count.
 
 | Dataset | Dimension | Node size | Build ms | Search ms | Avg visited | Avg hits | KNN top-1 ms | KNN top-10 ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| PlanarXY | 2D | 8 | 0.316 | 0.027 | 56.94 | 2.88 | 0.122 | 0.252 |
-| PlanarXY | 3D | 8 | 1.091 | 0.043 | 68.62 | 2.88 | 0.233 | 0.338 |
-| PlanarXY | 2D | 16 | 0.316 | 0.027 | 81.62 | 2.88 | 0.117 | 0.283 |
-| PlanarXY | 3D | 16 | 1.267 | 0.071 | 100.50 | 2.88 | 0.549 | 0.595 |
+| PlanarXY | 2D | 8 | 0.310 | 0.022 | 56.94 | 2.88 | 0.121 | 0.243 |
+| PlanarXY | 3D | 8 | 1.012 | 0.037 | 68.62 | 2.88 | 0.235 | 0.343 |
+| PlanarXY | 2D | 16 | 0.287 | 0.022 | 81.62 | 2.88 | 0.118 | 0.282 |
+| PlanarXY | 3D | 16 | 0.987 | 0.037 | 100.50 | 2.88 | 0.285 | 0.390 |
 
 Current read: `node_size = 8` matters more for the 3D path. In the planar
-same-hit-count case, 3D build is about 3.5x slower, search is about 1.6x slower,
-and KNN top-10 is about 1.3x slower than 2D. True 3D datasets can look better or
-worse depending on how much the Z dimension prunes queries.
+same-hit-count case, 3D build is about 3.3x slower, search is about 1.7x slower,
+and KNN top-10 is about 1.4x slower than 2D at `node_size = 8`. True 3D datasets
+can look better or worse depending on how much the Z dimension prunes queries.
 
 ## How To Run
 

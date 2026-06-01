@@ -924,14 +924,11 @@ fn morton3(x: u32, y: u32, z: u32) -> u64 {
 fn hilbert3(x: u32, y: u32, z: u32) -> u64 {
     let mut axes = [x, y, z];
     hilbert_axes_to_transpose(&mut axes);
+    interleave3_msb_order(axes[0], axes[1], axes[2])
+}
 
-    let mut key = 0u64;
-    for bit in (0..MORTON_BITS_PER_AXIS).rev() {
-        key = (key << 1) | u64::from((axes[0] >> bit) & 1);
-        key = (key << 1) | u64::from((axes[1] >> bit) & 1);
-        key = (key << 1) | u64::from((axes[2] >> bit) & 1);
-    }
-    key
+fn interleave3_msb_order(x: u32, y: u32, z: u32) -> u64 {
+    split_by_3(u64::from(z)) | (split_by_3(u64::from(y)) << 1) | (split_by_3(u64::from(x)) << 2)
 }
 
 fn hilbert_axes_to_transpose(axes: &mut [u32; 3]) {

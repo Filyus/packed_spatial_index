@@ -143,8 +143,7 @@ impl Index {
         self.boxes.last().copied()
     }
 
-    /// Return the packed node size.
-    #[doc(hidden)]
+    /// Return the packed node size used by this index.
     pub fn node_size(&self) -> usize {
         self.node_size
     }

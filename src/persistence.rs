@@ -3,7 +3,7 @@ use std::{error::Error, fmt};
 /// Error returned when loading an index from bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadError {
-    /// The buffer does not start with the expected `PSIDX001` magic/version marker.
+    /// The buffer does not start with the expected `PSINDEX\0` magic marker.
     BadMagic,
     /// The buffer uses a newer or otherwise unsupported format version.
     UnsupportedVersion,
@@ -48,9 +48,11 @@ impl fmt::Display for LoadError {
 
 impl Error for LoadError {}
 
-// Packed Spatial Index, binary format version 1.
-const FORMAT_MAGIC: &[u8; 8] = b"PSIDX001";
-const FORMAT_HEADER_LEN: usize = 40;
+// Packed Spatial Index file signature. The format version is stored separately
+// as a little-endian u64 in the header.
+const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
+const FORMAT_VERSION: u64 = 1;
+const FORMAT_HEADER_LEN: usize = 48;
 
 pub(crate) struct ParsedIndexBytes<'a> {
     pub(crate) node_size: usize,
@@ -67,20 +69,21 @@ pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, Lo
         return Err(LoadError::Truncated);
     }
     if &bytes[..FORMAT_MAGIC.len()] != FORMAT_MAGIC {
-        return if bytes.starts_with(b"PSIDX") {
-            Err(LoadError::UnsupportedVersion)
-        } else {
-            Err(LoadError::BadMagic)
-        };
+        return Err(LoadError::BadMagic);
     }
     if bytes.len() < FORMAT_HEADER_LEN {
         return Err(LoadError::Truncated);
     }
 
-    let node_size = read_u64_at(bytes, 8).and_then(usize_from_u64)?;
-    let num_items = read_u64_at(bytes, 16).and_then(usize_from_u64)?;
-    let num_nodes = read_u64_at(bytes, 24).and_then(usize_from_u64)?;
-    let level_count = read_u64_at(bytes, 32).and_then(usize_from_u64)?;
+    let version = read_u64_at(bytes, 8)?;
+    if version != FORMAT_VERSION {
+        return Err(LoadError::UnsupportedVersion);
+    }
+
+    let node_size = read_u64_at(bytes, 16).and_then(usize_from_u64)?;
+    let num_items = read_u64_at(bytes, 24).and_then(usize_from_u64)?;
+    let num_nodes = read_u64_at(bytes, 32).and_then(usize_from_u64)?;
+    let level_count = read_u64_at(bytes, 40).and_then(usize_from_u64)?;
 
     if !(2..=65535).contains(&node_size) {
         return Err(LoadError::InvalidNodeSize { node_size });
@@ -229,6 +232,10 @@ pub(crate) fn serialized_len(level_count: usize, num_nodes: usize) -> Result<usi
 
 pub(crate) fn push_magic(bytes: &mut Vec<u8>) {
     bytes.extend_from_slice(FORMAT_MAGIC);
+}
+
+pub(crate) fn push_format_version(bytes: &mut Vec<u8>) {
+    push_u64(bytes, FORMAT_VERSION);
 }
 
 pub(crate) fn push_u64(bytes: &mut Vec<u8>, value: u64) {

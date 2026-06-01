@@ -12,6 +12,9 @@ fn persistence_round_trip_and_view_agree() {
     let index = build_index(&boxes, 8);
 
     let bytes = index.to_bytes();
+    assert_eq!(&bytes[..8], b"PSINDEX\0");
+    assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 1);
+
     let loaded = Index::from_bytes(&bytes).unwrap();
     let view = IndexView::from_bytes(&bytes).unwrap();
 
@@ -100,7 +103,7 @@ fn persistence_rejects_malformed_buffers() {
     ));
 
     let mut bad_version = bytes.clone();
-    bad_version[..8].copy_from_slice(b"PSIDX999");
+    bad_version[8..16].copy_from_slice(&999u64.to_le_bytes());
     assert!(matches!(
         IndexView::from_bytes(&bad_version),
         Err(LoadError::UnsupportedVersion)
@@ -119,22 +122,22 @@ fn persistence_rejects_malformed_buffers() {
     ));
 
     let mut invalid_node_size = bytes.clone();
-    invalid_node_size[8..16].copy_from_slice(&1u64.to_le_bytes());
+    invalid_node_size[16..24].copy_from_slice(&1u64.to_le_bytes());
     assert!(matches!(
         IndexView::from_bytes(&invalid_node_size),
         Err(LoadError::InvalidNodeSize { node_size: 1 })
     ));
 
     let mut invalid_level_bounds = bytes.clone();
-    invalid_level_bounds[40..48].copy_from_slice(&999u64.to_le_bytes());
+    invalid_level_bounds[48..56].copy_from_slice(&999u64.to_le_bytes());
     assert!(matches!(
         IndexView::from_bytes(&invalid_level_bounds),
         Err(LoadError::InvalidTree)
     ));
 
-    let num_nodes = u64::from_le_bytes(bytes[24..32].try_into().unwrap()) as usize;
-    let level_count = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
-    let indices_offset = 40 + level_count * 8 + num_nodes * 32;
+    let num_nodes = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
+    let level_count = u64::from_le_bytes(bytes[40..48].try_into().unwrap()) as usize;
+    let indices_offset = 48 + level_count * 8 + num_nodes * 32;
 
     let mut invalid_leaf_index = bytes.clone();
     invalid_leaf_index[indices_offset..indices_offset + 8].copy_from_slice(&999u64.to_le_bytes());

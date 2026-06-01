@@ -25,8 +25,8 @@ use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACI
 use crate::geometry::{Num, Point, Rect};
 use crate::neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared};
 use crate::persistence::{
-    LoadError, parse_index_bytes, push_f64, push_magic, push_u64, read_f64_le_unchecked,
-    read_u64_le_unchecked, serialized_len,
+    LoadError, parse_index_bytes, push_f64, push_format_version, push_magic, push_u64,
+    read_f64_le_unchecked, read_u64_le_unchecked, serialized_len,
 };
 
 /// Reusable buffers for allocation-free repeated searches.
@@ -113,13 +113,14 @@ impl Index {
         self.node_size
     }
 
-    /// Serialize this index into the stable little-endian `PSIDX001` format.
+    /// Serialize this index into the stable little-endian `PSINDEX` format.
     pub fn to_bytes(&self) -> Vec<u8> {
         let level_count = self.level_bounds.len();
         let num_nodes = self.boxes.len();
         let len = serialized_len(level_count, num_nodes).expect("serialized index is too large");
         let mut bytes = Vec::with_capacity(len);
         push_magic(&mut bytes);
+        push_format_version(&mut bytes);
         push_u64(&mut bytes, self.node_size as u64);
         push_u64(&mut bytes, self.num_items as u64);
         push_u64(&mut bytes, num_nodes as u64);

@@ -7,22 +7,22 @@ during load.
 
 `SimdIndex` does not have a separate persisted SoA format.
 
-## Version
+## Magic And Version
 
-The current format magic is:
+The current format magic is eight bytes:
 
 ```text
-PSIDX001
+b"PSINDEX\0"
 ```
 
 It expands to:
 
 - `PS` = Packed Spatial;
-- `IDX` = Index;
-- `001` = binary format version 1.
+- `INDEX` = Index;
+- `\0` = one trailing NUL byte to keep the signature exactly eight bytes.
 
-The marker is exactly eight ASCII bytes and acts as both the file signature and
-the format version. A future breaking format should use a different marker.
+The binary format version is stored separately as a little-endian `u64` header
+field. The current version is `1`.
 
 ## Layout
 
@@ -31,17 +31,21 @@ little-endian IEEE-754 `f64` values.
 
 ```text
 offset  size  field
-0       8     magic/version: ASCII "PSIDX001"
-8       8     node_size
-16      8     num_items
-24      8     num_nodes
-32      8     level_count
-40      ...   level_bounds: [u64; level_count]
+0       8     magic: b"PSINDEX\0"
+8       8     format_version: u64 = 1
+16      8     node_size
+24      8     num_items
+32      8     num_nodes
+40      8     level_count
+48      ...   level_bounds: [u64; level_count]
 ...     ...   boxes: [f64 min_x, f64 min_y, f64 max_x, f64 max_y; num_nodes]
 ...     ...   indices: [u64; num_nodes]
 ```
 
 There is no padding between sections.
+
+The fixed header is 48 bytes, so every section starts on an 8-byte logical
+offset.
 
 ## Tree Storage
 
@@ -77,7 +81,7 @@ to `node_size` entries, clamped to the previous level's end.
 Loaders reject malformed buffers before exposing safe search APIs. Validation
 checks include:
 
-- exact magic/version match;
+- exact magic match and supported `format_version`;
 - complete header and sections;
 - exact byte length;
 - `node_size` in `2..=65535`;
@@ -92,5 +96,5 @@ offset for malformed input.
 ## Compatibility
 
 The byte format is intended for data produced by `packed_spatial_index`
-`Index::to_bytes`. The crate preserves the meaning of `PSIDX001`; incompatible
-changes should use a new magic/version marker.
+`Index::to_bytes`. The crate preserves the meaning of `format_version = 1`;
+incompatible changes should use a new version value.

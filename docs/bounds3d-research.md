@@ -1,12 +1,13 @@
-# Bounds3D Research Notes
+# Bounds3D Notes
 
-This branch is intentionally a research branch. It should leave enough evidence
-to make a 3D implementation decision, without committing the crate to a full
-public `Index3D` API yet.
+This document records the research that led to the first scalar 3D API. The
+crate now exposes `Bounds3D`, `Point3D`, `Index3DBuilder`, and `Index3D`; the
+remaining 3D work is persistence, SIMD/SoA layout, and publication-grade
+benchmarks.
 
 ## Decision
 
-Start future 3D support with a scalar, AoS, Hilbert-ordered packed R-tree:
+3D support starts with a scalar, AoS, Hilbert-ordered packed R-tree:
 
 - Public shape: `Bounds3D`, `Point3D`, `Index3DBuilder`, `Index3D`, and later
   `Index3DView`.
@@ -27,7 +28,8 @@ encode.
 
 ## Prototype Structure
 
-The temporary prototype in `tests/bounds3d_research.rs` uses:
+The temporary prototype in `tests/bounds3d_research.rs` was used to choose the
+initial production shape. It uses:
 
 - `Bounds3D { min_x, min_y, min_z, max_x, max_y, max_z }`;
 - `Point3D { x, y, z }`;
@@ -35,8 +37,8 @@ The temporary prototype in `tests/bounds3d_research.rs` uses:
 - `level_bounds` semantics matching `Index2D`;
 - exact overlap search and exact KNN using squared point-to-box distance.
 
-This is deliberately not wired into `src/` yet. The goal is to measure layout
-quality and shake out edge cases before designing the real public API.
+The production scalar API now lives in `src/`; the ignored research tests remain
+as a benchmark-style notebook for comparing future 3D changes.
 
 ## Algorithm Notes
 
@@ -69,20 +71,19 @@ cover top-1, top-10, and finite-radius top-10.
 
 ## Current Recommendation
 
-Use `Hilbert3D` as the initial default candidate for future `Index3D`, matching
-the current 2D philosophy. Keep `Morton3D` hidden as an experimental option for
-build-speed-sensitive workloads and benchmarks. Avoid public `SortKey3D` until
-both paths have Criterion coverage and the Hilbert encoder has more audit
-coverage.
+Use `Hilbert3D` as the default for `Index3D`, matching the current 2D philosophy.
+Keep `Morton3D` hidden as an experimental option for build-speed-sensitive
+workloads and benchmarks. Public `SortKey3D` intentionally exposes only
+`Hilbert` for now.
 
 Do not generalize `Bounds2D`/`Index2D` into a single const-generic public type
 yet. A shared internal helper layer may be useful later, but premature generic
 abstraction would make the hot paths harder to read and benchmark.
 
-Initial release-mode prototype numbers suggest `node_size = 8` should be the
-first 3D default candidate, especially for KNN-heavy workloads. Do not change
-the 2D default. Before stabilizing `Index3DBuilder::new`, repeat the comparison
-with Criterion and realistic user data.
+Initial release-mode prototype numbers suggested `node_size = 8` as a possible
+3D candidate, especially for KNN-heavy workloads. The first production pass keeps
+the crate-wide default at `16` for API consistency; this should be revisited with
+Criterion and realistic user data before a 1.0 API.
 
 Local command:
 

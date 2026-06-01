@@ -4,14 +4,14 @@
 [![crates.io](https://img.shields.io/crates/v/packed_spatial_index.svg)](https://crates.io/crates/packed_spatial_index)
 [![docs.rs](https://docs.rs/packed_spatial_index/badge.svg)](https://docs.rs/packed_spatial_index)
 
-`packed_spatial_index` is a packed static spatial index for 2D axis-aligned
-bounding boxes.
+`packed_spatial_index` is a packed static spatial index for 2D and 3D
+axis-aligned bounding boxes.
 
 It is built for read-heavy workloads where the full set of boxes is known up
 front: build once, then run many window/intersection searches. The default
-`Index2D` uses a packed Hilbert R-tree layout. With the `simd` feature,
-`SimdIndex2D` stores boxes in structure-of-arrays form and uses SIMD intersection
-checks.
+`Index2D` and `Index3D` use packed Hilbert R-tree layouts. With the `simd`
+feature, `SimdIndex2D` stores 2D boxes in structure-of-arrays form and uses SIMD
+intersection checks.
 
 ```rust
 use packed_spatial_index::{Index2DBuilder, Bounds2D};
@@ -50,11 +50,12 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 ## Limitations
 
 - The index is static: rebuild it when the dataset changes.
-- Only 2D axis-aligned bounding boxes are supported.
+- 2D and scalar 3D axis-aligned bounding boxes are supported.
 - Search results are item indices, not stored payloads or geometries.
 - Result ordering is not a stable API guarantee.
-- Persistence is defined for the canonical `Index2D` format; `SimdIndex2D` can be
-  rebuilt from source boxes but does not have a separate SoA file format yet.
+- Persistence is defined for the canonical `Index2D` format. `Index3D` and
+  `SimdIndex2D` can be rebuilt from source boxes but do not have stable file
+  formats yet.
 - Nearest-neighbor search is exact over indexed bounds; approximate KNN and dynamic
   spatial joins are out of scope for now.
 
@@ -63,13 +64,17 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - `Bounds2D` is the public AABB type, with inclusive `overlaps`, `contains`, and
   `contains_point` helpers. `Bounds2D::new` is unchecked; use `Bounds2D::try_new` for
   untrusted bounds.
+- `Bounds3D` and `Point3D` are the equivalent scalar 3D geometry types.
 - `Index2DBuilder` builds either `Index2D` or, with `simd`, `SimdIndex2D`.
+- `Index3DBuilder` builds scalar `Index3D`.
 - `Index2D` is the default read-only index.
+- `Index3D` is the scalar read-only 3D index.
 - `Index2DView` is a zero-copy read-only view over bytes produced by `Index2D::to_bytes`.
 - `SimdIndex2D` is available with the `simd` feature and has the same search API.
 - `SearchWorkspace` reuses result and traversal buffers.
-- `Point2D` and `NeighborWorkspace` support nearest-neighbor searches.
+- `Point2D`, `Point3D`, and `NeighborWorkspace` support nearest-neighbor searches.
 - `SortKey2D` selects the public build ordering curve. `Hilbert` is the stable default.
+- `SortKey3D` does the same for 3D. `Hilbert` is the stable default.
 
 Search APIs:
 
@@ -118,6 +123,24 @@ let simd_index = builder.finish_simd()?;
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
+3D uses the same builder/search shape:
+
+```rust
+use packed_spatial_index::{Bounds3D, Index3DBuilder, Point3D};
+
+let mut builder = Index3DBuilder::new(2);
+builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+builder.add(Bounds3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+
+let index = builder.finish()?;
+assert_eq!(
+    index.search(Bounds3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)),
+    vec![0]
+);
+assert_eq!(index.neighbors(Point3D::new(5.5, 5.5, 5.5), 1), vec![1]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
 ## Persistence
 
 `Index2D` can be serialized to a stable little-endian byte format and loaded back
@@ -139,7 +162,7 @@ assert_eq!(view.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`SimdIndex2D` is not persisted as a separate SoA format yet.
+`Index3D` and `SimdIndex2D` are not persisted as separate formats yet.
 
 The binary layout is documented in [`FORMAT.md`](FORMAT.md).
 
@@ -149,6 +172,7 @@ Runnable examples cover the public paths:
 
 ```bash
 cargo run --example basic
+cargo run --example basic_3d
 cargo run --example persistence
 cargo run --example knn
 cargo run --example reuse_workspace
@@ -158,7 +182,8 @@ cargo run --example reuse_workspace
 
 Both features are enabled by default:
 
-- `parallel`: adaptive rayon-based index builds through `Index2DBuilder::parallel`.
+- `parallel`: adaptive rayon-based index builds through `Index2DBuilder::parallel`
+  and `Index3DBuilder::parallel`.
 - `simd`: SoA index and SIMD search paths through `SimdIndex2D`.
 
 Minimal build:

@@ -5,6 +5,7 @@
 //! which has the same search API backed by a SoA layout and SIMD traversal.
 //! `Index2D` can also be serialized with [`Index2D::to_bytes`] and viewed without
 //! copying through [`Index2DView`].
+//! For 3D data, use the scalar [`Index3DBuilder`] -> [`Index3D`] flow.
 //!
 //! # Quick Start
 //! ```
@@ -24,27 +25,33 @@
 //!   and x86-64 AVX-512 intrinsics where available.
 
 mod builder;
+mod builder3d;
 mod config;
 mod geometry;
 mod hilbert;
 mod index;
+mod index3d;
 #[cfg(feature = "simd")]
 mod index_soa;
 mod neighbors;
 mod persistence;
 mod sort;
+mod sort3d;
 
 pub use builder::{BuildError, Index2DBuilder};
+pub use builder3d::Index3DBuilder;
 pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
-pub use geometry::{Bounds2D, BoundsError, Point2D};
+pub use geometry::{Bounds2D, Bounds3D, BoundsError, Point2D, Point3D};
 pub use index::{Index2D, Index2DView, SearchWorkspace};
 #[cfg(feature = "simd")]
 pub use index_soa::SimdIndex2D;
+pub use index3d::Index3D;
 pub use neighbors::NeighborWorkspace;
 pub use persistence::LoadError;
 pub use sort::SortKey2D;
+pub use sort3d::SortKey3D;
 
 /// Experimental internals kept public for benchmarks and research notebooks.
 #[doc(hidden)]
@@ -53,4 +60,7 @@ pub mod experimental {
         ENCODERS, HilbertFn, loop_rotation, lut, magic_bits, magic_bits_batch, morton,
     };
     pub use crate::sort::{ExperimentalSortKey2D, radix_sort_pairs};
+    pub use crate::sort3d::{
+        ExperimentalSortKey3D, encode_hilbert3, encode_morton3, radix_sort_pairs_u64,
+    };
 }

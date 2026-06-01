@@ -20,7 +20,14 @@ For the first release:
    cargo logout
    ```
 
-4. Revoke the crates.io token.
+4. Tag the published commit:
+
+   ```bash
+   git tag -a v0.3.0 -m "packed_spatial_index 0.3.0"
+   git push origin v0.3.0
+   ```
+
+5. Revoke the crates.io token.
 
 ## Trusted Publishing Setup
 
@@ -50,5 +57,7 @@ true` input and confirmation phrase.
 
 The workflow validates that it is running from `main`, checks the requested
 version against `Cargo.toml`, runs formatting/tests/clippy/docs, performs
-`cargo publish --dry-run`, rejects already-published versions, checks the
-confirmation phrase, and only then requests a short-lived crates.io token.
+`cargo publish --dry-run`, rejects already-published versions and existing
+release tags, checks the confirmation phrase, and only then requests a
+short-lived crates.io token. After a successful CI publish it creates and pushes
+the annotated `v<version>` git tag.

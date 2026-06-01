@@ -539,23 +539,21 @@ impl Index {
 
             if is_leaf {
                 for pos in node_index..end {
-                    // SAFETY: pos < end <= level_bounds[level] <= boxes.len() == indices.len().
-                    let b = unsafe { self.boxes.get_unchecked(pos) };
+                    let b = &self.boxes[pos];
                     if !b.overlaps(rect) {
                         continue;
                     }
-                    let index = unsafe { *self.indices.get_unchecked(pos) };
+                    let index = self.indices[pos];
                     results.push(index);
                 }
             } else {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
-                    // SAFETY: pos < end <= level_bounds[level] <= boxes.len() == indices.len().
-                    let b = unsafe { self.boxes.get_unchecked(pos) };
+                    let b = &self.boxes[pos];
                     if !b.overlaps(rect) {
                         continue;
                     }
-                    let index = unsafe { *self.indices.get_unchecked(pos) };
+                    let index = self.indices[pos];
                     stack.push(index);
                     stack.push(child_level);
                 }
@@ -601,23 +599,21 @@ impl Index {
 
             if is_leaf {
                 for pos in node_index..end {
-                    // SAFETY: pos < end <= level_bounds[level] <= boxes.len() == indices.len().
-                    let b = unsafe { self.boxes.get_unchecked(pos) };
+                    let b = &self.boxes[pos];
                     if !b.overlaps(rect) {
                         continue;
                     }
-                    let index = unsafe { *self.indices.get_unchecked(pos) };
+                    let index = self.indices[pos];
                     visitor(index)?;
                 }
             } else {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
-                    // SAFETY: pos < end <= level_bounds[level] <= boxes.len() == indices.len().
-                    let b = unsafe { self.boxes.get_unchecked(pos) };
+                    let b = &self.boxes[pos];
                     if !b.overlaps(rect) {
                         continue;
                     }
-                    let index = unsafe { *self.indices.get_unchecked(pos) };
+                    let index = self.indices[pos];
                     stack.push(index);
                     stack.push(child_level);
                 }

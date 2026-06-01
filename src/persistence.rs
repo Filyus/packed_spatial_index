@@ -52,7 +52,8 @@ impl Error for LoadError {}
 // as a little-endian u64 in the header.
 const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
 const FORMAT_VERSION: u64 = 1;
-const FORMAT_HEADER_LEN: usize = 48;
+const FORMAT_FLAGS: u64 = 0;
+const FORMAT_HEADER_LEN: usize = 64;
 
 pub(crate) struct ParsedIndexBytes<'a> {
     pub(crate) node_size: usize,
@@ -80,10 +81,16 @@ pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, Lo
         return Err(LoadError::UnsupportedVersion);
     }
 
-    let node_size = read_u64_at(bytes, 16).and_then(usize_from_u64)?;
-    let num_items = read_u64_at(bytes, 24).and_then(usize_from_u64)?;
-    let num_nodes = read_u64_at(bytes, 32).and_then(usize_from_u64)?;
-    let level_count = read_u64_at(bytes, 40).and_then(usize_from_u64)?;
+    let header_len = read_u64_at(bytes, 16).and_then(usize_from_u64)?;
+    let flags = read_u64_at(bytes, 24)?;
+    if header_len != FORMAT_HEADER_LEN || flags != FORMAT_FLAGS {
+        return Err(LoadError::UnsupportedVersion);
+    }
+
+    let node_size = read_u64_at(bytes, 32).and_then(usize_from_u64)?;
+    let num_items = read_u64_at(bytes, 40).and_then(usize_from_u64)?;
+    let num_nodes = read_u64_at(bytes, 48).and_then(usize_from_u64)?;
+    let level_count = read_u64_at(bytes, 56).and_then(usize_from_u64)?;
 
     if !(2..=65535).contains(&node_size) {
         return Err(LoadError::InvalidNodeSize { node_size });
@@ -236,6 +243,14 @@ pub(crate) fn push_magic(bytes: &mut Vec<u8>) {
 
 pub(crate) fn push_format_version(bytes: &mut Vec<u8>) {
     push_u64(bytes, FORMAT_VERSION);
+}
+
+pub(crate) fn push_header_len(bytes: &mut Vec<u8>) {
+    push_u64(bytes, FORMAT_HEADER_LEN as u64);
+}
+
+pub(crate) fn push_flags(bytes: &mut Vec<u8>) {
+    push_u64(bytes, FORMAT_FLAGS);
 }
 
 pub(crate) fn push_u64(bytes: &mut Vec<u8>, value: u64) {

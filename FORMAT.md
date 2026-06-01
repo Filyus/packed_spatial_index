@@ -24,6 +24,9 @@ It expands to:
 The binary format version is stored separately as a little-endian `u64` header
 field. The current version is `1`.
 
+`header_len` is the fixed byte length of this header. `flags` is reserved for
+future format options and must be zero in version 1.
+
 ## Layout
 
 All integers are unsigned little-endian 64-bit values. All coordinates are
@@ -33,18 +36,20 @@ little-endian IEEE-754 `f64` values.
 offset  size  field
 0       8     magic: b"PSINDEX\0"
 8       8     format_version: u64 = 1
-16      8     node_size
-24      8     num_items
-32      8     num_nodes
-40      8     level_count
-48      ...   level_bounds: [u64; level_count]
+16      8     header_len: u64 = 64
+24      8     flags: u64 = 0
+32      8     node_size
+40      8     num_items
+48      8     num_nodes
+56      8     level_count
+64      ...   level_bounds: [u64; level_count]
 ...     ...   boxes: [f64 min_x, f64 min_y, f64 max_x, f64 max_y; num_nodes]
 ...     ...   indices: [u64; num_nodes]
 ```
 
 There is no padding between sections.
 
-The fixed header is 48 bytes, so every section starts on an 8-byte logical
+The fixed header is 64 bytes, so every section starts on an 8-byte logical
 offset.
 
 ## Tree Storage
@@ -81,7 +86,8 @@ to `node_size` entries, clamped to the previous level's end.
 Loaders reject malformed buffers before exposing safe search APIs. Validation
 checks include:
 
-- exact magic match and supported `format_version`;
+- exact magic match, supported `format_version`, supported `header_len`, and
+  zero `flags`;
 - complete header and sections;
 - exact byte length;
 - `node_size` in `2..=65535`;

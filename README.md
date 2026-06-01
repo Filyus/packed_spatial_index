@@ -23,6 +23,13 @@ assert_eq!(hits, vec![0]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
+## Installation
+
+```toml
+[dependencies]
+packed_spatial_index = "0.3"
+```
+
 ## When To Use It
 
 Use this crate when:
@@ -167,4 +174,9 @@ cargo bench --bench persistence_knn_bench --no-default-features --features simd
 
 ## Status
 
-This crate is still marked `publish = false` while publishing metadata and the remaining API surface settle.
+The core API is intentionally small and breaking API cleanup happens before a
+`1.0` release.
+
+## License
+
+Licensed under the Apache License, Version 2.0.

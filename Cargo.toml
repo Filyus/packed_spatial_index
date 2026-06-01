@@ -3,10 +3,19 @@ name = "packed_spatial_index"
 version = "0.3.0"
 edition = "2021"
 description = "Packed static spatial index for 2D AABBs with Hilbert ordering, adaptive parallel builds, and SIMD queries."
+license = "Apache-2.0"
+repository = "https://github.com/Filyus/packed_spatial_index"
+documentation = "https://docs.rs/packed_spatial_index"
 readme = "README.md"
 keywords = ["spatial", "index", "aabb", "hilbert", "rtree"]
 categories = ["algorithms", "data-structures"]
-publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
 static_aabb2d_index = "2"

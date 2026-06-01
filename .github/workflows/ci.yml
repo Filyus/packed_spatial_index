@@ -1,0 +1,53 @@
+name: Rust CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test default features
+        run: cargo test --all-targets
+
+      - name: Test no default features
+        run: cargo test --all-targets --no-default-features
+
+      - name: Test parallel feature
+        run: cargo test --all-targets --no-default-features --features parallel
+
+      - name: Test simd feature
+        run: cargo test --all-targets --no-default-features --features simd
+
+      - name: Lint all features
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Check docs all features
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Check docs no default features
+        run: cargo doc --no-deps --no-default-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Package crate
+        run: cargo package

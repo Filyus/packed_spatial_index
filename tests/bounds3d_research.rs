@@ -14,6 +14,7 @@ const MORTON_BITS_PER_AXIS: u32 = 21;
 const MORTON_AXIS_MAX: u32 = (1 << MORTON_BITS_PER_AXIS) - 1;
 const HILBERT_BITS_PER_AXIS: u32 = 16;
 const HILBERT_AXIS_MAX: u32 = (1 << HILBERT_BITS_PER_AXIS) - 1;
+const HILBERT3_LUT: [u8; 192] = build_hilbert3_lut();
 const ENCODE_ITEMS: usize = 262_144;
 const RESEARCH_ITEMS: usize = 8_192;
 const RESEARCH_QUERIES: usize = 128;
@@ -969,13 +970,84 @@ fn morton3(x: u32, y: u32, z: u32) -> u64 {
 
 #[inline(always)]
 fn hilbert3(x: u32, y: u32, z: u32) -> u64 {
-    let (x, y, z) = hilbert3_axes_to_transpose(x, y, z);
-    interleave3_msb_order(x, y, z)
+    hilbert3_state_machine(x, y, z)
 }
 
 #[inline(always)]
 fn interleave3_msb_order(x: u32, y: u32, z: u32) -> u64 {
     split_by_3(u64::from(z)) | (split_by_3(u64::from(y)) << 1) | (split_by_3(u64::from(x)) << 2)
+}
+
+#[inline(always)]
+fn hilbert3_state_machine(x: u32, y: u32, z: u32) -> u64 {
+    let mut index = 0u64;
+    let mut state = 0usize;
+
+    for shift in (0..HILBERT_BITS_PER_AXIS).rev() {
+        let m = (((x >> shift) & 1) << 2) | (((y >> shift) & 1) << 1) | ((z >> shift) & 1);
+        let entry = HILBERT3_LUT[state * 8 + m as usize];
+        index = (index << 3) | u64::from(entry & 7);
+        state = (entry >> 3) as usize;
+    }
+
+    index
+}
+
+const fn build_hilbert3_lut() -> [u8; 192] {
+    let mut table = [0u8; 192];
+    let mut state = 0usize;
+    while state < 24 {
+        let c = (state & 7) as u32;
+        let n = (state / 8) as u32;
+        let mut m = 0u32;
+        while m < 8 {
+            let gray = rotate_right_3(c ^ m, n);
+            let i = gray_to_integer_3(gray);
+            let without_high_bit = gray & 0b011;
+            let next_rotation = if without_high_bit == 0 {
+                1
+            } else if (without_high_bit & 1) != 0 {
+                2
+            } else {
+                3
+            };
+            let transform = if i == 0 {
+                0
+            } else {
+                let low_bit = i & 0u32.wrapping_sub(i);
+                gray ^ (low_bit | 1)
+            };
+            let next_c = c ^ rotate_left_3(transform, n);
+            let next_n = (n + next_rotation) % 3;
+            let next_state = next_n * 8 + next_c;
+            table[state * 8 + m as usize] = ((next_state as u8) << 3) | (i as u8);
+            m += 1;
+        }
+        state += 1;
+    }
+    table
+}
+
+const fn rotate_left_3(value: u32, shift: u32) -> u32 {
+    match shift {
+        0 => value & 7,
+        1 => ((value << 1) | (value >> 2)) & 7,
+        _ => ((value << 2) | (value >> 1)) & 7,
+    }
+}
+
+const fn rotate_right_3(value: u32, shift: u32) -> u32 {
+    match shift {
+        0 => value & 7,
+        1 => ((value >> 1) | (value << 2)) & 7,
+        _ => ((value >> 2) | (value << 1)) & 7,
+    }
+}
+
+const fn gray_to_integer_3(mut gray: u32) -> u32 {
+    gray ^= gray >> 1;
+    gray ^= gray >> 2;
+    gray & 7
 }
 
 #[inline(always)]

@@ -42,11 +42,15 @@ quality and shake out edge cases before designing the real public API.
 
 Morton3D normalizes box centers into `[0, 2^21 - 1]` per axis and produces a
 63-bit `u64` key. Hilbert3D intentionally uses `[0, 2^16 - 1]` per axis: the
-extra 21-bit precision was the main encoding bottleneck and did not improve
-the smoke-test layout quality. Hilbert3D uses a branchless Skilling-style
-axes-to-transpose transform before interleaving bits. The final 3-axis interleave
-uses the same SWAR-style bit spreading as Morton3D, but there is not yet a 3D
-equivalent of the current 2D `magic_bits` Hilbert encoder.
+extra 21-bit precision was an encoding bottleneck and did not improve the
+smoke-test layout quality.
+
+The first Hilbert3D prototype used Skilling-style axes-to-transpose code. After
+checking existing work, the current prototype uses a compact 24-state transition
+LUT over `(state, octant)` and emits 3 Hilbert bits per input level. This follows
+the same direction described by rawrunprotected/threadlocalmutex for fast 3D
+Morton/Hilbert conversion, but builds the tiny transition table locally instead
+of copying a published table.
 
 Node sizes `8`, `16`, and `32` are the initial comparison set. The current 2D
 default is `16`, but 3D has different overlap behavior, so the default should
@@ -90,21 +94,22 @@ Prototype output from this branch:
 
 | Dataset | Sort key | Node size | Sort ms | Search ms | Avg visited | Avg hits | KNN top-1 ms | KNN top-10 ms | KNN top-10 r80 ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| PlanarXY | Morton | 8 | 0.177 | 0.047 | 85.31 | 2.88 | 0.281 | 0.407 | 0.121 |
-| PlanarXY | Hilbert | 8 | 0.720 | 0.035 | 68.75 | 2.88 | 0.215 | 0.335 | 0.098 |
-| Uniform | Morton | 8 | 0.157 | 0.039 | 87.44 | 0.05 | 0.478 | 0.773 | 0.146 |
-| Uniform | Hilbert | 8 | 0.755 | 0.027 | 50.50 | 0.05 | 0.291 | 0.556 | 0.097 |
-| Clustered | Morton | 8 | 0.173 | 0.005 | 4.16 | 0.00 | 0.238 | 0.515 | 0.018 |
-| Clustered | Hilbert | 8 | 0.738 | 0.005 | 4.16 | 0.00 | 0.207 | 0.419 | 0.016 |
-| FlatZ | Morton | 8 | 0.179 | 0.109 | 306.62 | 1.71 | 1.167 | 1.653 | 0.526 |
-| FlatZ | Hilbert | 8 | 0.731 | 0.073 | 165.31 | 1.71 | 0.558 | 0.787 | 0.291 |
-| Degenerate | Morton | 8 | 0.181 | 0.038 | 86.19 | 0.04 | 0.437 | 0.776 | 0.136 |
-| Degenerate | Hilbert | 8 | 0.758 | 0.026 | 50.25 | 0.04 | 0.267 | 0.519 | 0.077 |
+| PlanarXY | Morton | 8 | 0.172 | 0.047 | 85.31 | 2.88 | 0.279 | 0.402 | 0.131 |
+| PlanarXY | Hilbert | 8 | 0.272 | 0.035 | 72.94 | 2.88 | 0.233 | 0.353 | 0.105 |
+| Uniform | Morton | 8 | 0.159 | 0.042 | 87.44 | 0.05 | 0.498 | 0.860 | 0.151 |
+| Uniform | Hilbert | 8 | 0.271 | 0.026 | 49.06 | 0.05 | 0.271 | 0.503 | 0.081 |
+| Clustered | Morton | 8 | 0.157 | 0.005 | 4.16 | 0.00 | 0.236 | 0.536 | 0.020 |
+| Clustered | Hilbert | 8 | 0.271 | 0.004 | 4.16 | 0.00 | 0.205 | 0.421 | 0.016 |
+| FlatZ | Morton | 8 | 0.157 | 0.115 | 306.62 | 1.71 | 1.261 | 1.430 | 0.529 |
+| FlatZ | Hilbert | 8 | 0.274 | 0.068 | 150.38 | 1.71 | 0.578 | 0.754 | 0.276 |
+| Degenerate | Morton | 8 | 0.160 | 0.038 | 86.19 | 0.04 | 0.447 | 0.757 | 0.136 |
+| Degenerate | Hilbert | 8 | 0.271 | 0.024 | 47.31 | 0.04 | 0.276 | 0.503 | 0.076 |
 
 The timing columns are only prototype smoke metrics, not publication-grade
 benchmarks. The visited-bound counts are the more useful signal here: Hilbert3D
-cuts visited bounds by about 40-46% on the non-clustered datasets in this smoke
-test, while Morton3D keeps build sorting roughly 4-5x faster.
+cuts visited bounds by about 40-51% on the non-clustered 3D datasets in this
+smoke test. With the LUT encoder, Morton3D's sort-speed advantage is now usually
+around 1.7x instead of the earlier 4-7x.
 
 ## Hilbert2D vs Hilbert3D Cost
 
@@ -119,28 +124,38 @@ Raw key encoding is the largest visible gap:
 
 | Encoder | Items | Total ms | ns/key |
 | --- | ---: | ---: | ---: |
-| Hilbert2D | 262144 | 1.634 | 6.23 |
-| Hilbert3D | 262144 | 19.859 | 75.76 |
+| Hilbert2D | 262144 | 1.660 | 6.33 |
+| Hilbert3D | 262144 | 3.537 | 13.49 |
 
 This is not a pure dimension-only benchmark: `Hilbert2D` is the current optimized
 2D magic-bits encoder over 16-bit axes, while the temporary `Hilbert3D` path is a
-compact branchless Skilling-style 16-bit-per-axis prototype plus SWAR bit
-spreading for the final interleave.
+16-bit-per-axis 3D state-machine/LUT prototype.
 
 The closest apples-to-apples index scenario is `PlanarXY`: the same X/Y boxes
 embedded into 3D with `z = 0`, so 2D and 3D produce the same average hit count.
 
 | Dataset | Dimension | Node size | Build ms | Search ms | Avg visited | Avg hits | KNN top-1 ms | KNN top-10 ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| PlanarXY | 2D | 8 | 0.317 | 0.029 | 56.94 | 2.88 | 0.120 | 0.248 |
-| PlanarXY | 3D | 8 | 0.845 | 0.038 | 68.75 | 2.88 | 0.219 | 0.331 |
-| PlanarXY | 2D | 16 | 0.295 | 0.029 | 81.62 | 2.88 | 0.120 | 0.271 |
-| PlanarXY | 3D | 16 | 0.841 | 0.036 | 99.62 | 2.88 | 0.262 | 0.376 |
+| PlanarXY | 2D | 8 | 0.297 | 0.027 | 56.94 | 2.88 | 0.118 | 0.257 |
+| PlanarXY | 3D | 8 | 0.400 | 0.037 | 72.94 | 2.88 | 0.259 | 0.363 |
+| PlanarXY | 2D | 16 | 0.299 | 0.030 | 81.62 | 2.88 | 0.121 | 0.286 |
+| PlanarXY | 3D | 16 | 0.386 | 0.037 | 102.12 | 2.88 | 0.296 | 0.420 |
 
 Current read: `node_size = 8` matters more for the 3D path. In the planar
-same-hit-count case, 3D build is about 2.7x slower, search is about 1.3x slower,
-and KNN top-10 is about 1.3x slower than 2D at `node_size = 8`. True 3D datasets
+same-hit-count case, 3D build is about 1.35x slower, search is about 1.37x
+slower, and KNN top-10 is about 1.4x slower than 2D at `node_size = 8`. True 3D datasets
 can look better or worse depending on how much the Z dimension prunes queries.
+
+## External References
+
+- John Skilling, "Programming the Hilbert curve" (2004): compact n-dimensional
+  Hilbert code based on a global Gray code and a cleanup pass.
+- rawrunprotected/threadlocalmutex, "LUT-based 3D Hilbert curves" and "3D Hilbert
+  curves in even fewer instructions": Morton/Hilbert conversion through small
+  3D transformation-state tables.
+- The Rust `fast_hilbert` crate confirms the same broad lesson in 2D: compact
+  lookup tables can beat straightforward Hilbert implementations by large
+  margins.
 
 ## How To Run
 

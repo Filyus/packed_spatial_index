@@ -2,13 +2,17 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use packed_spatial_index::experimental::magic_bits as hilbert2d;
+use packed_spatial_index::{Bounds2D, Index2D, Index2DBuilder, Point2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
 const MORTON_BITS_PER_AXIS: u32 = 21;
 const MORTON_AXIS_MAX: u32 = (1 << MORTON_BITS_PER_AXIS) - 1;
+const ENCODE_ITEMS: usize = 262_144;
 const RESEARCH_ITEMS: usize = 8_192;
 const RESEARCH_QUERIES: usize = 128;
 
@@ -75,6 +79,7 @@ impl Point3D {
 
 #[derive(Clone, Copy, Debug)]
 enum DatasetKind {
+    PlanarXY,
     Uniform,
     Clustered,
     FlatZ,
@@ -387,6 +392,7 @@ fn bounds3d_sort_keys_are_injective_on_small_grid() {
 #[ignore = "research-only: validates the temporary 3D prototype against brute force"]
 fn bounds3d_sort_keys_correctness_against_bruteforce() {
     let datasets = [
+        DatasetKind::PlanarXY,
         DatasetKind::Uniform,
         DatasetKind::Clustered,
         DatasetKind::FlatZ,
@@ -443,6 +449,7 @@ fn bounds3d_sort_key_node_size_survey() {
     );
 
     for dataset in [
+        DatasetKind::PlanarXY,
         DatasetKind::Uniform,
         DatasetKind::Clustered,
         DatasetKind::FlatZ,
@@ -488,6 +495,181 @@ fn bounds3d_sort_key_node_size_survey() {
     }
 }
 
+#[test]
+#[ignore = "research-only: compares current 2D Hilbert encoding with temporary 3D Hilbert encoding"]
+fn hilbert2d_vs_hilbert3d_encode_survey() {
+    let mut rng = StdRng::seed_from_u64(0x2D3D);
+    let coords2d: Vec<(u16, u16)> = (0..ENCODE_ITEMS)
+        .map(|_| {
+            (
+                rng.random_range(0..=u16::MAX),
+                rng.random_range(0..=u16::MAX),
+            )
+        })
+        .collect();
+    let coords3d: Vec<(u32, u32, u32)> = (0..ENCODE_ITEMS)
+        .map(|_| {
+            (
+                rng.random_range(0..=MORTON_AXIS_MAX),
+                rng.random_range(0..=MORTON_AXIS_MAX),
+                rng.random_range(0..=MORTON_AXIS_MAX),
+            )
+        })
+        .collect();
+
+    println!("encoder,items,total_ms,ns_per_key,checksum");
+    let (elapsed2d, checksum2d) = time_hilbert2d_encode(&coords2d);
+    let (elapsed3d, checksum3d) = time_hilbert3d_encode(&coords3d);
+    println!(
+        "Hilbert2D,{},{:.3},{:.2},{}",
+        coords2d.len(),
+        millis(elapsed2d),
+        elapsed2d.as_nanos() as f64 / coords2d.len() as f64,
+        checksum2d
+    );
+    println!(
+        "Hilbert3D,{},{:.3},{:.2},{}",
+        coords3d.len(),
+        millis(elapsed3d),
+        elapsed3d.as_nanos() as f64 / coords3d.len() as f64,
+        checksum3d
+    );
+}
+
+#[test]
+#[ignore = "research-only: compares production 2D Hilbert index with temporary 3D Hilbert prototype"]
+fn hilbert2d_vs_hilbert3d_index_survey() {
+    println!(
+        "dataset,dimension,node_size,items,queries,build_ms,search_ms,avg_visited,avg_hits,knn1_ms,knn10_ms,knn10_r80_ms"
+    );
+
+    for dataset in [
+        DatasetKind::PlanarXY,
+        DatasetKind::Uniform,
+        DatasetKind::Clustered,
+        DatasetKind::FlatZ,
+        DatasetKind::Degenerate,
+    ] {
+        let items3d = make_dataset(dataset, RESEARCH_ITEMS, 0xA11CE);
+        let queries3d = make_queries(dataset, RESEARCH_QUERIES, 0xB0B);
+        let points3d = make_points(dataset, RESEARCH_QUERIES, 0xCAFE);
+        let items2d = project_items_2d(&items3d);
+        let queries2d = project_queries_2d(&queries3d);
+        let points2d = project_points_2d(&points3d);
+
+        for node_size in [8, 16] {
+            let (index2d, build2d) = build_2d_hilbert(&items2d, node_size);
+            let search2d = time_search_2d(&index2d, &queries2d);
+            let knn1_2d = time_neighbors_2d(&index2d, &points2d, 1, f64::INFINITY);
+            let knn10_2d = time_neighbors_2d(&index2d, &points2d, 10, f64::INFINITY);
+            let knn10_r80_2d = time_neighbors_2d(&index2d, &points2d, 10, 80.0);
+
+            println!(
+                "{dataset:?},2D,{node_size},{},{},{:.3},{:.3},{:.2},{:.2},{:.3},{:.3},{:.3}",
+                items2d.len(),
+                queries2d.len(),
+                millis(build2d),
+                millis(search2d.elapsed),
+                search2d.visited_bounds as f64 / queries2d.len() as f64,
+                search2d.results as f64 / queries2d.len() as f64,
+                millis(knn1_2d),
+                millis(knn10_2d),
+                millis(knn10_r80_2d),
+            );
+
+            let build3d_start = Instant::now();
+            let (index3d, _) = PrototypeIndex3D::build(&items3d, node_size, SortKey3D::Hilbert);
+            let build3d = build3d_start.elapsed();
+            let mut results = Vec::new();
+            let mut stack = Vec::new();
+            let mut search3d = SearchMetrics::default();
+            for &query in &queries3d {
+                let metrics = index3d.search_into(query, &mut results, &mut stack);
+                search3d.elapsed += metrics.elapsed;
+                search3d.visited_bounds += metrics.visited_bounds;
+                search3d.results += metrics.results;
+            }
+            let knn1_3d = time_neighbors(&index3d, &points3d, 1, f64::INFINITY);
+            let knn10_3d = time_neighbors(&index3d, &points3d, 10, f64::INFINITY);
+            let knn10_r80_3d = time_neighbors(&index3d, &points3d, 10, 80.0);
+
+            println!(
+                "{dataset:?},3D,{node_size},{},{},{:.3},{:.3},{:.2},{:.2},{:.3},{:.3},{:.3}",
+                items3d.len(),
+                queries3d.len(),
+                millis(build3d),
+                millis(search3d.elapsed),
+                search3d.visited_bounds as f64 / queries3d.len() as f64,
+                search3d.results as f64 / queries3d.len() as f64,
+                millis(knn1_3d),
+                millis(knn10_3d),
+                millis(knn10_r80_3d),
+            );
+        }
+    }
+}
+
+fn time_hilbert2d_encode(coords: &[(u16, u16)]) -> (Duration, u64) {
+    let start = Instant::now();
+    let mut checksum = 0u64;
+    for &(x, y) in coords {
+        checksum ^= u64::from(hilbert2d(black_box(x), black_box(y)));
+    }
+    (start.elapsed(), black_box(checksum))
+}
+
+fn time_hilbert3d_encode(coords: &[(u32, u32, u32)]) -> (Duration, u64) {
+    let start = Instant::now();
+    let mut checksum = 0u64;
+    for &(x, y, z) in coords {
+        checksum ^= hilbert3(black_box(x), black_box(y), black_box(z));
+    }
+    (start.elapsed(), black_box(checksum))
+}
+
+fn build_2d_hilbert(items: &[Bounds2D], node_size: usize) -> (Index2D, Duration) {
+    let start = Instant::now();
+    let mut builder = Index2DBuilder::new(items.len()).node_size(node_size);
+    for &bounds in items {
+        builder.add(bounds);
+    }
+    let index = builder.finish().unwrap();
+    (index, start.elapsed())
+}
+
+fn time_search_2d(index: &Index2D, queries: &[Bounds2D]) -> SearchMetrics {
+    let start = Instant::now();
+    let mut visited_bounds = 0usize;
+    let mut results = 0usize;
+    for &query in queries {
+        let (result_count, visited_count) = index.search_visited(query);
+        results += result_count;
+        visited_bounds += visited_count;
+    }
+    SearchMetrics {
+        elapsed: start.elapsed(),
+        visited_bounds,
+        results,
+    }
+}
+
+fn time_neighbors_2d(
+    index: &Index2D,
+    points: &[Point2D],
+    max_results: usize,
+    max_distance: f64,
+) -> Duration {
+    let start = Instant::now();
+    let mut total = 0usize;
+    for &point in points {
+        total += index
+            .neighbors_within(point, max_results, max_distance)
+            .len();
+    }
+    assert_ne!(total, usize::MAX);
+    start.elapsed()
+}
+
 fn time_neighbors(
     index: &PrototypeIndex3D,
     points: &[Point3D],
@@ -503,9 +685,36 @@ fn time_neighbors(
     start.elapsed()
 }
 
+fn project_items_2d(items: &[Bounds3D]) -> Vec<Bounds2D> {
+    items
+        .iter()
+        .map(|bounds| Bounds2D::new(bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y))
+        .collect()
+}
+
+fn project_queries_2d(queries: &[Bounds3D]) -> Vec<Bounds2D> {
+    queries
+        .iter()
+        .map(|bounds| Bounds2D::new(bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y))
+        .collect()
+}
+
+fn project_points_2d(points: &[Point3D]) -> Vec<Point2D> {
+    points
+        .iter()
+        .map(|point| Point2D::new(point.x, point.y))
+        .collect()
+}
+
 fn make_dataset(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     match kind {
+        DatasetKind::PlanarXY => (0..n)
+            .map(|_| {
+                let xy = random_box(&mut rng, 0.0..10_000.0, 0.0..10_000.0, 0.0..1.0, 1.0..40.0);
+                Bounds3D::new(xy.min_x, xy.min_y, 0.0, xy.max_x, xy.max_y, 0.0)
+            })
+            .collect(),
         DatasetKind::Uniform => (0..n)
             .map(|_| {
                 random_box(
@@ -550,6 +759,16 @@ fn make_queries(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| match kind {
+            DatasetKind::PlanarXY => {
+                let xy = random_box(
+                    &mut rng,
+                    0.0..10_000.0,
+                    0.0..10_000.0,
+                    0.0..1.0,
+                    50.0..300.0,
+                );
+                Bounds3D::new(xy.min_x, xy.min_y, 0.0, xy.max_x, xy.max_y, 0.0)
+            }
             DatasetKind::Clustered => random_box(
                 &mut rng,
                 800.0..8_500.0,
@@ -579,6 +798,11 @@ fn make_points(kind: DatasetKind, n: usize, seed: u64) -> Vec<Point3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| match kind {
+            DatasetKind::PlanarXY => Point3D::new(
+                rng.random_range(0.0..10_000.0),
+                rng.random_range(0.0..10_000.0),
+                0.0,
+            ),
             DatasetKind::Clustered => Point3D::new(
                 rng.random_range(800.0..8_500.0),
                 rng.random_range(800.0..6_000.0),

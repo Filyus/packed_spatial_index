@@ -100,6 +100,41 @@ benchmarks. The visited-bound counts are the more useful signal here: Hilbert3D
 cuts visited bounds by about 40-46% on the non-clustered datasets in this smoke
 test, while Morton3D keeps build sorting roughly 7-8x faster.
 
+## Hilbert2D vs Hilbert3D Cost
+
+The branch also has two focused comparison tests:
+
+```bash
+cargo test --release --test bounds3d_research hilbert2d_vs_hilbert3d_encode_survey -- --ignored --nocapture --exact
+cargo test --release --test bounds3d_research hilbert2d_vs_hilbert3d_index_survey -- --ignored --nocapture --exact
+```
+
+Raw key encoding is the largest visible gap:
+
+| Encoder | Items | Total ms | ns/key |
+| --- | ---: | ---: | ---: |
+| Hilbert2D | 262144 | 1.863 | 7.11 |
+| Hilbert3D | 262144 | 34.624 | 132.08 |
+
+This is not a pure dimension-only benchmark: `Hilbert2D` is the current optimized
+2D magic-bits encoder over 16-bit axes, while the temporary `Hilbert3D` path is a
+compact Skilling-style 21-bit-per-axis prototype.
+
+The closest apples-to-apples index scenario is `PlanarXY`: the same X/Y boxes
+embedded into 3D with `z = 0`, so 2D and 3D produce the same average hit count.
+
+| Dataset | Dimension | Node size | Build ms | Search ms | Avg visited | Avg hits | KNN top-1 ms | KNN top-10 ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| PlanarXY | 2D | 8 | 0.316 | 0.027 | 56.94 | 2.88 | 0.122 | 0.252 |
+| PlanarXY | 3D | 8 | 1.091 | 0.043 | 68.62 | 2.88 | 0.233 | 0.338 |
+| PlanarXY | 2D | 16 | 0.316 | 0.027 | 81.62 | 2.88 | 0.117 | 0.283 |
+| PlanarXY | 3D | 16 | 1.267 | 0.071 | 100.50 | 2.88 | 0.549 | 0.595 |
+
+Current read: `node_size = 8` matters more for the 3D path. In the planar
+same-hit-count case, 3D build is about 3.5x slower, search is about 1.6x slower,
+and KNN top-10 is about 1.3x slower than 2D. True 3D datasets can look better or
+worse depending on how much the Z dimension prunes queries.
+
 ## How To Run
 
 The research tests are ignored by default:

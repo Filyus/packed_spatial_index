@@ -3,6 +3,8 @@
 //! The canonical flow is [`IndexBuilder`] -> [`Index`] -> [`Index::search`].
 //! With the `simd` feature, `IndexBuilder::finish_simd` builds `SimdIndex`,
 //! which has the same search API backed by a SoA layout and SIMD traversal.
+//! `Index` can also be serialized with [`Index::to_bytes`] and viewed without
+//! copying through [`IndexView`].
 //!
 //! # Quick Start
 //! ```
@@ -26,7 +28,10 @@ mod index;
 #[cfg(feature = "simd")]
 mod index_soa;
 
-pub use index::{BuildError, Index, IndexBuilder, Rect, SearchWorkspace, SortKey};
+pub use index::{
+    BuildError, Index, IndexBuilder, IndexView, LoadError, NeighborWorkspace, Point, Rect,
+    SearchWorkspace, SortKey,
+};
 #[cfg(feature = "simd")]
 pub use index_soa::SimdIndex;
 

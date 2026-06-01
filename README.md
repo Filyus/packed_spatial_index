@@ -39,8 +39,10 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - `Rect` is the public AABB type.
 - `IndexBuilder` builds either `Index` or, with `simd`, `SimdIndex`.
 - `Index` is the default read-only index.
+- `IndexView` is a zero-copy read-only view over bytes produced by `Index::to_bytes`.
 - `SimdIndex` is available with the `simd` feature and has the same search API.
 - `SearchWorkspace` reuses result and traversal buffers.
+- `Point` and `NeighborWorkspace` support nearest-neighbor searches.
 - `SortKey` selects the public build ordering curve: `Hilbert` or `Morton`.
 
 Search APIs:
@@ -49,6 +51,13 @@ Search APIs:
 - `search_into(rect, &mut results)` reuses a result buffer.
 - `search_with(rect, &mut workspace)` reuses result and traversal buffers.
 - `any(rect)`, `first(rect)`, and `visit(rect, visitor)` support early exit.
+
+Nearest-neighbor APIs:
+
+- `neighbors(point, max_results)` returns nearest item indices.
+- `neighbors_within(point, max_results, max_distance)` caps the search radius.
+- `neighbors_into(...)` and `neighbors_with(...)` reuse buffers.
+- `visit_neighbors(point, max_distance, visitor)` visits `(index, distance_squared)` pairs.
 
 ## Builder
 
@@ -81,6 +90,29 @@ builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
 let simd_index = builder.finish_simd()?;
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
+
+## Persistence
+
+`Index` can be serialized to a stable little-endian byte format and loaded back
+either as an owned index or as a zero-copy view:
+
+```rust
+use packed_spatial_index::{Index, IndexBuilder, IndexView, Rect};
+
+let mut builder = IndexBuilder::new(1);
+builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+let index = builder.finish()?;
+
+let bytes = index.to_bytes();
+let owned = Index::from_bytes(&bytes)?;
+let view = IndexView::from_bytes(&bytes)?;
+
+assert_eq!(owned.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+assert_eq!(view.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`SimdIndex` is not persisted as a separate SoA format yet.
 
 ## Features
 
@@ -128,4 +160,4 @@ See `REPORT.md` for the detailed research notes and benchmark tables.
 
 ## Status
 
-This crate is still marked `publish = false` while the public API and persistence story settle.
+This crate is still marked `publish = false` while publishing metadata and the remaining API surface settle.

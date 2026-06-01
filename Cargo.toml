@@ -1,6 +1,6 @@
 [package]
 name = "packed_spatial_index"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Packed static spatial index for 2D AABBs with Hilbert ordering, adaptive parallel builds, and SIMD queries."
 readme = "README.md"

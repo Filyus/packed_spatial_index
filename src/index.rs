@@ -19,7 +19,7 @@
 //! assert!(!hits.contains(&1));
 //! ```
 
-use std::{error::Error, fmt, ops::ControlFlow};
+use std::{collections::BinaryHeap, error::Error, fmt, ops::ControlFlow};
 
 use crate::hilbert;
 
@@ -27,6 +27,8 @@ use crate::hilbert;
 type Num = f64;
 
 const DEFAULT_NODE_SIZE: usize = 16;
+const FORMAT_MAGIC: &[u8; 8] = b"PSIDX001";
+const FORMAT_HEADER_LEN: usize = 40;
 
 /// Minimum index size at which `parallel(true)` enables rayon.
 #[cfg(feature = "parallel")]
@@ -66,6 +68,30 @@ impl Rect {
             & (self.min_y <= query.max_y)
             & (self.max_y >= query.min_y)
     }
+
+    #[inline]
+    fn distance_squared_to(&self, point: Point) -> f64 {
+        let dx = axis_distance(point.x, self.min_x, self.max_x);
+        let dy = axis_distance(point.y, self.min_y, self.max_y);
+        dx * dx + dy * dy
+    }
+}
+
+/// 2D point used by nearest-neighbor searches.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    /// X coordinate.
+    pub x: f64,
+    /// Y coordinate.
+    pub y: f64,
+}
+
+impl Point {
+    /// Create a point from `x, y`.
+    #[inline]
+    pub const fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
 }
 
 /// Reusable buffers for allocation-free repeated searches.
@@ -92,6 +118,71 @@ impl SearchWorkspace {
     /// Results from the latest `search_with` call.
     pub fn results(&self) -> &[usize] {
         &self.results
+    }
+}
+
+/// Reusable buffers for allocation-free repeated nearest-neighbor searches.
+#[derive(Debug, Default)]
+pub struct NeighborWorkspace {
+    pub(crate) results: Vec<usize>,
+    pub(crate) queue: BinaryHeap<NeighborState>,
+}
+
+impl NeighborWorkspace {
+    /// Create an empty workspace.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a workspace with preallocated result and priority-queue capacity.
+    pub fn with_capacity(results: usize, queue: usize) -> Self {
+        Self {
+            results: Vec::with_capacity(results),
+            queue: BinaryHeap::with_capacity(queue),
+        }
+    }
+
+    /// Results from the latest `neighbors_with` call.
+    pub fn results(&self) -> &[usize] {
+        &self.results
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NeighborState {
+    pub(crate) index: usize,
+    pub(crate) is_leaf: bool,
+    pub(crate) dist: f64,
+}
+
+impl NeighborState {
+    #[inline]
+    pub(crate) fn new(index: usize, is_leaf: bool, dist: f64) -> Self {
+        Self {
+            index,
+            is_leaf,
+            dist,
+        }
+    }
+}
+
+impl Eq for NeighborState {}
+
+impl Ord for NeighborState {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .dist
+            .total_cmp(&self.dist)
+            .then_with(|| self.is_leaf.cmp(&other.is_leaf))
+            .then_with(|| other.index.cmp(&self.index))
+    }
+}
+
+impl PartialOrd for NeighborState {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -200,6 +291,54 @@ impl fmt::Display for BuildError {
 }
 
 impl Error for BuildError {}
+
+/// Error returned when loading an index from bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadError {
+    /// The buffer does not start with the expected `PSIDX001` magic/version marker.
+    BadMagic,
+    /// The buffer uses a newer or otherwise unsupported format version.
+    UnsupportedVersion,
+    /// The buffer ended before a complete header or section could be read.
+    Truncated,
+    /// The buffer length does not match the length declared by the header.
+    LengthMismatch {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        actual: usize,
+    },
+    /// The stored node size is outside the supported range.
+    InvalidNodeSize {
+        /// Stored node size.
+        node_size: usize,
+    },
+    /// A stored integer does not fit this platform or a byte-size calculation overflowed.
+    IntegerOverflow,
+    /// The level bounds or child pointers do not describe a valid packed tree.
+    InvalidTree,
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LoadError::BadMagic => write!(f, "buffer is not a packed_spatial_index index"),
+            LoadError::UnsupportedVersion => write!(f, "unsupported packed_spatial_index format"),
+            LoadError::Truncated => write!(f, "buffer is truncated"),
+            LoadError::LengthMismatch { expected, actual } => write!(
+                f,
+                "buffer length mismatch (expected {expected} bytes, got {actual})"
+            ),
+            LoadError::InvalidNodeSize { node_size } => {
+                write!(f, "invalid node size in buffer ({node_size})")
+            }
+            LoadError::IntegerOverflow => write!(f, "buffer integer value is too large"),
+            LoadError::InvalidTree => write!(f, "buffer does not contain a valid packed tree"),
+        }
+    }
+}
+
+impl Error for LoadError {}
 
 /// Builder for [`Index`] and, with the `simd` feature, `SimdIndex`.
 pub struct IndexBuilder {
@@ -454,6 +593,60 @@ impl Index {
         self.node_size
     }
 
+    /// Serialize this index into the stable little-endian `PSIDX001` format.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let level_count = self.level_bounds.len();
+        let num_nodes = self.boxes.len();
+        let len = serialized_len(level_count, num_nodes).expect("serialized index is too large");
+        let mut bytes = Vec::with_capacity(len);
+        bytes.extend_from_slice(FORMAT_MAGIC);
+        push_u64(&mut bytes, self.node_size as u64);
+        push_u64(&mut bytes, self.num_items as u64);
+        push_u64(&mut bytes, num_nodes as u64);
+        push_u64(&mut bytes, level_count as u64);
+        for &bound in &self.level_bounds {
+            push_u64(&mut bytes, bound as u64);
+        }
+        for b in &self.boxes {
+            push_f64(&mut bytes, b.min_x);
+            push_f64(&mut bytes, b.min_y);
+            push_f64(&mut bytes, b.max_x);
+            push_f64(&mut bytes, b.max_y);
+        }
+        for &index in &self.indices {
+            push_u64(&mut bytes, index as u64);
+        }
+        bytes
+    }
+
+    /// Load an owned index from bytes previously produced by [`Index::to_bytes`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
+        let view = IndexView::from_bytes(bytes)?;
+
+        let mut level_bounds = Vec::with_capacity(view.level_count);
+        for i in 0..view.level_count {
+            level_bounds.push(view.level_bound(i)?);
+        }
+
+        let mut boxes = Vec::with_capacity(view.num_nodes);
+        for i in 0..view.num_nodes {
+            boxes.push(view.box_at(i)?);
+        }
+
+        let mut indices = Vec::with_capacity(view.num_nodes);
+        for i in 0..view.num_nodes {
+            indices.push(view.index_at(i)?);
+        }
+
+        Ok(Self {
+            node_size: view.node_size,
+            num_items: view.num_items,
+            level_bounds,
+            boxes,
+            indices,
+        })
+    }
+
     /// Return the indices of all items whose rectangles intersect `rect`.
     pub fn search(&self, rect: Rect) -> Vec<usize> {
         let mut results = Vec::new();
@@ -497,6 +690,91 @@ impl Index {
         }
     }
 
+    /// Return up to `max_results` item indices nearest to `point`.
+    pub fn neighbors(&self, point: Point, max_results: usize) -> Vec<usize> {
+        self.neighbors_within(point, max_results, f64::INFINITY)
+    }
+
+    /// Return up to `max_results` item indices within `max_distance` of `point`.
+    pub fn neighbors_within(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_into(point, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// Nearest-neighbor search with a reusable result buffer.
+    pub fn neighbors_into(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        let mut queue = BinaryHeap::with_capacity(16);
+        results.clear();
+        if max_results == 0 {
+            return;
+        }
+        let mut visitor = |index, _dist| {
+            results.push(index);
+            if results.len() == max_results {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let _ = self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor);
+    }
+
+    /// Nearest-neighbor search with reusable result and priority-queue buffers.
+    pub fn neighbors_with<'a>(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+        workspace: &'a mut NeighborWorkspace,
+    ) -> &'a [usize] {
+        workspace.results.clear();
+        if max_results == 0 {
+            workspace.queue.clear();
+            return &workspace.results;
+        }
+        let mut visitor = |index, _dist| {
+            workspace.results.push(index);
+            if workspace.results.len() == max_results {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let _ = self.visit_neighbors_with_queue(
+            point,
+            max_distance,
+            &mut workspace.queue,
+            &mut visitor,
+        );
+        &workspace.results
+    }
+
+    /// Visit items in nondecreasing squared-distance order from `point`.
+    pub fn visit_neighbors<B, F>(
+        &self,
+        point: Point,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(16);
+        self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
+    }
+
     /// Visit intersecting items without collecting a result `Vec`.
     ///
     /// The visitor receives item positions in the original insertion order. Return
@@ -508,6 +786,60 @@ impl Index {
     {
         let mut stack: Vec<usize> = Vec::with_capacity(16);
         self.visit_with_stack(rect, &mut stack, visitor)
+    }
+
+    fn visit_neighbors_with_queue<B, F>(
+        &self,
+        point: Point,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return ControlFlow::Continue(());
+        };
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.boxes.len() - 1;
+        loop {
+            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
+            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
+            let is_leaf = node_index < self.num_items;
+
+            for pos in node_index..end {
+                let b = self.boxes[pos];
+                let dist = b.distance_squared_to(point);
+                if dist > max_dist_sq {
+                    continue;
+                }
+                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
+            }
+
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist_sq {
+                    queue.clear();
+                    return ControlFlow::Continue(());
+                }
+                if state.is_leaf {
+                    visitor(state.index, state.dist)?;
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+
+            if !continue_search {
+                return ControlFlow::Continue(());
+            }
+        }
     }
 
     /// Same as [`visit`](Index::visit), but the traversal stack is reused by the caller.
@@ -696,6 +1028,576 @@ impl Index {
             }
         }
     }
+}
+
+/// Zero-copy read-only view over bytes produced by [`Index::to_bytes`].
+pub struct IndexView<'a> {
+    node_size: usize,
+    num_items: usize,
+    num_nodes: usize,
+    level_count: usize,
+    level_bounds: &'a [u8],
+    boxes: &'a [u8],
+    indices: &'a [u8],
+}
+
+impl<'a> IndexView<'a> {
+    /// Load a zero-copy index view from bytes previously produced by [`Index::to_bytes`].
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
+        let parsed = parse_index_bytes(bytes)?;
+        Ok(Self {
+            node_size: parsed.node_size,
+            num_items: parsed.num_items,
+            num_nodes: parsed.num_nodes,
+            level_count: parsed.level_count,
+            level_bounds: parsed.level_bounds,
+            boxes: parsed.boxes,
+            indices: parsed.indices,
+        })
+    }
+
+    /// Return the number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.num_items
+    }
+
+    /// Return the packed node size.
+    pub fn node_size(&self) -> usize {
+        self.node_size
+    }
+
+    /// Return the indices of all items whose rectangles intersect `rect`.
+    pub fn search(&self, rect: Rect) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.search_into(rect, &mut results);
+        results
+    }
+
+    /// Return the indices of all items intersecting raw bounds.
+    pub fn search_bounds(&self, min_x: Num, min_y: Num, max_x: Num, max_y: Num) -> Vec<usize> {
+        self.search(Rect::new(min_x, min_y, max_x, max_y))
+    }
+
+    /// Search with a reusable result buffer.
+    pub fn search_into(&self, rect: Rect, results: &mut Vec<usize>) {
+        let mut stack: Vec<usize> = Vec::with_capacity(16);
+        self.search_into_stack(rect, results, &mut stack);
+    }
+
+    /// Search with reusable result and traversal buffers.
+    pub fn search_with<'b>(&self, rect: Rect, workspace: &'b mut SearchWorkspace) -> &'b [usize] {
+        self.search_into_stack(rect, &mut workspace.results, &mut workspace.stack);
+        &workspace.results
+    }
+
+    /// Return `true` if at least one item intersects `rect`.
+    pub fn any(&self, rect: Rect) -> bool {
+        self.visit(rect, |_| ControlFlow::Break(())).is_break()
+    }
+
+    /// Return one intersecting item, if any.
+    pub fn first(&self, rect: Rect) -> Option<usize> {
+        match self.visit(rect, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// Return up to `max_results` item indices nearest to `point`.
+    pub fn neighbors(&self, point: Point, max_results: usize) -> Vec<usize> {
+        self.neighbors_within(point, max_results, f64::INFINITY)
+    }
+
+    /// Return up to `max_results` item indices within `max_distance` of `point`.
+    pub fn neighbors_within(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_into(point, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// Nearest-neighbor search with a reusable result buffer.
+    pub fn neighbors_into(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        let mut queue = BinaryHeap::with_capacity(16);
+        results.clear();
+        if max_results == 0 {
+            return;
+        }
+        let mut visitor = |index, _dist| {
+            results.push(index);
+            if results.len() == max_results {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let _ = self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor);
+    }
+
+    /// Nearest-neighbor search with reusable result and priority-queue buffers.
+    pub fn neighbors_with<'b>(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+        workspace: &'b mut NeighborWorkspace,
+    ) -> &'b [usize] {
+        workspace.results.clear();
+        if max_results == 0 {
+            workspace.queue.clear();
+            return &workspace.results;
+        }
+        let mut visitor = |index, _dist| {
+            workspace.results.push(index);
+            if workspace.results.len() == max_results {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let _ = self.visit_neighbors_with_queue(
+            point,
+            max_distance,
+            &mut workspace.queue,
+            &mut visitor,
+        );
+        &workspace.results
+    }
+
+    /// Visit items in nondecreasing squared-distance order from `point`.
+    pub fn visit_neighbors<B, F>(
+        &self,
+        point: Point,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(16);
+        self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
+    }
+
+    /// Visit intersecting items without collecting a result `Vec`.
+    pub fn visit<B, F>(&self, rect: Rect, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(16);
+        self.visit_with_stack(rect, &mut stack, visitor)
+    }
+
+    #[doc(hidden)]
+    pub fn search_into_stack(&self, rect: Rect, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        results.clear();
+        stack.clear();
+        if self.num_items == 0 {
+            return;
+        }
+
+        let mut node_index = self.num_nodes - 1;
+        let mut level = self.level_count - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bound(level).unwrap());
+            let is_leaf = node_index < self.num_items;
+            for pos in node_index..end {
+                let b = self.box_at(pos).unwrap();
+                if !b.overlaps(rect) {
+                    continue;
+                }
+                let index = self.index_at(pos).unwrap();
+                if is_leaf {
+                    results.push(index);
+                } else {
+                    stack.push(index);
+                    stack.push(level - 1);
+                }
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return;
+            }
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn visit_with_stack<B, F>(
+        &self,
+        rect: Rect,
+        stack: &mut Vec<usize>,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.num_nodes - 1;
+        let mut level = self.level_count - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bound(level).unwrap());
+            let is_leaf = node_index < self.num_items;
+            for pos in node_index..end {
+                let b = self.box_at(pos).unwrap();
+                if !b.overlaps(rect) {
+                    continue;
+                }
+                let index = self.index_at(pos).unwrap();
+                if is_leaf {
+                    visitor(index)?;
+                } else {
+                    stack.push(index);
+                    stack.push(level - 1);
+                }
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    fn visit_neighbors_with_queue<B, F>(
+        &self,
+        point: Point,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return ControlFlow::Continue(());
+        };
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.num_nodes - 1;
+        loop {
+            let upper_bound_level = self.upper_bound_level(node_index);
+            let end =
+                (node_index + self.node_size).min(self.level_bound(upper_bound_level).unwrap());
+            let is_leaf = node_index < self.num_items;
+
+            for pos in node_index..end {
+                let b = self.box_at(pos).unwrap();
+                let dist = b.distance_squared_to(point);
+                if dist > max_dist_sq {
+                    continue;
+                }
+                queue.push(NeighborState::new(
+                    self.index_at(pos).unwrap(),
+                    is_leaf,
+                    dist,
+                ));
+            }
+
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist_sq {
+                    queue.clear();
+                    return ControlFlow::Continue(());
+                }
+                if state.is_leaf {
+                    visitor(state.index, state.dist)?;
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+
+            if !continue_search {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    fn upper_bound_level(&self, node_index: usize) -> usize {
+        let mut lo = 0usize;
+        let mut hi = self.level_count - 1;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.level_bound(mid).unwrap() > node_index {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        lo
+    }
+
+    fn level_bound(&self, index: usize) -> Result<usize, LoadError> {
+        read_u64_at(self.level_bounds, index * 8).and_then(usize_from_u64)
+    }
+
+    fn box_at(&self, index: usize) -> Result<Rect, LoadError> {
+        let offset = index.checked_mul(32).ok_or(LoadError::IntegerOverflow)?;
+        Ok(Rect::new(
+            read_f64_at(self.boxes, offset)?,
+            read_f64_at(self.boxes, offset + 8)?,
+            read_f64_at(self.boxes, offset + 16)?,
+            read_f64_at(self.boxes, offset + 24)?,
+        ))
+    }
+
+    fn index_at(&self, index: usize) -> Result<usize, LoadError> {
+        read_u64_at(self.indices, index * 8).and_then(usize_from_u64)
+    }
+}
+
+struct ParsedIndexBytes<'a> {
+    node_size: usize,
+    num_items: usize,
+    num_nodes: usize,
+    level_count: usize,
+    level_bounds: &'a [u8],
+    boxes: &'a [u8],
+    indices: &'a [u8],
+}
+
+fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    if bytes.len() < FORMAT_MAGIC.len() {
+        return Err(LoadError::Truncated);
+    }
+    if &bytes[..FORMAT_MAGIC.len()] != FORMAT_MAGIC {
+        return if bytes.starts_with(b"PSIDX") {
+            Err(LoadError::UnsupportedVersion)
+        } else {
+            Err(LoadError::BadMagic)
+        };
+    }
+    if bytes.len() < FORMAT_HEADER_LEN {
+        return Err(LoadError::Truncated);
+    }
+
+    let node_size = read_u64_at(bytes, 8).and_then(usize_from_u64)?;
+    let num_items = read_u64_at(bytes, 16).and_then(usize_from_u64)?;
+    let num_nodes = read_u64_at(bytes, 24).and_then(usize_from_u64)?;
+    let level_count = read_u64_at(bytes, 32).and_then(usize_from_u64)?;
+
+    if !(2..=65535).contains(&node_size) {
+        return Err(LoadError::InvalidNodeSize { node_size });
+    }
+
+    let (expected_nodes, expected_levels) = expected_tree_shape(num_items, node_size)?;
+    if num_nodes != expected_nodes || level_count != expected_levels {
+        return Err(LoadError::InvalidTree);
+    }
+
+    let expected_len = serialized_len(level_count, num_nodes)?;
+    if bytes.len() < expected_len {
+        return Err(LoadError::Truncated);
+    }
+    if bytes.len() != expected_len {
+        return Err(LoadError::LengthMismatch {
+            expected: expected_len,
+            actual: bytes.len(),
+        });
+    }
+
+    let level_bounds_len = level_count
+        .checked_mul(8)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let boxes_len = num_nodes
+        .checked_mul(32)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let indices_len = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
+
+    let level_start = FORMAT_HEADER_LEN;
+    let boxes_start = level_start
+        .checked_add(level_bounds_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let indices_start = boxes_start
+        .checked_add(boxes_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let end = indices_start
+        .checked_add(indices_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+
+    let parsed = ParsedIndexBytes {
+        node_size,
+        num_items,
+        num_nodes,
+        level_count,
+        level_bounds: &bytes[level_start..boxes_start],
+        boxes: &bytes[boxes_start..indices_start],
+        indices: &bytes[indices_start..end],
+    };
+    validate_level_bounds(&parsed)?;
+    validate_indices(&parsed)?;
+    Ok(parsed)
+}
+
+fn validate_level_bounds(parsed: &ParsedIndexBytes<'_>) -> Result<(), LoadError> {
+    let mut n = parsed.num_items;
+    let mut running_total = n;
+    for level in 0..parsed.level_count {
+        let actual = read_u64_at(parsed.level_bounds, level * 8).and_then(usize_from_u64)?;
+        if actual != running_total {
+            return Err(LoadError::InvalidTree);
+        }
+        if level + 1 == parsed.level_count {
+            break;
+        }
+        if n == 0 {
+            return Err(LoadError::InvalidTree);
+        }
+        n = n.div_ceil(parsed.node_size);
+        running_total = running_total
+            .checked_add(n)
+            .ok_or(LoadError::IntegerOverflow)?;
+    }
+    if read_u64_at(parsed.level_bounds, (parsed.level_count - 1) * 8).and_then(usize_from_u64)?
+        != parsed.num_nodes
+    {
+        return Err(LoadError::InvalidTree);
+    }
+    Ok(())
+}
+
+fn validate_indices(parsed: &ParsedIndexBytes<'_>) -> Result<(), LoadError> {
+    for pos in 0..parsed.num_items {
+        let index = read_u64_at(parsed.indices, pos * 8).and_then(usize_from_u64)?;
+        if index >= parsed.num_items {
+            return Err(LoadError::InvalidTree);
+        }
+    }
+
+    for level in 1..parsed.level_count {
+        let level_start =
+            read_u64_at(parsed.level_bounds, (level - 1) * 8).and_then(usize_from_u64)?;
+        let level_end = read_u64_at(parsed.level_bounds, level * 8).and_then(usize_from_u64)?;
+        let child_level_start = if level == 1 {
+            0
+        } else {
+            read_u64_at(parsed.level_bounds, (level - 2) * 8).and_then(usize_from_u64)?
+        };
+        let child_level_end = level_start;
+
+        for pos in level_start..level_end {
+            let index = read_u64_at(parsed.indices, pos * 8).and_then(usize_from_u64)?;
+            if index < child_level_start || index >= child_level_end {
+                return Err(LoadError::InvalidTree);
+            }
+            if (index - child_level_start) % parsed.node_size != 0 {
+                return Err(LoadError::InvalidTree);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn expected_tree_shape(num_items: usize, node_size: usize) -> Result<(usize, usize), LoadError> {
+    let mut num_nodes = num_items;
+    let mut levels = 1usize;
+    let mut n = num_items;
+    if num_items > 0 {
+        loop {
+            n = n.div_ceil(node_size);
+            num_nodes = num_nodes.checked_add(n).ok_or(LoadError::IntegerOverflow)?;
+            levels = levels.checked_add(1).ok_or(LoadError::IntegerOverflow)?;
+            if n == 1 {
+                break;
+            }
+        }
+    }
+    Ok((num_nodes, levels))
+}
+
+fn serialized_len(level_count: usize, num_nodes: usize) -> Result<usize, LoadError> {
+    let levels = level_count
+        .checked_mul(8)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let boxes = num_nodes
+        .checked_mul(32)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let indices = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
+    FORMAT_HEADER_LEN
+        .checked_add(levels)
+        .and_then(|len| len.checked_add(boxes))
+        .and_then(|len| len.checked_add(indices))
+        .ok_or(LoadError::IntegerOverflow)
+}
+
+fn push_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_f64(bytes: &mut Vec<u8>, value: f64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn read_u64_at(bytes: &[u8], offset: usize) -> Result<u64, LoadError> {
+    let end = offset.checked_add(8).ok_or(LoadError::IntegerOverflow)?;
+    let slice = bytes.get(offset..end).ok_or(LoadError::Truncated)?;
+    Ok(u64::from_le_bytes(slice.try_into().unwrap()))
+}
+
+fn read_f64_at(bytes: &[u8], offset: usize) -> Result<f64, LoadError> {
+    let end = offset.checked_add(8).ok_or(LoadError::IntegerOverflow)?;
+    let slice = bytes.get(offset..end).ok_or(LoadError::Truncated)?;
+    Ok(f64::from_le_bytes(slice.try_into().unwrap()))
+}
+
+fn usize_from_u64(value: u64) -> Result<usize, LoadError> {
+    usize::try_from(value).map_err(|_| LoadError::IntegerOverflow)
+}
+
+#[inline]
+fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
+    if point < min {
+        min - point
+    } else if point > max {
+        point - max
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn max_distance_squared(max_distance: f64) -> Option<f64> {
+    if max_distance.is_nan() || max_distance.is_sign_negative() {
+        None
+    } else {
+        Some(max_distance * max_distance)
+    }
+}
+
+pub(crate) fn upper_bound_level(level_bounds: &[usize], node_index: usize) -> usize {
+    let mut lo = 0usize;
+    let mut hi = level_bounds.len() - 1;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if level_bounds[mid] > node_index {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
 }
 
 fn encode_sort_serial<F>(items: &[Rect], encode: &F, radix: bool) -> Vec<(u32, u32)>

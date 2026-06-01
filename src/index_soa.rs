@@ -4,12 +4,13 @@
 //! `max_y[]`). The tree is built exactly like the AoS version; only the layout
 //! and search implementation differ.
 
-use std::ops::ControlFlow;
+use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use wide::{f64x4, CmpGe, CmpLe};
 
 use crate::index::{
-    hilbert_coord, prefetch_read, radix_sort_pairs, ExperimentalSortKey, Rect, SearchWorkspace,
+    hilbert_coord, max_distance_squared, prefetch_read, radix_sort_pairs, upper_bound_level,
+    ExperimentalSortKey, NeighborState, NeighborWorkspace, Point, Rect, SearchWorkspace,
 };
 
 type Num = f64;
@@ -254,6 +255,91 @@ impl SimdIndex {
         }
     }
 
+    /// Return up to `max_results` item indices nearest to `point`.
+    pub fn neighbors(&self, point: Point, max_results: usize) -> Vec<usize> {
+        self.neighbors_within(point, max_results, f64::INFINITY)
+    }
+
+    /// Return up to `max_results` item indices within `max_distance` of `point`.
+    pub fn neighbors_within(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_into(point, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// Nearest-neighbor search with a reusable result buffer.
+    pub fn neighbors_into(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        let mut queue = BinaryHeap::with_capacity(16);
+        results.clear();
+        if max_results == 0 {
+            return;
+        }
+        let mut visitor = |index, _dist| {
+            results.push(index);
+            if results.len() == max_results {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let _ = self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor);
+    }
+
+    /// Nearest-neighbor search with reusable result and priority-queue buffers.
+    pub fn neighbors_with<'a>(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+        workspace: &'a mut NeighborWorkspace,
+    ) -> &'a [usize] {
+        workspace.results.clear();
+        if max_results == 0 {
+            workspace.queue.clear();
+            return &workspace.results;
+        }
+        let mut visitor = |index, _dist| {
+            workspace.results.push(index);
+            if workspace.results.len() == max_results {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let _ = self.visit_neighbors_with_queue(
+            point,
+            max_distance,
+            &mut workspace.queue,
+            &mut visitor,
+        );
+        &workspace.results
+    }
+
+    /// Visit items in nondecreasing squared-distance order from `point`.
+    pub fn visit_neighbors<B, F>(
+        &self,
+        point: Point,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(16);
+        self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
+    }
+
     /// Visit intersecting items without collecting a result `Vec`.
     pub fn visit<B, F>(&self, rect: Rect, visitor: F) -> ControlFlow<B>
     where
@@ -261,6 +347,66 @@ impl SimdIndex {
     {
         let mut stack = Vec::with_capacity(16);
         self.visit_simd(rect, &mut stack, visitor)
+    }
+
+    fn visit_neighbors_with_queue<B, F>(
+        &self,
+        point: Point,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return ControlFlow::Continue(());
+        };
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.min_xs.len() - 1;
+        loop {
+            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
+            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
+            let is_leaf = node_index < self.num_items;
+
+            for pos in node_index..end {
+                let dist = self.distance_squared_to(pos, point);
+                if dist > max_dist_sq {
+                    continue;
+                }
+                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
+            }
+
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist_sq {
+                    queue.clear();
+                    return ControlFlow::Continue(());
+                }
+                if state.is_leaf {
+                    visitor(state.index, state.dist)?;
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+
+            if !continue_search {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    #[inline]
+    fn distance_squared_to(&self, pos: usize, point: Point) -> f64 {
+        let dx = axis_distance(point.x, self.min_xs[pos], self.max_xs[pos]);
+        let dy = axis_distance(point.y, self.min_ys[pos], self.max_ys[pos]);
+        dx * dx + dy * dy
     }
 
     /// Same as [`visit`](SimdIndex::visit), but the traversal stack is reused by the caller.
@@ -580,6 +726,17 @@ impl SimdIndex {
                 return;
             }
         }
+    }
+}
+
+#[inline]
+fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
+    if point < min {
+        min - point
+    } else if point > max {
+        point - max
+    } else {
+        0.0
     }
 }
 

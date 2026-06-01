@@ -6,7 +6,10 @@
 use std::ops::ControlFlow;
 
 use packed_spatial_index::experimental::{ExperimentalSortKey, ENCODERS};
-use packed_spatial_index::{BuildError, IndexBuilder, Rect, SearchWorkspace, SortKey};
+use packed_spatial_index::{
+    BuildError, Index, IndexBuilder, IndexView, LoadError, NeighborWorkspace, Point, Rect,
+    SearchWorkspace, SortKey,
+};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use static_aabb2d_index::{hilbert_xy_to_index, StaticAABB2DIndexBuilder};
@@ -25,6 +28,55 @@ fn random_boxes(rng: &mut StdRng, n: usize) -> Vec<[f64; 4]> {
         boxes.push([cx, cy, cx + w, cy + h]);
     }
     boxes
+}
+
+fn build_index(boxes: &[[f64; 4]], node_size: usize) -> Index {
+    let mut builder = IndexBuilder::new(boxes.len()).node_size(node_size);
+    for b in boxes {
+        builder.add_bounds(b[0], b[1], b[2], b[3]);
+    }
+    builder.finish().unwrap()
+}
+
+fn distance_squared(point: Point, rect: [f64; 4]) -> f64 {
+    fn axis(point: f64, min: f64, max: f64) -> f64 {
+        if point < min {
+            min - point
+        } else if point > max {
+            point - max
+        } else {
+            0.0
+        }
+    }
+
+    let dx = axis(point.x, rect[0], rect[2]);
+    let dy = axis(point.y, rect[1], rect[3]);
+    dx * dx + dy * dy
+}
+
+fn brute_force_neighbors(
+    boxes: &[[f64; 4]],
+    point: Point,
+    max_results: usize,
+    max_distance: f64,
+) -> Vec<usize> {
+    if max_results == 0 || max_distance.is_nan() || max_distance.is_sign_negative() {
+        return Vec::new();
+    }
+    let max_dist_sq = max_distance * max_distance;
+    let mut pairs: Vec<(usize, f64)> = boxes
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, b)| (index, distance_squared(point, b)))
+        .filter(|&(_, dist)| dist <= max_dist_sq)
+        .collect();
+    pairs.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    pairs
+        .into_iter()
+        .take(max_results)
+        .map(|(index, _)| index)
+        .collect()
 }
 
 #[test]
@@ -290,6 +342,229 @@ fn search_apis_agree() {
 }
 
 #[test]
+fn persistence_round_trip_and_view_agree() {
+    let mut rng = StdRng::seed_from_u64(0x5150);
+    let boxes = random_boxes(&mut rng, 500);
+    let index = build_index(&boxes, 8);
+
+    let bytes = index.to_bytes();
+    let loaded = Index::from_bytes(&bytes).unwrap();
+    let view = IndexView::from_bytes(&bytes).unwrap();
+
+    assert_eq!(loaded.num_items(), index.num_items());
+    assert_eq!(view.num_items(), index.num_items());
+    assert_eq!(loaded.node_size(), index.node_size());
+    assert_eq!(view.node_size(), index.node_size());
+
+    for _ in 0..100 {
+        let qx: f64 = rng.gen_range(0.0..1000.0);
+        let qy: f64 = rng.gen_range(0.0..1000.0);
+        let query = Rect::new(qx, qy, qx + 40.0, qy + 40.0);
+
+        let mut expected = index.search(query);
+        let mut owned = loaded.search(query);
+        let mut borrowed = view.search(query);
+        expected.sort_unstable();
+        owned.sort_unstable();
+        borrowed.sort_unstable();
+        assert_eq!(expected, owned);
+        assert_eq!(expected, borrowed);
+
+        let point = Point::new(qx, qy);
+        assert_eq!(
+            index.neighbors_within(point, 12, 100.0),
+            loaded.neighbors_within(point, 12, 100.0)
+        );
+        assert_eq!(
+            index.neighbors_within(point, 12, 100.0),
+            view.neighbors_within(point, 12, 100.0)
+        );
+    }
+}
+
+#[test]
+fn persistence_handles_edge_shapes() {
+    let cases: Vec<Vec<[f64; 4]>> = vec![
+        Vec::new(),
+        vec![[0.0, 0.0, 1.0, 1.0]],
+        vec![
+            [0.0, 0.0, 1.0, 1.0],
+            [2.0, 2.0, 3.0, 3.0],
+            [4.0, 4.0, 5.0, 5.0],
+        ],
+        vec![
+            [10.0, 10.0, 10.0, 10.0],
+            [10.0, 10.0, 10.0, 10.0],
+            [10.0, 10.0, 10.0, 10.0],
+        ],
+    ];
+
+    for boxes in cases {
+        let index = build_index(&boxes, 16);
+        let bytes = index.to_bytes();
+        let loaded = Index::from_bytes(&bytes).unwrap();
+        let view = IndexView::from_bytes(&bytes).unwrap();
+        let query = Rect::new(-100.0, -100.0, 100.0, 100.0);
+        assert_eq!(index.search(query), loaded.search(query));
+        assert_eq!(index.search(query), view.search(query));
+        assert_eq!(
+            index.neighbors(Point::new(0.0, 0.0), 3),
+            loaded.neighbors(Point::new(0.0, 0.0), 3)
+        );
+        assert_eq!(
+            index.neighbors(Point::new(0.0, 0.0), 3),
+            view.neighbors(Point::new(0.0, 0.0), 3)
+        );
+    }
+}
+
+#[test]
+fn persistence_rejects_malformed_buffers() {
+    let boxes: Vec<[f64; 4]> = (0..40)
+        .map(|i| {
+            let x = i as f64;
+            [x, x, x + 0.5, x + 0.5]
+        })
+        .collect();
+    let bytes = build_index(&boxes, 4).to_bytes();
+
+    let mut bad_magic = bytes.clone();
+    bad_magic[0] = b'X';
+    assert!(matches!(
+        IndexView::from_bytes(&bad_magic),
+        Err(LoadError::BadMagic)
+    ));
+
+    let mut bad_version = bytes.clone();
+    bad_version[..8].copy_from_slice(b"PSIDX999");
+    assert!(matches!(
+        IndexView::from_bytes(&bad_version),
+        Err(LoadError::UnsupportedVersion)
+    ));
+
+    assert!(matches!(
+        IndexView::from_bytes(&bytes[..bytes.len() - 1]),
+        Err(LoadError::Truncated)
+    ));
+
+    let mut extra = bytes.clone();
+    extra.push(0);
+    assert!(matches!(
+        IndexView::from_bytes(&extra),
+        Err(LoadError::LengthMismatch { .. })
+    ));
+
+    let mut invalid_node_size = bytes.clone();
+    invalid_node_size[8..16].copy_from_slice(&1u64.to_le_bytes());
+    assert!(matches!(
+        IndexView::from_bytes(&invalid_node_size),
+        Err(LoadError::InvalidNodeSize { node_size: 1 })
+    ));
+
+    let mut invalid_level_bounds = bytes.clone();
+    invalid_level_bounds[40..48].copy_from_slice(&999u64.to_le_bytes());
+    assert!(matches!(
+        IndexView::from_bytes(&invalid_level_bounds),
+        Err(LoadError::InvalidTree)
+    ));
+
+    let num_nodes = u64::from_le_bytes(bytes[24..32].try_into().unwrap()) as usize;
+    let level_count = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
+    let indices_offset = 40 + level_count * 8 + num_nodes * 32;
+
+    let mut invalid_leaf_index = bytes.clone();
+    invalid_leaf_index[indices_offset..indices_offset + 8].copy_from_slice(&999u64.to_le_bytes());
+    assert!(matches!(
+        IndexView::from_bytes(&invalid_leaf_index),
+        Err(LoadError::InvalidTree)
+    ));
+
+    let mut invalid_child_pointer = bytes.clone();
+    let last_index_offset = indices_offset + (num_nodes - 1) * 8;
+    invalid_child_pointer[last_index_offset..last_index_offset + 8]
+        .copy_from_slice(&999u64.to_le_bytes());
+    assert!(matches!(
+        IndexView::from_bytes(&invalid_child_pointer),
+        Err(LoadError::InvalidTree)
+    ));
+}
+
+#[test]
+fn neighbors_match_brute_force() {
+    let mut rng = StdRng::seed_from_u64(0xAABB);
+    let boxes = random_boxes(&mut rng, 1_000);
+    let index = build_index(&boxes, 16);
+
+    for _ in 0..200 {
+        let point = Point::new(rng.gen_range(0.0..1000.0), rng.gen_range(0.0..1000.0));
+        for &(limit, max_distance) in &[
+            (0, f64::INFINITY),
+            (1, f64::INFINITY),
+            (8, 80.0),
+            (32, 250.0),
+        ] {
+            assert_eq!(
+                index.neighbors_within(point, limit, max_distance),
+                brute_force_neighbors(&boxes, point, limit, max_distance)
+            );
+        }
+    }
+}
+
+#[test]
+fn neighbor_apis_agree_and_support_early_exit() {
+    let boxes = [
+        [0.0, 0.0, 2.0, 2.0],
+        [5.0, 0.0, 6.0, 1.0],
+        [10.0, 0.0, 11.0, 1.0],
+        [-5.0, 0.0, -4.0, 1.0],
+    ];
+    let index = build_index(&boxes, 2);
+    let point = Point::new(1.0, 1.0);
+    let expected = brute_force_neighbors(&boxes, point, 3, f64::INFINITY);
+    assert_eq!(expected[0], 0);
+    assert_eq!(index.neighbors(point, 3), expected);
+    assert_eq!(index.neighbors_within(point, 4, 3.9), vec![0]);
+    assert!(index.neighbors(point, 0).is_empty());
+    assert!(index.neighbors_within(point, 3, -1.0).is_empty());
+
+    let mut out = vec![usize::MAX];
+    index.neighbors_into(point, 3, f64::INFINITY, &mut out);
+    assert_eq!(out, expected);
+
+    let mut workspace = NeighborWorkspace::with_capacity(8, 8);
+    assert_eq!(
+        index.neighbors_with(point, 3, f64::INFINITY, &mut workspace),
+        expected.as_slice()
+    );
+    assert_eq!(workspace.results(), expected.as_slice());
+
+    let mut visited = Vec::new();
+    let completed: ControlFlow<()> = index.visit_neighbors(point, f64::INFINITY, |idx, dist| {
+        visited.push((idx, dist));
+        ControlFlow::Continue(())
+    });
+    assert!(completed.is_continue());
+    assert_eq!(
+        visited
+            .iter()
+            .map(|&(idx, _)| idx)
+            .take(3)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(visited.windows(2).all(|pair| pair[0].1 <= pair[1].1));
+
+    let mut calls = 0usize;
+    let stopped: ControlFlow<usize> = index.visit_neighbors(point, f64::INFINITY, |idx, _| {
+        calls += 1;
+        ControlFlow::Break(idx)
+    });
+    assert_eq!(calls, 1);
+    assert_eq!(stopped, ControlFlow::Break(0));
+}
+
+#[test]
 fn hidden_stack_paths_reuse_and_clear_buffers() {
     let mut builder = IndexBuilder::new(2);
     builder.add_bounds(0.0, 0.0, 1.0, 1.0);
@@ -436,6 +711,41 @@ fn simd_search_apis_agree_with_aos() {
     assert!(completed.is_continue());
     visited.sort_unstable();
     assert_eq!(expected, visited);
+}
+
+#[cfg(feature = "simd")]
+#[test]
+fn simd_neighbors_match_aos() {
+    let mut rng = StdRng::seed_from_u64(0x51D);
+    let boxes = random_boxes(&mut rng, 1_000);
+
+    let mut aos_builder = IndexBuilder::new(boxes.len()).node_size(16);
+    let mut simd_builder = IndexBuilder::new(boxes.len()).node_size(16);
+    for b in &boxes {
+        aos_builder.add_bounds(b[0], b[1], b[2], b[3]);
+        simd_builder.add_bounds(b[0], b[1], b[2], b[3]);
+    }
+    let aos = aos_builder.finish().unwrap();
+    let simd = simd_builder.finish_simd().unwrap();
+
+    for _ in 0..100 {
+        let point = Point::new(rng.gen_range(0.0..1000.0), rng.gen_range(0.0..1000.0));
+        assert_eq!(simd.neighbors(point, 16), aos.neighbors(point, 16));
+        assert_eq!(
+            simd.neighbors_within(point, 16, 100.0),
+            aos.neighbors_within(point, 16, 100.0)
+        );
+
+        let mut out = Vec::new();
+        simd.neighbors_into(point, 8, f64::INFINITY, &mut out);
+        assert_eq!(out, aos.neighbors(point, 8));
+
+        let mut workspace = NeighborWorkspace::new();
+        assert_eq!(
+            simd.neighbors_with(point, 8, f64::INFINITY, &mut workspace),
+            aos.neighbors(point, 8).as_slice()
+        );
+    }
 }
 
 #[cfg(feature = "simd")]

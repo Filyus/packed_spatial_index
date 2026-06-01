@@ -8,15 +8,13 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use wide::{CmpGe, CmpLe, f64x4};
 
-#[cfg(feature = "parallel")]
-use crate::sort::encode_sort_parallel;
 use crate::{
     builder::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Bounds2D, Point2D},
     index::{SearchWorkspace, prefetch_read, upper_bound_level},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
-    sort::{encode_sort_serial, hilbert_coord},
+    sort::{SortKeyContext, encode_sort_by_key},
 };
 
 type Num = f64;
@@ -73,25 +71,20 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> Sim
     let scaled_width = u16::MAX as f64 / (e_max_x - e_min_x);
     let scaled_height = u16::MAX as f64 / (e_max_y - e_min_y);
 
-    let sort_key = config.sort_key;
-    let encode = |i: usize, b: &Bounds2D| -> (u32, u32) {
-        let hx = hilbert_coord(scaled_width, b.min_x, b.max_x, e_min_x);
-        let hy = hilbert_coord(scaled_height, b.min_y, b.max_y, e_min_y);
-        (sort_key.encode(hx, hy), i as u32)
-    };
-
     #[cfg(feature = "parallel")]
     let use_parallel = config.parallel && num_items >= config.parallel_min_items;
 
-    #[cfg(feature = "parallel")]
-    let order: Vec<(u32, u32)> = if use_parallel {
-        encode_sort_parallel(&boxes, &encode)
-    } else {
-        encode_sort_serial(&boxes, &encode, config.radix, config.radix_bits)
+    let context = SortKeyContext {
+        scaled_width,
+        scaled_height,
+        min_x: e_min_x,
+        min_y: e_min_y,
+        radix: config.radix,
+        radix_bits: config.radix_bits,
+        #[cfg(feature = "parallel")]
+        use_parallel,
     };
-    #[cfg(not(feature = "parallel"))]
-    let order: Vec<(u32, u32)> =
-        encode_sort_serial(&boxes, &encode, config.radix, config.radix_bits);
+    let order = encode_sort_by_key(&boxes, config.sort_key, context);
 
     for (slot, &(_, orig)) in order.iter().enumerate() {
         let b = boxes[orig as usize];

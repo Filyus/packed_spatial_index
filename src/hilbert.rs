@@ -9,8 +9,6 @@
 //!  * [`loop_rotation`] — the classic iterative xy2d algorithm with quadrant rotations;
 //!  * [`lut`]           — a table-driven finite-state machine (4 states, 2 bits per step).
 
-use std::sync::OnceLock;
-
 /// Encoder signature: 2D coordinates (16 bits each) -> Hilbert-curve value.
 pub type HilbertFn = fn(u16, u16) -> u32;
 
@@ -168,16 +166,18 @@ struct LutTables {
     next: [[u8; 256]; 4],
 }
 
-static LUT: OnceLock<LutTables> = OnceLock::new();
+static LUT: LutTables = build_lut();
 
-fn build_lut() -> LutTables {
+const fn build_lut() -> LutTables {
     // 1) small 1-level automaton (derived analytically from quadrant and rotation rules)
     let mut f_emit = [[0u8; 4]; 4];
     let mut f_next = [[0u8; 4]; 4];
-    for state in 0usize..4 {
+    let mut state = 0usize;
+    while state < 4 {
         let swap = (state & 1) as u8;
         let flip = ((state >> 1) & 1) as u8;
-        for q in 0usize..4 {
+        let mut q = 0usize;
+        while q < 4 {
             let mut a = ((q >> 1) & 1) as u8;
             let mut b = (q & 1) as u8;
             if flip == 1 {
@@ -185,7 +185,9 @@ fn build_lut() -> LutTables {
                 b ^= 1;
             }
             if swap == 1 {
-                std::mem::swap(&mut a, &mut b);
+                let tmp = a;
+                a = b;
+                b = tmp;
             }
             let (rx, ry) = (a as u32, b as u32);
             f_emit[state][q] = ((3 * rx) ^ ry) as u8;
@@ -198,19 +200,25 @@ fn build_lut() -> LutTables {
                 (1u8, 1u8) // reflect + swap
             };
             f_next[state][q] = (rot_swap ^ swap) | ((rot_flip ^ flip) << 1);
+            q += 1;
         }
+        state += 1;
     }
 
     // 2) compose 4 levels -> "one nibble per step" table
     let mut emit = [[0u8; 256]; 4];
     let mut next = [[0u8; 256]; 4];
-    for s in 0usize..4 {
-        for idx in 0usize..256 {
+    let mut s = 0usize;
+    while s < 4 {
+        let mut idx = 0usize;
+        while idx < 256 {
             let xnib = (idx >> 4) & 0xF;
             let ynib = idx & 0xF;
             let mut st = s;
             let mut out = 0u32;
-            for bit in (0..4).rev() {
+            let mut bit = 4usize;
+            while bit > 0 {
+                bit -= 1;
                 let a = (xnib >> bit) & 1;
                 let b = (ynib >> bit) & 1;
                 let q = (a << 1) | b;
@@ -219,7 +227,9 @@ fn build_lut() -> LutTables {
             }
             emit[s][idx] = out as u8;
             next[s][idx] = st as u8;
+            idx += 1;
         }
+        s += 1;
     }
 
     LutTables { emit, next }
@@ -230,7 +240,6 @@ fn build_lut() -> LutTables {
 /// in L1). Only 4 iterations versus 16 in the fine-grained version.
 #[inline]
 pub fn lut(x: u16, y: u16) -> u32 {
-    let t = LUT.get_or_init(build_lut);
     let x = x as u32;
     let y = y as u32;
     let mut state = 0usize;
@@ -242,8 +251,8 @@ pub fn lut(x: u16, y: u16) -> u32 {
         let xnib = (x >> shift) & 0xF;
         let ynib = (y >> shift) & 0xF;
         let idx = ((xnib << 4) | ynib) as usize;
-        d = (d << 8) | t.emit[state][idx] as u32;
-        state = t.next[state][idx] as usize;
+        d = (d << 8) | LUT.emit[state][idx] as u32;
+        state = LUT.next[state][idx] as usize;
     }
     d
 }

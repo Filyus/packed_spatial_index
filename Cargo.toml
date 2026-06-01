@@ -56,6 +56,10 @@ harness = false
 required-features = ["parallel", "simd"]
 
 [[bench]]
+name = "sortkey_bench"
+harness = false
+
+[[bench]]
 name = "persistence_knn_bench"
 harness = false
 required-features = ["simd"]

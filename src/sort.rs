@@ -32,22 +32,23 @@ pub enum ExperimentalSortKey2D {
 impl From<SortKey2D> for ExperimentalSortKey2D {
     fn from(key: SortKey2D) -> Self {
         match key {
-            SortKey2D::Hilbert => ExperimentalSortKey2D::HilbertMagicBits,
+            // Same Hilbert values as the reference-style magic-bits encoder, but faster
+            // in the real build path where keys are produced as `(key, index)` pairs.
+            SortKey2D::Hilbert => ExperimentalSortKey2D::HilbertLut,
         }
     }
 }
 
-impl ExperimentalSortKey2D {
-    /// Compute the sort key for normalized coordinates `x, y in [0, 65535]`.
-    #[inline]
-    pub(crate) fn encode(self, x: u16, y: u16) -> u32 {
-        match self {
-            ExperimentalSortKey2D::HilbertMagicBits => hilbert::magic_bits(x, y),
-            ExperimentalSortKey2D::HilbertLoopRotation => hilbert::loop_rotation(x, y),
-            ExperimentalSortKey2D::HilbertLut => hilbert::lut(x, y),
-            ExperimentalSortKey2D::Morton => hilbert::morton(x, y),
-        }
-    }
+#[derive(Clone, Copy)]
+pub(crate) struct SortKeyContext {
+    pub(crate) scaled_width: f64,
+    pub(crate) scaled_height: f64,
+    pub(crate) min_x: f64,
+    pub(crate) min_y: f64,
+    pub(crate) radix: bool,
+    pub(crate) radix_bits: u32,
+    #[cfg(feature = "parallel")]
+    pub(crate) use_parallel: bool,
 }
 
 pub(crate) fn encode_sort_serial<F>(
@@ -69,6 +70,82 @@ where
         order.sort_unstable_by_key(|&(h, _)| h);
     }
     order
+}
+
+#[cfg(feature = "parallel")]
+pub(crate) fn encode_sort_by_key(
+    items: &[Bounds2D],
+    sort_key: ExperimentalSortKey2D,
+    context: SortKeyContext,
+) -> Vec<(u32, u32)> {
+    match sort_key {
+        ExperimentalSortKey2D::HilbertMagicBits => {
+            encode_sort_with_encoder(items, hilbert::magic_bits, context)
+        }
+        ExperimentalSortKey2D::HilbertLoopRotation => {
+            encode_sort_with_encoder(items, hilbert::loop_rotation, context)
+        }
+        ExperimentalSortKey2D::HilbertLut => encode_sort_with_encoder(items, hilbert::lut, context),
+        ExperimentalSortKey2D::Morton => encode_sort_with_encoder(items, hilbert::morton, context),
+    }
+}
+
+#[cfg(not(feature = "parallel"))]
+pub(crate) fn encode_sort_by_key(
+    items: &[Bounds2D],
+    sort_key: ExperimentalSortKey2D,
+    context: SortKeyContext,
+) -> Vec<(u32, u32)> {
+    match sort_key {
+        ExperimentalSortKey2D::HilbertMagicBits => {
+            encode_sort_with_encoder(items, hilbert::magic_bits, context)
+        }
+        ExperimentalSortKey2D::HilbertLoopRotation => {
+            encode_sort_with_encoder(items, hilbert::loop_rotation, context)
+        }
+        ExperimentalSortKey2D::HilbertLut => encode_sort_with_encoder(items, hilbert::lut, context),
+        ExperimentalSortKey2D::Morton => encode_sort_with_encoder(items, hilbert::morton, context),
+    }
+}
+
+#[cfg(feature = "parallel")]
+fn encode_sort_with_encoder<F>(
+    items: &[Bounds2D],
+    key_fn: F,
+    context: SortKeyContext,
+) -> Vec<(u32, u32)>
+where
+    F: Fn(u16, u16) -> u32 + Copy + Sync,
+{
+    let encode = |i: usize, b: &Bounds2D| -> (u32, u32) {
+        let hx = hilbert_coord(context.scaled_width, b.min_x, b.max_x, context.min_x);
+        let hy = hilbert_coord(context.scaled_height, b.min_y, b.max_y, context.min_y);
+        (key_fn(hx, hy), i as u32)
+    };
+
+    if context.use_parallel {
+        encode_sort_parallel(items, &encode)
+    } else {
+        encode_sort_serial(items, &encode, context.radix, context.radix_bits)
+    }
+}
+
+#[cfg(not(feature = "parallel"))]
+fn encode_sort_with_encoder<F>(
+    items: &[Bounds2D],
+    key_fn: F,
+    context: SortKeyContext,
+) -> Vec<(u32, u32)>
+where
+    F: Fn(u16, u16) -> u32 + Copy,
+{
+    let encode = |i: usize, b: &Bounds2D| -> (u32, u32) {
+        let hx = hilbert_coord(context.scaled_width, b.min_x, b.max_x, context.min_x);
+        let hy = hilbert_coord(context.scaled_height, b.min_y, b.max_y, context.min_y);
+        (key_fn(hx, hy), i as u32)
+    };
+
+    encode_sort_serial(items, &encode, context.radix, context.radix_bits)
 }
 
 #[cfg(feature = "parallel")]

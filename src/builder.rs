@@ -1,16 +1,16 @@
 use std::{error::Error, fmt};
 
+#[cfg(feature = "parallel")]
+use crate::config::DEFAULT_PARALLEL_MIN_ITEMS;
 use crate::{
     config::DEFAULT_NODE_SIZE,
     geometry::{Bounds2D, Num},
     index::Index2D,
     sort::{
-        DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, encode_sort_serial, hilbert_coord,
+        DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, SortKeyContext, encode_sort_by_key,
         normalize_radix_bits,
     },
 };
-#[cfg(feature = "parallel")]
-use crate::{config::DEFAULT_PARALLEL_MIN_ITEMS, sort::encode_sort_parallel};
 
 /// Builder for [`Index2D`] and, with the `simd` feature, `SimdIndex2D`.
 ///
@@ -261,23 +261,18 @@ impl Index2DBuilder {
 
         let scaled_width = u16::MAX as f64 / (max_x - min_x);
         let scaled_height = u16::MAX as f64 / (max_y - min_y);
-        let sort_key = self.sort_key;
-
-        let encode = |i: usize, b: &Bounds2D| -> (u32, u32) {
-            let hx = hilbert_coord(scaled_width, b.min_x, b.max_x, min_x);
-            let hy = hilbert_coord(scaled_height, b.min_y, b.max_y, min_y);
-            (sort_key.encode(hx, hy), i as u32)
+        let context = SortKeyContext {
+            scaled_width,
+            scaled_height,
+            min_x,
+            min_y,
+            radix: self.radix,
+            radix_bits: self.radix_bits,
+            #[cfg(feature = "parallel")]
+            use_parallel,
         };
 
-        #[cfg(feature = "parallel")]
-        let order: Vec<(u32, u32)> = if use_parallel {
-            encode_sort_parallel(items, &encode)
-        } else {
-            encode_sort_serial(items, &encode, self.radix, self.radix_bits)
-        };
-        #[cfg(not(feature = "parallel"))]
-        let order: Vec<(u32, u32)> =
-            encode_sort_serial(items, &encode, self.radix, self.radix_bits);
+        let order = encode_sort_by_key(items, self.sort_key, context);
 
         #[cfg(feature = "parallel")]
         if use_parallel {

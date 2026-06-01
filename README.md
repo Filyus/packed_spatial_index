@@ -96,7 +96,7 @@ let mut builder = IndexBuilder::new(10_000)
     .sort_key(SortKey::Hilbert);
 
 builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-builder.add_bounds(5.0, 5.0, 6.0, 6.0);
+builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
 ```
 
 With `parallel` enabled:

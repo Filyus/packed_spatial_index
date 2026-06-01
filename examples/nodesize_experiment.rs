@@ -52,7 +52,7 @@ fn main() {
                 .node_size(ns)
                 .experimental_sort_key(ExperimentalSortKey::HilbertLut);
             for r in &boxes {
-                b.add_bounds(r[0], r[1], r[2], r[3]);
+                b.add(Rect::new(r[0], r[1], r[2], r[3]));
             }
             let idx = b.finish().unwrap();
             bbest = bbest.min(t.elapsed().as_secs_f64() * 1e3);
@@ -64,7 +64,7 @@ fn main() {
             .node_size(ns)
             .experimental_sort_key(ExperimentalSortKey::HilbertLut);
         for r in &boxes {
-            sb.add_bounds(r[0], r[1], r[2], r[3]);
+            sb.add(Rect::new(r[0], r[1], r[2], r[3]));
         }
         let soa = sb.finish_simd().unwrap();
         let (mut buf, mut st) = (Vec::new(), Vec::new());

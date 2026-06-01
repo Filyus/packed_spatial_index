@@ -75,7 +75,7 @@ fn build_index(boxes: &[[f64; 4]], parallel: bool) -> Index {
         .parallel(parallel)
         .experimental_sort_key(ExperimentalSortKey::HilbertLut);
     for b in boxes {
-        builder.add_bounds(b[0], b[1], b[2], b[3]);
+        builder.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish().unwrap()
 }
@@ -86,7 +86,7 @@ fn build_simd_index(boxes: &[[f64; 4]]) -> packed_spatial_index::SimdIndex {
         .parallel(true)
         .experimental_sort_key(ExperimentalSortKey::HilbertLut);
     for b in boxes {
-        builder.add_bounds(b[0], b[1], b[2], b[3]);
+        builder.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish_simd().unwrap()
 }

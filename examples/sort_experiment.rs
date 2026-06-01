@@ -4,8 +4,8 @@
 
 use std::time::Instant;
 
-use packed_spatial_index::IndexBuilder;
 use packed_spatial_index::experimental::ExperimentalSortKey;
+use packed_spatial_index::{IndexBuilder, Rect};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -33,7 +33,7 @@ fn time_build(boxes: &[[f64; 4]], radix: bool, reps: usize) -> f64 {
             .experimental_sort_key(ExperimentalSortKey::HilbertLut)
             .radix(radix);
         for r in boxes {
-            b.add_bounds(r[0], r[1], r[2], r[3]);
+            b.add(Rect::new(r[0], r[1], r[2], r[3]));
         }
         let idx = b.finish().unwrap();
         let el = t.elapsed().as_secs_f64() * 1e3;

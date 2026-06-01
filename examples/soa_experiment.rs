@@ -33,8 +33,8 @@ fn main() {
         .node_size(NODE_SIZE)
         .experimental_sort_key(ExperimentalSortKey::HilbertLut);
     for b in &boxes {
-        aos.add_bounds(b[0], b[1], b[2], b[3]);
-        soa.add_bounds(b[0], b[1], b[2], b[3]);
+        aos.add(Rect::new(b[0], b[1], b[2], b[3]));
+        soa.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     let aos = aos.finish().unwrap();
     let soa = soa.finish_simd().unwrap();

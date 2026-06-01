@@ -1,6 +1,3 @@
-mod common;
-
-use common::rect;
 #[cfg(feature = "parallel")]
 use packed_spatial_index::DEFAULT_PARALLEL_MIN_ITEMS;
 #[cfg(feature = "parallel")]
@@ -54,7 +51,7 @@ fn rect_try_new_validates_bounds() {
 fn default_builder_uses_exported_node_size() {
     let mut builder = IndexBuilder::new(17);
     for i in 0..17 {
-        builder.add_bounds(i as f64, 0.0, i as f64 + 0.5, 1.0);
+        builder.add(Rect::new(i as f64, 0.0, i as f64 + 0.5, 1.0));
     }
     let index = builder.finish().unwrap();
     assert_eq!(index.node_size(), DEFAULT_NODE_SIZE);
@@ -64,30 +61,6 @@ fn default_builder_uses_exported_node_size() {
 #[test]
 fn default_parallel_threshold_is_exported() {
     assert_eq!(DEFAULT_PARALLEL_MIN_ITEMS, 50_000);
-}
-
-#[test]
-fn add_rect_and_add_bounds_produce_identical_results() {
-    let boxes = [
-        [0.0, 0.0, 1.0, 1.0],
-        [2.0, 2.0, 3.0, 3.0],
-        [-1.0, -1.0, 0.5, 0.5],
-    ];
-    let mut by_rect = IndexBuilder::new(boxes.len());
-    let mut by_bounds = IndexBuilder::new(boxes.len());
-    for b in boxes {
-        by_rect.add(rect(b));
-        by_bounds.add_bounds(b[0], b[1], b[2], b[3]);
-    }
-    let by_rect = by_rect.finish().unwrap();
-    let by_bounds = by_bounds.finish().unwrap();
-
-    let query = Rect::new(-0.25, -0.25, 2.25, 2.25);
-    let mut a = by_rect.search(query);
-    let mut b = by_bounds.search(query);
-    a.sort_unstable();
-    b.sort_unstable();
-    assert_eq!(a, b);
 }
 
 #[test]
@@ -112,7 +85,7 @@ fn empty_and_small_indexes_behave_like_reference() {
     let mut index = IndexBuilder::new(boxes.len());
     for b in boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        index.add_bounds(b[0], b[1], b[2], b[3]);
+        index.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
@@ -138,7 +111,7 @@ fn degenerate_extent_matches_reference() {
     let mut index = IndexBuilder::new(boxes.len());
     for b in boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        index.add_bounds(b[0], b[1], b[2], b[3]);
+        index.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
@@ -154,8 +127,8 @@ fn degenerate_extent_matches_reference() {
 #[test]
 fn search_apis_agree() {
     let mut builder = IndexBuilder::new(3);
-    builder.add_bounds(0.0, 0.0, 1.0, 1.0);
-    builder.add_bounds(5.0, 5.0, 6.0, 6.0);
+    builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
     builder.add(Rect::new(0.5, 0.5, 2.0, 2.0));
     let index = builder.finish().unwrap();
 
@@ -200,8 +173,8 @@ fn search_apis_agree() {
 #[test]
 fn hidden_stack_paths_reuse_and_clear_buffers() {
     let mut builder = IndexBuilder::new(2);
-    builder.add_bounds(0.0, 0.0, 1.0, 1.0);
-    builder.add_bounds(5.0, 5.0, 6.0, 6.0);
+    builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
     let index = builder.finish().unwrap();
 
     let mut out = vec![usize::MAX];
@@ -217,7 +190,7 @@ fn hidden_stack_paths_reuse_and_clear_buffers() {
 #[test]
 fn finish_reports_count_mismatch() {
     let mut builder = IndexBuilder::new(2);
-    builder.add_bounds(0.0, 0.0, 1.0, 1.0);
+    builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
 
     assert!(matches!(
         builder.finish(),
@@ -246,8 +219,8 @@ fn parallel_build_matches_serial() {
         .parallel(true)
         .parallel_min_items(0);
     for b in &boxes {
-        serial.add_bounds(b[0], b[1], b[2], b[3]);
-        parallel.add_bounds(b[0], b[1], b[2], b[3]);
+        serial.add(Rect::new(b[0], b[1], b[2], b[3]));
+        parallel.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     let serial = serial.finish().unwrap();
     let parallel = parallel.finish().unwrap();

@@ -21,7 +21,7 @@ use crate::{config::DEFAULT_PARALLEL_MIN_ITEMS, sort::encode_sort_parallel};
 ///
 /// let mut builder = IndexBuilder::new(2);
 /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-/// builder.add_bounds(5.0, 5.0, 6.0, 6.0);
+/// builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
 ///
 /// let index = builder.finish().unwrap();
 /// assert_eq!(index.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
@@ -153,12 +153,6 @@ impl IndexBuilder {
     #[inline]
     pub fn add(&mut self, rect: Rect) {
         self.boxes.push(rect);
-    }
-
-    /// Add a rectangle from raw bounds.
-    #[inline]
-    pub fn add_bounds(&mut self, min_x: Num, min_y: Num, max_x: Num, max_y: Num) {
-        self.add(Rect::new(min_x, min_y, max_x, max_y));
     }
 
     /// Pack the tree and return the finished index.

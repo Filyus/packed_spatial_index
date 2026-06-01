@@ -43,7 +43,7 @@ fn build(boxes: &[[f64; 4]], mode: BuildMode) -> packed_spatial_index::Index {
         BuildMode::ParallelForced => b.parallel(true).parallel_min_items(0),
     };
     for r in boxes {
-        b.add_bounds(r[0], r[1], r[2], r[3]);
+        b.add(Rect::new(r[0], r[1], r[2], r[3]));
     }
     b.finish().unwrap()
 }

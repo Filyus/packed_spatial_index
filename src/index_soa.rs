@@ -264,11 +264,6 @@ impl SimdIndex {
         out
     }
 
-    /// Return the indices of all items intersecting raw bounds.
-    pub fn search_bounds(&self, min_x: Num, min_y: Num, max_x: Num, max_y: Num) -> Vec<usize> {
-        self.search(Rect::new(min_x, min_y, max_x, max_y))
-    }
-
     /// Search with a reusable result buffer.
     ///
     /// This automatically chooses the widest available SIMD implementation: AVX-512

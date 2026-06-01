@@ -27,8 +27,8 @@ fn simd_empty_and_small_indexes_behave_like_aos() {
     let mut aos = IndexBuilder::new(boxes.len());
     let mut simd = IndexBuilder::new(boxes.len());
     for b in boxes {
-        aos.add_bounds(b[0], b[1], b[2], b[3]);
-        simd.add_bounds(b[0], b[1], b[2], b[3]);
+        aos.add(Rect::new(b[0], b[1], b[2], b[3]));
+        simd.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     let aos = aos.finish().unwrap();
     let simd = simd.finish_simd().unwrap();
@@ -46,7 +46,7 @@ fn simd_empty_and_small_indexes_behave_like_aos() {
 #[test]
 fn simd_finish_reports_count_mismatch() {
     let mut builder = IndexBuilder::new(2);
-    builder.add_bounds(0.0, 0.0, 1.0, 1.0);
+    builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
 
     assert!(matches!(
         builder.finish_simd(),
@@ -60,9 +60,9 @@ fn simd_finish_reports_count_mismatch() {
 #[test]
 fn simd_search_apis_agree_with_aos() {
     let mut builder = IndexBuilder::new(3);
-    builder.add_bounds(0.0, 0.0, 1.0, 1.0);
-    builder.add_bounds(5.0, 5.0, 6.0, 6.0);
-    builder.add_bounds(0.5, 0.5, 2.0, 2.0);
+    builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+    builder.add(Rect::new(0.5, 0.5, 2.0, 2.0));
     let simd = builder.finish_simd().unwrap();
 
     let query = Rect::new(0.0, 0.0, 2.0, 2.0);
@@ -102,8 +102,8 @@ fn simd_neighbors_match_aos() {
     let mut aos_builder = IndexBuilder::new(boxes.len()).node_size(16);
     let mut simd_builder = IndexBuilder::new(boxes.len()).node_size(16);
     for b in &boxes {
-        aos_builder.add_bounds(b[0], b[1], b[2], b[3]);
-        simd_builder.add_bounds(b[0], b[1], b[2], b[3]);
+        aos_builder.add(Rect::new(b[0], b[1], b[2], b[3]));
+        simd_builder.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     let aos = aos_builder.finish().unwrap();
     let simd = simd_builder.finish_simd().unwrap();
@@ -141,7 +141,7 @@ fn simd_index_search_matches_reference() {
         .experimental_sort_key(ExperimentalSortKey::HilbertLut);
     for b in &boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        builder.add_bounds(b[0], b[1], b[2], b[3]);
+        builder.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let simd = builder.finish_simd().unwrap();

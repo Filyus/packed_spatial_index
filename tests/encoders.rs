@@ -63,7 +63,7 @@ fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey) {
         .experimental_sort_key(choice);
     for b in &boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        index.add_bounds(b[0], b[1], b[2], b[3]);
+        index.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();

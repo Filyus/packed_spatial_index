@@ -23,7 +23,7 @@ pub fn random_boxes(rng: &mut StdRng, n: usize) -> Vec<[f64; 4]> {
 pub fn build_index(boxes: &[[f64; 4]], node_size: usize) -> Index {
     let mut builder = IndexBuilder::new(boxes.len()).node_size(node_size);
     for b in boxes {
-        builder.add_bounds(b[0], b[1], b[2], b[3]);
+        builder.add(Rect::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish().unwrap()
 }

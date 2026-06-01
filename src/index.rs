@@ -22,7 +22,7 @@
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
-use crate::geometry::{Num, Point, Rect};
+use crate::geometry::{Point, Rect};
 use crate::neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared};
 use crate::persistence::{
     ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -228,11 +228,6 @@ impl Index {
         let mut results = Vec::new();
         self.search_into(rect, &mut results);
         results
-    }
-
-    /// Return the indices of all items intersecting raw bounds.
-    pub fn search_bounds(&self, min_x: Num, min_y: Num, max_x: Num, max_y: Num) -> Vec<usize> {
-        self.search(Rect::new(min_x, min_y, max_x, max_y))
     }
 
     /// Search with a reusable result buffer.
@@ -853,11 +848,6 @@ impl<'a> IndexView<'a> {
         let mut results = Vec::new();
         self.search_into(rect, &mut results);
         results
-    }
-
-    /// Return the indices of all items intersecting raw bounds.
-    pub fn search_bounds(&self, min_x: Num, min_y: Num, max_x: Num, max_y: Num) -> Vec<usize> {
-        self.search(Rect::new(min_x, min_y, max_x, max_y))
     }
 
     /// Search with a reusable result buffer.

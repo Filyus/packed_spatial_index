@@ -62,7 +62,7 @@ fn main() {
             .node_size(NODE_SIZE)
             .experimental_sort_key(*key);
         for r in &boxes {
-            b.add_bounds(r[0], r[1], r[2], r[3]);
+            b.add(Rect::new(r[0], r[1], r[2], r[3]));
         }
         let index = b.finish().unwrap();
         let build_t = t0.elapsed();

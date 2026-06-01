@@ -57,7 +57,7 @@ fn build_mine(boxes: &[[f64; 4]], mode: BuildMode) {
         BuildMode::ParallelForced => b.parallel(true).parallel_min_items(0),
     };
     for r in boxes {
-        b.add_bounds(r[0], r[1], r[2], r[3]);
+        b.add(Rect::new(r[0], r[1], r[2], r[3]));
     }
     black_box(b.finish().unwrap());
 }
@@ -119,8 +119,8 @@ fn bench_query(c: &mut Criterion) {
         .experimental_sort_key(ExperimentalSortKey::HilbertLut);
     for r in &boxes {
         rb.add(r[0], r[1], r[2], r[3]);
-        mb.add_bounds(r[0], r[1], r[2], r[3]);
-        sb.add_bounds(r[0], r[1], r[2], r[3]);
+        mb.add(Rect::new(r[0], r[1], r[2], r[3]));
+        sb.add(Rect::new(r[0], r[1], r[2], r[3]));
     }
     let reference: StaticAABB2DIndex<f64> = rb.build().unwrap();
     let packed: Index = mb.finish().unwrap();

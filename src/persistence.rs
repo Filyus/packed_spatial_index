@@ -48,6 +48,7 @@ impl fmt::Display for LoadError {
 
 impl Error for LoadError {}
 
+// Packed Spatial Index, binary format version 1.
 const FORMAT_MAGIC: &[u8; 8] = b"PSIDX001";
 const FORMAT_HEADER_LEN: usize = 40;
 

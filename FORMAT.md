@@ -15,8 +15,14 @@ The current format magic is:
 PSIDX001
 ```
 
-The marker is both the file signature and the format version. A future breaking
-format should use a different marker.
+It expands to:
+
+- `PS` = Packed Spatial;
+- `IDX` = Index;
+- `001` = binary format version 1.
+
+The marker is exactly eight ASCII bytes and acts as both the file signature and
+the format version. A future breaking format should use a different marker.
 
 ## Layout
 

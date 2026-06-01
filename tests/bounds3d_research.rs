@@ -12,6 +12,8 @@ use rand::{RngExt, SeedableRng};
 
 const MORTON_BITS_PER_AXIS: u32 = 21;
 const MORTON_AXIS_MAX: u32 = (1 << MORTON_BITS_PER_AXIS) - 1;
+const HILBERT_BITS_PER_AXIS: u32 = 16;
+const HILBERT_AXIS_MAX: u32 = (1 << HILBERT_BITS_PER_AXIS) - 1;
 const ENCODE_ITEMS: usize = 262_144;
 const RESEARCH_ITEMS: usize = 8_192;
 const RESEARCH_QUERIES: usize = 128;
@@ -510,9 +512,9 @@ fn hilbert2d_vs_hilbert3d_encode_survey() {
     let coords3d: Vec<(u32, u32, u32)> = (0..ENCODE_ITEMS)
         .map(|_| {
             (
-                rng.random_range(0..=MORTON_AXIS_MAX),
-                rng.random_range(0..=MORTON_AXIS_MAX),
-                rng.random_range(0..=MORTON_AXIS_MAX),
+                rng.random_range(0..=HILBERT_AXIS_MAX),
+                rng.random_range(0..=HILBERT_AXIS_MAX),
+                rng.random_range(0..=HILBERT_AXIS_MAX),
             )
         })
         .collect();
@@ -873,12 +875,55 @@ fn brute_force_neighbors(
 }
 
 fn encode_sort_key(extent: Bounds3D, bounds: Bounds3D, sort_key: SortKey3D) -> u64 {
-    let x = normalize_center(bounds.min_x, bounds.max_x, extent.min_x, extent.max_x);
-    let y = normalize_center(bounds.min_y, bounds.max_y, extent.min_y, extent.max_y);
-    let z = normalize_center(bounds.min_z, bounds.max_z, extent.min_z, extent.max_z);
     match sort_key {
-        SortKey3D::Morton => morton3(x, y, z),
-        SortKey3D::Hilbert => hilbert3(x, y, z),
+        SortKey3D::Morton => {
+            let x = normalize_center(
+                bounds.min_x,
+                bounds.max_x,
+                extent.min_x,
+                extent.max_x,
+                MORTON_AXIS_MAX,
+            );
+            let y = normalize_center(
+                bounds.min_y,
+                bounds.max_y,
+                extent.min_y,
+                extent.max_y,
+                MORTON_AXIS_MAX,
+            );
+            let z = normalize_center(
+                bounds.min_z,
+                bounds.max_z,
+                extent.min_z,
+                extent.max_z,
+                MORTON_AXIS_MAX,
+            );
+            morton3(x, y, z)
+        }
+        SortKey3D::Hilbert => {
+            let x = normalize_center(
+                bounds.min_x,
+                bounds.max_x,
+                extent.min_x,
+                extent.max_x,
+                HILBERT_AXIS_MAX,
+            );
+            let y = normalize_center(
+                bounds.min_y,
+                bounds.max_y,
+                extent.min_y,
+                extent.max_y,
+                HILBERT_AXIS_MAX,
+            );
+            let z = normalize_center(
+                bounds.min_z,
+                bounds.max_z,
+                extent.min_z,
+                extent.max_z,
+                HILBERT_AXIS_MAX,
+            );
+            hilbert3(x, y, z)
+        }
     }
 }
 
@@ -901,72 +946,84 @@ fn empty_bounds() -> Bounds3D {
     )
 }
 
-fn normalize_center(min: f64, max: f64, extent_min: f64, extent_max: f64) -> u32 {
+fn normalize_center(min: f64, max: f64, extent_min: f64, extent_max: f64, axis_max: u32) -> u32 {
     let width = extent_max - extent_min;
     if width <= 0.0 || !width.is_finite() {
         return 0;
     }
 
-    let normalized = ((0.5 * (min + max) - extent_min) / width) * f64::from(MORTON_AXIS_MAX);
+    let normalized = ((0.5 * (min + max) - extent_min) / width) * f64::from(axis_max);
     if normalized.is_nan() || normalized <= 0.0 {
         0
-    } else if normalized >= f64::from(MORTON_AXIS_MAX) {
-        MORTON_AXIS_MAX
+    } else if normalized >= f64::from(axis_max) {
+        axis_max
     } else {
         normalized as u32
     }
 }
 
+#[inline(always)]
 fn morton3(x: u32, y: u32, z: u32) -> u64 {
     split_by_3(u64::from(x)) | (split_by_3(u64::from(y)) << 1) | (split_by_3(u64::from(z)) << 2)
 }
 
+#[inline(always)]
 fn hilbert3(x: u32, y: u32, z: u32) -> u64 {
-    let mut axes = [x, y, z];
-    hilbert_axes_to_transpose(&mut axes);
-    interleave3_msb_order(axes[0], axes[1], axes[2])
+    let (x, y, z) = hilbert3_axes_to_transpose(x, y, z);
+    interleave3_msb_order(x, y, z)
 }
 
+#[inline(always)]
 fn interleave3_msb_order(x: u32, y: u32, z: u32) -> u64 {
     split_by_3(u64::from(z)) | (split_by_3(u64::from(y)) << 1) | (split_by_3(u64::from(x)) << 2)
 }
 
-fn hilbert_axes_to_transpose(axes: &mut [u32; 3]) {
-    let highest_bit = 1 << (MORTON_BITS_PER_AXIS - 1);
+#[inline(always)]
+fn hilbert3_axes_to_transpose(mut x: u32, mut y: u32, mut z: u32) -> (u32, u32, u32) {
+    let highest_bit = 1 << (HILBERT_BITS_PER_AXIS - 1);
 
     let mut q = highest_bit;
     while q > 1 {
         let p = q - 1;
-        for i in 0..axes.len() {
-            if (axes[i] & q) != 0 {
-                axes[0] ^= p;
-            } else {
-                let t = (axes[0] ^ axes[i]) & p;
-                axes[0] ^= t;
-                axes[i] ^= t;
-            }
-        }
+        let x_bit = mask_from_nonzero(x & q);
+        x ^= p & x_bit;
+        conditional_hilbert_exchange(&mut x, &mut y, p, q);
+        conditional_hilbert_exchange(&mut x, &mut z, p, q);
         q >>= 1;
     }
 
-    for i in 1..axes.len() {
-        axes[i] ^= axes[i - 1];
-    }
+    y ^= x;
+    z ^= y;
 
     let mut t = 0;
     q = highest_bit;
     while q > 1 {
-        if (axes[axes.len() - 1] & q) != 0 {
-            t ^= q - 1;
-        }
+        t ^= (q - 1) & mask_from_nonzero(z & q);
         q >>= 1;
     }
 
-    for axis in axes {
-        *axis ^= t;
-    }
+    x ^= t;
+    y ^= t;
+    z ^= t;
+    (x, y, z)
 }
 
+#[inline(always)]
+fn conditional_hilbert_exchange(x: &mut u32, axis: &mut u32, p: u32, q: u32) {
+    let axis_bit = mask_from_nonzero(*axis & q);
+    let swap = (*x ^ *axis) & p;
+    let x_delta = (p & axis_bit) | (swap & !axis_bit);
+    let axis_delta = swap & !axis_bit;
+    *x ^= x_delta;
+    *axis ^= axis_delta;
+}
+
+#[inline(always)]
+fn mask_from_nonzero(value: u32) -> u32 {
+    0u32.wrapping_sub(u32::from(value != 0))
+}
+
+#[inline(always)]
 fn split_by_3(mut value: u64) -> u64 {
     value &= 0x1f_ffff;
     value = (value | (value << 32)) & 0x001f_0000_0000_ffff;

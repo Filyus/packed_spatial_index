@@ -249,8 +249,16 @@ impl Index3D {
             return;
         }
 
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
+        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queues(
+            point,
+            max_results,
+            max_distance,
+            results,
+            &mut item_queue,
+            &mut node_queue,
+        );
     }
 
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
@@ -277,13 +285,13 @@ impl Index3D {
             return &workspace.results;
         }
 
-        workspace.node_queue.clear();
-        self.collect_neighbors_with_queue(
+        self.collect_neighbors_with_queues(
             point,
             max_results,
             max_distance,
             &mut workspace.results,
             &mut workspace.queue,
+            &mut workspace.node_queue,
         );
         &workspace.results
     }
@@ -318,15 +326,17 @@ impl Index3D {
         self.visit_with_stack(bounds, &mut stack, visitor)
     }
 
-    fn collect_neighbors_with_queue(
+    fn collect_neighbors_with_queues(
         &self,
         point: Point3D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
-        queue: &mut BinaryHeap<NeighborState>,
+        item_queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
-        queue.clear();
+        item_queue.clear();
+        node_queue.clear();
         let Some(max_dist_sq) = max_distance_squared(max_distance) else {
             return;
         };
@@ -334,40 +344,48 @@ impl Index3D {
             return;
         }
 
-        let mut node_index = self.boxes.len() - 1;
-        loop {
-            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
-            let is_leaf = node_index < self.num_items;
+        let root_index = self.boxes.len() - 1;
+        let root_dist = self.boxes[root_index].distance_squared_to(point);
+        if root_dist > max_dist_sq {
+            return;
+        }
+        node_queue.push(NeighborNodeState::new(root_index, root_dist));
 
-            for pos in node_index..end {
-                let dist = self.boxes[pos].distance_squared_to(point);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return;
-                }
-                if state.is_leaf {
-                    results.push(state.index);
-                    if results.len() == max_results {
-                        return;
-                    }
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
+        while results.len() < max_results {
+            while let Some(&node) = node_queue.peek() {
+                if node.dist > max_dist_sq {
+                    node_queue.clear();
                     break;
                 }
+                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
+                    break;
+                }
+
+                let node = node_queue.pop().unwrap();
+                let upper_bound_level = upper_bound_level(&self.level_bounds, node.index);
+                let end = (node.index + self.node_size).min(self.level_bounds[upper_bound_level]);
+                let is_leaf = node.index < self.num_items;
+
+                if is_leaf {
+                    for pos in node.index..end {
+                        let dist = self.boxes[pos].distance_squared_to(point);
+                        if dist <= max_dist_sq {
+                            item_queue.push(NeighborState::new(self.indices[pos], true, dist));
+                        }
+                    }
+                } else {
+                    for pos in node.index..end {
+                        let dist = self.boxes[pos].distance_squared_to(point);
+                        if dist <= max_dist_sq {
+                            node_queue.push(NeighborNodeState::new(self.indices[pos], dist));
+                        }
+                    }
+                }
             }
 
-            if !continue_search {
-                return;
+            match item_queue.pop() {
+                Some(state) if state.dist <= max_dist_sq => results.push(state.index),
+                _ => return,
             }
         }
     }
@@ -719,8 +737,16 @@ impl<'a> Index3DView<'a> {
             return;
         }
 
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
+        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queues(
+            point,
+            max_results,
+            max_distance,
+            results,
+            &mut item_queue,
+            &mut node_queue,
+        );
     }
 
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
@@ -747,13 +773,13 @@ impl<'a> Index3DView<'a> {
             return &workspace.results;
         }
 
-        workspace.node_queue.clear();
-        self.collect_neighbors_with_queue(
+        self.collect_neighbors_with_queues(
             point,
             max_results,
             max_distance,
             &mut workspace.results,
             &mut workspace.queue,
+            &mut workspace.node_queue,
         );
         &workspace.results
     }
@@ -781,15 +807,17 @@ impl<'a> Index3DView<'a> {
         self.visit_with_stack(bounds, &mut stack, visitor)
     }
 
-    fn collect_neighbors_with_queue(
+    fn collect_neighbors_with_queues(
         &self,
         point: Point3D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
-        queue: &mut BinaryHeap<NeighborState>,
+        item_queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
-        queue.clear();
+        item_queue.clear();
+        node_queue.clear();
         let Some(max_dist_sq) = max_distance_squared(max_distance) else {
             return;
         };
@@ -797,46 +825,56 @@ impl<'a> Index3DView<'a> {
             return;
         }
 
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper_bound_level = self.upper_bound_level(node_index);
-            let end =
-                (node_index + self.node_size).min(self.level_bound_unchecked(upper_bound_level));
-            let is_leaf = node_index < self.num_items;
+        let root_index = self.num_nodes - 1;
+        let root_dist = self.box_at_unchecked(root_index).distance_squared_to(point);
+        if root_dist > max_dist_sq {
+            return;
+        }
+        node_queue.push(NeighborNodeState::new(root_index, root_dist));
 
-            for pos in node_index..end {
-                let b = self.box_at_unchecked(pos);
-                let dist = b.distance_squared_to(point);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(
-                    self.index_at_unchecked(pos),
-                    is_leaf,
-                    dist,
-                ));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return;
-                }
-                if state.is_leaf {
-                    results.push(state.index);
-                    if results.len() == max_results {
-                        return;
-                    }
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
+        while results.len() < max_results {
+            while let Some(&node) = node_queue.peek() {
+                if node.dist > max_dist_sq {
+                    node_queue.clear();
                     break;
                 }
+                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
+                    break;
+                }
+
+                let node = node_queue.pop().unwrap();
+                let upper_bound_level = self.upper_bound_level(node.index);
+                let end = (node.index + self.node_size)
+                    .min(self.level_bound_unchecked(upper_bound_level));
+                let is_leaf = node.index < self.num_items;
+
+                if is_leaf {
+                    for pos in node.index..end {
+                        let b = self.box_at_unchecked(pos);
+                        let dist = b.distance_squared_to(point);
+                        if dist <= max_dist_sq {
+                            item_queue.push(NeighborState::new(
+                                self.index_at_unchecked(pos),
+                                true,
+                                dist,
+                            ));
+                        }
+                    }
+                } else {
+                    for pos in node.index..end {
+                        let b = self.box_at_unchecked(pos);
+                        let dist = b.distance_squared_to(point);
+                        if dist <= max_dist_sq {
+                            node_queue
+                                .push(NeighborNodeState::new(self.index_at_unchecked(pos), dist));
+                        }
+                    }
+                }
             }
 
-            if !continue_search {
-                return;
+            match item_queue.pop() {
+                Some(state) if state.dist <= max_dist_sq => results.push(state.index),
+                _ => return,
             }
         }
     }

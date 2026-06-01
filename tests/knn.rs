@@ -1,7 +1,7 @@
 mod common;
 
 use common::{brute_force_neighbors, build_index, random_boxes};
-use packed_spatial_index::{NeighborWorkspace, Point};
+use packed_spatial_index::{NeighborWorkspace, Point2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::ops::ControlFlow;
@@ -13,7 +13,7 @@ fn neighbors_match_brute_force() {
     let index = build_index(&boxes, 16);
 
     for _ in 0..200 {
-        let point = Point::new(rng.random_range(0.0..1000.0), rng.random_range(0.0..1000.0));
+        let point = Point2D::new(rng.random_range(0.0..1000.0), rng.random_range(0.0..1000.0));
         for &(limit, max_distance) in &[
             (0, f64::INFINITY),
             (1, f64::INFINITY),
@@ -37,7 +37,7 @@ fn neighbor_apis_agree_and_support_early_exit() {
         [-5.0, 0.0, -4.0, 1.0],
     ];
     let index = build_index(&boxes, 2);
-    let point = Point::new(1.0, 1.0);
+    let point = Point2D::new(1.0, 1.0);
     let expected = brute_force_neighbors(&boxes, point, 3, f64::INFINITY);
     assert_eq!(expected[0], 0);
     assert_eq!(index.neighbors(point, 3), expected);

@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use packed_spatial_index::{Index, IndexBuilder, Point, Rect};
+use packed_spatial_index::{Bounds2D, Index2D, Index2DBuilder, Point2D};
 use rand::RngExt;
 use rand::rngs::StdRng;
 
-pub fn rect(bounds: [f64; 4]) -> Rect {
-    Rect::new(bounds[0], bounds[1], bounds[2], bounds[3])
+pub fn bounds(coords: [f64; 4]) -> Bounds2D {
+    Bounds2D::new(coords[0], coords[1], coords[2], coords[3])
 }
 
 pub fn random_boxes(rng: &mut StdRng, n: usize) -> Vec<[f64; 4]> {
@@ -20,15 +20,15 @@ pub fn random_boxes(rng: &mut StdRng, n: usize) -> Vec<[f64; 4]> {
     boxes
 }
 
-pub fn build_index(boxes: &[[f64; 4]], node_size: usize) -> Index {
-    let mut builder = IndexBuilder::new(boxes.len()).node_size(node_size);
+pub fn build_index(boxes: &[[f64; 4]], node_size: usize) -> Index2D {
+    let mut builder = Index2DBuilder::new(boxes.len()).node_size(node_size);
     for b in boxes {
-        builder.add(Rect::new(b[0], b[1], b[2], b[3]));
+        builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish().unwrap()
 }
 
-fn distance_squared(point: Point, rect: [f64; 4]) -> f64 {
+fn distance_squared(point: Point2D, bounds: [f64; 4]) -> f64 {
     fn axis(point: f64, min: f64, max: f64) -> f64 {
         if point < min {
             min - point
@@ -39,14 +39,14 @@ fn distance_squared(point: Point, rect: [f64; 4]) -> f64 {
         }
     }
 
-    let dx = axis(point.x, rect[0], rect[2]);
-    let dy = axis(point.y, rect[1], rect[3]);
+    let dx = axis(point.x, bounds[0], bounds[2]);
+    let dy = axis(point.y, bounds[1], bounds[3]);
     dx * dx + dy * dy
 }
 
 pub fn brute_force_neighbors(
     boxes: &[[f64; 4]],
-    point: Point,
+    point: Point2D,
     max_results: usize,
     max_distance: f64,
 ) -> Vec<usize> {

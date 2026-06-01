@@ -1,4 +1,4 @@
-use crate::{geometry::Rect, hilbert};
+use crate::{geometry::Bounds2D, hilbert};
 
 pub(crate) const DEFAULT_RADIX_BITS: u32 = 8;
 const MIN_RADIX_BITS: u32 = 1;
@@ -6,11 +6,11 @@ const MAX_RADIX_BITS: u32 = 16;
 
 /// Which key to use when sorting boxes before packing the tree.
 ///
-/// [`SortKey::Hilbert`] is the default and currently the only stable public
+/// [`SortKey2D::Hilbert`] is the default and currently the only stable public
 /// ordering. Additional sort keys are kept in the hidden experimental API for
 /// benchmarking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SortKey {
+pub enum SortKey2D {
     /// Hilbert curve order.
     Hilbert,
 }
@@ -18,7 +18,7 @@ pub enum SortKey {
 /// Experimental sort-key implementations used by benchmarks.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExperimentalSortKey {
+pub enum ExperimentalSortKey2D {
     /// Hilbert curve, "magic bits" (rawrunprotected): the reference crate algorithm.
     HilbertMagicBits,
     /// Hilbert curve, classic iterative algorithm with quadrant rotations.
@@ -29,35 +29,35 @@ pub enum ExperimentalSortKey {
     Morton,
 }
 
-impl From<SortKey> for ExperimentalSortKey {
-    fn from(key: SortKey) -> Self {
+impl From<SortKey2D> for ExperimentalSortKey2D {
+    fn from(key: SortKey2D) -> Self {
         match key {
-            SortKey::Hilbert => ExperimentalSortKey::HilbertMagicBits,
+            SortKey2D::Hilbert => ExperimentalSortKey2D::HilbertMagicBits,
         }
     }
 }
 
-impl ExperimentalSortKey {
+impl ExperimentalSortKey2D {
     /// Compute the sort key for normalized coordinates `x, y in [0, 65535]`.
     #[inline]
     pub(crate) fn encode(self, x: u16, y: u16) -> u32 {
         match self {
-            ExperimentalSortKey::HilbertMagicBits => hilbert::magic_bits(x, y),
-            ExperimentalSortKey::HilbertLoopRotation => hilbert::loop_rotation(x, y),
-            ExperimentalSortKey::HilbertLut => hilbert::lut(x, y),
-            ExperimentalSortKey::Morton => hilbert::morton(x, y),
+            ExperimentalSortKey2D::HilbertMagicBits => hilbert::magic_bits(x, y),
+            ExperimentalSortKey2D::HilbertLoopRotation => hilbert::loop_rotation(x, y),
+            ExperimentalSortKey2D::HilbertLut => hilbert::lut(x, y),
+            ExperimentalSortKey2D::Morton => hilbert::morton(x, y),
         }
     }
 }
 
 pub(crate) fn encode_sort_serial<F>(
-    items: &[Rect],
+    items: &[Bounds2D],
     encode: &F,
     radix: bool,
     radix_bits: u32,
 ) -> Vec<(u32, u32)>
 where
-    F: Fn(usize, &Rect) -> (u32, u32),
+    F: Fn(usize, &Bounds2D) -> (u32, u32),
 {
     let mut order: Vec<(u32, u32)> = Vec::with_capacity(items.len());
     for (i, b) in items.iter().enumerate() {
@@ -72,9 +72,9 @@ where
 }
 
 #[cfg(feature = "parallel")]
-pub(crate) fn encode_sort_parallel<F>(items: &[Rect], encode: &F) -> Vec<(u32, u32)>
+pub(crate) fn encode_sort_parallel<F>(items: &[Bounds2D], encode: &F) -> Vec<(u32, u32)>
 where
-    F: Fn(usize, &Rect) -> (u32, u32) + Sync,
+    F: Fn(usize, &Bounds2D) -> (u32, u32) + Sync,
 {
     use rayon::prelude::*;
 

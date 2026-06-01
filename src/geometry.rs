@@ -1,11 +1,11 @@
 use std::{error::Error, fmt};
 
-/// Index coordinates are `f64`, matching the reference default.
+/// Spatial coordinates are `f64`, matching the reference default.
 pub(crate) type Num = f64;
 
-/// Error returned by [`Rect::try_new`] for inverted or unordered bounds.
+/// Error returned by [`Bounds2D::try_new`] for inverted or unordered bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum RectError {
+pub enum BoundsError {
     /// Bounds do not satisfy `min_x <= max_x` and `min_y <= max_y`.
     ///
     /// This also covers `NaN`, because `NaN` is unordered and fails those
@@ -22,42 +22,39 @@ pub enum RectError {
     },
 }
 
-impl fmt::Display for RectError {
+impl fmt::Display for BoundsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RectError::InvalidBounds { .. } => {
-                write!(
-                    f,
-                    "rectangle bounds must satisfy min_x <= max_x and min_y <= max_y"
-                )
+            BoundsError::InvalidBounds { .. } => {
+                write!(f, "bounds must satisfy min_x <= max_x and min_y <= max_y")
             }
         }
     }
 }
 
-impl Error for RectError {}
+impl Error for BoundsError {}
 
-/// Axis-aligned rectangle bounds.
+/// Axis-aligned 2D bounds stored as `(min_x, min_y, max_x, max_y)`.
 ///
-/// Bounds are inclusive: rectangles that touch at an edge or corner overlap.
-/// [`Rect::new`] is a cheap constructor and does not validate or reorder
-/// bounds; use [`Rect::try_new`] when accepting unchecked input.
+/// Bounds are inclusive: boxes that touch at an edge or corner overlap.
+/// [`Bounds2D::new`] is a cheap constructor and does not validate or reorder
+/// bounds; use [`Bounds2D::try_new`] when accepting unchecked input.
 ///
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Point, Rect, RectError};
+/// use packed_spatial_index::{Point2D, Bounds2D, BoundsError};
 ///
-/// let a = Rect::new(0.0, 0.0, 1.0, 1.0);
-/// let b = Rect::try_new(1.0, 1.0, 2.0, 2.0)?;
+/// let a = Bounds2D::new(0.0, 0.0, 1.0, 1.0);
+/// let b = Bounds2D::try_new(1.0, 1.0, 2.0, 2.0)?;
 ///
 /// assert!(a.overlaps(b));
-/// assert!(a.contains_point(Point::new(0.5, 0.5)));
+/// assert!(a.contains_point(Point2D::new(0.5, 0.5)));
 /// assert!(!a.contains(b));
-/// # Ok::<(), RectError>(())
+/// # Ok::<(), BoundsError>(())
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rect {
+pub struct Bounds2D {
     /// Minimum x coordinate.
     pub min_x: f64,
     /// Minimum y coordinate.
@@ -68,11 +65,11 @@ pub struct Rect {
     pub max_y: f64,
 }
 
-impl Rect {
-    /// Create a rectangle from `[min_x, min_y, max_x, max_y]` bounds.
+impl Bounds2D {
+    /// Create bounds from `[min_x, min_y, max_x, max_y]`.
     ///
     /// This constructor does not validate or reorder bounds. Prefer
-    /// [`Rect::try_new`] for data that may contain inverted bounds or `NaN`.
+    /// [`Bounds2D::try_new`] for data that may contain inverted bounds or `NaN`.
     #[inline]
     pub const fn new(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Self {
         Self {
@@ -83,24 +80,24 @@ impl Rect {
         }
     }
 
-    /// Try to create a rectangle with validated bounds.
+    /// Try to create validated bounds.
     ///
-    /// Returns [`RectError::InvalidBounds`] when `min_x > max_x`, `min_y > max_y`,
+    /// Returns [`BoundsError::InvalidBounds`] when `min_x > max_x`, `min_y > max_y`,
     /// or any bound is `NaN`.
     ///
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Rect, RectError};
+    /// use packed_spatial_index::{Bounds2D, BoundsError};
     ///
-    /// let rect = Rect::try_new(0.0, 0.0, 1.0, 1.0)?;
-    /// assert_eq!(rect, Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// let bounds = Bounds2D::try_new(0.0, 0.0, 1.0, 1.0)?;
+    /// assert_eq!(bounds, Bounds2D::new(0.0, 0.0, 1.0, 1.0));
     ///
     /// assert!(matches!(
-    ///     Rect::try_new(2.0, 0.0, 1.0, 1.0),
-    ///     Err(RectError::InvalidBounds { .. })
+    ///     Bounds2D::try_new(2.0, 0.0, 1.0, 1.0),
+    ///     Err(BoundsError::InvalidBounds { .. })
     /// ));
-    /// # Ok::<(), RectError>(())
+    /// # Ok::<(), BoundsError>(())
     /// ```
     #[inline]
     pub const fn try_new(
@@ -108,11 +105,11 @@ impl Rect {
         min_y: f64,
         max_x: f64,
         max_y: f64,
-    ) -> Result<Self, RectError> {
+    ) -> Result<Self, BoundsError> {
         if min_x <= max_x && min_y <= max_y {
             Ok(Self::new(min_x, min_y, max_x, max_y))
         } else {
-            Err(RectError::InvalidBounds {
+            Err(BoundsError::InvalidBounds {
                 min_x,
                 min_y,
                 max_x,
@@ -121,12 +118,12 @@ impl Rect {
         }
     }
 
-    /// Return `true` when this rectangle overlaps `other`.
+    /// Return `true` when these bounds overlap `other`.
     ///
-    /// Edges are inclusive: rectangles that only touch at an edge or corner
+    /// Edges are inclusive: boxes that only touch at an edge or corner
     /// are considered overlapping.
     #[inline]
-    pub fn overlaps(&self, other: Rect) -> bool {
+    pub fn overlaps(&self, other: Bounds2D) -> bool {
         // Branchless: compute all four comparisons and combine them with bitwise `&`
         // to remove hard-to-predict floating-point branches from the traversal loop.
         (self.min_x <= other.max_x)
@@ -135,22 +132,22 @@ impl Rect {
             & (self.max_y >= other.min_y)
     }
 
-    /// Return `true` when this rectangle fully contains `other`.
+    /// Return `true` when these bounds fully contain `other`.
     ///
     /// Edges are inclusive.
     #[inline]
-    pub fn contains(&self, other: Rect) -> bool {
+    pub fn contains(&self, other: Bounds2D) -> bool {
         (self.min_x <= other.min_x)
             & (self.min_y <= other.min_y)
             & (self.max_x >= other.max_x)
             & (self.max_y >= other.max_y)
     }
 
-    /// Return `true` when this rectangle contains `point`.
+    /// Return `true` when these bounds contain `point`.
     ///
     /// Edges are inclusive.
     #[inline]
-    pub fn contains_point(&self, point: Point) -> bool {
+    pub fn contains_point(&self, point: Point2D) -> bool {
         (self.min_x <= point.x)
             & (self.max_x >= point.x)
             & (self.min_y <= point.y)
@@ -158,7 +155,7 @@ impl Rect {
     }
 
     #[inline]
-    pub(crate) fn distance_squared_to(&self, point: Point) -> f64 {
+    pub(crate) fn distance_squared_to(&self, point: Point2D) -> f64 {
         let dx = axis_distance(point.x, self.min_x, self.max_x);
         let dy = axis_distance(point.y, self.min_y, self.max_y);
         dx * dx + dy * dy
@@ -170,21 +167,21 @@ impl Rect {
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::Point;
+/// use packed_spatial_index::Point2D;
 ///
-/// let point = Point::new(10.0, 20.0);
+/// let point = Point2D::new(10.0, 20.0);
 /// assert_eq!(point.x, 10.0);
 /// assert_eq!(point.y, 20.0);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Point {
+pub struct Point2D {
     /// X coordinate.
     pub x: f64,
     /// Y coordinate.
     pub y: f64,
 }
 
-impl Point {
+impl Point2D {
     /// Create a point from `x, y`.
     #[inline]
     pub const fn new(x: f64, y: f64) -> Self {

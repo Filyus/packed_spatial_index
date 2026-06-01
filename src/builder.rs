@@ -2,42 +2,42 @@ use std::{error::Error, fmt};
 
 use crate::{
     config::DEFAULT_NODE_SIZE,
-    geometry::{Num, Rect},
-    index::Index,
+    geometry::{Bounds2D, Num},
+    index::Index2D,
     sort::{
-        DEFAULT_RADIX_BITS, ExperimentalSortKey, SortKey, encode_sort_serial, hilbert_coord,
+        DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, encode_sort_serial, hilbert_coord,
         normalize_radix_bits,
     },
 };
 #[cfg(feature = "parallel")]
 use crate::{config::DEFAULT_PARALLEL_MIN_ITEMS, sort::encode_sort_parallel};
 
-/// Builder for [`Index`] and, with the `simd` feature, `SimdIndex`.
+/// Builder for [`Index2D`] and, with the `simd` feature, `SimdIndex2D`.
 ///
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{IndexBuilder, Rect};
+/// use packed_spatial_index::{Index2DBuilder, Bounds2D};
 ///
-/// let mut builder = IndexBuilder::new(2);
-/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-/// builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+/// let mut builder = Index2DBuilder::new(2);
+/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
 ///
 /// let index = builder.finish().unwrap();
-/// assert_eq!(index.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// assert_eq!(index.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 /// ```
-#[must_use = "IndexBuilder methods return an updated builder; assign the result or chain the call"]
-pub struct IndexBuilder {
+#[must_use = "Index2DBuilder methods return an updated builder; assign the result or chain the call"]
+pub struct Index2DBuilder {
     node_size: usize,
     num_items: usize,
-    sort_key: ExperimentalSortKey,
+    sort_key: ExperimentalSortKey2D,
     radix: bool,
     radix_bits: u32,
     #[cfg(feature = "parallel")]
     parallel: bool,
     #[cfg(feature = "parallel")]
     parallel_min_items: usize,
-    boxes: Vec<Rect>,
+    boxes: Vec<Bounds2D>,
 }
 
 #[derive(Clone, Copy)]
@@ -45,7 +45,7 @@ pub struct IndexBuilder {
 pub(crate) struct BuildConfig {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
-    pub(crate) sort_key: ExperimentalSortKey,
+    pub(crate) sort_key: ExperimentalSortKey2D,
     pub(crate) radix: bool,
     pub(crate) radix_bits: u32,
     #[cfg(feature = "parallel")]
@@ -61,7 +61,7 @@ pub enum BuildError {
     ItemCount {
         /// Number actually added through `add`.
         added: usize,
-        /// Expected by `IndexBuilder::new(count)`.
+        /// Expected by `Index2DBuilder::new(count)`.
         expected: usize,
     },
 }
@@ -79,13 +79,13 @@ impl fmt::Display for BuildError {
 
 impl Error for BuildError {}
 
-impl IndexBuilder {
+impl Index2DBuilder {
     /// Create a builder for exactly `count` items with [`DEFAULT_NODE_SIZE`].
     pub fn new(count: usize) -> Self {
-        IndexBuilder {
+        Index2DBuilder {
             node_size: DEFAULT_NODE_SIZE,
             num_items: count,
-            sort_key: SortKey::Hilbert.into(),
+            sort_key: SortKey2D::Hilbert.into(),
             radix: true,
             radix_bits: DEFAULT_RADIX_BITS,
             #[cfg(feature = "parallel")]
@@ -102,15 +102,15 @@ impl IndexBuilder {
         self
     }
 
-    /// Choose the sort key (default: [`SortKey::Hilbert`]).
-    pub fn sort_key(mut self, key: SortKey) -> Self {
+    /// Choose the sort key (default: [`SortKey2D::Hilbert`]).
+    pub fn sort_key(mut self, key: SortKey2D) -> Self {
         self.sort_key = key.into();
         self
     }
 
     /// Choose an experimental sort-key implementation.
     #[doc(hidden)]
-    pub fn experimental_sort_key(mut self, key: ExperimentalSortKey) -> Self {
+    pub fn experimental_sort_key(mut self, key: ExperimentalSortKey2D) -> Self {
         self.sort_key = key;
         self
     }
@@ -149,14 +149,14 @@ impl IndexBuilder {
         self
     }
 
-    /// Add a rectangle.
+    /// Add item bounds.
     #[inline]
-    pub fn add(&mut self, rect: Rect) {
-        self.boxes.push(rect);
+    pub fn add(&mut self, bounds: Bounds2D) {
+        self.boxes.push(bounds);
     }
 
     /// Pack the tree and return the finished index.
-    pub fn finish(self) -> Result<Index, BuildError> {
+    pub fn finish(self) -> Result<Index2D, BuildError> {
         if self.boxes.len() != self.num_items {
             return Err(BuildError::ItemCount {
                 added: self.boxes.len(),
@@ -171,16 +171,16 @@ impl IndexBuilder {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{IndexBuilder, Rect};
+    /// use packed_spatial_index::{Index2DBuilder, Bounds2D};
     ///
-    /// let mut builder = IndexBuilder::new(1);
-    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// let mut builder = Index2DBuilder::new(1);
+    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
     ///
     /// let index = builder.finish_simd().unwrap();
-    /// assert_eq!(index.search(Rect::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
+    /// assert_eq!(index.search(Bounds2D::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
     /// ```
     #[cfg(feature = "simd")]
-    pub fn finish_simd(self) -> Result<crate::SimdIndex, BuildError> {
+    pub fn finish_simd(self) -> Result<crate::SimdIndex2D, BuildError> {
         if self.boxes.len() != self.num_items {
             return Err(BuildError::ItemCount {
                 added: self.boxes.len(),
@@ -208,7 +208,7 @@ impl IndexBuilder {
         }
     }
 
-    fn build_unchecked(self) -> Index {
+    fn build_unchecked(self) -> Index2D {
         let node_size = self.node_size;
         let num_items = self.num_items;
 
@@ -228,7 +228,7 @@ impl IndexBuilder {
         }
 
         if num_items == 0 {
-            return Index {
+            return Index2D {
                 node_size,
                 num_items,
                 level_bounds,
@@ -241,7 +241,7 @@ impl IndexBuilder {
             return build_single_node_index(node_size, num_items, level_bounds, self.boxes);
         }
 
-        let mut boxes: Vec<Rect> = vec![Rect::new(0.0, 0.0, 0.0, 0.0); num_nodes];
+        let mut boxes: Vec<Bounds2D> = vec![Bounds2D::new(0.0, 0.0, 0.0, 0.0); num_nodes];
         let mut indices: Vec<usize> = vec![0usize; num_nodes];
         let items = &self.boxes;
 
@@ -263,7 +263,7 @@ impl IndexBuilder {
         let scaled_height = u16::MAX as f64 / (max_y - min_y);
         let sort_key = self.sort_key;
 
-        let encode = |i: usize, b: &Rect| -> (u32, u32) {
+        let encode = |i: usize, b: &Bounds2D| -> (u32, u32) {
             let hx = hilbert_coord(scaled_width, b.min_x, b.max_x, min_x);
             let hy = hilbert_coord(scaled_height, b.min_y, b.max_y, min_y);
             (sort_key.encode(hx, hy), i as u32)
@@ -293,7 +293,7 @@ impl IndexBuilder {
         for &level_end in &level_bounds[0..level_bounds.len() - 1] {
             while read_pos < level_end {
                 let node_index = read_pos;
-                let mut node_bounds = Rect::new(
+                let mut node_bounds = Bounds2D::new(
                     Num::INFINITY,
                     Num::INFINITY,
                     Num::NEG_INFINITY,
@@ -315,7 +315,7 @@ impl IndexBuilder {
             }
         }
 
-        Index {
+        Index2D {
             node_size,
             num_items,
             level_bounds,
@@ -325,7 +325,12 @@ impl IndexBuilder {
     }
 }
 
-fn reorder_serial(boxes: &mut [Rect], indices: &mut [usize], order: &[(u32, u32)], items: &[Rect]) {
+fn reorder_serial(
+    boxes: &mut [Bounds2D],
+    indices: &mut [usize],
+    order: &[(u32, u32)],
+    items: &[Bounds2D],
+) {
     for (slot, &(_, orig)) in order.iter().enumerate() {
         boxes[slot] = items[orig as usize];
         indices[slot] = orig as usize;
@@ -336,9 +341,9 @@ fn build_single_node_index(
     node_size: usize,
     num_items: usize,
     level_bounds: Vec<usize>,
-    mut boxes: Vec<Rect>,
-) -> Index {
-    let mut root = Rect::new(
+    mut boxes: Vec<Bounds2D>,
+) -> Index2D {
+    let mut root = Bounds2D::new(
         Num::INFINITY,
         Num::INFINITY,
         Num::NEG_INFINITY,
@@ -356,7 +361,7 @@ fn build_single_node_index(
     indices.extend(0..num_items);
     indices.push(0);
 
-    Index {
+    Index2D {
         node_size,
         num_items,
         level_bounds,
@@ -367,10 +372,10 @@ fn build_single_node_index(
 
 #[cfg(feature = "parallel")]
 fn reorder_parallel(
-    boxes: &mut [Rect],
+    boxes: &mut [Bounds2D],
     indices: &mut [usize],
     order: &[(u32, u32)],
-    items: &[Rect],
+    items: &[Bounds2D],
     num_items: usize,
 ) {
     use rayon::prelude::*;

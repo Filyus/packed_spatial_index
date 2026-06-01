@@ -1,11 +1,11 @@
-//! Experiment: AoS queries (current Index) vs SoA scalar vs SoA SIMD (f64x4).
+//! Experiment: AoS queries (current Index2D) vs SoA scalar vs SoA SIMD (f64x4).
 //! Run: `cargo run --release --example soa_experiment`
 //! (faster with `RUSTFLAGS="-C target-cpu=native"`).
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey;
-use packed_spatial_index::{IndexBuilder, Rect};
+use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::{Bounds2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -26,15 +26,15 @@ fn main() {
         })
         .collect();
 
-    let mut aos = IndexBuilder::new(N)
+    let mut aos = Index2DBuilder::new(N)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey::HilbertLut);
-    let mut soa = IndexBuilder::new(N)
+        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+    let mut soa = Index2DBuilder::new(N)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey::HilbertLut);
+        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     for b in &boxes {
-        aos.add(Rect::new(b[0], b[1], b[2], b[3]));
-        soa.add(Rect::new(b[0], b[1], b[2], b[3]));
+        aos.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        soa.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
     }
     let aos = aos.finish().unwrap();
     let soa = soa.finish_simd().unwrap();
@@ -55,11 +55,11 @@ fn main() {
         let (mut a, mut s, mut sm, mut av) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let (mut st1, mut st2, mut st3, mut st4) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for q in &queries {
-            let rect = Rect::new(q[0], q[1], q[2], q[3]);
-            aos.search_into_stack(rect, &mut a, &mut st1);
-            soa.search_scalar(rect, &mut s, &mut st2);
-            soa.search_simd(rect, &mut sm, &mut st3);
-            soa.search_avx512(rect, &mut av, &mut st4);
+            let bounds = Bounds2D::new(q[0], q[1], q[2], q[3]);
+            aos.search_into_stack(bounds, &mut a, &mut st1);
+            soa.search_scalar(bounds, &mut s, &mut st2);
+            soa.search_simd(bounds, &mut sm, &mut st3);
+            soa.search_avx512(bounds, &mut av, &mut st4);
             a.sort_unstable();
             s.sort_unstable();
             sm.sort_unstable();
@@ -91,7 +91,7 @@ fn main() {
     bench("AoS", NQ, || {
         let mut t = 0;
         for x in &queries {
-            aos.search_into_stack(Rect::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
+            aos.search_into_stack(Bounds2D::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
             t += buf.len();
         }
         t
@@ -99,7 +99,7 @@ fn main() {
     bench("SoA-scalar", NQ, || {
         let mut t = 0;
         for x in &queries {
-            soa.search_scalar(Rect::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
+            soa.search_scalar(Bounds2D::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
             t += buf.len();
         }
         t
@@ -107,7 +107,7 @@ fn main() {
     bench("SoA-SIMD(f64x4)", NQ, || {
         let mut t = 0;
         for x in &queries {
-            soa.search_simd(Rect::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
+            soa.search_simd(Bounds2D::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
             t += buf.len();
         }
         t
@@ -115,7 +115,7 @@ fn main() {
     bench("SoA-AVX512(x8)", NQ, || {
         let mut t = 0;
         for x in &queries {
-            soa.search_avx512(Rect::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
+            soa.search_avx512(Bounds2D::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
             t += buf.len();
         }
         t

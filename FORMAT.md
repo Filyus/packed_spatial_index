@@ -1,11 +1,11 @@
 # Binary Format
 
-`Index::to_bytes` writes the canonical `Index` layout to a stable
-little-endian byte format. `Index::from_bytes` loads the same format into owned
-vectors, and `IndexView::from_bytes` borrows the buffer without allocating
+`Index2D::to_bytes` writes the canonical `Index2D` layout to a stable
+little-endian byte format. `Index2D::from_bytes` loads the same format into owned
+vectors, and `Index2DView::from_bytes` borrows the buffer without allocating
 during load.
 
-`SimdIndex` does not have a separate persisted SoA format.
+`SimdIndex2D` does not have a separate persisted SoA format.
 
 ## Magic And Version
 
@@ -18,7 +18,7 @@ b"PSINDEX\0"
 It expands to:
 
 - `PS` = Packed Spatial;
-- `INDEX` = Index;
+- `INDEX` = index;
 - `\0` = one trailing NUL byte to keep the signature exactly eight bytes.
 
 The binary format version is stored separately as a little-endian `u64` header
@@ -102,5 +102,5 @@ offset for malformed input.
 ## Compatibility
 
 The byte format is intended for data produced by `packed_spatial_index`
-`Index::to_bytes`. The crate preserves the meaning of `format_version = 1`;
+`Index2D::to_bytes`. The crate preserves the meaning of `format_version = 1`;
 incompatible changes should use a new version value.

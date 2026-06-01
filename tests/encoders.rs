@@ -1,8 +1,8 @@
 mod common;
 
-use common::{random_boxes, rect};
-use packed_spatial_index::experimental::{ENCODERS, ExperimentalSortKey};
-use packed_spatial_index::{IndexBuilder, Rect, SortKey};
+use common::{bounds, random_boxes};
+use packed_spatial_index::experimental::{ENCODERS, ExperimentalSortKey2D};
+use packed_spatial_index::{Bounds2D, Index2DBuilder, SortKey2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use static_aabb2d_index::{StaticAABB2DIndexBuilder, hilbert_xy_to_index};
@@ -51,19 +51,19 @@ fn encoder_is_bijection_on_8bit() {
     }
 }
 
-fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey) {
+fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey2D) {
     let mut rng = StdRng::seed_from_u64(42);
     let n = 5_000usize;
     let node_size = 16usize;
     let boxes = random_boxes(&mut rng, n);
 
     let mut reference = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, node_size);
-    let mut index = IndexBuilder::new(n)
+    let mut index = Index2DBuilder::new(n)
         .node_size(node_size)
         .experimental_sort_key(choice);
     for b in &boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        index.add(Rect::new(b[0], b[1], b[2], b[3]));
+        index.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
@@ -73,7 +73,7 @@ fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey) {
         let qy: f64 = rng.random_range(0.0..1000.0);
         let qw: f64 = rng.random_range(1.0..100.0);
         let qh: f64 = rng.random_range(1.0..100.0);
-        let query = Rect::new(qx, qy, qx + qw, qy + qh);
+        let query = Bounds2D::new(qx, qy, qx + qw, qy + qh);
 
         let mut expected = reference.query(qx, qy, qx + qw, qy + qh);
         let mut actual = index.search(query);
@@ -88,22 +88,22 @@ fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey) {
 
 #[test]
 fn index_search_matches_reference_magic() {
-    check_experimental_sort_key_matches_reference(ExperimentalSortKey::HilbertMagicBits);
+    check_experimental_sort_key_matches_reference(ExperimentalSortKey2D::HilbertMagicBits);
 }
 
 #[test]
 fn index_search_matches_reference_loop() {
-    check_experimental_sort_key_matches_reference(ExperimentalSortKey::HilbertLoopRotation);
+    check_experimental_sort_key_matches_reference(ExperimentalSortKey2D::HilbertLoopRotation);
 }
 
 #[test]
 fn index_search_matches_reference_lut() {
-    check_experimental_sort_key_matches_reference(ExperimentalSortKey::HilbertLut);
+    check_experimental_sort_key_matches_reference(ExperimentalSortKey2D::HilbertLut);
 }
 
 #[test]
 fn index_search_matches_reference_morton() {
-    check_experimental_sort_key_matches_reference(ExperimentalSortKey::Morton);
+    check_experimental_sort_key_matches_reference(ExperimentalSortKey2D::Morton);
 }
 
 #[test]
@@ -113,15 +113,15 @@ fn public_sort_keys_match_reference() {
     let boxes = random_boxes(&mut rng, n);
 
     let mut reference = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, 16);
-    let mut index = IndexBuilder::new(n).sort_key(SortKey::Hilbert);
+    let mut index = Index2DBuilder::new(n).sort_key(SortKey2D::Hilbert);
     for b in &boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        index.add(rect(*b));
+        index.add(bounds(*b));
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
 
-    let query = Rect::new(250.0, 250.0, 750.0, 750.0);
+    let query = Bounds2D::new(250.0, 250.0, 750.0, 750.0);
     let mut expected = reference.query(query.min_x, query.min_y, query.max_x, query.max_y);
     let mut actual = index.search(query);
     expected.sort_unstable();

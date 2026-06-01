@@ -1,7 +1,7 @@
 mod common;
 
 use common::{build_index, random_boxes};
-use packed_spatial_index::{Index, IndexView, LoadError, Point, Rect};
+use packed_spatial_index::{Bounds2D, Index2D, Index2DView, LoadError, Point2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -17,20 +17,20 @@ fn persistence_round_trip_and_view_agree() {
     assert_eq!(u64::from_le_bytes(bytes[16..24].try_into().unwrap()), 64);
     assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 0);
 
-    let loaded = Index::from_bytes(&bytes).unwrap();
-    let view = IndexView::from_bytes(&bytes).unwrap();
+    let loaded = Index2D::from_bytes(&bytes).unwrap();
+    let view = Index2DView::from_bytes(&bytes).unwrap();
 
     assert_eq!(loaded.num_items(), index.num_items());
     assert_eq!(view.num_items(), index.num_items());
     assert_eq!(loaded.node_size(), index.node_size());
     assert_eq!(view.node_size(), index.node_size());
-    assert_eq!(loaded.bounds(), index.bounds());
-    assert_eq!(view.bounds(), index.bounds());
+    assert_eq!(loaded.extent(), index.extent());
+    assert_eq!(view.extent(), index.extent());
 
     for _ in 0..100 {
         let qx: f64 = rng.random_range(0.0..1000.0);
         let qy: f64 = rng.random_range(0.0..1000.0);
-        let query = Rect::new(qx, qy, qx + 40.0, qy + 40.0);
+        let query = Bounds2D::new(qx, qy, qx + 40.0, qy + 40.0);
 
         let mut expected = index.search(query);
         let mut owned = loaded.search(query);
@@ -41,7 +41,7 @@ fn persistence_round_trip_and_view_agree() {
         assert_eq!(expected, owned);
         assert_eq!(expected, borrowed);
 
-        let point = Point::new(qx, qy);
+        let point = Point2D::new(qx, qy);
         assert_eq!(
             index.neighbors_within(point, 12, 100.0),
             loaded.neighbors_within(point, 12, 100.0)
@@ -73,20 +73,20 @@ fn persistence_handles_edge_shapes() {
     for boxes in cases {
         let index = build_index(&boxes, 16);
         let bytes = index.to_bytes();
-        let loaded = Index::from_bytes(&bytes).unwrap();
-        let view = IndexView::from_bytes(&bytes).unwrap();
-        assert_eq!(loaded.bounds(), index.bounds());
-        assert_eq!(view.bounds(), index.bounds());
-        let query = Rect::new(-100.0, -100.0, 100.0, 100.0);
+        let loaded = Index2D::from_bytes(&bytes).unwrap();
+        let view = Index2DView::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded.extent(), index.extent());
+        assert_eq!(view.extent(), index.extent());
+        let query = Bounds2D::new(-100.0, -100.0, 100.0, 100.0);
         assert_eq!(index.search(query), loaded.search(query));
         assert_eq!(index.search(query), view.search(query));
         assert_eq!(
-            index.neighbors(Point::new(0.0, 0.0), 3),
-            loaded.neighbors(Point::new(0.0, 0.0), 3)
+            index.neighbors(Point2D::new(0.0, 0.0), 3),
+            loaded.neighbors(Point2D::new(0.0, 0.0), 3)
         );
         assert_eq!(
-            index.neighbors(Point::new(0.0, 0.0), 3),
-            view.neighbors(Point::new(0.0, 0.0), 3)
+            index.neighbors(Point2D::new(0.0, 0.0), 3),
+            view.neighbors(Point2D::new(0.0, 0.0), 3)
         );
     }
 }
@@ -104,54 +104,54 @@ fn persistence_rejects_malformed_buffers() {
     let mut bad_magic = bytes.clone();
     bad_magic[0] = b'X';
     assert!(matches!(
-        IndexView::from_bytes(&bad_magic),
+        Index2DView::from_bytes(&bad_magic),
         Err(LoadError::BadMagic)
     ));
 
     let mut bad_version = bytes.clone();
     bad_version[8..16].copy_from_slice(&999u64.to_le_bytes());
     assert!(matches!(
-        IndexView::from_bytes(&bad_version),
+        Index2DView::from_bytes(&bad_version),
         Err(LoadError::UnsupportedVersion)
     ));
 
     let mut bad_header_len = bytes.clone();
     bad_header_len[16..24].copy_from_slice(&48u64.to_le_bytes());
     assert!(matches!(
-        IndexView::from_bytes(&bad_header_len),
+        Index2DView::from_bytes(&bad_header_len),
         Err(LoadError::UnsupportedVersion)
     ));
 
     let mut bad_flags = bytes.clone();
     bad_flags[24..32].copy_from_slice(&1u64.to_le_bytes());
     assert!(matches!(
-        IndexView::from_bytes(&bad_flags),
+        Index2DView::from_bytes(&bad_flags),
         Err(LoadError::UnsupportedVersion)
     ));
 
     assert!(matches!(
-        IndexView::from_bytes(&bytes[..bytes.len() - 1]),
+        Index2DView::from_bytes(&bytes[..bytes.len() - 1]),
         Err(LoadError::Truncated)
     ));
 
     let mut extra = bytes.clone();
     extra.push(0);
     assert!(matches!(
-        IndexView::from_bytes(&extra),
+        Index2DView::from_bytes(&extra),
         Err(LoadError::LengthMismatch { .. })
     ));
 
     let mut invalid_node_size = bytes.clone();
     invalid_node_size[32..40].copy_from_slice(&1u64.to_le_bytes());
     assert!(matches!(
-        IndexView::from_bytes(&invalid_node_size),
+        Index2DView::from_bytes(&invalid_node_size),
         Err(LoadError::InvalidNodeSize { node_size: 1 })
     ));
 
     let mut invalid_level_bounds = bytes.clone();
     invalid_level_bounds[64..72].copy_from_slice(&999u64.to_le_bytes());
     assert!(matches!(
-        IndexView::from_bytes(&invalid_level_bounds),
+        Index2DView::from_bytes(&invalid_level_bounds),
         Err(LoadError::InvalidTree)
     ));
 
@@ -162,7 +162,7 @@ fn persistence_rejects_malformed_buffers() {
     let mut invalid_leaf_index = bytes.clone();
     invalid_leaf_index[indices_offset..indices_offset + 8].copy_from_slice(&999u64.to_le_bytes());
     assert!(matches!(
-        IndexView::from_bytes(&invalid_leaf_index),
+        Index2DView::from_bytes(&invalid_leaf_index),
         Err(LoadError::InvalidTree)
     ));
 
@@ -171,7 +171,7 @@ fn persistence_rejects_malformed_buffers() {
     invalid_child_pointer[last_index_offset..last_index_offset + 8]
         .copy_from_slice(&999u64.to_le_bytes());
     assert!(matches!(
-        IndexView::from_bytes(&invalid_child_pointer),
+        Index2DView::from_bytes(&invalid_child_pointer),
         Err(LoadError::InvalidTree)
     ));
 }

@@ -26,9 +26,9 @@ wide = { version = "1.4.0", optional = true }
 [features]
 # Both features are enabled by default to preserve the previous behavior.
 default = ["parallel", "simd"]
-# Adaptive parallel index builds through rayon (`IndexBuilder::parallel`).
+# Adaptive parallel index builds through rayon (`Index2DBuilder::parallel`).
 parallel = ["dep:rayon"]
-# SoA index with SIMD queries (`SimdIndex`, AVX2 `wide::f64x4` + AVX-512 intrinsics).
+# SoA index with SIMD queries (`SimdIndex2D`, AVX2 `wide::f64x4` + AVX-512 intrinsics).
 simd = ["dep:wide"]
 
 [dev-dependencies]

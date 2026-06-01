@@ -1,20 +1,20 @@
 //! Static spatial index implementation for 2D AABBs:
 //! a packed Hilbert R-tree in the style of flatbush / `static_aabb2d_index`.
 //!
-//! The public API is intentionally small: collect rectangles with [`crate::IndexBuilder`],
-//! call [`crate::IndexBuilder::finish`], then search the finished [`Index`].
+//! The public API is intentionally small: collect bounds with [`crate::Index2DBuilder`],
+//! call [`crate::Index2DBuilder::finish`], then search the finished [`Index2D`].
 //!
 //! # Example
 //! ```
-//! use packed_spatial_index::{IndexBuilder, Rect};
+//! use packed_spatial_index::{Index2DBuilder, Bounds2D};
 //!
-//! let mut builder = IndexBuilder::new(3);
-//! builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-//! builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
-//! builder.add(Rect::new(0.5, 0.5, 2.0, 2.0));
+//! let mut builder = Index2DBuilder::new(3);
+//! builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+//! builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
+//! builder.add(Bounds2D::new(0.5, 0.5, 2.0, 2.0));
 //! let index = builder.finish().unwrap();
 //!
-//! let hits = index.search(Rect::new(0.0, 0.0, 1.5, 1.5));
+//! let hits = index.search(Bounds2D::new(0.0, 0.0, 1.5, 1.5));
 //! assert!(hits.contains(&0) && hits.contains(&2));
 //! assert!(!hits.contains(&1));
 //! ```
@@ -22,7 +22,7 @@
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
-use crate::geometry::{Point, Rect};
+use crate::geometry::{Bounds2D, Point2D};
 use crate::neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared};
 use crate::persistence::{
     ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -37,14 +37,14 @@ use crate::persistence::{
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{IndexBuilder, Rect, SearchWorkspace};
+/// use packed_spatial_index::{Index2DBuilder, Bounds2D, SearchWorkspace};
 ///
-/// let mut builder = IndexBuilder::new(1);
-/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+/// let mut builder = Index2DBuilder::new(1);
+/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
 /// let index = builder.finish().unwrap();
 ///
 /// let mut workspace = SearchWorkspace::new();
-/// let hits = index.search_with(Rect::new(0.5, 0.5, 0.5, 0.5), &mut workspace);
+/// let hits = index.search_with(Bounds2D::new(0.5, 0.5, 0.5, 0.5), &mut workspace);
 /// assert_eq!(hits, &[0]);
 /// ```
 #[derive(Debug, Default)]
@@ -94,12 +94,12 @@ pub(crate) fn prefetch_read<T>(ptr: *const T) {
 }
 
 #[inline]
-fn prefetch_aos_node(boxes: &[Rect], indices: &[usize], node_index: usize, node_size: usize) {
+fn prefetch_aos_node(boxes: &[Bounds2D], indices: &[usize], node_index: usize, node_size: usize) {
     if node_index < boxes.len() {
         prefetch_read(boxes.as_ptr().wrapping_add(node_index));
         prefetch_read(indices.as_ptr().wrapping_add(node_index));
     }
-    let next_line = node_index.saturating_add((64 / std::mem::size_of::<Rect>()).max(1));
+    let next_line = node_index.saturating_add((64 / std::mem::size_of::<Bounds2D>()).max(1));
     if node_size > 1 && next_line < boxes.len() {
         prefetch_read(boxes.as_ptr().wrapping_add(next_line));
         prefetch_read(indices.as_ptr().wrapping_add(next_line));
@@ -114,32 +114,32 @@ fn prefetch_aos_node(boxes: &[Rect], indices: &[usize], node_index: usize, node_
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{IndexBuilder, Rect};
+/// use packed_spatial_index::{Index2DBuilder, Bounds2D};
 ///
-/// let mut builder = IndexBuilder::new(2);
-/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-/// builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+/// let mut builder = Index2DBuilder::new(2);
+/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
 /// let index = builder.finish().unwrap();
 ///
 /// assert_eq!(index.num_items(), 2);
-/// assert_eq!(index.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// assert_eq!(index.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 /// ```
-pub struct Index {
+pub struct Index2D {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
     pub(crate) level_bounds: Vec<usize>,
-    pub(crate) boxes: Vec<Rect>,
+    pub(crate) boxes: Vec<Bounds2D>,
     pub(crate) indices: Vec<usize>,
 }
 
-impl Index {
+impl Index2D {
     /// Return the number of indexed items.
     pub fn num_items(&self) -> usize {
         self.num_items
     }
 
-    /// Return the total bounds of indexed items, or `None` for an empty index.
-    pub fn bounds(&self) -> Option<Rect> {
+    /// Return the total extent of indexed items, or `None` for an empty index.
+    pub fn extent(&self) -> Option<Bounds2D> {
         self.boxes.last().copied()
     }
 
@@ -153,17 +153,17 @@ impl Index {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Index, IndexBuilder, IndexView, Rect};
+    /// use packed_spatial_index::{Index2D, Index2DBuilder, Index2DView, Bounds2D};
     ///
-    /// let mut builder = IndexBuilder::new(1);
-    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// let mut builder = Index2DBuilder::new(1);
+    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
     /// let index = builder.finish()?;
     ///
     /// let bytes = index.to_bytes();
-    /// let owned = Index::from_bytes(&bytes)?;
-    /// let view = IndexView::from_bytes(&bytes)?;
+    /// let owned = Index2D::from_bytes(&bytes)?;
+    /// let view = Index2DView::from_bytes(&bytes)?;
     ///
-    /// let query = Rect::new(0.5, 0.5, 0.5, 0.5);
+    /// let query = Bounds2D::new(0.5, 0.5, 0.5, 0.5);
     /// assert_eq!(owned.search(query), view.search(query));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -195,9 +195,9 @@ impl Index {
         bytes.finish()
     }
 
-    /// Load an owned index from bytes previously produced by [`Index::to_bytes`].
+    /// Load an owned index from bytes previously produced by [`Index2D::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
-        let view = IndexView::from_bytes(bytes)?;
+        let view = Index2DView::from_bytes(bytes)?;
 
         let mut level_bounds = Vec::with_capacity(view.level_count);
         for i in 0..view.level_count {
@@ -223,17 +223,17 @@ impl Index {
         })
     }
 
-    /// Return the indices of all items whose rectangles intersect `rect`.
-    pub fn search(&self, rect: Rect) -> Vec<usize> {
+    /// Return the indices of all items whose bounds intersect `bounds`.
+    pub fn search(&self, bounds: Bounds2D) -> Vec<usize> {
         let mut results = Vec::new();
-        self.search_into(rect, &mut results);
+        self.search_into(bounds, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, rect: Rect, results: &mut Vec<usize>) {
+    pub fn search_into(&self, bounds: Bounds2D, results: &mut Vec<usize>) {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(rect, results, &mut stack);
+        self.search_into_stack(bounds, results, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
@@ -241,36 +241,40 @@ impl Index {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{IndexBuilder, Rect, SearchWorkspace};
+    /// use packed_spatial_index::{Index2DBuilder, Bounds2D, SearchWorkspace};
     ///
-    /// let mut builder = IndexBuilder::new(1);
-    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// let mut builder = Index2DBuilder::new(1);
+    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
     /// let index = builder.finish().unwrap();
     ///
     /// let mut workspace = SearchWorkspace::with_capacity(8, 8);
-    /// let hits = index.search_with(Rect::new(0.0, 0.0, 2.0, 2.0), &mut workspace);
+    /// let hits = index.search_with(Bounds2D::new(0.0, 0.0, 2.0, 2.0), &mut workspace);
     /// assert_eq!(hits, &[0]);
     /// assert_eq!(workspace.results(), &[0]);
     /// ```
-    pub fn search_with<'a>(&self, rect: Rect, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
-        self.search_into_stack(rect, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'a>(
+        &self,
+        bounds: Bounds2D,
+        workspace: &'a mut SearchWorkspace,
+    ) -> &'a [usize] {
+        self.search_into_stack(bounds, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `rect`.
+    /// Return `true` if at least one item intersects `bounds`.
     ///
     /// This is an early-exit path: traversal stops at the first hit and does not
     /// allocate a result `Vec`.
-    pub fn any(&self, rect: Rect) -> bool {
-        self.visit(rect, |_| ControlFlow::Break(())).is_break()
+    pub fn any(&self, bounds: Bounds2D) -> bool {
+        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
     ///
     /// Tree traversal order is not part of the API, so this returns just some first
     /// found item, not the minimum insertion index.
-    pub fn first(&self, rect: Rect) -> Option<usize> {
-        match self.visit(rect, ControlFlow::Break) {
+    pub fn first(&self, bounds: Bounds2D) -> Option<usize> {
+        match self.visit(bounds, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -281,23 +285,23 @@ impl Index {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{IndexBuilder, Point, Rect};
+    /// use packed_spatial_index::{Index2DBuilder, Point2D, Bounds2D};
     ///
-    /// let mut builder = IndexBuilder::new(2);
-    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-    /// builder.add(Rect::new(10.0, 10.0, 11.0, 11.0));
+    /// let mut builder = Index2DBuilder::new(2);
+    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Bounds2D::new(10.0, 10.0, 11.0, 11.0));
     /// let index = builder.finish().unwrap();
     ///
-    /// assert_eq!(index.neighbors(Point::new(10.25, 10.25), 1), vec![1]);
+    /// assert_eq!(index.neighbors(Point2D::new(10.25, 10.25), 1), vec![1]);
     /// ```
-    pub fn neighbors(&self, point: Point, max_results: usize) -> Vec<usize> {
+    pub fn neighbors(&self, point: Point2D, max_results: usize) -> Vec<usize> {
         self.neighbors_within(point, max_results, f64::INFINITY)
     }
 
     /// Return up to `max_results` item indices within `max_distance` of `point`.
     pub fn neighbors_within(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
     ) -> Vec<usize> {
@@ -309,7 +313,7 @@ impl Index {
     /// Nearest-neighbor search with a reusable result buffer.
     pub fn neighbors_into(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
@@ -333,7 +337,7 @@ impl Index {
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
     pub fn neighbors_with<'a>(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         workspace: &'a mut NeighborWorkspace,
@@ -371,7 +375,7 @@ impl Index {
     /// stop early.
     pub fn visit_neighbors<B, F>(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -393,27 +397,27 @@ impl Index {
     /// ```
     /// use std::ops::ControlFlow;
     ///
-    /// use packed_spatial_index::{IndexBuilder, Rect};
+    /// use packed_spatial_index::{Index2DBuilder, Bounds2D};
     ///
-    /// let mut builder = IndexBuilder::new(2);
-    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-    /// builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+    /// let mut builder = Index2DBuilder::new(2);
+    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
     /// let index = builder.finish().unwrap();
     ///
-    /// let found = index.visit(Rect::new(5.0, 5.0, 6.0, 6.0), ControlFlow::Break);
+    /// let found = index.visit(Bounds2D::new(5.0, 5.0, 6.0, 6.0), ControlFlow::Break);
     /// assert_eq!(found, ControlFlow::Break(1));
     /// ```
-    pub fn visit<B, F>(&self, rect: Rect, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, bounds: Bounds2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(rect, &mut stack, visitor)
+        self.visit_with_stack(bounds, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queue(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
@@ -468,7 +472,7 @@ impl Index {
 
     fn nearest_one_with_queue(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
@@ -511,7 +515,7 @@ impl Index {
 
     fn visit_neighbors_with_queue<B, F>(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborState>,
         visitor: &mut F,
@@ -563,54 +567,59 @@ impl Index {
         }
     }
 
-    /// Same as [`visit`](Index::visit), but the traversal stack is reused by the caller.
+    /// Same as [`visit`](Index2D::visit), but the traversal stack is reused by the caller.
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         stack: &mut Vec<usize>,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<false, B, F>(rect, stack, visitor)
+        self.visit_with_stack_impl::<false, B, F>(bounds, stack, visitor)
     }
 
-    /// Experimental prefetch variant of [`visit_with_stack`](Index::visit_with_stack).
+    /// Experimental prefetch variant of [`visit_with_stack`](Index2D::visit_with_stack).
     #[doc(hidden)]
     pub fn visit_with_stack_prefetch<B, F>(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         stack: &mut Vec<usize>,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<true, B, F>(rect, stack, visitor)
+        self.visit_with_stack_impl::<true, B, F>(bounds, stack, visitor)
     }
 
     /// Hottest path: both result buffer and traversal stack are reused by the caller.
     #[doc(hidden)]
-    pub fn search_into_stack(&self, rect: Rect, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        self.search_into_stack_impl::<false>(rect, results, stack);
+    pub fn search_into_stack(
+        &self,
+        bounds: Bounds2D,
+        results: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        self.search_into_stack_impl::<false>(bounds, results, stack);
     }
 
     /// Traversal variant that prefetches the next node from the stack.
     #[doc(hidden)]
     pub fn search_into_stack_prefetch(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        self.search_into_stack_impl::<true>(rect, results, stack);
+        self.search_into_stack_impl::<true>(bounds, results, stack);
     }
 
     fn search_into_stack_impl<const PREFETCH: bool>(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
@@ -630,7 +639,7 @@ impl Index {
             if is_leaf {
                 for pos in node_index..end {
                     let b = &self.boxes[pos];
-                    if !b.overlaps(rect) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
                     let index = self.indices[pos];
@@ -640,7 +649,7 @@ impl Index {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
                     let b = &self.boxes[pos];
-                    if !b.overlaps(rect) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
                     let index = self.indices[pos];
@@ -668,7 +677,7 @@ impl Index {
 
     fn visit_with_stack_impl<const PREFETCH: bool, B, F>(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -690,7 +699,7 @@ impl Index {
             if is_leaf {
                 for pos in node_index..end {
                     let b = &self.boxes[pos];
-                    if !b.overlaps(rect) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
                     let index = self.indices[pos];
@@ -700,7 +709,7 @@ impl Index {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
                     let b = &self.boxes[pos];
-                    if !b.overlaps(rect) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
                     let index = self.indices[pos];
@@ -728,7 +737,7 @@ impl Index {
 
     /// Diagnostics: returns `(result_count, intersection_check_count)`.
     #[doc(hidden)]
-    pub fn search_visited(&self, rect: Rect) -> (usize, usize) {
+    pub fn search_visited(&self, bounds: Bounds2D) -> (usize, usize) {
         let mut results = 0usize;
         let mut visited = 0usize;
         if self.num_items == 0 {
@@ -745,7 +754,7 @@ impl Index {
             for pos in node_index..end {
                 visited += 1;
                 let b = &self.boxes[pos];
-                if !b.overlaps(rect) {
+                if !b.overlaps(bounds) {
                     continue;
                 }
                 let index = self.indices[pos];
@@ -767,7 +776,7 @@ impl Index {
     }
 }
 
-/// Zero-copy read-only view over bytes produced by [`Index::to_bytes`].
+/// Zero-copy read-only view over bytes produced by [`Index2D::to_bytes`].
 ///
 /// Loading validates the buffer but does not copy the tree into owned vectors.
 /// Search and nearest-neighbor methods read little-endian values directly from
@@ -776,16 +785,16 @@ impl Index {
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{IndexBuilder, IndexView, Rect};
+/// use packed_spatial_index::{Index2DBuilder, Index2DView, Bounds2D};
 ///
-/// let mut builder = IndexBuilder::new(1);
-/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+/// let mut builder = Index2DBuilder::new(1);
+/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
 /// let bytes = builder.finish().unwrap().to_bytes();
 ///
-/// let view = IndexView::from_bytes(&bytes).unwrap();
-/// assert_eq!(view.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// let view = Index2DView::from_bytes(&bytes).unwrap();
+/// assert_eq!(view.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 /// ```
-pub struct IndexView<'a> {
+pub struct Index2DView<'a> {
     node_size: usize,
     num_items: usize,
     num_nodes: usize,
@@ -795,19 +804,19 @@ pub struct IndexView<'a> {
     indices: &'a [u8],
 }
 
-impl<'a> IndexView<'a> {
-    /// Load a zero-copy index view from bytes previously produced by [`Index::to_bytes`].
+impl<'a> Index2DView<'a> {
+    /// Load a zero-copy index view from bytes previously produced by [`Index2D::to_bytes`].
     ///
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{IndexBuilder, IndexView, Rect};
+    /// use packed_spatial_index::{Index2DBuilder, Index2DView, Bounds2D};
     ///
-    /// let mut builder = IndexBuilder::new(1);
-    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// let mut builder = Index2DBuilder::new(1);
+    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
     /// let bytes = builder.finish()?.to_bytes();
     ///
-    /// let view = IndexView::from_bytes(&bytes)?;
+    /// let view = Index2DView::from_bytes(&bytes)?;
     /// assert_eq!(view.num_items(), 1);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -829,8 +838,8 @@ impl<'a> IndexView<'a> {
         self.num_items
     }
 
-    /// Return the total bounds of indexed items, or `None` for an empty view.
-    pub fn bounds(&self) -> Option<Rect> {
+    /// Return the total extent of indexed items, or `None` for an empty view.
+    pub fn extent(&self) -> Option<Bounds2D> {
         if self.num_items == 0 {
             None
         } else {
@@ -843,47 +852,51 @@ impl<'a> IndexView<'a> {
         self.node_size
     }
 
-    /// Return the indices of all items whose rectangles intersect `rect`.
-    pub fn search(&self, rect: Rect) -> Vec<usize> {
+    /// Return the indices of all items whose bounds intersect `bounds`.
+    pub fn search(&self, bounds: Bounds2D) -> Vec<usize> {
         let mut results = Vec::new();
-        self.search_into(rect, &mut results);
+        self.search_into(bounds, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, rect: Rect, results: &mut Vec<usize>) {
+    pub fn search_into(&self, bounds: Bounds2D, results: &mut Vec<usize>) {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(rect, results, &mut stack);
+        self.search_into_stack(bounds, results, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
-    pub fn search_with<'b>(&self, rect: Rect, workspace: &'b mut SearchWorkspace) -> &'b [usize] {
-        self.search_into_stack(rect, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'b>(
+        &self,
+        bounds: Bounds2D,
+        workspace: &'b mut SearchWorkspace,
+    ) -> &'b [usize] {
+        self.search_into_stack(bounds, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `rect`.
-    pub fn any(&self, rect: Rect) -> bool {
-        self.visit(rect, |_| ControlFlow::Break(())).is_break()
+    /// Return `true` if at least one item intersects `bounds`.
+    pub fn any(&self, bounds: Bounds2D) -> bool {
+        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
-    pub fn first(&self, rect: Rect) -> Option<usize> {
-        match self.visit(rect, ControlFlow::Break) {
+    pub fn first(&self, bounds: Bounds2D) -> Option<usize> {
+        match self.visit(bounds, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
     }
 
     /// Return up to `max_results` item indices nearest to `point`.
-    pub fn neighbors(&self, point: Point, max_results: usize) -> Vec<usize> {
+    pub fn neighbors(&self, point: Point2D, max_results: usize) -> Vec<usize> {
         self.neighbors_within(point, max_results, f64::INFINITY)
     }
 
     /// Return up to `max_results` item indices within `max_distance` of `point`.
     pub fn neighbors_within(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
     ) -> Vec<usize> {
@@ -895,7 +908,7 @@ impl<'a> IndexView<'a> {
     /// Nearest-neighbor search with a reusable result buffer.
     pub fn neighbors_into(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
@@ -919,7 +932,7 @@ impl<'a> IndexView<'a> {
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
     pub fn neighbors_with<'b>(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         workspace: &'b mut NeighborWorkspace,
@@ -954,7 +967,7 @@ impl<'a> IndexView<'a> {
     /// Visit items in nondecreasing squared-distance order from `point`.
     pub fn visit_neighbors<B, F>(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -966,17 +979,17 @@ impl<'a> IndexView<'a> {
     }
 
     /// Visit intersecting items without collecting a result `Vec`.
-    pub fn visit<B, F>(&self, rect: Rect, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, bounds: Bounds2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(rect, &mut stack, visitor)
+        self.visit_with_stack(bounds, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queue(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
@@ -1036,7 +1049,7 @@ impl<'a> IndexView<'a> {
 
     fn nearest_one_with_queue(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
@@ -1079,7 +1092,12 @@ impl<'a> IndexView<'a> {
     }
 
     #[doc(hidden)]
-    pub fn search_into_stack(&self, rect: Rect, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    pub fn search_into_stack(
+        &self,
+        bounds: Bounds2D,
+        results: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
         results.clear();
         stack.clear();
         if self.num_items == 0 {
@@ -1095,7 +1113,7 @@ impl<'a> IndexView<'a> {
             if is_leaf {
                 for pos in node_index..end {
                     let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(rect) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
                     let index = self.index_at_unchecked(pos);
@@ -1105,7 +1123,7 @@ impl<'a> IndexView<'a> {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
                     let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(rect) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
                     let index = self.index_at_unchecked(pos);
@@ -1126,7 +1144,7 @@ impl<'a> IndexView<'a> {
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -1147,7 +1165,7 @@ impl<'a> IndexView<'a> {
             if is_leaf {
                 for pos in node_index..end {
                     let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(rect) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
                     let index = self.index_at_unchecked(pos);
@@ -1157,7 +1175,7 @@ impl<'a> IndexView<'a> {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
                     let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(rect) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
                     let index = self.index_at_unchecked(pos);
@@ -1177,7 +1195,7 @@ impl<'a> IndexView<'a> {
 
     fn visit_neighbors_with_queue<B, F>(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborState>,
         visitor: &mut F,
@@ -1254,9 +1272,9 @@ impl<'a> IndexView<'a> {
     }
 
     #[inline]
-    fn box_at_unchecked(&self, index: usize) -> Rect {
+    fn box_at_unchecked(&self, index: usize) -> Bounds2D {
         let offset = index * 32;
-        Rect::new(
+        Bounds2D::new(
             read_f64_le_unchecked(self.boxes, offset),
             read_f64_le_unchecked(self.boxes, offset + 8),
             read_f64_le_unchecked(self.boxes, offset + 16),

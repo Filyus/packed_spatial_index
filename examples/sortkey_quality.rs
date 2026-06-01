@@ -6,8 +6,8 @@
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey;
-use packed_spatial_index::{IndexBuilder, Rect};
+use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::{Bounds2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -42,9 +42,9 @@ fn main() {
     let keys = [
         (
             "Hilbert (magic_bits)",
-            ExperimentalSortKey::HilbertMagicBits,
+            ExperimentalSortKey2D::HilbertMagicBits,
         ),
-        ("Morton (Z-order)", ExperimentalSortKey::Morton),
+        ("Morton (Z-order)", ExperimentalSortKey2D::Morton),
     ];
 
     println!("N={N}, node_size={NODE_SIZE}, queries={QUERIES} (x{REPEATS} repetitions)\n");
@@ -58,11 +58,11 @@ fn main() {
     for (i, (name, key)) in keys.iter().enumerate() {
         // build
         let t0 = Instant::now();
-        let mut b = IndexBuilder::new(N)
+        let mut b = Index2DBuilder::new(N)
             .node_size(NODE_SIZE)
             .experimental_sort_key(*key);
         for r in &boxes {
-            b.add(Rect::new(r[0], r[1], r[2], r[3]));
+            b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
         }
         let index = b.finish().unwrap();
         let build_t = t0.elapsed();
@@ -71,7 +71,7 @@ fn main() {
         let mut total_visited = 0usize;
         let mut total_results = 0usize;
         for q in &queries {
-            let (res, vis) = index.search_visited(Rect::new(q[0], q[1], q[2], q[3]));
+            let (res, vis) = index.search_visited(Bounds2D::new(q[0], q[1], q[2], q[3]));
             total_results += res;
             total_visited += vis;
         }
@@ -87,7 +87,7 @@ fn main() {
         let mut buf = Vec::new();
         for _ in 0..REPEATS {
             for q in &queries {
-                index.search_into(Rect::new(q[0], q[1], q[2], q[3]), &mut buf);
+                index.search_into(Bounds2D::new(q[0], q[1], q[2], q[3]), &mut buf);
                 sink += buf.len();
             }
         }

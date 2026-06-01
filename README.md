@@ -9,19 +9,19 @@ bounding boxes.
 
 It is built for read-heavy workloads where the full set of boxes is known up
 front: build once, then run many window/intersection searches. The default
-`Index` uses a packed Hilbert R-tree layout. With the `simd` feature,
-`SimdIndex` stores boxes in structure-of-arrays form and uses SIMD intersection
+`Index2D` uses a packed Hilbert R-tree layout. With the `simd` feature,
+`SimdIndex2D` stores boxes in structure-of-arrays form and uses SIMD intersection
 checks.
 
 ```rust
-use packed_spatial_index::{IndexBuilder, Rect};
+use packed_spatial_index::{Index2DBuilder, Bounds2D};
 
-let mut builder = IndexBuilder::new(2);
-builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+let mut builder = Index2DBuilder::new(2);
+builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
 
 let index = builder.finish()?;
-let hits = index.search(Rect::new(0.0, 0.0, 2.0, 2.0));
+let hits = index.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0));
 
 assert_eq!(hits, vec![0]);
 # Ok::<(), packed_spatial_index::BuildError>(())
@@ -53,31 +53,31 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - Only 2D axis-aligned bounding boxes are supported.
 - Search results are item indices, not stored payloads or geometries.
 - Result ordering is not a stable API guarantee.
-- Persistence is defined for the canonical `Index` format; `SimdIndex` can be
+- Persistence is defined for the canonical `Index2D` format; `SimdIndex2D` can be
   rebuilt from source boxes but does not have a separate SoA file format yet.
-- Nearest-neighbor search is exact over rectangles; approximate KNN and dynamic
+- Nearest-neighbor search is exact over indexed bounds; approximate KNN and dynamic
   spatial joins are out of scope for now.
 
 ## Main Types
 
-- `Rect` is the public AABB type, with inclusive `overlaps`, `contains`, and
-  `contains_point` helpers. `Rect::new` is unchecked; use `Rect::try_new` for
+- `Bounds2D` is the public AABB type, with inclusive `overlaps`, `contains`, and
+  `contains_point` helpers. `Bounds2D::new` is unchecked; use `Bounds2D::try_new` for
   untrusted bounds.
-- `IndexBuilder` builds either `Index` or, with `simd`, `SimdIndex`.
-- `Index` is the default read-only index.
-- `IndexView` is a zero-copy read-only view over bytes produced by `Index::to_bytes`.
-- `SimdIndex` is available with the `simd` feature and has the same search API.
+- `Index2DBuilder` builds either `Index2D` or, with `simd`, `SimdIndex2D`.
+- `Index2D` is the default read-only index.
+- `Index2DView` is a zero-copy read-only view over bytes produced by `Index2D::to_bytes`.
+- `SimdIndex2D` is available with the `simd` feature and has the same search API.
 - `SearchWorkspace` reuses result and traversal buffers.
-- `Point` and `NeighborWorkspace` support nearest-neighbor searches.
-- `SortKey` selects the public build ordering curve. `Hilbert` is the stable default.
+- `Point2D` and `NeighborWorkspace` support nearest-neighbor searches.
+- `SortKey2D` selects the public build ordering curve. `Hilbert` is the stable default.
 
 Search APIs:
 
-- `bounds()` returns the total item bounds, or `None` for an empty index.
-- `search(rect)` allocates and returns a `Vec<usize>`.
-- `search_into(rect, &mut results)` reuses a result buffer.
-- `search_with(rect, &mut workspace)` reuses result and traversal buffers.
-- `any(rect)`, `first(rect)`, and `visit(rect, visitor)` support early exit.
+- `extent()` returns the total item bounds, or `None` for an empty index.
+- `search(bounds)` allocates and returns a `Vec<usize>`.
+- `search_into(bounds, &mut results)` reuses a result buffer.
+- `search_with(bounds, &mut workspace)` reuses result and traversal buffers.
+- `any(bounds)`, `first(bounds)`, and `visit(bounds, visitor)` support early exit.
 
 Nearest-neighbor APIs:
 
@@ -89,21 +89,21 @@ Nearest-neighbor APIs:
 ## Builder
 
 ```rust
-use packed_spatial_index::{DEFAULT_NODE_SIZE, IndexBuilder, Rect, SortKey};
+use packed_spatial_index::{DEFAULT_NODE_SIZE, Index2DBuilder, Bounds2D, SortKey2D};
 
-let mut builder = IndexBuilder::new(10_000)
+let mut builder = Index2DBuilder::new(10_000)
     .node_size(DEFAULT_NODE_SIZE)
-    .sort_key(SortKey::Hilbert);
+    .sort_key(SortKey2D::Hilbert);
 
-builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
-builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
 ```
 
 With `parallel` enabled:
 
 ```rust
-# use packed_spatial_index::{DEFAULT_PARALLEL_MIN_ITEMS, IndexBuilder};
-let builder = IndexBuilder::new(100_000)
+# use packed_spatial_index::{DEFAULT_PARALLEL_MIN_ITEMS, Index2DBuilder};
+let builder = Index2DBuilder::new(100_000)
     .parallel(true)
     .parallel_min_items(DEFAULT_PARALLEL_MIN_ITEMS);
 ```
@@ -111,35 +111,35 @@ let builder = IndexBuilder::new(100_000)
 With `simd` enabled:
 
 ```rust
-# use packed_spatial_index::{IndexBuilder, Rect};
-let mut builder = IndexBuilder::new(1);
-builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+# use packed_spatial_index::{Index2DBuilder, Bounds2D};
+let mut builder = Index2DBuilder::new(1);
+builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
 let simd_index = builder.finish_simd()?;
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
 ## Persistence
 
-`Index` can be serialized to a stable little-endian byte format and loaded back
+`Index2D` can be serialized to a stable little-endian byte format and loaded back
 either as an owned index or as a zero-copy view:
 
 ```rust
-use packed_spatial_index::{Index, IndexBuilder, IndexView, Rect};
+use packed_spatial_index::{Index2D, Index2DBuilder, Index2DView, Bounds2D};
 
-let mut builder = IndexBuilder::new(1);
-builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+let mut builder = Index2DBuilder::new(1);
+builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
 let index = builder.finish()?;
 
 let bytes = index.to_bytes();
-let owned = Index::from_bytes(&bytes)?;
-let view = IndexView::from_bytes(&bytes)?;
+let owned = Index2D::from_bytes(&bytes)?;
+let view = Index2DView::from_bytes(&bytes)?;
 
-assert_eq!(owned.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
-assert_eq!(view.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+assert_eq!(owned.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+assert_eq!(view.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`SimdIndex` is not persisted as a separate SoA format yet.
+`SimdIndex2D` is not persisted as a separate SoA format yet.
 
 The binary layout is documented in [`FORMAT.md`](FORMAT.md).
 
@@ -158,8 +158,8 @@ cargo run --example reuse_workspace
 
 Both features are enabled by default:
 
-- `parallel`: adaptive rayon-based index builds through `IndexBuilder::parallel`.
-- `simd`: SoA index and SIMD search paths through `SimdIndex`.
+- `parallel`: adaptive rayon-based index builds through `Index2DBuilder::parallel`.
+- `simd`: SoA index and SIMD search paths through `SimdIndex2D`.
 
 Minimal build:
 
@@ -182,7 +182,7 @@ or query neighbors.
 Internally, the crate keeps `unsafe` limited to narrow performance-sensitive
 paths:
 
-- unaligned little-endian reads for validated `IndexView` byte buffers;
+- unaligned little-endian reads for validated `Index2DView` byte buffers;
 - x86/x86_64 prefetch intrinsics used only by hidden benchmark/experimental paths;
 - AVX-512 loads in the `simd` feature, guarded by runtime CPU feature detection.
 
@@ -194,7 +194,7 @@ reported as `LoadError` instead of relying on caller-side invariants.
 Recent local Criterion run, lower is better. The workload uses 100,000 random
 AABBs and 1,000 random search windows.
 
-| Benchmark | FlatGeobuf packed R-tree | `Index` | `SimdIndex` |
+| Benchmark | FlatGeobuf packed R-tree | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: |
 | Full build | 48.03 ms | 2.64 ms serial / 2.06 ms parallel | - |
 | Search batch | 568.23 us | 418.81 us | 136.27 us |
@@ -204,8 +204,8 @@ AABBs and 1,000 random search windows.
 
 The short version:
 
-- `Index` is the general-purpose path;
-- `SimdIndex` is best for heavier query batches where SIMD work amortizes well;
+- `Index2D` is the general-purpose path;
+- `SimdIndex2D` is best for heavier query batches where SIMD work amortizes well;
 - `any` is often much faster than collecting full result sets when all you need is existence;
 - AVX-512 is not always the fastest path in parallel workloads because CPU frequency behavior matters.
 - `flatgeobuf_bench` compares against FlatGeobuf's packed Hilbert R-tree;

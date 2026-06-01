@@ -4,8 +4,8 @@
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey;
-use packed_spatial_index::{IndexBuilder, Rect};
+use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::{Bounds2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -28,12 +28,12 @@ fn time_build(boxes: &[[f64; 4]], radix: bool, reps: usize) -> f64 {
     let mut best = f64::INFINITY;
     for _ in 0..reps {
         let t = Instant::now();
-        let mut b = IndexBuilder::new(boxes.len())
+        let mut b = Index2DBuilder::new(boxes.len())
             .node_size(NODE_SIZE)
-            .experimental_sort_key(ExperimentalSortKey::HilbertLut)
+            .experimental_sort_key(ExperimentalSortKey2D::HilbertLut)
             .radix(radix);
         for r in boxes {
-            b.add(Rect::new(r[0], r[1], r[2], r[3]));
+            b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
         }
         let idx = b.finish().unwrap();
         let el = t.elapsed().as_secs_f64() * 1e3;

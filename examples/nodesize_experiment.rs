@@ -5,8 +5,8 @@
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey;
-use packed_spatial_index::{IndexBuilder, Rect};
+use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::{Bounds2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -48,11 +48,11 @@ fn main() {
         let mut bbest = f64::INFINITY;
         for _ in 0..REPS_B {
             let t = Instant::now();
-            let mut b = IndexBuilder::new(N)
+            let mut b = Index2DBuilder::new(N)
                 .node_size(ns)
-                .experimental_sort_key(ExperimentalSortKey::HilbertLut);
+                .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
             for r in &boxes {
-                b.add(Rect::new(r[0], r[1], r[2], r[3]));
+                b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
             }
             let idx = b.finish().unwrap();
             bbest = bbest.min(t.elapsed().as_secs_f64() * 1e3);
@@ -60,11 +60,11 @@ fn main() {
         }
 
         // SoA index for queries
-        let mut sb = IndexBuilder::new(N)
+        let mut sb = Index2DBuilder::new(N)
             .node_size(ns)
-            .experimental_sort_key(ExperimentalSortKey::HilbertLut);
+            .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
         for r in &boxes {
-            sb.add(Rect::new(r[0], r[1], r[2], r[3]));
+            sb.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
         }
         let soa = sb.finish_simd().unwrap();
         let (mut buf, mut st) = (Vec::new(), Vec::new());
@@ -74,7 +74,7 @@ fn main() {
             let t = Instant::now();
             let mut tot = 0;
             for x in &queries {
-                soa.search_simd(Rect::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
+                soa.search_simd(Bounds2D::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
                 tot += buf.len();
             }
             std::hint::black_box(tot);
@@ -86,7 +86,7 @@ fn main() {
             let t = Instant::now();
             let mut tot = 0;
             for x in &queries {
-                soa.search_avx512(Rect::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
+                soa.search_avx512(Bounds2D::new(x[0], x[1], x[2], x[3]), &mut buf, &mut st);
                 tot += buf.len();
             }
             std::hint::black_box(tot);

@@ -8,8 +8,8 @@ use std::io::Cursor;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use flatgeobuf::packed_r_tree::{NodeItem, PackedRTree, calc_extent, hilbert_sort};
-use packed_spatial_index::experimental::ExperimentalSortKey;
-use packed_spatial_index::{Index, IndexBuilder, IndexView, Rect};
+use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::{Bounds2D, Index2D, Index2DBuilder, Index2DView};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -42,8 +42,8 @@ fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
         .collect()
 }
 
-fn to_rect(q: &[f64; 4]) -> Rect {
-    Rect::new(q[0], q[1], q[2], q[3])
+fn to_bounds(q: &[f64; 4]) -> Bounds2D {
+    Bounds2D::new(q[0], q[1], q[2], q[3])
 }
 
 fn flatgeobuf_nodes(boxes: &[[f64; 4]]) -> Vec<NodeItem> {
@@ -69,24 +69,24 @@ fn build_flatgeobuf_presorted(nodes: &[NodeItem], extent: &NodeItem) -> PackedRT
     PackedRTree::build(nodes, extent, NODE_SIZE as u16).unwrap()
 }
 
-fn build_index(boxes: &[[f64; 4]], parallel: bool) -> Index {
-    let mut builder = IndexBuilder::new(boxes.len())
+fn build_index(boxes: &[[f64; 4]], parallel: bool) -> Index2D {
+    let mut builder = Index2DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
         .parallel(parallel)
-        .experimental_sort_key(ExperimentalSortKey::HilbertLut);
+        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     for b in boxes {
-        builder.add(Rect::new(b[0], b[1], b[2], b[3]));
+        builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish().unwrap()
 }
 
-fn build_simd_index(boxes: &[[f64; 4]]) -> packed_spatial_index::SimdIndex {
-    let mut builder = IndexBuilder::new(boxes.len())
+fn build_simd_index(boxes: &[[f64; 4]]) -> packed_spatial_index::SimdIndex2D {
+    let mut builder = Index2DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
         .parallel(true)
-        .experimental_sort_key(ExperimentalSortKey::HilbertLut);
+        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     for b in boxes {
-        builder.add(Rect::new(b[0], b[1], b[2], b[3]));
+        builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish_simd().unwrap()
 }
@@ -142,7 +142,7 @@ fn bench_search(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                total += index.search_with(to_rect(q), &mut workspace).len();
+                total += index.search_with(to_bounds(q), &mut workspace).len();
             }
             black_box(total)
         })
@@ -152,7 +152,7 @@ fn bench_search(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                total += simd.search_with(to_rect(q), &mut workspace).len();
+                total += simd.search_with(to_bounds(q), &mut workspace).len();
             }
             black_box(total)
         })
@@ -191,10 +191,10 @@ fn bench_persistence(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(index_bytes.len() as u64));
     group.bench_function("index_to_bytes", |b| b.iter(|| black_box(index.to_bytes())));
     group.bench_function("index_from_bytes_owned", |b| {
-        b.iter(|| black_box(Index::from_bytes(&index_bytes).unwrap()))
+        b.iter(|| black_box(Index2D::from_bytes(&index_bytes).unwrap()))
     });
     group.bench_function("index_from_bytes_view", |b| {
-        b.iter(|| black_box(IndexView::from_bytes(&index_bytes).unwrap()))
+        b.iter(|| black_box(Index2DView::from_bytes(&index_bytes).unwrap()))
     });
     group.finish();
 }

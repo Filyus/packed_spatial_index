@@ -1,17 +1,17 @@
 //! Spatial-index benchmark in **two modes**: single-threaded and parallel.
 //!
-//!  * Single-threaded: `Index` (serial) against the `static_aabb2d_index` baseline.
+//!  * Single-threaded: `Index2D` (serial) against the `static_aabb2d_index` baseline.
 //!  * Parallel build: thresholded auto mode versus forced rayon. The baseline is single-threaded
 //!    (it has no parallel build), so parallel numbers are the implementation ceiling,
 //!    not a one-to-one algorithm comparison.
 //!  * For queries, the query batch itself is parallelized (read-only), so the comparison is symmetric:
-//!    both the baseline crate and `Index` benefit.
+//!    both the baseline crate and `Index2D` benefit.
 
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use packed_spatial_index::experimental::ExperimentalSortKey;
-use packed_spatial_index::{Index, IndexBuilder, Rect};
+use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::{Bounds2D, Index2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
@@ -48,16 +48,16 @@ fn build_reference(boxes: &[[f64; 4]]) {
 }
 
 fn build_mine(boxes: &[[f64; 4]], mode: BuildMode) {
-    let mut b = IndexBuilder::new(boxes.len())
+    let mut b = Index2DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey::HilbertLut);
+        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     b = match mode {
         BuildMode::Serial => b.parallel(false),
         BuildMode::ParallelAuto => b.parallel(true),
         BuildMode::ParallelForced => b.parallel(true).parallel_min_items(0),
     };
     for r in boxes {
-        b.add(Rect::new(r[0], r[1], r[2], r[3]));
+        b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
     }
     black_box(b.finish().unwrap());
 }
@@ -102,8 +102,8 @@ fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
         .collect()
 }
 
-fn to_rect(q: &[f64; 4]) -> Rect {
-    Rect::new(q[0], q[1], q[2], q[3])
+fn to_bounds(q: &[f64; 4]) -> Bounds2D {
+    Bounds2D::new(q[0], q[1], q[2], q[3])
 }
 
 fn bench_query(c: &mut Criterion) {
@@ -111,19 +111,19 @@ fn bench_query(c: &mut Criterion) {
     let boxes = gen_boxes(n, 0xB0B);
 
     let mut rb = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, NODE_SIZE);
-    let mut mb = IndexBuilder::new(n)
+    let mut mb = Index2DBuilder::new(n)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey::HilbertLut);
-    let mut sb = IndexBuilder::new(n)
+        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+    let mut sb = Index2DBuilder::new(n)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey::HilbertLut);
+        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     for r in &boxes {
         rb.add(r[0], r[1], r[2], r[3]);
-        mb.add(Rect::new(r[0], r[1], r[2], r[3]));
-        sb.add(Rect::new(r[0], r[1], r[2], r[3]));
+        mb.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
+        sb.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
     }
     let reference: StaticAABB2DIndex<f64> = rb.build().unwrap();
-    let packed: Index = mb.finish().unwrap();
+    let packed: Index2D = mb.finish().unwrap();
     let simd = sb.finish_simd().unwrap();
     let queries = make_queries(1_000, 0xACE);
 
@@ -147,7 +147,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                packed.search_into_stack(to_rect(q), &mut buf, &mut stack);
+                packed.search_into_stack(to_bounds(q), &mut buf, &mut stack);
                 total += buf.len();
             }
             black_box(total)
@@ -158,7 +158,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                packed.search_into_stack_prefetch(to_rect(q), &mut buf, &mut stack);
+                packed.search_into_stack_prefetch(to_bounds(q), &mut buf, &mut stack);
                 total += buf.len();
             }
             black_box(total)
@@ -168,7 +168,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                total += usize::from(packed.any(to_rect(q)));
+                total += usize::from(packed.any(to_bounds(q)));
             }
             black_box(total)
         })
@@ -178,7 +178,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                simd.search_simd(to_rect(q), &mut buf, &mut stack);
+                simd.search_simd(to_bounds(q), &mut buf, &mut stack);
                 total += buf.len();
             }
             black_box(total)
@@ -188,7 +188,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                total += usize::from(simd.any(to_rect(q)));
+                total += usize::from(simd.any(to_bounds(q)));
             }
             black_box(total)
         })
@@ -198,7 +198,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                simd.search_simd_prefetch(to_rect(q), &mut buf, &mut stack);
+                simd.search_simd_prefetch(to_bounds(q), &mut buf, &mut stack);
                 total += buf.len();
             }
             black_box(total)
@@ -209,7 +209,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let mut total = 0usize;
             for q in &queries {
-                simd.search_avx512(to_rect(q), &mut buf, &mut stack);
+                simd.search_avx512(to_bounds(q), &mut buf, &mut stack);
                 total += buf.len();
             }
             black_box(total)
@@ -237,7 +237,7 @@ fn bench_query(c: &mut Criterion) {
                 .map_init(
                     || (Vec::new(), Vec::new()),
                     |(buf, stack), q| {
-                        packed.search_into_stack(to_rect(q), buf, stack);
+                        packed.search_into_stack(to_bounds(q), buf, stack);
                         buf.len()
                     },
                 )
@@ -252,7 +252,7 @@ fn bench_query(c: &mut Criterion) {
                 .map_init(
                     || (Vec::new(), Vec::new()),
                     |(buf, stack), q| {
-                        packed.search_into_stack_prefetch(to_rect(q), buf, stack);
+                        packed.search_into_stack_prefetch(to_bounds(q), buf, stack);
                         buf.len()
                     },
                 )
@@ -264,7 +264,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let total: usize = queries
                 .par_iter()
-                .map(|q| usize::from(packed.any(to_rect(q))))
+                .map(|q| usize::from(packed.any(to_bounds(q))))
                 .sum();
             black_box(total)
         })
@@ -276,7 +276,7 @@ fn bench_query(c: &mut Criterion) {
                 .map_init(
                     || (Vec::new(), Vec::new()),
                     |(buf, stack), q| {
-                        simd.search_simd(to_rect(q), buf, stack);
+                        simd.search_simd(to_bounds(q), buf, stack);
                         buf.len()
                     },
                 )
@@ -288,7 +288,7 @@ fn bench_query(c: &mut Criterion) {
         b.iter(|| {
             let total: usize = queries
                 .par_iter()
-                .map(|q| usize::from(simd.any(to_rect(q))))
+                .map(|q| usize::from(simd.any(to_bounds(q))))
                 .sum();
             black_box(total)
         })
@@ -300,7 +300,7 @@ fn bench_query(c: &mut Criterion) {
                 .map_init(
                     || (Vec::new(), Vec::new()),
                     |(buf, stack), q| {
-                        simd.search_simd_prefetch(to_rect(q), buf, stack);
+                        simd.search_simd_prefetch(to_bounds(q), buf, stack);
                         buf.len()
                     },
                 )
@@ -315,7 +315,7 @@ fn bench_query(c: &mut Criterion) {
                 .map_init(
                     || (Vec::new(), Vec::new()),
                     |(buf, stack), q| {
-                        simd.search_avx512(to_rect(q), buf, stack);
+                        simd.search_avx512(to_bounds(q), buf, stack);
                         buf.len()
                     },
                 )

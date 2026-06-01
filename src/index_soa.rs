@@ -13,7 +13,7 @@ use crate::sort::encode_sort_parallel;
 use crate::{
     builder::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Point, Rect},
+    geometry::{Bounds2D, Point2D},
     index::{SearchWorkspace, prefetch_read, upper_bound_level},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     sort::{encode_sort_serial, hilbert_coord},
@@ -21,7 +21,7 @@ use crate::{
 
 type Num = f64;
 
-pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Rect>) -> SimdIndex {
+pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> SimdIndex2D {
     let node_size = config.node_size;
     let num_items = config.num_items;
     let mut level_bounds: Vec<usize> = Vec::new();
@@ -40,7 +40,7 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Rect>) -> SimdInd
     }
 
     if num_items == 0 {
-        return SimdIndex {
+        return SimdIndex2D {
             node_size,
             num_items,
             level_bounds,
@@ -74,7 +74,7 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Rect>) -> SimdInd
     let scaled_height = u16::MAX as f64 / (e_max_y - e_min_y);
 
     let sort_key = config.sort_key;
-    let encode = |i: usize, b: &Rect| -> (u32, u32) {
+    let encode = |i: usize, b: &Bounds2D| -> (u32, u32) {
         let hx = hilbert_coord(scaled_width, b.min_x, b.max_x, e_min_x);
         let hy = hilbert_coord(scaled_height, b.min_y, b.max_y, e_min_y);
         (sort_key.encode(hx, hy), i as u32)
@@ -127,7 +127,7 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Rect>) -> SimdInd
         }
     }
 
-    SimdIndex {
+    SimdIndex2D {
         node_size,
         num_items,
         level_bounds,
@@ -143,8 +143,8 @@ fn build_single_node_soa(
     node_size: usize,
     num_items: usize,
     level_bounds: Vec<usize>,
-    boxes: Vec<Rect>,
-) -> SimdIndex {
+    boxes: Vec<Bounds2D>,
+) -> SimdIndex2D {
     let mut min_xs = Vec::with_capacity(num_items + 1);
     let mut min_ys = Vec::with_capacity(num_items + 1);
     let mut max_xs = Vec::with_capacity(num_items + 1);
@@ -172,7 +172,7 @@ fn build_single_node_soa(
     max_ys.push(root_max_y);
     indices.push(0);
 
-    SimdIndex {
+    SimdIndex2D {
         node_size,
         num_items,
         level_bounds,
@@ -186,22 +186,22 @@ fn build_single_node_soa(
 
 /// Finished read-only SIMD index.
 ///
-/// Created through [`IndexBuilder::finish_simd`](crate::IndexBuilder::finish_simd).
-/// It has the same public search and nearest-neighbor API as [`Index`](crate::Index),
+/// Created through [`Index2DBuilder::finish_simd`](crate::Index2DBuilder::finish_simd).
+/// It has the same public search and nearest-neighbor API as [`Index2D`](crate::Index2D),
 /// but stores bounds in structure-of-arrays form for SIMD traversal.
 ///
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{IndexBuilder, Rect};
+/// use packed_spatial_index::{Index2DBuilder, Bounds2D};
 ///
-/// let mut builder = IndexBuilder::new(1);
-/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+/// let mut builder = Index2DBuilder::new(1);
+/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
 ///
 /// let index = builder.finish_simd().unwrap();
-/// assert_eq!(index.search(Rect::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
+/// assert_eq!(index.search(Bounds2D::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
 /// ```
-pub struct SimdIndex {
+pub struct SimdIndex2D {
     node_size: usize,
     num_items: usize,
     level_bounds: Vec<usize>,
@@ -212,19 +212,19 @@ pub struct SimdIndex {
     indices: Vec<usize>,
 }
 
-impl SimdIndex {
+impl SimdIndex2D {
     /// Number of indexed items.
     pub fn num_items(&self) -> usize {
         self.num_items
     }
 
-    /// Return the total bounds of indexed items, or `None` for an empty index.
-    pub fn bounds(&self) -> Option<Rect> {
+    /// Return the total extent of indexed items, or `None` for an empty index.
+    pub fn extent(&self) -> Option<Bounds2D> {
         if self.num_items == 0 {
             None
         } else {
             let last = self.min_xs.len() - 1;
-            Some(Rect::new(
+            Some(Bounds2D::new(
                 self.min_xs[last],
                 self.min_ys[last],
                 self.max_xs[last],
@@ -257,10 +257,10 @@ impl SimdIndex {
         }
     }
 
-    /// Return the indices of all items whose rectangles intersect `rect`.
-    pub fn search(&self, rect: Rect) -> Vec<usize> {
+    /// Return the indices of all items whose bounds intersect `bounds`.
+    pub fn search(&self, bounds: Bounds2D) -> Vec<usize> {
         let mut out = Vec::new();
-        self.search_into(rect, &mut out);
+        self.search_into(bounds, &mut out);
         out
     }
 
@@ -268,39 +268,43 @@ impl SimdIndex {
     ///
     /// This automatically chooses the widest available SIMD implementation: AVX-512
     /// on supporting x86-64 CPUs, otherwise AVX2/SSE through `wide`.
-    pub fn search_into(&self, rect: Rect, out: &mut Vec<usize>) {
+    pub fn search_into(&self, bounds: Bounds2D, out: &mut Vec<usize>) {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_avx512(rect, out, &mut stack);
+        self.search_avx512(bounds, out, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
-    pub fn search_with<'a>(&self, rect: Rect, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
-        self.search_avx512(rect, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'a>(
+        &self,
+        bounds: Bounds2D,
+        workspace: &'a mut SearchWorkspace,
+    ) -> &'a [usize] {
+        self.search_avx512(bounds, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `rect`.
-    pub fn any(&self, rect: Rect) -> bool {
-        self.visit(rect, |_| ControlFlow::Break(())).is_break()
+    /// Return `true` if at least one item intersects `bounds`.
+    pub fn any(&self, bounds: Bounds2D) -> bool {
+        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
-    pub fn first(&self, rect: Rect) -> Option<usize> {
-        match self.visit(rect, ControlFlow::Break) {
+    pub fn first(&self, bounds: Bounds2D) -> Option<usize> {
+        match self.visit(bounds, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
     }
 
     /// Return up to `max_results` item indices nearest to `point`.
-    pub fn neighbors(&self, point: Point, max_results: usize) -> Vec<usize> {
+    pub fn neighbors(&self, point: Point2D, max_results: usize) -> Vec<usize> {
         self.neighbors_within(point, max_results, f64::INFINITY)
     }
 
     /// Return up to `max_results` item indices within `max_distance` of `point`.
     pub fn neighbors_within(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
     ) -> Vec<usize> {
@@ -312,7 +316,7 @@ impl SimdIndex {
     /// Nearest-neighbor search with a reusable result buffer.
     pub fn neighbors_into(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
@@ -336,7 +340,7 @@ impl SimdIndex {
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
     pub fn neighbors_with<'a>(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         workspace: &'a mut NeighborWorkspace,
@@ -371,7 +375,7 @@ impl SimdIndex {
     /// Visit items in nondecreasing squared-distance order from `point`.
     pub fn visit_neighbors<B, F>(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -383,17 +387,17 @@ impl SimdIndex {
     }
 
     /// Visit intersecting items without collecting a result `Vec`.
-    pub fn visit<B, F>(&self, rect: Rect, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, bounds: Bounds2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_simd(rect, &mut stack, visitor)
+        self.visit_simd(bounds, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queue(
         &self,
-        point: Point,
+        point: Point2D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
@@ -447,7 +451,7 @@ impl SimdIndex {
 
     fn nearest_one_with_queue(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
@@ -489,7 +493,7 @@ impl SimdIndex {
 
     fn visit_neighbors_with_queue<B, F>(
         &self,
-        point: Point,
+        point: Point2D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborState>,
         visitor: &mut F,
@@ -541,38 +545,43 @@ impl SimdIndex {
     }
 
     #[inline]
-    fn distance_squared_to(&self, pos: usize, point: Point) -> f64 {
+    fn distance_squared_to(&self, pos: usize, point: Point2D) -> f64 {
         let dx = axis_distance(point.x, self.min_xs[pos], self.max_xs[pos]);
         let dy = axis_distance(point.y, self.min_ys[pos], self.max_ys[pos]);
         dx * dx + dy * dy
     }
 
-    /// Same as [`visit`](SimdIndex::visit), but the traversal stack is reused by the caller.
+    /// Same as [`visit`](SimdIndex2D::visit), but the traversal stack is reused by the caller.
     #[doc(hidden)]
-    pub fn visit_simd<B, F>(&self, rect: Rect, stack: &mut Vec<usize>, visitor: F) -> ControlFlow<B>
-    where
-        F: FnMut(usize) -> ControlFlow<B>,
-    {
-        self.visit_simd_impl::<false, B, F>(rect, stack, visitor)
-    }
-
-    /// Experimental prefetch variant of [`visit_simd`](SimdIndex::visit_simd).
-    #[doc(hidden)]
-    pub fn visit_simd_prefetch<B, F>(
+    pub fn visit_simd<B, F>(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         stack: &mut Vec<usize>,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_simd_impl::<true, B, F>(rect, stack, visitor)
+        self.visit_simd_impl::<false, B, F>(bounds, stack, visitor)
+    }
+
+    /// Experimental prefetch variant of [`visit_simd`](SimdIndex2D::visit_simd).
+    #[doc(hidden)]
+    pub fn visit_simd_prefetch<B, F>(
+        &self,
+        bounds: Bounds2D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        self.visit_simd_impl::<true, B, F>(bounds, stack, visitor)
     }
 
     /// Element-by-element traversal (SoA layout, branchless `overlaps`).
     #[doc(hidden)]
-    pub fn search_scalar(&self, rect: Rect, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    pub fn search_scalar(&self, bounds: Bounds2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
         out.clear();
         stack.clear();
         if self.num_items == 0 {
@@ -584,10 +593,10 @@ impl SimdIndex {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
-                let hit = (self.min_xs[pos] <= rect.max_x)
-                    & (self.max_xs[pos] >= rect.min_x)
-                    & (self.min_ys[pos] <= rect.max_y)
-                    & (self.max_ys[pos] >= rect.min_y);
+                let hit = (self.min_xs[pos] <= bounds.max_x)
+                    & (self.max_xs[pos] >= bounds.min_x)
+                    & (self.min_ys[pos] <= bounds.max_y)
+                    & (self.max_ys[pos] >= bounds.min_y);
                 if !hit {
                     continue;
                 }
@@ -610,19 +619,24 @@ impl SimdIndex {
 
     /// AVX2/SSE path through `wide::f64x4`.
     #[doc(hidden)]
-    pub fn search_simd(&self, rect: Rect, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        self.search_simd_impl::<false>(rect, out, stack);
+    pub fn search_simd(&self, bounds: Bounds2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        self.search_simd_impl::<false>(bounds, out, stack);
     }
 
     /// AVX2/SSE path with prefetch for the next node from the stack.
     #[doc(hidden)]
-    pub fn search_simd_prefetch(&self, rect: Rect, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        self.search_simd_impl::<true>(rect, out, stack);
+    pub fn search_simd_prefetch(
+        &self,
+        bounds: Bounds2D,
+        out: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        self.search_simd_impl::<true>(bounds, out, stack);
     }
 
     fn search_simd_impl<const PREFETCH: bool>(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         out: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
@@ -631,10 +645,10 @@ impl SimdIndex {
         if self.num_items == 0 {
             return;
         }
-        let qmxx_v = f64x4::splat(rect.max_x);
-        let qmnx_v = f64x4::splat(rect.min_x);
-        let qmxy_v = f64x4::splat(rect.max_y);
-        let qmny_v = f64x4::splat(rect.min_y);
+        let qmxx_v = f64x4::splat(bounds.max_x);
+        let qmnx_v = f64x4::splat(bounds.min_x);
+        let qmxy_v = f64x4::splat(bounds.max_y);
+        let qmny_v = f64x4::splat(bounds.min_y);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -671,10 +685,10 @@ impl SimdIndex {
             }
 
             while pos < end {
-                let hit = (self.min_xs[pos] <= rect.max_x)
-                    & (self.max_xs[pos] >= rect.min_x)
-                    & (self.min_ys[pos] <= rect.max_y)
-                    & (self.max_ys[pos] >= rect.min_y);
+                let hit = (self.min_xs[pos] <= bounds.max_x)
+                    & (self.max_xs[pos] >= bounds.min_x)
+                    & (self.min_ys[pos] <= bounds.max_y)
+                    & (self.max_ys[pos] >= bounds.min_y);
                 if hit {
                     let index = self.indices[pos];
                     if is_leaf {
@@ -701,7 +715,7 @@ impl SimdIndex {
 
     fn visit_simd_impl<const PREFETCH: bool, B, F>(
         &self,
-        rect: Rect,
+        bounds: Bounds2D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -712,10 +726,10 @@ impl SimdIndex {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        let qmxx_v = f64x4::splat(rect.max_x);
-        let qmnx_v = f64x4::splat(rect.min_x);
-        let qmxy_v = f64x4::splat(rect.max_y);
-        let qmny_v = f64x4::splat(rect.min_y);
+        let qmxx_v = f64x4::splat(bounds.max_x);
+        let qmnx_v = f64x4::splat(bounds.min_x);
+        let qmxy_v = f64x4::splat(bounds.max_y);
+        let qmny_v = f64x4::splat(bounds.min_y);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -752,10 +766,10 @@ impl SimdIndex {
             }
 
             while pos < end {
-                let hit = (self.min_xs[pos] <= rect.max_x)
-                    & (self.max_xs[pos] >= rect.min_x)
-                    & (self.min_ys[pos] <= rect.max_y)
-                    & (self.max_ys[pos] >= rect.min_y);
+                let hit = (self.min_xs[pos] <= bounds.max_x)
+                    & (self.max_xs[pos] >= bounds.min_x)
+                    & (self.min_ys[pos] <= bounds.max_y)
+                    & (self.max_ys[pos] >= bounds.min_y);
                 if hit {
                     let index = self.indices[pos];
                     if is_leaf {
@@ -780,23 +794,28 @@ impl SimdIndex {
         }
     }
 
-    /// AVX-512 path, falling back to [`search_simd`](SimdIndex::search_simd).
+    /// AVX-512 path, falling back to [`search_simd`](SimdIndex2D::search_simd).
     #[doc(hidden)]
-    pub fn search_avx512(&self, rect: Rect, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    pub fn search_avx512(&self, bounds: Bounds2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx512f") {
                 // SAFETY: this branch is selected only after checking avx512f availability.
-                unsafe { self.search_avx512_impl(rect, out, stack) };
+                unsafe { self.search_avx512_impl(bounds, out, stack) };
                 return;
             }
         }
-        self.search_simd(rect, out, stack);
+        self.search_simd(bounds, out, stack);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
-    unsafe fn search_avx512_impl(&self, rect: Rect, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    unsafe fn search_avx512_impl(
+        &self,
+        bounds: Bounds2D,
+        out: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
         use std::arch::x86_64::*;
 
         out.clear();
@@ -804,10 +823,10 @@ impl SimdIndex {
         if self.num_items == 0 {
             return;
         }
-        let qmxx_v = _mm512_set1_pd(rect.max_x);
-        let qmnx_v = _mm512_set1_pd(rect.min_x);
-        let qmxy_v = _mm512_set1_pd(rect.max_y);
-        let qmny_v = _mm512_set1_pd(rect.min_y);
+        let qmxx_v = _mm512_set1_pd(bounds.max_x);
+        let qmnx_v = _mm512_set1_pd(bounds.min_x);
+        let qmxy_v = _mm512_set1_pd(bounds.max_y);
+        let qmny_v = _mm512_set1_pd(bounds.min_y);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -846,10 +865,10 @@ impl SimdIndex {
             }
 
             while pos < end {
-                let hit = (self.min_xs[pos] <= rect.max_x)
-                    & (self.max_xs[pos] >= rect.min_x)
-                    & (self.min_ys[pos] <= rect.max_y)
-                    & (self.max_ys[pos] >= rect.min_y);
+                let hit = (self.min_xs[pos] <= bounds.max_x)
+                    & (self.max_xs[pos] >= bounds.min_x)
+                    & (self.min_ys[pos] <= bounds.max_y)
+                    & (self.max_ys[pos] >= bounds.min_y);
                 if hit {
                     let index = self.indices[pos];
                     if is_leaf {

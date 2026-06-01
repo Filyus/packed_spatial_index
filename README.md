@@ -173,6 +173,21 @@ cargo build --no-default-features --features simd
 cargo build --no-default-features --features parallel
 ```
 
+## Safety
+
+The public API is safe Rust; users do not need `unsafe` to build, load, search,
+or query neighbors.
+
+Internally, the crate keeps `unsafe` limited to narrow performance-sensitive
+paths:
+
+- unaligned little-endian reads for validated `IndexView` byte buffers;
+- x86/x86_64 prefetch intrinsics used only by hidden benchmark/experimental paths;
+- AVX-512 loads in the `simd` feature, guarded by runtime CPU feature detection.
+
+Loaded buffers are validated before they can be searched, so malformed input is
+reported as `LoadError` instead of relying on caller-side invariants.
+
 ## Performance Notes
 
 Recent local Criterion run, lower is better. The workload uses 100,000 random

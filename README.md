@@ -169,18 +169,6 @@ cargo build --no-default-features --features simd
 cargo build --no-default-features --features parallel
 ```
 
-## Migration From 0.1
-
-- `PackedIndexBuilder::new(count, node_size)` -> `IndexBuilder::new(count).node_size(node_size)`
-- `PackedIndexBuilder::build()` / `try_build()` -> `IndexBuilder::finish()`
-- `PackedIndex` -> `Index`
-- `PackedSoaIndexBuilder` -> `IndexBuilder::finish_simd()`
-- `PackedSoaIndex` -> `SimdIndex`
-- `PackedIndexBuildError` -> `BuildError`
-- `query*` -> `search*`
-- `query_any`, `query_first`, `visit_query` -> `any`, `first`, `visit`
-- non-default and encoder-specific sort-key variants moved to the hidden experimental API used by benches
-
 ## Performance Notes
 
 Recent local Criterion run, lower is better. The workload uses 100,000 random

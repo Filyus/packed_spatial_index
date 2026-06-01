@@ -12,12 +12,11 @@ use wide::{CmpGe, CmpLe, f64x4};
 use crate::sort::encode_sort_parallel;
 use crate::{
     builder::BuildConfig,
-    index::{prefetch_read, upper_bound_level},
+    config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
+    geometry::{Point, Rect},
+    index::{SearchWorkspace, prefetch_read, upper_bound_level},
+    neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     sort::{encode_sort_serial, hilbert_coord},
-    types::{
-        DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY, NeighborNodeState,
-        NeighborState, NeighborWorkspace, Point, Rect, SearchWorkspace, max_distance_squared,
-    },
 };
 
 type Num = f64;

@@ -1,4 +1,4 @@
-use crate::{hilbert, types::Rect};
+use crate::{geometry::Rect, hilbert};
 
 pub(crate) const DEFAULT_RADIX_BITS: u32 = 8;
 const MIN_RADIX_BITS: u32 = 1;

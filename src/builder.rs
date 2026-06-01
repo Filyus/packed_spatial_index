@@ -1,13 +1,16 @@
+use std::{error::Error, fmt};
+
 use crate::{
+    config::DEFAULT_NODE_SIZE,
+    geometry::{Num, Rect},
     index::Index,
     sort::{
         DEFAULT_RADIX_BITS, ExperimentalSortKey, SortKey, encode_sort_serial, hilbert_coord,
         normalize_radix_bits,
     },
-    types::{BuildError, DEFAULT_NODE_SIZE, Num, Rect},
 };
 #[cfg(feature = "parallel")]
-use crate::{sort::encode_sort_parallel, types::DEFAULT_PARALLEL_MIN_ITEMS};
+use crate::{config::DEFAULT_PARALLEL_MIN_ITEMS, sort::encode_sort_parallel};
 
 /// Builder for [`Index`] and, with the `simd` feature, `SimdIndex`.
 pub struct IndexBuilder {
@@ -36,6 +39,31 @@ pub(crate) struct BuildConfig {
     #[cfg(feature = "parallel")]
     pub(crate) parallel_min_items: usize,
 }
+
+/// Build error for finishing an index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildError {
+    /// The builder received the wrong number of items.
+    ItemCount {
+        /// Number actually added through `add`.
+        added: usize,
+        /// Expected by `IndexBuilder::new(count)`.
+        expected: usize,
+    },
+}
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BuildError::ItemCount { added, expected } => write!(
+                f,
+                "added item count must match declared count (added {added}, expected {expected})"
+            ),
+        }
+    }
+}
+
+impl Error for BuildError {}
 
 impl IndexBuilder {
     /// Create a builder for exactly `count` items with [`DEFAULT_NODE_SIZE`].

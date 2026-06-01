@@ -21,14 +21,40 @@
 
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
+use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
+use crate::geometry::{Num, Point, Rect};
+use crate::neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared};
 use crate::persistence::{
-    parse_index_bytes, push_f64, push_magic, push_u64, read_f64_le_unchecked,
+    LoadError, parse_index_bytes, push_f64, push_magic, push_u64, read_f64_le_unchecked,
     read_u64_le_unchecked, serialized_len,
 };
-use crate::types::{
-    DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY, LoadError, NeighborNodeState,
-    NeighborState, NeighborWorkspace, Num, Point, Rect, SearchWorkspace, max_distance_squared,
-};
+
+/// Reusable buffers for allocation-free repeated searches.
+#[derive(Debug, Default)]
+pub struct SearchWorkspace {
+    pub(crate) results: Vec<usize>,
+    pub(crate) stack: Vec<usize>,
+}
+
+impl SearchWorkspace {
+    /// Create an empty workspace.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a workspace with preallocated result and traversal-stack capacity.
+    pub fn with_capacity(results: usize, stack: usize) -> Self {
+        Self {
+            results: Vec::with_capacity(results),
+            stack: Vec::with_capacity(stack),
+        }
+    }
+
+    /// Results from the latest `search_with` call.
+    pub fn results(&self) -> &[usize] {
+        &self.results
+    }
+}
 
 #[inline]
 pub(crate) fn prefetch_read<T>(ptr: *const T) {

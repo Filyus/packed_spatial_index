@@ -24,24 +24,27 @@
 //!   and x86-64 AVX-512 intrinsics where available.
 
 mod builder;
+mod config;
+mod geometry;
 mod hilbert;
 mod index;
 #[cfg(feature = "simd")]
 mod index_soa;
+mod neighbors;
 mod persistence;
 mod sort;
-mod types;
 
-pub use builder::IndexBuilder;
-pub use index::{Index, IndexView};
+pub use builder::{BuildError, IndexBuilder};
+pub use config::DEFAULT_NODE_SIZE;
+#[cfg(feature = "parallel")]
+pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
+pub use geometry::{Point, Rect};
+pub use index::{Index, IndexView, SearchWorkspace};
 #[cfg(feature = "simd")]
 pub use index_soa::SimdIndex;
+pub use neighbors::NeighborWorkspace;
+pub use persistence::LoadError;
 pub use sort::SortKey;
-#[cfg(feature = "parallel")]
-pub use types::DEFAULT_PARALLEL_MIN_ITEMS;
-pub use types::{
-    BuildError, DEFAULT_NODE_SIZE, LoadError, NeighborWorkspace, Point, Rect, SearchWorkspace,
-};
 
 /// Experimental internals kept public for benchmarks and research notebooks.
 #[doc(hidden)]

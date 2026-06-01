@@ -5,10 +5,12 @@
 
 use std::ops::ControlFlow;
 
+#[cfg(feature = "parallel")]
+use packed_spatial_index::DEFAULT_PARALLEL_MIN_ITEMS;
 use packed_spatial_index::experimental::{ENCODERS, ExperimentalSortKey};
 use packed_spatial_index::{
-    BuildError, Index, IndexBuilder, IndexView, LoadError, NeighborWorkspace, Point, Rect,
-    SearchWorkspace, SortKey,
+    BuildError, DEFAULT_NODE_SIZE, Index, IndexBuilder, IndexView, LoadError, NeighborWorkspace,
+    Point, Rect, SearchWorkspace, SortKey,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -202,13 +204,19 @@ fn public_sort_keys_match_reference() {
 }
 
 #[test]
-fn default_builder_uses_node_size_16() {
+fn default_builder_uses_exported_node_size() {
     let mut builder = IndexBuilder::new(17);
     for i in 0..17 {
         builder.add_bounds(i as f64, 0.0, i as f64 + 0.5, 1.0);
     }
     let index = builder.finish().unwrap();
-    assert_eq!(index.node_size(), 16);
+    assert_eq!(index.node_size(), DEFAULT_NODE_SIZE);
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn default_parallel_threshold_is_exported() {
+    assert_eq!(DEFAULT_PARALLEL_MIN_ITEMS, 50_000);
 }
 
 #[test]

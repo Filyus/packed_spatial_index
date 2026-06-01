@@ -28,9 +28,11 @@ mod index;
 #[cfg(feature = "simd")]
 mod index_soa;
 
+#[cfg(feature = "parallel")]
+pub use index::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use index::{
-    BuildError, Index, IndexBuilder, IndexView, LoadError, NeighborWorkspace, Point, Rect,
-    SearchWorkspace, SortKey,
+    BuildError, DEFAULT_NODE_SIZE, Index, IndexBuilder, IndexView, LoadError, NeighborWorkspace,
+    Point, Rect, SearchWorkspace, SortKey,
 };
 #[cfg(feature = "simd")]
 pub use index_soa::SimdIndex;

@@ -8,20 +8,19 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use wide::{CmpGe, CmpLe, f64x4};
 
+#[cfg(feature = "parallel")]
+use crate::index::encode_sort_parallel;
 use crate::index::{
-    ExperimentalSortKey, NeighborNodeState, NeighborState, NeighborWorkspace, Point, Rect,
-    SearchWorkspace, hilbert_coord, max_distance_squared, prefetch_read, radix_sort_pairs,
-    upper_bound_level,
+    BuildConfig, DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY, NeighborNodeState,
+    NeighborState, NeighborWorkspace, Point, Rect, SearchWorkspace, encode_sort_serial,
+    hilbert_coord, max_distance_squared, prefetch_read, upper_bound_level,
 };
 
 type Num = f64;
 
-pub(crate) fn build_simd_index(
-    node_size: usize,
-    num_items: usize,
-    sort_key: ExperimentalSortKey,
-    boxes: Vec<Rect>,
-) -> SimdIndex {
+pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Rect>) -> SimdIndex {
+    let node_size = config.node_size;
+    let num_items = config.num_items;
     let mut level_bounds: Vec<usize> = Vec::new();
     let mut num_nodes = num_items;
     let mut n = num_items;
@@ -71,16 +70,25 @@ pub(crate) fn build_simd_index(
     let scaled_width = u16::MAX as f64 / (e_max_x - e_min_x);
     let scaled_height = u16::MAX as f64 / (e_max_y - e_min_y);
 
-    let mut order: Vec<(u32, u32)> = boxes
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let hx = hilbert_coord(scaled_width, b.min_x, b.max_x, e_min_x);
-            let hy = hilbert_coord(scaled_height, b.min_y, b.max_y, e_min_y);
-            (sort_key.encode(hx, hy), i as u32)
-        })
-        .collect();
-    radix_sort_pairs(&mut order, 8);
+    let sort_key = config.sort_key;
+    let encode = |i: usize, b: &Rect| -> (u32, u32) {
+        let hx = hilbert_coord(scaled_width, b.min_x, b.max_x, e_min_x);
+        let hy = hilbert_coord(scaled_height, b.min_y, b.max_y, e_min_y);
+        (sort_key.encode(hx, hy), i as u32)
+    };
+
+    #[cfg(feature = "parallel")]
+    let use_parallel = config.parallel && num_items >= config.parallel_min_items;
+
+    #[cfg(feature = "parallel")]
+    let order: Vec<(u32, u32)> = if use_parallel {
+        encode_sort_parallel(&boxes, &encode)
+    } else {
+        encode_sort_serial(&boxes, &encode, config.radix, config.radix_bits)
+    };
+    #[cfg(not(feature = "parallel"))]
+    let order: Vec<(u32, u32)> =
+        encode_sort_serial(&boxes, &encode, config.radix, config.radix_bits);
 
     for (slot, &(_, orig)) in order.iter().enumerate() {
         let b = boxes[orig as usize];
@@ -233,7 +241,7 @@ impl SimdIndex {
     /// This automatically chooses the widest available SIMD implementation: AVX-512
     /// on supporting x86-64 CPUs, otherwise AVX2/SSE through `wide`.
     pub fn search_into(&self, rect: Rect, out: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(16);
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.search_avx512(rect, out, &mut stack);
     }
 
@@ -286,14 +294,14 @@ impl SimdIndex {
             return;
         }
         if max_results == 1 {
-            let mut queue = BinaryHeap::with_capacity(16);
+            let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
             if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
                 results.push(index);
             }
             return;
         }
 
-        let mut queue = BinaryHeap::with_capacity(16);
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
     }
 
@@ -342,7 +350,7 @@ impl SimdIndex {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(16);
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
     }
 
@@ -351,7 +359,7 @@ impl SimdIndex {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(16);
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.visit_simd(rect, &mut stack, visitor)
     }
 

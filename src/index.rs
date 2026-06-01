@@ -26,13 +26,19 @@ use crate::hilbert;
 /// Index coordinates are `f64`, matching the reference default.
 type Num = f64;
 
-const DEFAULT_NODE_SIZE: usize = 16;
+/// Default maximum number of children per tree node.
+pub const DEFAULT_NODE_SIZE: usize = 16;
 const FORMAT_MAGIC: &[u8; 8] = b"PSIDX001";
 const FORMAT_HEADER_LEN: usize = 40;
+pub(crate) const DEFAULT_SEARCH_STACK_CAPACITY: usize = DEFAULT_NODE_SIZE;
+pub(crate) const DEFAULT_NEIGHBOR_QUEUE_CAPACITY: usize = DEFAULT_NODE_SIZE;
+pub(crate) const DEFAULT_RADIX_BITS: u32 = 8;
+const MIN_RADIX_BITS: u32 = 1;
+const MAX_RADIX_BITS: u32 = 16;
 
 /// Minimum index size at which `parallel(true)` enables rayon.
 #[cfg(feature = "parallel")]
-pub(crate) const DEFAULT_PARALLEL_MIN_ITEMS: usize = 50_000;
+pub const DEFAULT_PARALLEL_MIN_ITEMS: usize = 50_000;
 
 /// Axis-aligned rectangle bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -378,6 +384,7 @@ pub struct IndexBuilder {
     num_items: usize,
     sort_key: ExperimentalSortKey,
     radix: bool,
+    radix_bits: u32,
     #[cfg(feature = "parallel")]
     parallel: bool,
     #[cfg(feature = "parallel")]
@@ -385,14 +392,29 @@ pub struct IndexBuilder {
     boxes: Vec<Rect>,
 }
 
+#[derive(Clone, Copy)]
+#[cfg(feature = "simd")]
+pub(crate) struct BuildConfig {
+    pub(crate) node_size: usize,
+    pub(crate) num_items: usize,
+    pub(crate) sort_key: ExperimentalSortKey,
+    pub(crate) radix: bool,
+    pub(crate) radix_bits: u32,
+    #[cfg(feature = "parallel")]
+    pub(crate) parallel: bool,
+    #[cfg(feature = "parallel")]
+    pub(crate) parallel_min_items: usize,
+}
+
 impl IndexBuilder {
-    /// Create a builder for exactly `count` items with the default node size (`16`).
+    /// Create a builder for exactly `count` items with [`DEFAULT_NODE_SIZE`].
     pub fn new(count: usize) -> Self {
         IndexBuilder {
             node_size: DEFAULT_NODE_SIZE,
             num_items: count,
             sort_key: SortKey::Hilbert.into(),
             radix: true,
+            radix_bits: DEFAULT_RADIX_BITS,
             #[cfg(feature = "parallel")]
             parallel: false,
             #[cfg(feature = "parallel")]
@@ -424,6 +446,15 @@ impl IndexBuilder {
     #[doc(hidden)]
     pub fn radix(mut self, radix: bool) -> Self {
         self.radix = radix;
+        self
+    }
+
+    /// Set the LSD radix-sort digit width for benchmarks and tuning.
+    ///
+    /// Values are clamped to `1..=16`; the default is 8.
+    #[doc(hidden)]
+    pub fn experimental_radix_bits(mut self, bits: u32) -> Self {
+        self.radix_bits = normalize_radix_bits(bits);
         self
     }
 
@@ -478,11 +509,24 @@ impl IndexBuilder {
             });
         }
         Ok(crate::index_soa::build_simd_index(
-            self.node_size,
-            self.num_items,
-            self.sort_key,
+            self.config(),
             self.boxes,
         ))
+    }
+
+    #[cfg(feature = "simd")]
+    fn config(&self) -> BuildConfig {
+        BuildConfig {
+            node_size: self.node_size,
+            num_items: self.num_items,
+            sort_key: self.sort_key,
+            radix: self.radix,
+            radix_bits: self.radix_bits,
+            #[cfg(feature = "parallel")]
+            parallel: self.parallel,
+            #[cfg(feature = "parallel")]
+            parallel_min_items: self.parallel_min_items,
+        }
     }
 
     fn build_unchecked(self) -> Index {
@@ -550,10 +594,11 @@ impl IndexBuilder {
         let order: Vec<(u32, u32)> = if use_parallel {
             encode_sort_parallel(items, &encode)
         } else {
-            encode_sort_serial(items, &encode, self.radix)
+            encode_sort_serial(items, &encode, self.radix, self.radix_bits)
         };
         #[cfg(not(feature = "parallel"))]
-        let order: Vec<(u32, u32)> = encode_sort_serial(items, &encode, self.radix);
+        let order: Vec<(u32, u32)> =
+            encode_sort_serial(items, &encode, self.radix, self.radix_bits);
 
         #[cfg(feature = "parallel")]
         if use_parallel {
@@ -693,7 +738,7 @@ impl Index {
 
     /// Search with a reusable result buffer.
     pub fn search_into(&self, rect: Rect, results: &mut Vec<usize>) {
-        let mut stack: Vec<usize> = Vec::with_capacity(16);
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.search_into_stack(rect, results, &mut stack);
     }
 
@@ -752,14 +797,14 @@ impl Index {
             return;
         }
         if max_results == 1 {
-            let mut queue = BinaryHeap::with_capacity(16);
+            let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
             if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
                 results.push(index);
             }
             return;
         }
 
-        let mut queue = BinaryHeap::with_capacity(16);
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
     }
 
@@ -808,7 +853,7 @@ impl Index {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(16);
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
     }
 
@@ -821,7 +866,7 @@ impl Index {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack: Vec<usize> = Vec::with_capacity(16);
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.visit_with_stack(rect, &mut stack, visitor)
     }
 
@@ -1135,7 +1180,7 @@ impl Index {
 
         let mut node_index = self.boxes.len() - 1;
         let mut level = self.level_bounds.len() - 1;
-        let mut stack: Vec<usize> = Vec::with_capacity(16);
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
 
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
@@ -1215,7 +1260,7 @@ impl<'a> IndexView<'a> {
 
     /// Search with a reusable result buffer.
     pub fn search_into(&self, rect: Rect, results: &mut Vec<usize>) {
-        let mut stack: Vec<usize> = Vec::with_capacity(16);
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.search_into_stack(rect, results, &mut stack);
     }
 
@@ -1268,14 +1313,14 @@ impl<'a> IndexView<'a> {
             return;
         }
         if max_results == 1 {
-            let mut queue = BinaryHeap::with_capacity(16);
+            let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
             if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
                 results.push(index);
             }
             return;
         }
 
-        let mut queue = BinaryHeap::with_capacity(16);
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
     }
 
@@ -1324,7 +1369,7 @@ impl<'a> IndexView<'a> {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(16);
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
     }
 
@@ -1333,7 +1378,7 @@ impl<'a> IndexView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack: Vec<usize> = Vec::with_capacity(16);
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.visit_with_stack(rect, &mut stack, visitor)
     }
 
@@ -1864,7 +1909,12 @@ pub(crate) fn upper_bound_level(level_bounds: &[usize], node_index: usize) -> us
     lo
 }
 
-fn encode_sort_serial<F>(items: &[Rect], encode: &F, radix: bool) -> Vec<(u32, u32)>
+pub(crate) fn encode_sort_serial<F>(
+    items: &[Rect],
+    encode: &F,
+    radix: bool,
+    radix_bits: u32,
+) -> Vec<(u32, u32)>
 where
     F: Fn(usize, &Rect) -> (u32, u32),
 {
@@ -1873,7 +1923,7 @@ where
         order.push(encode(i, b));
     }
     if radix {
-        radix_sort_u32(&mut order);
+        radix_sort_u32(&mut order, radix_bits);
     } else {
         order.sort_unstable_by_key(|&(h, _)| h);
     }
@@ -1881,7 +1931,7 @@ where
 }
 
 #[cfg(feature = "parallel")]
-fn encode_sort_parallel<F>(items: &[Rect], encode: &F) -> Vec<(u32, u32)>
+pub(crate) fn encode_sort_parallel<F>(items: &[Rect], encode: &F) -> Vec<(u32, u32)>
 where
     F: Fn(usize, &Rect) -> (u32, u32) + Sync,
 {
@@ -1978,6 +2028,7 @@ pub fn radix_sort_pairs(a: &mut [(u32, u32)], bits: u32) {
     if n <= 1 {
         return;
     }
+    let bits = normalize_radix_bits(bits);
     let buckets = 1usize << bits;
     let mask = (buckets as u32) - 1;
     let passes = 32u32.div_ceil(bits);
@@ -2022,6 +2073,11 @@ pub fn radix_sort_pairs(a: &mut [(u32, u32)], bits: u32) {
     }
 }
 
-fn radix_sort_u32(a: &mut [(u32, u32)]) {
-    radix_sort_pairs(a, 8);
+fn radix_sort_u32(a: &mut [(u32, u32)], bits: u32) {
+    radix_sort_pairs(a, bits);
+}
+
+#[inline]
+pub(crate) fn normalize_radix_bits(bits: u32) -> u32 {
+    bits.clamp(MIN_RADIX_BITS, MAX_RADIX_BITS)
 }

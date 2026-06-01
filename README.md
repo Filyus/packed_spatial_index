@@ -69,10 +69,10 @@ Nearest-neighbor APIs:
 ## Builder
 
 ```rust
-use packed_spatial_index::{IndexBuilder, Rect, SortKey};
+use packed_spatial_index::{DEFAULT_NODE_SIZE, IndexBuilder, Rect, SortKey};
 
 let mut builder = IndexBuilder::new(10_000)
-    .node_size(16)
+    .node_size(DEFAULT_NODE_SIZE)
     .sort_key(SortKey::Hilbert);
 
 builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
@@ -82,10 +82,10 @@ builder.add_bounds(5.0, 5.0, 6.0, 6.0);
 With `parallel` enabled:
 
 ```rust
-# use packed_spatial_index::IndexBuilder;
+# use packed_spatial_index::{DEFAULT_PARALLEL_MIN_ITEMS, IndexBuilder};
 let builder = IndexBuilder::new(100_000)
     .parallel(true)
-    .parallel_min_items(50_000);
+    .parallel_min_items(DEFAULT_PARALLEL_MIN_ITEMS);
 ```
 
 With `simd` enabled:

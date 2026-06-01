@@ -27,6 +27,9 @@ jobs:
       - name: Test default features
         run: cargo test --all-targets
 
+      - name: Test all features
+        run: cargo test --all-targets --all-features
+
       - name: Test no default features
         run: cargo test --all-targets --no-default-features
 
@@ -48,6 +51,9 @@ jobs:
         run: cargo doc --no-deps --no-default-features
         env:
           RUSTDOCFLAGS: -D warnings
+
+      - name: List packaged files
+        run: cargo package --list
 
       - name: Package crate
         run: cargo package

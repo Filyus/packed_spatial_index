@@ -121,6 +121,19 @@ assert_eq!(view.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 
 `SimdIndex` is not persisted as a separate SoA format yet.
 
+The binary layout is documented in [`FORMAT.md`](FORMAT.md).
+
+## Examples
+
+Runnable examples cover the public paths:
+
+```bash
+cargo run --example basic
+cargo run --example persistence
+cargo run --example knn
+cargo run --example reuse_workspace
+```
+
 ## Features
 
 Both features are enabled by default:

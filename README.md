@@ -1,5 +1,9 @@
 # packed_spatial_index
 
+[![Rust CI](https://github.com/Filyus/packed_spatial_index/actions/workflows/ci.yml/badge.svg)](https://github.com/Filyus/packed_spatial_index/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/packed_spatial_index.svg)](https://crates.io/crates/packed_spatial_index)
+[![docs.rs](https://docs.rs/packed_spatial_index/badge.svg)](https://docs.rs/packed_spatial_index)
+
 `packed_spatial_index` is a packed static spatial index for 2D axis-aligned
 bounding boxes.
 
@@ -40,6 +44,17 @@ Use this crate when:
 - batch search throughput matters.
 
 It is not a dynamic R-tree: there are no insert/delete operations after build.
+
+## Limitations
+
+- The index is static: rebuild it when the dataset changes.
+- Only 2D axis-aligned bounding boxes are supported.
+- Search results are item indices, not stored payloads or geometries.
+- Result ordering is not a stable API guarantee.
+- Persistence is defined for the canonical `Index` format; `SimdIndex` can be
+  rebuilt from source boxes but does not have a separate SoA file format yet.
+- Nearest-neighbor search is exact over rectangles; approximate KNN and dynamic
+  spatial joins are out of scope for now.
 
 ## Main Types
 
@@ -168,15 +183,26 @@ cargo build --no-default-features --features parallel
 
 ## Performance Notes
 
-The short version from the local benchmarks:
+Recent local Criterion run, lower is better. The workload uses 100,000 random
+AABBs and 1,000 random search windows.
 
-- build is faster than `static_aabb2d_index` for the measured random AABB workloads;
+| Benchmark | FlatGeobuf packed R-tree | `Index` | `SimdIndex` |
+| --- | ---: | ---: | ---: |
+| Full build | 48.03 ms | 2.64 ms serial / 2.06 ms parallel | - |
+| Search batch | 568.23 us | 418.81 us | 136.27 us |
+| Serialize built tree | 133.94 us | 788.69 us | - |
+| Load owned tree | 868.02 us | 596.94 us | - |
+| Load zero-copy view | - | 36.97 us | - |
+
+The short version:
+
 - `Index` is the general-purpose path;
 - `SimdIndex` is best for heavier query batches where SIMD work amortizes well;
 - `any` is often much faster than collecting full result sets when all you need is existence;
 - AVX-512 is not always the fastest path in parallel workloads because CPU frequency behavior matters.
-
-See `REPORT.md` for the detailed research notes and benchmark tables.
+- `flatgeobuf_bench` compares against FlatGeobuf's packed Hilbert R-tree;
+- `index_bench` compares build/search paths against `static_aabb2d_index`;
+- `persistence_knn_bench` covers persistence, loaded views, and KNN.
 
 Run the focused benchmark suites with:
 

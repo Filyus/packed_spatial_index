@@ -9,6 +9,7 @@ documentation = "https://docs.rs/packed_spatial_index"
 readme = "README.md"
 keywords = ["spatial", "index", "aabb", "hilbert", "rtree"]
 categories = ["algorithms", "data-structures"]
+exclude = ["/.github/"]
 
 [package.metadata.docs.rs]
 all-features = true

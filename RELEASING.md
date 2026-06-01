@@ -45,7 +45,7 @@ true` input and confirmation phrase.
 3. Run the `Publish to crates.io` workflow from `main`.
 4. Set `version` to the exact `Cargo.toml` version.
 5. Keep `publish` as `false` for a dry run, or set it to `true` to publish.
-6. For a real publish, set `confirm` to `publish packed_spatial_index <version>`.
+6. For a real publish, set `confirm` to `publish packed_spatial_index`.
 7. Approve the `release` environment when GitHub asks for confirmation.
 
 The workflow validates that it is running from `main`, checks the requested

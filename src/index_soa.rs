@@ -184,7 +184,23 @@ fn build_single_node_soa(
     }
 }
 
-/// Finished read-only SIMD index. Created through [`IndexBuilder::finish_simd`](crate::IndexBuilder::finish_simd).
+/// Finished read-only SIMD index.
+///
+/// Created through [`IndexBuilder::finish_simd`](crate::IndexBuilder::finish_simd).
+/// It has the same public search and nearest-neighbor API as [`Index`](crate::Index),
+/// but stores bounds in structure-of-arrays form for SIMD traversal.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{IndexBuilder, Rect};
+///
+/// let mut builder = IndexBuilder::new(1);
+/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+///
+/// let index = builder.finish_simd().unwrap();
+/// assert_eq!(index.search(Rect::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
+/// ```
 pub struct SimdIndex {
     node_size: usize,
     num_items: usize,

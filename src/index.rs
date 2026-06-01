@@ -30,6 +30,23 @@ use crate::persistence::{
 };
 
 /// Reusable buffers for allocation-free repeated searches.
+///
+/// Use this when running many searches against the same index to reuse the
+/// result vector and traversal stack.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{IndexBuilder, Rect, SearchWorkspace};
+///
+/// let mut builder = IndexBuilder::new(1);
+/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+/// let index = builder.finish().unwrap();
+///
+/// let mut workspace = SearchWorkspace::new();
+/// let hits = index.search_with(Rect::new(0.5, 0.5, 0.5, 0.5), &mut workspace);
+/// assert_eq!(hits, &[0]);
+/// ```
 #[derive(Debug, Default)]
 pub struct SearchWorkspace {
     pub(crate) results: Vec<usize>,
@@ -93,6 +110,20 @@ fn prefetch_aos_node(boxes: &[Rect], indices: &[usize], node_index: usize, node_
 ///
 /// Search methods return item positions in the original insertion order. The order
 /// of returned results is traversal order and is not part of the API.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{IndexBuilder, Rect};
+///
+/// let mut builder = IndexBuilder::new(2);
+/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+/// let index = builder.finish().unwrap();
+///
+/// assert_eq!(index.num_items(), 2);
+/// assert_eq!(index.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// ```
 pub struct Index {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
@@ -119,6 +150,24 @@ impl Index {
     }
 
     /// Serialize this index into the stable little-endian `PSINDEX` format.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index, IndexBuilder, IndexView, Rect};
+    ///
+    /// let mut builder = IndexBuilder::new(1);
+    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// let index = builder.finish()?;
+    ///
+    /// let bytes = index.to_bytes();
+    /// let owned = Index::from_bytes(&bytes)?;
+    /// let view = IndexView::from_bytes(&bytes)?;
+    ///
+    /// let query = Rect::new(0.5, 0.5, 0.5, 0.5);
+    /// assert_eq!(owned.search(query), view.search(query));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn to_bytes(&self) -> Vec<u8> {
         let level_count = self.level_bounds.len();
         let num_nodes = self.boxes.len();
@@ -194,6 +243,21 @@ impl Index {
     }
 
     /// Search with reusable result and traversal buffers.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{IndexBuilder, Rect, SearchWorkspace};
+    ///
+    /// let mut builder = IndexBuilder::new(1);
+    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let mut workspace = SearchWorkspace::with_capacity(8, 8);
+    /// let hits = index.search_with(Rect::new(0.0, 0.0, 2.0, 2.0), &mut workspace);
+    /// assert_eq!(hits, &[0]);
+    /// assert_eq!(workspace.results(), &[0]);
+    /// ```
     pub fn search_with<'a>(&self, rect: Rect, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
         self.search_into_stack(rect, &mut workspace.results, &mut workspace.stack);
         &workspace.results
@@ -219,6 +283,19 @@ impl Index {
     }
 
     /// Return up to `max_results` item indices nearest to `point`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{IndexBuilder, Point, Rect};
+    ///
+    /// let mut builder = IndexBuilder::new(2);
+    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Rect::new(10.0, 10.0, 11.0, 11.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// assert_eq!(index.neighbors(Point::new(10.25, 10.25), 1), vec![1]);
+    /// ```
     pub fn neighbors(&self, point: Point, max_results: usize) -> Vec<usize> {
         self.neighbors_within(point, max_results, f64::INFINITY)
     }
@@ -295,6 +372,9 @@ impl Index {
     }
 
     /// Visit items in nondecreasing squared-distance order from `point`.
+    ///
+    /// The visitor receives squared distances. Return [`ControlFlow::Break`] to
+    /// stop early.
     pub fn visit_neighbors<B, F>(
         &self,
         point: Point,
@@ -313,6 +393,22 @@ impl Index {
     /// The visitor receives item positions in the original insertion order. Return
     /// [`ControlFlow::Continue`] to continue traversal or [`ControlFlow::Break`] for
     /// early exit with a user-provided value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::ops::ControlFlow;
+    ///
+    /// use packed_spatial_index::{IndexBuilder, Rect};
+    ///
+    /// let mut builder = IndexBuilder::new(2);
+    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Rect::new(5.0, 5.0, 6.0, 6.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let found = index.visit(Rect::new(5.0, 5.0, 6.0, 6.0), ControlFlow::Break);
+    /// assert_eq!(found, ControlFlow::Break(1));
+    /// ```
     pub fn visit<B, F>(&self, rect: Rect, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
@@ -678,6 +774,23 @@ impl Index {
 }
 
 /// Zero-copy read-only view over bytes produced by [`Index::to_bytes`].
+///
+/// Loading validates the buffer but does not copy the tree into owned vectors.
+/// Search and nearest-neighbor methods read little-endian values directly from
+/// the borrowed byte slice.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{IndexBuilder, IndexView, Rect};
+///
+/// let mut builder = IndexBuilder::new(1);
+/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+/// let bytes = builder.finish().unwrap().to_bytes();
+///
+/// let view = IndexView::from_bytes(&bytes).unwrap();
+/// assert_eq!(view.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// ```
 pub struct IndexView<'a> {
     node_size: usize,
     num_items: usize,
@@ -690,6 +803,20 @@ pub struct IndexView<'a> {
 
 impl<'a> IndexView<'a> {
     /// Load a zero-copy index view from bytes previously produced by [`Index::to_bytes`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{IndexBuilder, IndexView, Rect};
+    ///
+    /// let mut builder = IndexBuilder::new(1);
+    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    /// let bytes = builder.finish()?.to_bytes();
+    ///
+    /// let view = IndexView::from_bytes(&bytes)?;
+    /// assert_eq!(view.num_items(), 1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
         let parsed = parse_index_bytes(bytes)?;
         Ok(Self {

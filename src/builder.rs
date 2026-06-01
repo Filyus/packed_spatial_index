@@ -13,6 +13,19 @@ use crate::{
 use crate::{config::DEFAULT_PARALLEL_MIN_ITEMS, sort::encode_sort_parallel};
 
 /// Builder for [`Index`] and, with the `simd` feature, `SimdIndex`.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{IndexBuilder, Rect};
+///
+/// let mut builder = IndexBuilder::new(2);
+/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add_bounds(5.0, 5.0, 6.0, 6.0);
+///
+/// let index = builder.finish().unwrap();
+/// assert_eq!(index.search(Rect::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// ```
 pub struct IndexBuilder {
     node_size: usize,
     num_items: usize,
@@ -159,6 +172,18 @@ impl IndexBuilder {
     }
 
     /// Pack the tree into the SIMD-accelerated SoA index.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{IndexBuilder, Rect};
+    ///
+    /// let mut builder = IndexBuilder::new(1);
+    /// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+    ///
+    /// let index = builder.finish_simd().unwrap();
+    /// assert_eq!(index.search(Rect::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
+    /// ```
     #[cfg(feature = "simd")]
     pub fn finish_simd(self) -> Result<crate::SimdIndex, BuildError> {
         if self.boxes.len() != self.num_items {

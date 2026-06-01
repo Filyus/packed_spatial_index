@@ -2,6 +2,21 @@
 pub(crate) type Num = f64;
 
 /// Axis-aligned rectangle bounds.
+///
+/// Bounds are inclusive: rectangles that touch at an edge or corner overlap.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{Point, Rect};
+///
+/// let a = Rect::new(0.0, 0.0, 1.0, 1.0);
+/// let b = Rect::new(1.0, 1.0, 2.0, 2.0);
+///
+/// assert!(a.overlaps(b));
+/// assert!(a.contains_point(Point::new(0.5, 0.5)));
+/// assert!(!a.contains(b));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
     /// Minimum x coordinate.
@@ -71,6 +86,16 @@ impl Rect {
 }
 
 /// 2D point used by nearest-neighbor searches.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::Point;
+///
+/// let point = Point::new(10.0, 20.0);
+/// assert_eq!(point.x, 10.0);
+/// assert_eq!(point.y, 20.0);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     /// X coordinate.

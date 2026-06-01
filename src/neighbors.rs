@@ -1,6 +1,22 @@
 use std::collections::BinaryHeap;
 
 /// Reusable buffers for allocation-free repeated nearest-neighbor searches.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{IndexBuilder, NeighborWorkspace, Point, Rect};
+///
+/// let mut builder = IndexBuilder::new(2);
+/// builder.add(Rect::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Rect::new(10.0, 10.0, 11.0, 11.0));
+/// let index = builder.finish().unwrap();
+///
+/// let mut workspace = NeighborWorkspace::new();
+/// let hits = index.neighbors_with(Point::new(0.5, 0.5), 1, f64::INFINITY, &mut workspace);
+/// assert_eq!(hits, &[0]);
+/// assert_eq!(workspace.results(), &[0]);
+/// ```
 #[derive(Debug, Default)]
 pub struct NeighborWorkspace {
     pub(crate) results: Vec<usize>,

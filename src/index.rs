@@ -221,14 +221,13 @@ fn prefetch_aos_node(boxes: &[Rect], indices: &[usize], node_index: usize, node_
 
 /// Which key to use when sorting boxes before packing the tree.
 ///
-/// [`SortKey::Hilbert`] is the default. [`SortKey::Morton`] is cheaper to compute, but
-/// usually has slightly worse spatial locality.
+/// [`SortKey::Hilbert`] is the default and currently the only stable public
+/// ordering. Additional sort keys are kept in the hidden experimental API for
+/// benchmarking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortKey {
     /// Hilbert curve order.
     Hilbert,
-    /// Morton curve (Z-order).
-    Morton,
 }
 
 /// Experimental sort-key implementations used by benchmarks.
@@ -249,7 +248,6 @@ impl From<SortKey> for ExperimentalSortKey {
     fn from(key: SortKey) -> Self {
         match key {
             SortKey::Hilbert => ExperimentalSortKey::HilbertMagicBits,
-            SortKey::Morton => ExperimentalSortKey::Morton,
         }
     }
 }

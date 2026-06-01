@@ -180,27 +180,25 @@ fn index_search_matches_reference_morton() {
 
 #[test]
 fn public_sort_keys_match_reference() {
-    for key in [SortKey::Hilbert, SortKey::Morton] {
-        let mut rng = StdRng::seed_from_u64(123);
-        let n = 2_000usize;
-        let boxes = random_boxes(&mut rng, n);
+    let mut rng = StdRng::seed_from_u64(123);
+    let n = 2_000usize;
+    let boxes = random_boxes(&mut rng, n);
 
-        let mut reference = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, 16);
-        let mut index = IndexBuilder::new(n).sort_key(key);
-        for b in &boxes {
-            reference.add(b[0], b[1], b[2], b[3]);
-            index.add(rect(*b));
-        }
-        let reference = reference.build().unwrap();
-        let index = index.finish().unwrap();
-
-        let query = Rect::new(250.0, 250.0, 750.0, 750.0);
-        let mut expected = reference.query(query.min_x, query.min_y, query.max_x, query.max_y);
-        let mut actual = index.search(query);
-        expected.sort_unstable();
-        actual.sort_unstable();
-        assert_eq!(expected, actual, "public sort key differs: {key:?}");
+    let mut reference = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, 16);
+    let mut index = IndexBuilder::new(n).sort_key(SortKey::Hilbert);
+    for b in &boxes {
+        reference.add(b[0], b[1], b[2], b[3]);
+        index.add(rect(*b));
     }
+    let reference = reference.build().unwrap();
+    let index = index.finish().unwrap();
+
+    let query = Rect::new(250.0, 250.0, 750.0, 750.0);
+    let mut expected = reference.query(query.min_x, query.min_y, query.max_x, query.max_y);
+    let mut actual = index.search(query);
+    expected.sort_unstable();
+    actual.sort_unstable();
+    assert_eq!(expected, actual);
 }
 
 #[test]

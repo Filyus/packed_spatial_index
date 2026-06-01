@@ -50,7 +50,7 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - `SimdIndex` is available with the `simd` feature and has the same search API.
 - `SearchWorkspace` reuses result and traversal buffers.
 - `Point` and `NeighborWorkspace` support nearest-neighbor searches.
-- `SortKey` selects the public build ordering curve: `Hilbert` or `Morton`.
+- `SortKey` selects the public build ordering curve. `Hilbert` is the stable default.
 
 Search APIs:
 
@@ -151,7 +151,7 @@ cargo build --no-default-features --features parallel
 - `PackedIndexBuildError` -> `BuildError`
 - `query*` -> `search*`
 - `query_any`, `query_first`, `visit_query` -> `any`, `first`, `visit`
-- encoder-specific `SortKey` variants moved to the hidden experimental API used by benches
+- non-default and encoder-specific sort-key variants moved to the hidden experimental API used by benches
 
 ## Performance Notes
 

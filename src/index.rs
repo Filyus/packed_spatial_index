@@ -126,6 +126,7 @@ impl SearchWorkspace {
 pub struct NeighborWorkspace {
     pub(crate) results: Vec<usize>,
     pub(crate) queue: BinaryHeap<NeighborState>,
+    pub(crate) node_queue: BinaryHeap<NeighborNodeState>,
 }
 
 impl NeighborWorkspace {
@@ -139,6 +140,7 @@ impl NeighborWorkspace {
         Self {
             results: Vec::with_capacity(results),
             queue: BinaryHeap::with_capacity(queue),
+            node_queue: BinaryHeap::with_capacity(queue),
         }
     }
 
@@ -180,6 +182,38 @@ impl Ord for NeighborState {
 }
 
 impl PartialOrd for NeighborState {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NeighborNodeState {
+    pub(crate) index: usize,
+    pub(crate) dist: f64,
+}
+
+impl NeighborNodeState {
+    #[inline]
+    pub(crate) fn new(index: usize, dist: f64) -> Self {
+        Self { index, dist }
+    }
+}
+
+impl Eq for NeighborNodeState {}
+
+impl Ord for NeighborNodeState {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .dist
+            .total_cmp(&self.dist)
+            .then_with(|| other.index.cmp(&self.index))
+    }
+}
+
+impl PartialOrd for NeighborNodeState {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -713,20 +747,20 @@ impl Index {
         max_distance: f64,
         results: &mut Vec<usize>,
     ) {
-        let mut queue = BinaryHeap::with_capacity(16);
         results.clear();
         if max_results == 0 {
             return;
         }
-        let mut visitor = |index, _dist| {
-            results.push(index);
-            if results.len() == max_results {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
+        if max_results == 1 {
+            let mut queue = BinaryHeap::with_capacity(16);
+            if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
+                results.push(index);
             }
-        };
-        let _ = self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor);
+            return;
+        }
+
+        let mut queue = BinaryHeap::with_capacity(16);
+        self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
     }
 
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
@@ -740,21 +774,26 @@ impl Index {
         workspace.results.clear();
         if max_results == 0 {
             workspace.queue.clear();
+            workspace.node_queue.clear();
             return &workspace.results;
         }
-        let mut visitor = |index, _dist| {
-            workspace.results.push(index);
-            if workspace.results.len() == max_results {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
+        if max_results == 1 {
+            workspace.queue.clear();
+            if let Some(index) =
+                self.nearest_one_with_queue(point, max_distance, &mut workspace.node_queue)
+            {
+                workspace.results.push(index);
             }
-        };
-        let _ = self.visit_neighbors_with_queue(
+            return &workspace.results;
+        }
+
+        workspace.node_queue.clear();
+        self.collect_neighbors_with_queue(
             point,
+            max_results,
             max_distance,
+            &mut workspace.results,
             &mut workspace.queue,
-            &mut visitor,
         );
         &workspace.results
     }
@@ -784,6 +823,104 @@ impl Index {
     {
         let mut stack: Vec<usize> = Vec::with_capacity(16);
         self.visit_with_stack(rect, &mut stack, visitor)
+    }
+
+    fn collect_neighbors_with_queue(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+        queue: &mut BinaryHeap<NeighborState>,
+    ) {
+        queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return;
+        };
+        if self.num_items == 0 {
+            return;
+        }
+
+        let mut node_index = self.boxes.len() - 1;
+        loop {
+            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
+            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
+            let is_leaf = node_index < self.num_items;
+
+            for pos in node_index..end {
+                let b = self.boxes[pos];
+                let dist = b.distance_squared_to(point);
+                if dist > max_dist_sq {
+                    continue;
+                }
+                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
+            }
+
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist_sq {
+                    queue.clear();
+                    return;
+                }
+                if state.is_leaf {
+                    results.push(state.index);
+                    if results.len() == max_results {
+                        return;
+                    }
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+
+            if !continue_search {
+                return;
+            }
+        }
+    }
+
+    fn nearest_one_with_queue(
+        &self,
+        point: Point,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborNodeState>,
+    ) -> Option<usize> {
+        queue.clear();
+        let mut best_dist = max_distance_squared(max_distance)?;
+        if self.num_items == 0 {
+            return None;
+        }
+
+        let mut best_index = None;
+        let mut node_index = self.boxes.len() - 1;
+        loop {
+            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
+            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
+            let is_leaf = node_index < self.num_items;
+
+            for pos in node_index..end {
+                let b = self.boxes[pos];
+                let dist = b.distance_squared_to(point);
+                if dist > best_dist {
+                    continue;
+                }
+                if is_leaf {
+                    if dist == 0.0 {
+                        return Some(self.indices[pos]);
+                    }
+                    best_dist = dist;
+                    best_index = Some(self.indices[pos]);
+                } else {
+                    queue.push(NeighborNodeState::new(self.indices[pos], dist));
+                }
+            }
+
+            match queue.pop() {
+                Some(state) if state.dist <= best_dist => node_index = state.index,
+                _ => return best_index,
+            }
+        }
     }
 
     fn visit_neighbors_with_queue<B, F>(
@@ -1126,20 +1263,20 @@ impl<'a> IndexView<'a> {
         max_distance: f64,
         results: &mut Vec<usize>,
     ) {
-        let mut queue = BinaryHeap::with_capacity(16);
         results.clear();
         if max_results == 0 {
             return;
         }
-        let mut visitor = |index, _dist| {
-            results.push(index);
-            if results.len() == max_results {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
+        if max_results == 1 {
+            let mut queue = BinaryHeap::with_capacity(16);
+            if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
+                results.push(index);
             }
-        };
-        let _ = self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor);
+            return;
+        }
+
+        let mut queue = BinaryHeap::with_capacity(16);
+        self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
     }
 
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
@@ -1153,21 +1290,26 @@ impl<'a> IndexView<'a> {
         workspace.results.clear();
         if max_results == 0 {
             workspace.queue.clear();
+            workspace.node_queue.clear();
             return &workspace.results;
         }
-        let mut visitor = |index, _dist| {
-            workspace.results.push(index);
-            if workspace.results.len() == max_results {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
+        if max_results == 1 {
+            workspace.queue.clear();
+            if let Some(index) =
+                self.nearest_one_with_queue(point, max_distance, &mut workspace.node_queue)
+            {
+                workspace.results.push(index);
             }
-        };
-        let _ = self.visit_neighbors_with_queue(
+            return &workspace.results;
+        }
+
+        workspace.node_queue.clear();
+        self.collect_neighbors_with_queue(
             point,
+            max_results,
             max_distance,
+            &mut workspace.results,
             &mut workspace.queue,
-            &mut visitor,
         );
         &workspace.results
     }
@@ -1193,6 +1335,110 @@ impl<'a> IndexView<'a> {
     {
         let mut stack: Vec<usize> = Vec::with_capacity(16);
         self.visit_with_stack(rect, &mut stack, visitor)
+    }
+
+    fn collect_neighbors_with_queue(
+        &self,
+        point: Point,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+        queue: &mut BinaryHeap<NeighborState>,
+    ) {
+        queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return;
+        };
+        if self.num_items == 0 {
+            return;
+        }
+
+        let mut node_index = self.num_nodes - 1;
+        loop {
+            let upper_bound_level = self.upper_bound_level(node_index);
+            let end =
+                (node_index + self.node_size).min(self.level_bound_unchecked(upper_bound_level));
+            let is_leaf = node_index < self.num_items;
+
+            for pos in node_index..end {
+                let b = self.box_at_unchecked(pos);
+                let dist = b.distance_squared_to(point);
+                if dist > max_dist_sq {
+                    continue;
+                }
+                queue.push(NeighborState::new(
+                    self.index_at_unchecked(pos),
+                    is_leaf,
+                    dist,
+                ));
+            }
+
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist_sq {
+                    queue.clear();
+                    return;
+                }
+                if state.is_leaf {
+                    results.push(state.index);
+                    if results.len() == max_results {
+                        return;
+                    }
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+
+            if !continue_search {
+                return;
+            }
+        }
+    }
+
+    fn nearest_one_with_queue(
+        &self,
+        point: Point,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborNodeState>,
+    ) -> Option<usize> {
+        queue.clear();
+        let mut best_dist = max_distance_squared(max_distance)?;
+        if self.num_items == 0 {
+            return None;
+        }
+
+        let mut best_index = None;
+        let mut node_index = self.num_nodes - 1;
+        loop {
+            let upper_bound_level = self.upper_bound_level(node_index);
+            let end =
+                (node_index + self.node_size).min(self.level_bound_unchecked(upper_bound_level));
+            let is_leaf = node_index < self.num_items;
+
+            for pos in node_index..end {
+                let b = self.box_at_unchecked(pos);
+                let dist = b.distance_squared_to(point);
+                if dist > best_dist {
+                    continue;
+                }
+                if is_leaf {
+                    if dist == 0.0 {
+                        return Some(self.index_at_unchecked(pos));
+                    }
+                    best_dist = dist;
+                    best_index = Some(self.index_at_unchecked(pos));
+                } else {
+                    queue.push(NeighborNodeState::new(self.index_at_unchecked(pos), dist));
+                }
+            }
+
+            match queue.pop() {
+                Some(state) if state.dist <= best_dist => node_index = state.index,
+                _ => return best_index,
+            }
+        }
     }
 
     #[doc(hidden)]

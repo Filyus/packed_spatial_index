@@ -18,8 +18,38 @@ use static_aabb2d_index::{Control, StaticAABB2DIndex, StaticAABB2DIndexBuilder};
 
 const NODE_SIZE: usize = 16;
 const QUERY_COUNT: usize = 1_000;
-const KNN_LIMIT: usize = 10;
-const KNN_MAX_DISTANCE: f64 = f64::INFINITY;
+const LOADED_KNN_LIMIT: usize = 10;
+const LOADED_KNN_MAX_DISTANCE: f64 = f64::INFINITY;
+
+#[derive(Clone, Copy)]
+struct KnnCase {
+    name: &'static str,
+    limit: usize,
+    max_distance: f64,
+}
+
+const KNN_CASES: &[KnnCase] = &[
+    KnnCase {
+        name: "top_1",
+        limit: 1,
+        max_distance: f64::INFINITY,
+    },
+    KnnCase {
+        name: "top_10",
+        limit: 10,
+        max_distance: f64::INFINITY,
+    },
+    KnnCase {
+        name: "top_100",
+        limit: 100,
+        max_distance: f64::INFINITY,
+    },
+    KnnCase {
+        name: "top_10_radius_100",
+        limit: 10,
+        max_distance: 100.0,
+    },
+];
 
 fn gen_boxes(n: usize, seed: u64) -> Vec<[f64; 4]> {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -154,7 +184,7 @@ fn bench_loaded_query(c: &mut Criterion) {
             let mut total = 0usize;
             for &p in &points {
                 total += index
-                    .neighbors_with(p, KNN_LIMIT, KNN_MAX_DISTANCE, &mut workspace)
+                    .neighbors_with(p, LOADED_KNN_LIMIT, LOADED_KNN_MAX_DISTANCE, &mut workspace)
                     .len();
             }
             black_box(total)
@@ -166,7 +196,7 @@ fn bench_loaded_query(c: &mut Criterion) {
             let mut total = 0usize;
             for &p in &points {
                 total += view
-                    .neighbors_with(p, KNN_LIMIT, KNN_MAX_DISTANCE, &mut workspace)
+                    .neighbors_with(p, LOADED_KNN_LIMIT, LOADED_KNN_MAX_DISTANCE, &mut workspace)
                     .len();
             }
             black_box(total)
@@ -186,80 +216,110 @@ fn bench_knn(c: &mut Criterion) {
     let points = make_points(QUERY_COUNT, 0xD15C);
 
     let mut group = c.benchmark_group("knn");
-    group.bench_function("crate_visit_neighbors", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            let mut results = Vec::with_capacity(KNN_LIMIT);
-            for &p in &points {
-                results.clear();
-                let _ = reference.visit_neighbors(p.x, p.y, &mut |idx, _dist| {
-                    results.push(idx);
-                    if results.len() == KNN_LIMIT {
-                        Control::Break(())
-                    } else {
-                        Control::Continue
+    for case in KNN_CASES {
+        group.bench_with_input(
+            BenchmarkId::new("crate_visit_neighbors", case.name),
+            case,
+            |b, case| {
+                let max_dist_sq = case.max_distance * case.max_distance;
+                b.iter(|| {
+                    let mut total = 0usize;
+                    let mut results = Vec::with_capacity(case.limit);
+                    for &p in &points {
+                        results.clear();
+                        let _ = reference.visit_neighbors(p.x, p.y, &mut |idx, dist| {
+                            if dist > max_dist_sq {
+                                return Control::Break(());
+                            }
+                            results.push(idx);
+                            if results.len() == case.limit {
+                                Control::Break(())
+                            } else {
+                                Control::Continue
+                            }
+                        });
+                        total += results.len();
                     }
-                });
-                total += results.len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("index_neighbors_with", |b| {
-        let mut workspace = NeighborWorkspace::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for &p in &points {
-                total += index
-                    .neighbors_with(p, KNN_LIMIT, KNN_MAX_DISTANCE, &mut workspace)
-                    .len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("view_neighbors_with", |b| {
-        let mut workspace = NeighborWorkspace::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for &p in &points {
-                total += view
-                    .neighbors_with(p, KNN_LIMIT, KNN_MAX_DISTANCE, &mut workspace)
-                    .len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_neighbors_with", |b| {
-        let mut workspace = NeighborWorkspace::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for &p in &points {
-                total += simd
-                    .neighbors_with(p, KNN_LIMIT, KNN_MAX_DISTANCE, &mut workspace)
-                    .len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("index_visit_neighbors", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for &p in &points {
-                let mut count = 0usize;
-                let _: ControlFlow<()> =
-                    index.visit_neighbors(p, KNN_MAX_DISTANCE, |_idx, _dist| {
-                        count += 1;
-                        if count == KNN_LIMIT {
-                            ControlFlow::Break(())
-                        } else {
-                            ControlFlow::Continue(())
-                        }
-                    });
-                total += count;
-            }
-            black_box(total)
-        })
-    });
+                    black_box(total)
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("index_neighbors_with", case.name),
+            case,
+            |b, case| {
+                let mut workspace = NeighborWorkspace::new();
+                b.iter(|| {
+                    let mut total = 0usize;
+                    for &p in &points {
+                        total += index
+                            .neighbors_with(p, case.limit, case.max_distance, &mut workspace)
+                            .len();
+                    }
+                    black_box(total)
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("view_neighbors_with", case.name),
+            case,
+            |b, case| {
+                let mut workspace = NeighborWorkspace::new();
+                b.iter(|| {
+                    let mut total = 0usize;
+                    for &p in &points {
+                        total += view
+                            .neighbors_with(p, case.limit, case.max_distance, &mut workspace)
+                            .len();
+                    }
+                    black_box(total)
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("simd_neighbors_with", case.name),
+            case,
+            |b, case| {
+                let mut workspace = NeighborWorkspace::new();
+                b.iter(|| {
+                    let mut total = 0usize;
+                    for &p in &points {
+                        total += simd
+                            .neighbors_with(p, case.limit, case.max_distance, &mut workspace)
+                            .len();
+                    }
+                    black_box(total)
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("index_visit_neighbors", case.name),
+            case,
+            |b, case| {
+                b.iter(|| {
+                    let mut total = 0usize;
+                    for &p in &points {
+                        let mut count = 0usize;
+                        let _: ControlFlow<()> =
+                            index.visit_neighbors(p, case.max_distance, |_idx, _dist| {
+                                count += 1;
+                                if count == case.limit {
+                                    ControlFlow::Break(())
+                                } else {
+                                    ControlFlow::Continue(())
+                                }
+                            });
+                        total += count;
+                    }
+                    black_box(total)
+                })
+            },
+        );
+    }
     group.finish();
 }
 

@@ -69,6 +69,11 @@ harness = false
 required-features = ["simd"]
 
 [[bench]]
+name = "persistence_knn3d_bench"
+harness = false
+required-features = ["simd"]
+
+[[bench]]
 name = "flatgeobuf2d_bench"
 harness = false
 required-features = ["parallel", "simd"]
@@ -79,9 +84,21 @@ name = "parallel_experiment_2d"
 required-features = ["parallel"]
 
 [[example]]
+name = "parallel_experiment_3d"
+required-features = ["parallel"]
+
+[[example]]
 name = "soa_experiment_2d"
 required-features = ["simd"]
 
 [[example]]
+name = "soa_experiment_3d"
+required-features = ["simd"]
+
+[[example]]
 name = "nodesize_experiment_2d"
+required-features = ["simd"]
+
+[[example]]
+name = "nodesize_experiment_3d"
 required-features = ["simd"]

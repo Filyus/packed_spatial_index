@@ -188,9 +188,16 @@ Runnable examples cover the public paths:
 cargo run --example basic_2d
 cargo run --example basic_3d
 cargo run --example persistence_2d
+cargo run --example persistence_3d
 cargo run --example knn_2d
+cargo run --example knn_3d
 cargo run --example reuse_workspace_2d
+cargo run --example reuse_workspace_3d
 ```
+
+Feature-gated experiment examples include `parallel_experiment_2d`,
+`parallel_experiment_3d`, `soa_experiment_2d`, `soa_experiment_3d`,
+`nodesize_experiment_2d`, and `nodesize_experiment_3d`.
 
 ## Features
 
@@ -315,9 +322,10 @@ The short version:
 - AVX-512 is not always the fastest path in parallel workloads because CPU frequency behavior matters.
 - `flatgeobuf2d_bench` compares against FlatGeobuf's packed Hilbert R-tree;
 - `index2d_bench` compares build/search paths against `static_aabb2d_index`;
-- `index3d_bench` covers 3D build/search/KNN, SIMD search/build, persistence,
-  loaded views, node sizes, and hidden Morton baseline;
-- `persistence_knn2d_bench` covers scalar/SIMD persistence, loaded views, and KNN.
+- `index3d_bench` covers 3D build/search/KNN, SIMD search/build, dimension
+  comparisons, node sizes, and hidden Morton baseline;
+- `persistence_knn2d_bench` covers 2D scalar/SIMD persistence, loaded views, and KNN;
+- `persistence_knn3d_bench` covers 3D scalar/SIMD persistence, loaded views, and KNN.
 
 Run the focused benchmark suites with:
 
@@ -325,6 +333,7 @@ Run the focused benchmark suites with:
 cargo bench --bench index2d_bench --no-default-features --features parallel,simd
 cargo bench --bench index3d_bench --no-default-features --features parallel,simd
 cargo bench --bench persistence_knn2d_bench --no-default-features --features simd
+cargo bench --bench persistence_knn3d_bench --no-default-features --features simd
 cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd
 ```
 

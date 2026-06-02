@@ -1,0 +1,45 @@
+name: Release-plz PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run without opening or updating a release PR
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-plz-pr-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-pr:
+    name: release-pr
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'Filyus' }}
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz release-pr
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+          config: release-plz.toml
+          dry_run: ${{ inputs.dry_run }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,79 @@
+# release-plz is configured in a safe PR-only mode for now.
+#
+# The workflow runs manually and calls only `release-pr`, never `release`.
+# Publishing, tag creation, and GitHub Releases are disabled here as an extra
+# guardrail while we evaluate the workflow.
+
+[workspace]
+allow_dirty = false
+changelog_update = true
+dependencies_update = false
+git_release_enable = false
+git_tag_enable = false
+publish = false
+release_always = false
+release_commits = "^(api|build|bounds3d|sort3d|simd|simd3d|persistence|knn|perf|search|sortkey|bench|benches|test|tests|docs|refactor|layout|ci|deps|edition|meta|package)(,|:)"
+pr_branch_prefix = "release-plz-"
+pr_draft = true
+pr_labels = ["release"]
+pr_name = "release: prepare packed_spatial_index v{{ version }}"
+repo_url = "https://github.com/Filyus/packed_spatial_index"
+semver_check = true
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this crate are documented here.
+
+## [Unreleased]
+
+"""
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+
+{% for commit in commits %}
+- {{ commit.message | upper_first }}{% if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}) {% endfor %}){% endif %}
+{% endfor %}
+
+{% endfor %}
+"""
+trim = true
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
+protect_breaking_commits = true
+
+commit_parsers = [
+  { message = "^api(?:,|:)", group = "API" },
+  { message = "^build(?:,|:)", group = "API" },
+  { message = "^bounds3d(?:,|:)", group = "3D" },
+  { message = "^sort3d(?:,|:)", group = "3D" },
+  { message = "^simd(?:,|:)", group = "SIMD" },
+  { message = "^simd3d(?:,|:)", group = "SIMD" },
+  { message = "^persistence(?:,|:)", group = "Persistence" },
+  { message = "^knn(?:,|:)", group = "Nearest Neighbors" },
+  { message = "^perf(?:,|:)", group = "Performance" },
+  { message = "^search(?:,|:)", group = "Performance" },
+  { message = "^sortkey(?:,|:)", group = "Performance" },
+  { message = "^bench(?:,|:)", group = "Benchmarks" },
+  { message = "^benches(?:,|:)", group = "Benchmarks" },
+  { message = "^test(?:,|:)", group = "Tests" },
+  { message = "^tests(?:,|:)", group = "Tests" },
+  { message = "^docs(?:,|:)", group = "Documentation" },
+  { message = "^refactor(?:,|:)", group = "Refactoring" },
+  { message = "^layout(?:,|:)", group = "Refactoring" },
+  { message = "^ci(?:,|:)", group = "Build, CI, and Packaging" },
+  { message = "^deps(?:,|:)", group = "Build, CI, and Packaging" },
+  { message = "^edition(?:,|:)", group = "Build, CI, and Packaging" },
+  { message = "^meta(?:,|:)", group = "Build, CI, and Packaging" },
+  { message = "^package(?:,|:)", group = "Build, CI, and Packaging" },
+  { message = "^release(?:,|:)", skip = true },
+  { message = "^repo(?:,|:)", skip = true },
+]
+
+link_parsers = [
+  { pattern = "#(\\d+)", href = "https://github.com/Filyus/packed_spatial_index/issues/$1" },
+]

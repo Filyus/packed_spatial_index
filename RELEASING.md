@@ -1,9 +1,9 @@
 # Releasing
 
 Releases are manual and controlled through GitHub Actions. Normal CI already
-runs on every `main` commit. The publish workflow creates the annotated
-`v<version>` tag after a successful publish; the tag workflow exists for the
-first local-token release and other tag-only recovery cases.
+runs on every `main` commit. `release-plz` is configured only to prepare draft
+release PRs; publishing, tag creation, and GitHub Releases remain handled by
+the explicit manual workflows below.
 
 ## First Release
 
@@ -49,17 +49,26 @@ there too.
 
 ## Updates
 
-1. Update `Cargo.toml` version. If the minor version changes, update the README
-   install snippet too.
-2. Push the release commit to `main` and wait for CI to pass.
-3. Run the `Publish to crates.io` workflow from `main`.
-4. Set `version` to the exact `Cargo.toml` package version, for example
+Before using `Release-plz PR`, GitHub repository settings must allow GitHub
+Actions to create pull requests with `GITHUB_TOKEN`. The workflow is manual and
+does not publish, push tags, or create GitHub Releases.
+
+1. Run the `Release-plz PR` workflow from `main` with `dry_run: true` and read
+   the log.
+2. If the dry run looks right, run `Release-plz PR` again with `dry_run: false`.
+   It may open or update a draft release PR that changes `Cargo.toml` and
+   `CHANGELOG.md`.
+3. Review the generated changelog and version bump. Edit the draft PR if the
+   release notes need a more user-facing summary.
+4. Merge the release PR and wait for CI on `main` to pass.
+5. Run the `Publish to crates.io` workflow from `main`.
+6. Set `version` to the exact `Cargo.toml` package version, for example
    `0.3.1`.
-5. For a dry run, keep `publish` as `false`; `confirm` can stay empty.
-6. For a real publish, set:
+7. For a dry run, keep `publish` as `false`; `confirm` can stay empty.
+8. For a real publish, set:
    - `publish`: `true`;
    - `confirm`: `publish packed_spatial_index`.
-7. Approve the `release` environment when GitHub asks for confirmation.
+9. Approve the `release` environment when GitHub asks for confirmation.
 
 If `version` is mistyped, the workflow fails before publishing. The confirmation
 phrase deliberately does not include the version; the version is checked only

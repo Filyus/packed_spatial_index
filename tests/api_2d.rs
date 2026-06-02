@@ -31,6 +31,41 @@ fn bounds_helpers_use_inclusive_edges() {
 }
 
 #[test]
+fn box_from_point_creates_zero_size_query_box() {
+    let point = packed_spatial_index::Point2D::new(2.0, 3.0);
+    assert_eq!(Box2D::from_point(point), Box2D::new(2.0, 3.0, 2.0, 3.0));
+}
+
+#[test]
+fn point_queries_find_containing_boxes() {
+    let mut builder = Index2DBuilder::new(3);
+    builder.add(Box2D::new(0.0, 0.0, 2.0, 2.0));
+    builder.add(Box2D::new(2.0, 2.0, 4.0, 4.0));
+    builder.add(Box2D::new(10.0, 10.0, 11.0, 11.0));
+    let index = builder.finish().unwrap();
+
+    assert_eq!(
+        index.search(Box2D::from_point(packed_spatial_index::Point2D::new(
+            1.0, 1.0
+        ))),
+        vec![0]
+    );
+    assert_eq!(
+        index.search(Box2D::from_point(packed_spatial_index::Point2D::new(
+            2.0, 2.0
+        ))),
+        vec![0, 1]
+    );
+    assert!(
+        index
+            .search(Box2D::from_point(packed_spatial_index::Point2D::new(
+                9.0, 9.0
+            )))
+            .is_empty()
+    );
+}
+
+#[test]
 fn bounds_try_new_validates_bounds() {
     assert_eq!(
         Box2D::try_new(0.0, 0.0, 1.0, 1.0),

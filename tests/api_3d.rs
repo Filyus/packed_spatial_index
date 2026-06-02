@@ -24,6 +24,37 @@ fn bounds3d_helpers_use_inclusive_edges() {
 }
 
 #[test]
+fn box3d_from_point_creates_zero_size_query_box() {
+    let point = Point3D::new(2.0, 3.0, 4.0);
+    assert_eq!(
+        Box3D::from_point(point),
+        Box3D::new(2.0, 3.0, 4.0, 2.0, 3.0, 4.0)
+    );
+}
+
+#[test]
+fn point3d_queries_find_containing_boxes() {
+    let mut builder = Index3DBuilder::new(2);
+    builder.add(Box3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0));
+    builder.add(Box3D::new(2.0, 2.0, 2.0, 4.0, 4.0, 4.0));
+    let index = builder.finish().unwrap();
+
+    assert_eq!(
+        index.search(Box3D::from_point(Point3D::new(1.0, 1.0, 1.0))),
+        vec![0]
+    );
+    assert_eq!(
+        index.search(Box3D::from_point(Point3D::new(2.0, 2.0, 2.0))),
+        vec![0, 1]
+    );
+    assert!(
+        index
+            .search(Box3D::from_point(Point3D::new(5.0, 5.0, 5.0)))
+            .is_empty()
+    );
+}
+
+#[test]
 fn bounds3d_try_new_validates_bounds() {
     assert_eq!(
         Box3D::try_new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),

@@ -106,6 +106,25 @@ impl Box2D {
         }
     }
 
+    /// Create a zero-size box at `point`.
+    ///
+    /// This is useful for point containment queries:
+    /// `index.search(Box2D::from_point(point))` returns boxes that contain the
+    /// point, because box overlap is inclusive.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Point2D};
+    ///
+    /// let point = Point2D::new(2.0, 3.0);
+    /// assert_eq!(Box2D::from_point(point), Box2D::new(2.0, 3.0, 2.0, 3.0));
+    /// ```
+    #[inline]
+    pub const fn from_point(point: Point2D) -> Self {
+        Self::new(point.x, point.y, point.x, point.y)
+    }
+
     /// Try to create a validated box.
     ///
     /// Returns [`BoundsError::InvalidBounds`] when `min_x > max_x`, `min_y > max_y`,
@@ -248,6 +267,28 @@ impl Box3D {
             max_y,
             max_z,
         }
+    }
+
+    /// Create a zero-size box at `point`.
+    ///
+    /// This is useful for point containment queries:
+    /// `index.search(Box3D::from_point(point))` returns boxes that contain the
+    /// point, because box overlap is inclusive.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box3D, Point3D};
+    ///
+    /// let point = Point3D::new(2.0, 3.0, 4.0);
+    /// assert_eq!(
+    ///     Box3D::from_point(point),
+    ///     Box3D::new(2.0, 3.0, 4.0, 2.0, 3.0, 4.0)
+    /// );
+    /// ```
+    #[inline]
+    pub const fn from_point(point: Point3D) -> Self {
+        Self::new(point.x, point.y, point.z, point.x, point.y, point.z)
     }
 
     /// Try to create a validated 3D box.

@@ -62,9 +62,9 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 
 ## Main Types
 
-- `Box2D` is the public AABB type, with inclusive `overlaps`, `contains`, and
-  `contains_point` helpers. `Box2D::new` is unchecked; use `Box2D::try_new` for
-  untrusted coordinate bounds.
+- `Box2D` is the public AABB type, with inclusive `overlaps`, `contains`,
+  `contains_point`, and `from_point` helpers. `Box2D::new` is unchecked; use
+  `Box2D::try_new` for untrusted coordinate bounds.
 - `Box3D` and `Point3D` are the equivalent scalar 3D geometry types.
 - `Index2DBuilder` builds either `Index2D` or, with `simd`, `SimdIndex2D`.
 - `Index3DBuilder` builds either `Index3D` or, with `simd`, `SimdIndex3D`.
@@ -322,13 +322,12 @@ items touching the point are included.
 # builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
 # let index = builder.finish()?;
 let point = Point2D::new(1.0, 1.0);
-let query = Box2D::new(point.x, point.y, point.x, point.y);
 
-assert_eq!(index.search(query), vec![0]);
+assert_eq!(index.search(Box2D::from_point(point)), vec![0]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
-For 3D, use `Box3D::new(x, y, z, x, y, z)` in the same way.
+For 3D, use `Box3D::from_point(point)` in the same way.
 
 ### Keep payloads outside the index
 

@@ -5,8 +5,10 @@ const MIN_RADIX_BITS: u32 = 1;
 const MAX_RADIX_BITS: u32 = 16;
 
 const MORTON_BITS_PER_AXIS: u32 = 21;
+const MORTON_KEY_BITS: u32 = MORTON_BITS_PER_AXIS * 3;
 const MORTON_AXIS_MAX: u32 = (1 << MORTON_BITS_PER_AXIS) - 1;
 const HILBERT_BITS_PER_AXIS: u32 = 16;
+const HILBERT_KEY_BITS: u32 = HILBERT_BITS_PER_AXIS * 3;
 const HILBERT_AXIS_MAX: u32 = (1 << HILBERT_BITS_PER_AXIS) - 1;
 const HILBERT3_STEP_LUT: [u8; 192] = build_hilbert3_step_lut();
 const HILBERT3_PAIR_LUT: [u16; 1536] = build_hilbert3_pair_lut();
@@ -73,12 +75,20 @@ pub(crate) fn encode_sort_by_key_3d(
     context: SortKey3DContext,
 ) -> Vec<(u64, usize)> {
     match sort_key {
-        ExperimentalSortKey3D::Hilbert => {
-            encode_sort_with_encoder_3d(items, encode_hilbert3, HILBERT_AXIS_MAX, context)
-        }
-        ExperimentalSortKey3D::Morton => {
-            encode_sort_with_encoder_3d(items, encode_morton3, MORTON_AXIS_MAX, context)
-        }
+        ExperimentalSortKey3D::Hilbert => encode_sort_with_encoder_3d(
+            items,
+            encode_hilbert3_nibble,
+            HILBERT_AXIS_MAX,
+            HILBERT_KEY_BITS,
+            context,
+        ),
+        ExperimentalSortKey3D::Morton => encode_sort_with_encoder_3d(
+            items,
+            encode_morton3,
+            MORTON_AXIS_MAX,
+            MORTON_KEY_BITS,
+            context,
+        ),
     }
 }
 
@@ -86,6 +96,7 @@ fn encode_sort_with_encoder_3d<F>(
     items: &[Bounds3D],
     key_fn: F,
     axis_max: u32,
+    key_bits: u32,
     context: SortKey3DContext,
 ) -> Vec<(u64, usize)>
 where
@@ -121,7 +132,7 @@ where
         return encode_sort_parallel_3d(items, &encode);
     }
 
-    encode_sort_serial_3d(items, &encode, context.radix, context.radix_bits)
+    encode_sort_serial_3d(items, &encode, context.radix, context.radix_bits, key_bits)
 }
 
 pub(crate) fn encode_sort_serial_3d<F>(
@@ -129,6 +140,7 @@ pub(crate) fn encode_sort_serial_3d<F>(
     encode: &F,
     radix: bool,
     radix_bits: u32,
+    key_bits: u32,
 ) -> Vec<(u64, usize)>
 where
     F: Fn(usize, &Bounds3D) -> (u64, usize),
@@ -138,7 +150,7 @@ where
         order.push(encode(i, bounds));
     }
     if radix {
-        radix_sort_pairs_u64(&mut order, radix_bits);
+        radix_sort_pairs_u64_with_used_bits(&mut order, radix_bits, key_bits);
     } else {
         order.sort_unstable_by_key(|&(key, _)| key);
     }
@@ -172,6 +184,12 @@ pub(crate) fn normalize_radix_bits_3d(bits: u32) -> u32 {
 
 #[doc(hidden)]
 pub fn radix_sort_pairs_u64(a: &mut [(u64, usize)], bits: u32) {
+    let max_key = a.iter().map(|&(key, _)| key).max().unwrap_or(0);
+    let used_bits = 64 - max_key.leading_zeros();
+    radix_sort_pairs_u64_with_used_bits(a, bits, used_bits);
+}
+
+fn radix_sort_pairs_u64_with_used_bits(a: &mut [(u64, usize)], bits: u32, used_bits: u32) {
     let n = a.len();
     if n <= 1 {
         return;
@@ -179,7 +197,10 @@ pub fn radix_sort_pairs_u64(a: &mut [(u64, usize)], bits: u32) {
     let bits = normalize_radix_bits_3d(bits);
     let buckets = 1usize << bits;
     let mask = (buckets as u64) - 1;
-    let passes = 64u32.div_ceil(bits);
+    let passes = used_bits.min(64).div_ceil(bits);
+    if passes == 0 {
+        return;
+    }
 
     let mut tmp = vec![(0u64, 0usize); n];
     let mut counts = vec![0usize; buckets];
@@ -257,6 +278,59 @@ pub fn encode_hilbert3(x: u32, y: u32, z: u32) -> u64 {
         let entry = HILBERT3_PAIR_LUT[state * 64 + m as usize];
         index = (index << 6) | u64::from(entry & 0x3f);
         state = (entry >> 6) as usize;
+    }
+
+    index
+}
+
+/// Coarsened 4-bit-per-axis ("nibble") pair LUT: 24 states x 4096 (xnib<<8|ynib<<4|znib)
+/// entries. Each entry packs the next state in the high bits and 12 output bits
+/// (4 Hilbert levels x 3 bits) in the low bits. Lets [`encode_hilbert3_nibble`] consume
+/// 4 levels per step (4 steps for 16 bits) instead of the 2-level pair LUT's 8 steps.
+static HILBERT3_QUAD_LUT: [u32; 24 * 4096] = build_hilbert3_quad_lut();
+
+const fn build_hilbert3_quad_lut() -> [u32; 24 * 4096] {
+    let mut table = [0u32; 24 * 4096];
+    let mut state = 0usize;
+    while state < 24 {
+        let mut m = 0u32;
+        while m < 4096 {
+            let x = (m >> 8) & 0xf;
+            let y = (m >> 4) & 0xf;
+            let z = m & 0xf;
+            let mut next_state = state;
+            let mut out = 0u32;
+            let mut bit = 4u32;
+            while bit > 0 {
+                bit -= 1;
+                let step_m = (((x >> bit) & 1) << 2) | (((y >> bit) & 1) << 1) | ((z >> bit) & 1);
+                let entry = HILBERT3_STEP_LUT[next_state * 8 + step_m as usize];
+                out = (out << 3) | ((entry & 7) as u32);
+                next_state = (entry >> 3) as usize;
+            }
+            table[state * 4096 + m as usize] = ((next_state as u32) << 12) | out;
+            m += 1;
+        }
+        state += 1;
+    }
+    table
+}
+
+/// Nibble-coarsened encoder: 4 levels per step (4 steps), one lookup into the larger
+/// 384 KiB [`HILBERT3_QUAD_LUT`] per step. Bit-for-bit identical to [`encode_hilbert3`].
+#[doc(hidden)]
+#[inline]
+pub fn encode_hilbert3_nibble(x: u32, y: u32, z: u32) -> u64 {
+    let mut index = 0u64;
+    let mut state = 0usize;
+
+    let mut shift = HILBERT_BITS_PER_AXIS;
+    while shift > 0 {
+        shift -= 4;
+        let m = (((x >> shift) & 0xf) << 8) | (((y >> shift) & 0xf) << 4) | ((z >> shift) & 0xf);
+        let entry = HILBERT3_QUAD_LUT[state * 4096 + m as usize];
+        index = (index << 12) | u64::from(entry & 0xfff);
+        state = (entry >> 12) as usize;
     }
 
     index
@@ -373,6 +447,52 @@ mod tests {
         }
 
         index
+    }
+
+    #[test]
+    fn nibble_hilbert3_lut_matches_pair_encoder() {
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        for _ in 0..200_000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let x = (seed & HILBERT_AXIS_MAX as u64) as u32;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let y = (seed & HILBERT_AXIS_MAX as u64) as u32;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let z = (seed & HILBERT_AXIS_MAX as u64) as u32;
+            assert_eq!(
+                encode_hilbert3_nibble(x, y, z),
+                encode_hilbert3(x, y, z),
+                "nibble mismatch at ({x}, {y}, {z})"
+            );
+        }
+    }
+
+    #[test]
+    fn radix_pairs_u64_matches_stable_sort_across_widths() {
+        let mut seed = 0xDEAD_BEEF_0BAD_F00Du64;
+        for &width in &[0u32, 1, 6, 48, 63, 64] {
+            let mask = if width == 0 {
+                0
+            } else if width >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << width) - 1
+            };
+            for &n in &[1usize, 2, 1000] {
+                let mut data: Vec<(u64, usize)> = (0..n)
+                    .map(|i| {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        (seed & mask, i)
+                    })
+                    .collect();
+                let mut expected = data.clone();
+                expected.sort_by_key(|&(key, _)| key);
+                radix_sort_pairs_u64(&mut data, 8);
+                let got_keys: Vec<u64> = data.iter().map(|&(key, _)| key).collect();
+                let expected_keys: Vec<u64> = expected.iter().map(|&(key, _)| key).collect();
+                assert_eq!(got_keys, expected_keys, "width={width} n={n}");
+            }
+        }
     }
 
     #[test]

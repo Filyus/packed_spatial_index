@@ -244,7 +244,109 @@ fn bench_dimension_encode(c: &mut Criterion) {
             black_box(checksum);
         });
     });
+    group.bench_function("hilbert3d_nibble", |b| {
+        b.iter(|| {
+            let mut checksum = 0u64;
+            for &(x, y, z) in &coords3d {
+                checksum ^=
+                    experimental::encode_hilbert3_nibble(black_box(x), black_box(y), black_box(z));
+            }
+            black_box(checksum);
+        });
+    });
     group.finish();
+}
+
+fn bench_dimension_radix(c: &mut Criterion) {
+    let n = 262_144usize;
+    let mut rng = StdRng::seed_from_u64(0x2D3D);
+    let pairs: Vec<(u64, usize)> = (0..n)
+        .map(|i| (rng.random::<u64>() & ((1u64 << 48) - 1), i))
+        .collect();
+
+    let mut group = c.benchmark_group("dimension_compare_radix");
+    group.throughput(Throughput::Elements(n as u64));
+    group.bench_function("hilbert3d_radix_8bit_known_48", |b| {
+        b.iter_batched_ref(
+            || pairs.clone(),
+            |a| radix_sort_pairs_u64_known_bits(a, black_box(8), 48),
+            criterion::BatchSize::LargeInput,
+        );
+    });
+    group.bench_function("hilbert3d_radix_8bit_data_driven", |b| {
+        b.iter_batched_ref(
+            || pairs.clone(),
+            |a| experimental::radix_sort_pairs_u64(a, black_box(8)),
+            criterion::BatchSize::LargeInput,
+        );
+    });
+    group.bench_function("hilbert3d_radix_8bit_full_64", |b| {
+        b.iter_batched_ref(
+            || pairs.clone(),
+            |a| radix_sort_pairs_u64_full_passes(a, black_box(8)),
+            criterion::BatchSize::LargeInput,
+        );
+    });
+    group.finish();
+}
+
+fn radix_sort_pairs_u64_known_bits(a: &mut [(u64, usize)], bits: u32, used_bits: u32) {
+    radix_sort_pairs_u64_fixed_passes(a, bits, used_bits.div_ceil(bits));
+}
+
+fn radix_sort_pairs_u64_full_passes(a: &mut [(u64, usize)], bits: u32) {
+    radix_sort_pairs_u64_fixed_passes(a, bits, 64u32.div_ceil(bits));
+}
+
+fn radix_sort_pairs_u64_fixed_passes(a: &mut [(u64, usize)], bits: u32, passes: u32) {
+    let n = a.len();
+    if n <= 1 || passes == 0 {
+        return;
+    }
+
+    let bits = bits.clamp(4, 12);
+    let buckets = 1usize << bits;
+    let mask = (buckets as u64) - 1;
+    let mut tmp = vec![(0u64, 0usize); n];
+    let mut counts = vec![0usize; buckets];
+
+    fn pass(
+        src: &[(u64, usize)],
+        dst: &mut [(u64, usize)],
+        shift: u32,
+        mask: u64,
+        counts: &mut [usize],
+    ) {
+        counts.fill(0);
+        for &(key, _) in src {
+            counts[((key >> shift) & mask) as usize] += 1;
+        }
+
+        let mut sum = 0usize;
+        for count in counts.iter_mut() {
+            let current = *count;
+            *count = sum;
+            sum += current;
+        }
+
+        for &pair in src {
+            let bucket = ((pair.0 >> shift) & mask) as usize;
+            dst[counts[bucket]] = pair;
+            counts[bucket] += 1;
+        }
+    }
+
+    for pass_idx in 0..passes {
+        let shift = pass_idx * bits;
+        if pass_idx % 2 == 0 {
+            pass(a, &mut tmp, shift, mask, &mut counts);
+        } else {
+            pass(&tmp, a, shift, mask, &mut counts);
+        }
+    }
+    if passes % 2 == 1 {
+        a.copy_from_slice(&tmp);
+    }
 }
 
 fn bench_dimension_build(c: &mut Criterion) {
@@ -628,6 +730,7 @@ fn bench_knn(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_dimension_encode,
+    bench_dimension_radix,
     bench_dimension_build,
     bench_dimension_search,
     bench_dimension_knn,

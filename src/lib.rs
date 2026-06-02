@@ -60,6 +60,7 @@ pub mod experimental {
     };
     pub use crate::sort::{ExperimentalSortKey2D, radix_sort_pairs};
     pub use crate::sort3d::{
-        ExperimentalSortKey3D, encode_hilbert3, encode_morton3, radix_sort_pairs_u64,
+        ExperimentalSortKey3D, encode_hilbert3, encode_hilbert3_nibble, encode_morton3,
+        radix_sort_pairs_u64,
     };
 }

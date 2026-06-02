@@ -12,6 +12,7 @@ use packed_spatial_index::experimental::ExperimentalSortKey2D;
 use packed_spatial_index::{Bounds2D, Index2D, Index2DBuilder, Index2DView};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
+use static_aabb2d_index::{StaticAABB2DIndex, StaticAABB2DIndexBuilder};
 
 const NODE_SIZE: usize = 16;
 const QUERY_COUNT: usize = 1_000;
@@ -69,6 +70,14 @@ fn build_flatgeobuf_presorted(nodes: &[NodeItem], extent: &NodeItem) -> PackedRT
     PackedRTree::build(nodes, extent, NODE_SIZE as u16).unwrap()
 }
 
+fn build_static_aabb(boxes: &[[f64; 4]]) -> StaticAABB2DIndex<f64> {
+    let mut builder = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(boxes.len(), NODE_SIZE);
+    for b in boxes {
+        builder.add(b[0], b[1], b[2], b[3]);
+    }
+    builder.build().unwrap()
+}
+
 fn build_index(boxes: &[[f64; 4]], parallel: bool) -> Index2D {
     let mut builder = Index2DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
@@ -109,6 +118,9 @@ fn bench_build(c: &mut Criterion) {
             &(sorted_nodes, extent),
             |b, (nodes, extent)| b.iter(|| black_box(build_flatgeobuf_presorted(nodes, extent))),
         );
+        group.bench_with_input(BenchmarkId::new("static_aabb", n), &boxes, |b, boxes| {
+            b.iter(|| black_box(build_static_aabb(boxes)))
+        });
         group.bench_with_input(BenchmarkId::new("index_serial", n), &boxes, |b, boxes| {
             b.iter(|| black_box(build_index(boxes, false)))
         });
@@ -123,6 +135,7 @@ fn bench_search(c: &mut Criterion) {
     let n = 100_000usize;
     let boxes = gen_boxes(n, 0xF6B);
     let flatgeobuf = build_flatgeobuf(&boxes);
+    let static_aabb = build_static_aabb(&boxes);
     let index = build_index(&boxes, false);
     let simd = build_simd_index(&boxes);
     let queries = make_queries(QUERY_COUNT, 0xACE);
@@ -133,6 +146,18 @@ fn bench_search(c: &mut Criterion) {
             let mut total = 0usize;
             for q in &queries {
                 total += flatgeobuf.search(q[0], q[1], q[2], q[3]).unwrap().len();
+            }
+            black_box(total)
+        })
+    });
+    group.bench_function("static_aabb_search", |b| {
+        let mut stack = Vec::new();
+        b.iter(|| {
+            let mut total = 0usize;
+            for q in &queries {
+                total += static_aabb
+                    .query_with_stack(q[0], q[1], q[2], q[3], &mut stack)
+                    .len();
             }
             black_box(total)
         })

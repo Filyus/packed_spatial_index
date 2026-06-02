@@ -45,12 +45,19 @@ impl SearchWorkspace {
 #[inline]
 pub(crate) fn prefetch_read<T>(ptr: *const T) {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: `_mm_prefetch` is a pure cache hint that never reads or dereferences
+    // `ptr`, so any pointer value (including dangling or out of bounds) is sound; it is
+    // `unsafe` only because it is a target-feature intrinsic, and SSE is baseline on
+    // x86-64.
     unsafe {
         use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
         _mm_prefetch(ptr.cast::<i8>(), _MM_HINT_T0);
     }
 
     #[cfg(target_arch = "x86")]
+    // SAFETY: `_mm_prefetch` is a pure cache hint that never reads or dereferences
+    // `ptr`, so any pointer value is sound; it is `unsafe` only because it is a
+    // target-feature intrinsic.
     unsafe {
         use std::arch::x86::{_MM_HINT_T0, _mm_prefetch};
         _mm_prefetch(ptr.cast::<i8>(), _MM_HINT_T0);

@@ -506,21 +506,23 @@ impl Index3D {
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
+            let node_boxes = &self.boxes[node_index..end];
+            let node_indices = &self.indices[node_index..end];
 
             if is_leaf {
-                for pos in node_index..end {
-                    if !self.boxes[pos].overlaps(bounds) {
+                for (b, &index) in node_boxes.iter().zip(node_indices) {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
-                    visitor(self.indices[pos])?;
+                    visitor(index)?;
                 }
             } else {
                 let child_level = level - 1;
-                for pos in (node_index..end).rev() {
-                    if !self.boxes[pos].overlaps(bounds) {
+                for (b, &index) in node_boxes.iter().zip(node_indices).rev() {
+                    if !b.overlaps(bounds) {
                         continue;
                     }
-                    stack.push(self.indices[pos]);
+                    stack.push(index);
                     stack.push(child_level);
                 }
             }

@@ -15,6 +15,7 @@ use crate::{
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     sort2d::{SortKeyContext, encode_sort_by_key},
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
+    tree::{TreeLayout, compute_tree_layout},
 };
 
 type Num = f64;
@@ -22,20 +23,10 @@ type Num = f64;
 pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> SimdIndex2D {
     let node_size = config.node_size;
     let num_items = config.num_items;
-    let mut level_bounds: Vec<usize> = Vec::new();
-    let mut num_nodes = num_items;
-    let mut n = num_items;
-    level_bounds.push(n);
-    if num_items > 0 {
-        loop {
-            n = (n as f64 / node_size as f64).ceil() as usize;
-            num_nodes += n;
-            level_bounds.push(num_nodes);
-            if n == 1 {
-                break;
-            }
-        }
-    }
+    let TreeLayout {
+        level_bounds,
+        num_nodes,
+    } = compute_tree_layout(num_items, node_size);
 
     if num_items == 0 {
         return SimdIndex2D {

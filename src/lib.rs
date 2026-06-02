@@ -38,6 +38,7 @@ mod persistence;
 mod sort2d;
 mod sort3d;
 mod traversal;
+mod tree;
 
 pub use build::BuildError;
 pub use builder2d::Index2DBuilder;

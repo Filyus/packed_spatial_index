@@ -9,6 +9,7 @@ use crate::{
         DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, SortKeyContext, encode_sort_by_key,
         normalize_radix_bits,
     },
+    tree::{TreeLayout, compute_tree_layout, normalize_node_size},
 };
 
 /// Builder for [`Index2D`] and, with the `simd` feature, `SimdIndex2D`.
@@ -72,7 +73,7 @@ impl Index2DBuilder {
 
     /// Set the maximum number of children per tree node (clamped to `[2, 65535]`).
     pub fn node_size(mut self, node_size: usize) -> Self {
-        self.node_size = node_size.clamp(2, 65535);
+        self.node_size = normalize_node_size(node_size);
         self
     }
 
@@ -185,21 +186,10 @@ impl Index2DBuilder {
     fn build_unchecked(self) -> Index2D {
         let node_size = self.node_size;
         let num_items = self.num_items;
-
-        let mut level_bounds: Vec<usize> = Vec::new();
-        let mut num_nodes = num_items;
-        let mut n = num_items;
-        level_bounds.push(n);
-        if num_items > 0 {
-            loop {
-                n = (n as f64 / node_size as f64).ceil() as usize;
-                num_nodes += n;
-                level_bounds.push(num_nodes);
-                if n == 1 {
-                    break;
-                }
-            }
-        }
+        let TreeLayout {
+            level_bounds,
+            num_nodes,
+        } = compute_tree_layout(num_items, node_size);
 
         if num_items == 0 {
             return Index2D {

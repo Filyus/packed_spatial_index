@@ -1,8 +1,9 @@
 //! Packed static spatial index for 2D and 3D axis-aligned bounding boxes.
 //!
 //! The canonical flow is [`Index2DBuilder`] -> [`Index2D`] -> [`Index2D::search`].
-//! With the `simd` feature, `Index2DBuilder::finish_simd` builds `SimdIndex2D`,
-//! which has the same search API backed by a SoA layout and SIMD traversal.
+//! With the `simd` feature, `Index2DBuilder::finish_simd` and
+//! `Index3DBuilder::finish_simd` build `SimdIndex2D` and `SimdIndex3D`, which
+//! have the same search APIs backed by SoA layouts and SIMD traversal.
 //! `Index2D` and `Index3D` can also be serialized with `to_bytes` and viewed
 //! without copying through [`Index2DView`] and [`Index3DView`].
 //!
@@ -20,8 +21,8 @@
 //!
 //! # Cargo Features
 //! * `parallel` (enabled by default): adaptive parallel builds through rayon.
-//! * `simd` (enabled by default): `SimdIndex2D` with SIMD searches through `wide`
-//!   and x86-64 AVX-512 intrinsics where available.
+//! * `simd` (enabled by default): `SimdIndex2D` and `SimdIndex3D` with SIMD
+//!   searches through `wide` and x86-64 AVX-512 intrinsics where available.
 
 mod build;
 mod builder2d;
@@ -33,6 +34,8 @@ mod index2d;
 #[cfg(feature = "simd")]
 mod index2d_soa;
 mod index3d;
+#[cfg(feature = "simd")]
+mod index3d_soa;
 mod neighbors;
 mod persistence;
 mod sort2d;
@@ -51,6 +54,8 @@ pub use index2d::{Index2D, Index2DView};
 #[cfg(feature = "simd")]
 pub use index2d_soa::SimdIndex2D;
 pub use index3d::{Index3D, Index3DView};
+#[cfg(feature = "simd")]
+pub use index3d_soa::SimdIndex3D;
 pub use neighbors::NeighborWorkspace;
 pub use persistence::LoadError;
 pub use sort2d::SortKey2D;

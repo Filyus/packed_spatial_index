@@ -10,8 +10,8 @@ axis-aligned bounding boxes.
 It is built for read-heavy workloads where the full set of boxes is known up
 front: build once, then run many window/intersection searches. The default
 `Index2D` and `Index3D` use packed Hilbert R-tree layouts. With the `simd`
-feature, `SimdIndex2D` stores 2D boxes in structure-of-arrays form and uses SIMD
-intersection checks.
+feature, `SimdIndex2D` and `SimdIndex3D` store boxes in structure-of-arrays form
+and use SIMD intersection checks.
 
 ```rust
 use packed_spatial_index::{Index2DBuilder, Bounds2D};
@@ -50,12 +50,12 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 ## Limitations
 
 - The index is static: rebuild it when the dataset changes.
-- 2D and scalar 3D axis-aligned bounding boxes are supported.
+- 2D and 3D axis-aligned bounding boxes are supported.
 - Search results are item indices, not stored payloads or geometries.
 - Result ordering is not a stable API guarantee.
 - Persistence is defined for canonical `Index2D` and `Index3D` formats.
-  `SimdIndex2D` can be rebuilt from source boxes but does not have a stable SoA
-  file format yet.
+  `SimdIndex2D` and `SimdIndex3D` can be rebuilt from source boxes but do not
+  have stable SoA file formats yet.
 - Nearest-neighbor search is exact over indexed bounds; approximate KNN and dynamic
   spatial joins are out of scope for now.
 
@@ -66,12 +66,13 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
   untrusted bounds.
 - `Bounds3D` and `Point3D` are the equivalent scalar 3D geometry types.
 - `Index2DBuilder` builds either `Index2D` or, with `simd`, `SimdIndex2D`.
-- `Index3DBuilder` builds scalar `Index3D`.
+- `Index3DBuilder` builds either `Index3D` or, with `simd`, `SimdIndex3D`.
 - `Index2D` is the default read-only index.
 - `Index3D` is the scalar read-only 3D index.
 - `Index2DView` and `Index3DView` are zero-copy read-only views over bytes
   produced by `Index2D::to_bytes` and `Index3D::to_bytes`.
-- `SimdIndex2D` is available with the `simd` feature and has the same search API.
+- `SimdIndex2D` and `SimdIndex3D` are available with the `simd` feature and have
+  the same search API as their scalar counterparts.
 - `SearchWorkspace` reuses result and traversal buffers.
 - `Point2D`, `Point3D`, and `NeighborWorkspace` support nearest-neighbor searches.
 - `SortKey2D` selects the public build ordering curve. `Hilbert` is the stable default.
@@ -124,6 +125,9 @@ let simd_index = builder.finish_simd()?;
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
+The same `finish_simd()` method is available on `Index3DBuilder` and returns
+`SimdIndex3D`.
+
 3D uses the same builder/search shape:
 
 ```rust
@@ -168,8 +172,8 @@ assert_eq!(view.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 ```
 
 3D persistence uses the same header and sections, with a dimension flag and
-six `f64` coordinates per stored bounds. `SimdIndex2D` is not persisted as a
-separate SoA format yet.
+six `f64` coordinates per stored bounds. SIMD indexes are not persisted as
+separate SoA formats yet.
 
 The binary layout is documented in [`FORMAT.md`](FORMAT.md).
 
@@ -191,7 +195,8 @@ Both features are enabled by default:
 
 - `parallel`: adaptive rayon-based index builds through `Index2DBuilder::parallel`
   and `Index3DBuilder::parallel`.
-- `simd`: SoA index and SIMD search paths through `SimdIndex2D`.
+- `simd`: SoA index and SIMD search paths through `SimdIndex2D` and
+  `SimdIndex3D`.
 
 Minimal build:
 

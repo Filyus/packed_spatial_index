@@ -12,7 +12,21 @@ use crate::{
     tree::{TreeLayout, compute_tree_layout, normalize_node_size},
 };
 
-/// Builder for [`Index3D`].
+/// Build parameters passed to the SoA/SIMD 3D builder.
+#[cfg(feature = "simd")]
+pub(crate) struct BuildConfig3D {
+    pub(crate) node_size: usize,
+    pub(crate) num_items: usize,
+    pub(crate) sort_key: ExperimentalSortKey3D,
+    pub(crate) radix: bool,
+    pub(crate) radix_bits: u32,
+    #[cfg(feature = "parallel")]
+    pub(crate) parallel: bool,
+    #[cfg(feature = "parallel")]
+    pub(crate) parallel_min_items: usize,
+}
+
+/// Builder for [`Index3D`] and, with the `simd` feature, `SimdIndex3D`.
 ///
 /// # Example
 ///
@@ -128,6 +142,46 @@ impl Index3DBuilder {
             });
         }
         Ok(self.build_unchecked())
+    }
+
+    /// Pack the tree into the SIMD-accelerated SoA 3D index.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index3DBuilder, Bounds3D};
+    ///
+    /// let mut builder = Index3DBuilder::new(1);
+    /// builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    ///
+    /// let index = builder.finish_simd().unwrap();
+    /// assert_eq!(index.search(Bounds3D::new(0.5, 0.5, 0.5, 0.5, 0.5, 0.5)), vec![0]);
+    /// ```
+    #[cfg(feature = "simd")]
+    pub fn finish_simd(self) -> Result<crate::SimdIndex3D, BuildError> {
+        if self.boxes.len() != self.num_items {
+            return Err(BuildError::ItemCount {
+                added: self.boxes.len(),
+                expected: self.num_items,
+            });
+        }
+        let config = self.config();
+        Ok(crate::index3d_soa::build_simd_index_3d(config, self.boxes))
+    }
+
+    #[cfg(feature = "simd")]
+    fn config(&self) -> BuildConfig3D {
+        BuildConfig3D {
+            node_size: self.node_size,
+            num_items: self.num_items,
+            sort_key: self.sort_key,
+            radix: self.radix,
+            radix_bits: self.radix_bits,
+            #[cfg(feature = "parallel")]
+            parallel: self.parallel,
+            #[cfg(feature = "parallel")]
+            parallel_min_items: self.parallel_min_items,
+        }
     }
 
     fn build_unchecked(self) -> Index3D {

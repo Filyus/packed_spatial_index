@@ -575,6 +575,51 @@ fn bench_build(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(not(feature = "simd"))]
+fn bench_simd_search(_c: &mut Criterion) {}
+
+#[cfg(feature = "simd")]
+fn bench_simd_search(c: &mut Criterion) {
+    let n = 100_000usize;
+    let mut group = c.benchmark_group("index3d_simd_search");
+    for kind in [DatasetKind::Uniform, DatasetKind::FlatZ] {
+        let boxes = gen_boxes(kind, n, 0x5D10);
+        let queries = gen_queries(kind, QUERY_COUNT, 0x5D11);
+        let node_size = 16usize;
+
+        let mut scalar_builder = Index3DBuilder::new(boxes.len()).node_size(node_size);
+        let mut simd_builder = Index3DBuilder::new(boxes.len()).node_size(node_size);
+        for &b in &boxes {
+            scalar_builder.add(b);
+            simd_builder.add(b);
+        }
+        let scalar = scalar_builder.finish().unwrap();
+        let simd = simd_builder.finish_simd().unwrap();
+
+        group.bench_function(format!("{}_scalar", kind.name()), |b| {
+            let mut workspace = SearchWorkspace::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for &query in &queries {
+                    total += scalar.search_with(query, &mut workspace).len();
+                }
+                black_box(total);
+            });
+        });
+        group.bench_function(format!("{}_simd", kind.name()), |b| {
+            let mut workspace = SearchWorkspace::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for &query in &queries {
+                    total += simd.search_with(query, &mut workspace).len();
+                }
+                black_box(total);
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_search(c: &mut Criterion) {
     let n = 100_000usize;
     let mut group = c.benchmark_group("index3d_search");
@@ -765,6 +810,7 @@ criterion_group!(
     bench_dimension_persistence,
     bench_build,
     bench_search,
+    bench_simd_search,
     bench_persistence,
     bench_loaded_view,
     bench_knn

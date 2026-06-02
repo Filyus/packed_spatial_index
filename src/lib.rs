@@ -4,8 +4,9 @@
 //! With the `simd` feature, `Index2DBuilder::finish_simd` and
 //! `Index3DBuilder::finish_simd` build `SimdIndex2D` and `SimdIndex3D`, which
 //! have the same search APIs backed by SoA layouts and SIMD traversal.
-//! `Index2D` and `Index3D` can also be serialized with `to_bytes` and viewed
-//! without copying through [`Index2DView`] and [`Index3DView`].
+//! `Index2D`, `Index3D`, and their SIMD counterparts can also be serialized
+//! with `to_bytes`; scalar indexes can be viewed without copying through
+//! [`Index2DView`] and [`Index3DView`].
 //!
 //! # Quick Start
 //! ```

@@ -578,6 +578,38 @@ fn bench_build(c: &mut Criterion) {
 #[cfg(not(feature = "simd"))]
 fn bench_simd_search(_c: &mut Criterion) {}
 
+#[cfg(not(all(feature = "simd", feature = "parallel")))]
+fn bench_simd_build(_c: &mut Criterion) {}
+
+#[cfg(all(feature = "simd", feature = "parallel"))]
+fn bench_simd_build(c: &mut Criterion) {
+    let n = 200_000usize;
+    let boxes = gen_boxes(DatasetKind::Uniform, n, 0x5B10);
+    let mut group = c.benchmark_group("index3d_simd_build");
+    group.bench_function("finish_simd_serial", |b| {
+        b.iter(|| {
+            let mut builder = Index3DBuilder::new(n).node_size(16).parallel(false);
+            for &bx in &boxes {
+                builder.add(bx);
+            }
+            black_box(builder.finish_simd().unwrap());
+        });
+    });
+    group.bench_function("finish_simd_parallel", |b| {
+        b.iter(|| {
+            let mut builder = Index3DBuilder::new(n)
+                .node_size(16)
+                .parallel(true)
+                .parallel_min_items(1);
+            for &bx in &boxes {
+                builder.add(bx);
+            }
+            black_box(builder.finish_simd().unwrap());
+        });
+    });
+    group.finish();
+}
+
 #[cfg(feature = "simd")]
 fn bench_simd_search(c: &mut Criterion) {
     let n = 100_000usize;
@@ -665,6 +697,16 @@ fn bench_persistence(c: &mut Criterion) {
             false,
         );
         let bytes = index.to_bytes();
+        #[cfg(feature = "simd")]
+        let simd = {
+            let mut builder = Index3DBuilder::new(boxes.len())
+                .node_size(PERSISTENCE_NODE_SIZE)
+                .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+            for &bounds in &boxes {
+                builder.add(bounds);
+            }
+            builder.finish_simd().unwrap()
+        };
 
         group.throughput(Throughput::Bytes(bytes.len() as u64));
         group.bench_with_input(BenchmarkId::new("to_bytes", n), &index, |b, index| {
@@ -687,6 +729,32 @@ fn bench_persistence(c: &mut Criterion) {
             &bytes,
             |b, bytes| b.iter(|| black_box(Index3DView::from_bytes(bytes).unwrap())),
         );
+        #[cfg(feature = "simd")]
+        {
+            group.bench_with_input(BenchmarkId::new("simd_to_bytes", n), &simd, |b, simd| {
+                b.iter(|| black_box(simd.to_bytes()))
+            });
+            group.bench_with_input(
+                BenchmarkId::new("simd_to_bytes_into", n),
+                &simd,
+                |b, simd| {
+                    let mut out = Vec::with_capacity(bytes.len());
+                    b.iter(|| {
+                        simd.to_bytes_into(&mut out);
+                        black_box(out.len())
+                    })
+                },
+            );
+            group.bench_with_input(
+                BenchmarkId::new("simd_from_bytes_owned", n),
+                &bytes,
+                |b, bytes| {
+                    b.iter(|| {
+                        black_box(packed_spatial_index::SimdIndex3D::from_bytes(bytes).unwrap())
+                    })
+                },
+            );
+        }
     }
 
     group.finish();
@@ -811,6 +879,7 @@ criterion_group!(
     bench_build,
     bench_search,
     bench_simd_search,
+    bench_simd_build,
     bench_persistence,
     bench_loaded_view,
     bench_knn

@@ -127,6 +127,7 @@ fn bench_persistence(c: &mut Criterion) {
     for &n in &[1_000usize, 100_000, 1_000_000] {
         let boxes = gen_boxes(n, 0xB0B);
         let index = build_index(&boxes);
+        let simd = build_simd_index(&boxes);
         let bytes = index.to_bytes();
 
         group.throughput(Throughput::Bytes(bytes.len() as u64));
@@ -149,6 +150,27 @@ fn bench_persistence(c: &mut Criterion) {
             BenchmarkId::new("from_bytes_view", n),
             &bytes,
             |b, bytes| b.iter(|| black_box(Index2DView::from_bytes(bytes).unwrap())),
+        );
+        group.bench_with_input(BenchmarkId::new("simd_to_bytes", n), &simd, |b, simd| {
+            b.iter(|| black_box(simd.to_bytes()))
+        });
+        group.bench_with_input(
+            BenchmarkId::new("simd_to_bytes_into", n),
+            &simd,
+            |b, simd| {
+                let mut out = Vec::with_capacity(bytes.len());
+                b.iter(|| {
+                    simd.to_bytes_into(&mut out);
+                    black_box(out.len())
+                })
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("simd_from_bytes_owned", n),
+            &bytes,
+            |b, bytes| {
+                b.iter(|| black_box(packed_spatial_index::SimdIndex2D::from_bytes(bytes).unwrap()))
+            },
         );
     }
 

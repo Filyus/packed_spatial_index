@@ -14,6 +14,10 @@ use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Bounds3D, Point3D},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
+    persistence::{
+        ByteWriter, LoadError, parse_index3d_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
+        serialized_len_3d,
+    },
     sort3d::{SortKey3DContext, encode_sort_by_key_3d},
     traversal::{SearchWorkspace, upper_bound_level},
     tree::{TreeLayout, compute_tree_layout},
@@ -55,15 +59,37 @@ pub(crate) fn build_simd_index_3d(config: BuildConfig3D, boxes: Vec<Bounds3D>) -
     let context = context.parallel(use_parallel);
     let order = encode_sort_by_key_3d(&boxes, config.sort_key, context);
 
-    for (slot, &(_, orig)) in order.iter().enumerate() {
-        let b = boxes[orig];
-        min_xs[slot] = b.min_x;
-        min_ys[slot] = b.min_y;
-        min_zs[slot] = b.min_z;
-        max_xs[slot] = b.max_x;
-        max_ys[slot] = b.max_y;
-        max_zs[slot] = b.max_z;
-        indices[slot] = orig;
+    #[cfg(feature = "parallel")]
+    let scattered_in_parallel = if use_parallel {
+        reorder_parallel_soa_3d(
+            &mut min_xs[..num_items],
+            &mut min_ys[..num_items],
+            &mut min_zs[..num_items],
+            &mut max_xs[..num_items],
+            &mut max_ys[..num_items],
+            &mut max_zs[..num_items],
+            &mut indices[..num_items],
+            &order,
+            &boxes,
+        );
+        true
+    } else {
+        false
+    };
+    #[cfg(not(feature = "parallel"))]
+    let scattered_in_parallel = false;
+
+    if !scattered_in_parallel {
+        for (slot, &(_, orig)) in order.iter().enumerate() {
+            let b = boxes[orig];
+            min_xs[slot] = b.min_x;
+            min_ys[slot] = b.min_y;
+            min_zs[slot] = b.min_z;
+            max_xs[slot] = b.max_x;
+            max_ys[slot] = b.max_y;
+            max_zs[slot] = b.max_z;
+            indices[slot] = orig;
+        }
     }
 
     let mut read_pos = 0usize;
@@ -250,6 +276,90 @@ impl SimdIndex3D {
     /// Return the packed node size used by this index.
     pub fn node_size(&self) -> usize {
         self.node_size
+    }
+
+    /// Serialize into the stable little-endian `PSINDEX` 3D format.
+    ///
+    /// The output is byte-identical to [`Index3D::to_bytes`](crate::Index3D::to_bytes)
+    /// for the same boxes, so a `SimdIndex3D` and an `Index3D` are interchangeable on
+    /// disk: either can load bytes produced by the other.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.to_bytes_into(&mut out);
+        out
+    }
+
+    /// Serialize into a caller-provided buffer, reusing its allocation.
+    ///
+    /// Equivalent to [`to_bytes`](Self::to_bytes) but writes into `out` (cleared first).
+    pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
+        let level_count = self.level_bounds.len();
+        let num_nodes = self.min_xs.len();
+        let len = serialized_len_3d(level_count, num_nodes).expect("serialized index is too large");
+        let mut bytes = ByteWriter::new(out, len);
+        bytes.write_magic();
+        bytes.write_format_version();
+        bytes.write_header_len();
+        bytes.write_3d_flags();
+        bytes.write_u64(self.node_size as u64);
+        bytes.write_u64(self.num_items as u64);
+        bytes.write_u64(num_nodes as u64);
+        bytes.write_u64(level_count as u64);
+        bytes.write_usize_slice_as_u64(&self.level_bounds);
+        bytes.write_soa_bounds_3d(
+            &self.min_xs,
+            &self.min_ys,
+            &self.min_zs,
+            &self.max_xs,
+            &self.max_ys,
+            &self.max_zs,
+        );
+        bytes.write_usize_slice_as_u64(&self.indices);
+        bytes.finish();
+    }
+
+    /// Load a SIMD 3D index from bytes produced by [`to_bytes`](Self::to_bytes) or by
+    /// [`Index3D::to_bytes`](crate::Index3D::to_bytes); the AoS box records are
+    /// scattered into the structure-of-arrays columns.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
+        let parsed = parse_index3d_bytes(bytes)?;
+        let num_nodes = parsed.num_nodes;
+
+        let mut level_bounds = Vec::with_capacity(parsed.level_count);
+        for i in 0..parsed.level_count {
+            level_bounds.push(read_u64_le_unchecked(parsed.level_bounds, i * 8) as usize);
+        }
+
+        let mut min_xs = Vec::with_capacity(num_nodes);
+        let mut min_ys = Vec::with_capacity(num_nodes);
+        let mut min_zs = Vec::with_capacity(num_nodes);
+        let mut max_xs = Vec::with_capacity(num_nodes);
+        let mut max_ys = Vec::with_capacity(num_nodes);
+        let mut max_zs = Vec::with_capacity(num_nodes);
+        let mut indices = Vec::with_capacity(num_nodes);
+        for i in 0..num_nodes {
+            let off = i * 48; // six f64 per 3D box record
+            min_xs.push(read_f64_le_unchecked(parsed.boxes, off));
+            min_ys.push(read_f64_le_unchecked(parsed.boxes, off + 8));
+            min_zs.push(read_f64_le_unchecked(parsed.boxes, off + 16));
+            max_xs.push(read_f64_le_unchecked(parsed.boxes, off + 24));
+            max_ys.push(read_f64_le_unchecked(parsed.boxes, off + 32));
+            max_zs.push(read_f64_le_unchecked(parsed.boxes, off + 40));
+            indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
+        }
+
+        Ok(SimdIndex3D {
+            node_size: parsed.node_size,
+            num_items: parsed.num_items,
+            level_bounds,
+            min_xs,
+            min_ys,
+            min_zs,
+            max_xs,
+            max_ys,
+            max_zs,
+            indices,
+        })
     }
 
     /// Return the indices of all items whose bounds intersect `bounds`.
@@ -859,4 +969,44 @@ fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
 #[inline]
 fn load4(a: &[f64], p: usize) -> f64x4 {
     f64x4::from([a[p], a[p + 1], a[p + 2], a[p + 3]])
+}
+
+/// Scatter the Hilbert-ordered items into the SoA leaf columns in parallel. Each
+/// output slot is written exactly once, so the columns can be filled independently.
+#[cfg(feature = "parallel")]
+#[allow(clippy::too_many_arguments)]
+fn reorder_parallel_soa_3d(
+    min_xs: &mut [f64],
+    min_ys: &mut [f64],
+    min_zs: &mut [f64],
+    max_xs: &mut [f64],
+    max_ys: &mut [f64],
+    max_zs: &mut [f64],
+    indices: &mut [usize],
+    order: &[(u64, usize)],
+    items: &[Bounds3D],
+) {
+    use rayon::prelude::*;
+
+    min_xs
+        .par_iter_mut()
+        .zip(min_ys.par_iter_mut())
+        .zip(min_zs.par_iter_mut())
+        .zip(max_xs.par_iter_mut())
+        .zip(max_ys.par_iter_mut())
+        .zip(max_zs.par_iter_mut())
+        .zip(indices.par_iter_mut())
+        .zip(order.par_iter())
+        .for_each(
+            |(((((((mnx, mny), mnz), mxx), mxy), mxz), idx), &(_, orig))| {
+                let b = items[orig];
+                *mnx = b.min_x;
+                *mny = b.min_y;
+                *mnz = b.min_z;
+                *mxx = b.max_x;
+                *mxy = b.max_y;
+                *mxz = b.max_z;
+                *idx = orig;
+            },
+        );
 }

@@ -1,12 +1,15 @@
 # Binary Format
 
 `Index2D::to_bytes` and `Index3D::to_bytes` write canonical packed layouts to a
-stable little-endian byte format. `Index2D::from_bytes` and
-`Index3D::from_bytes` load the same format into owned vectors, while
-`Index2DView::from_bytes` and `Index3DView::from_bytes` borrow the buffer
-without allocating during load.
+stable little-endian byte format. `SimdIndex2D::to_bytes` and
+`SimdIndex3D::to_bytes` write byte-identical canonical layouts from their SoA
+columns, so scalar and SIMD indexes are interchangeable on disk.
 
-`SimdIndex2D` does not have a separate persisted SoA format.
+`Index2D::from_bytes` and `Index3D::from_bytes` load the same format into owned
+vectors, while `Index2DView::from_bytes` and `Index3DView::from_bytes` borrow
+the buffer without allocating during load. SIMD indexes load the canonical
+bytes into owned SoA columns; there is no separate persisted SoA format and no
+zero-copy SIMD view format.
 
 ## Magic And Version
 
@@ -115,5 +118,6 @@ offset for malformed input.
 ## Compatibility
 
 The byte format is intended for data produced by `packed_spatial_index`
-`Index2D::to_bytes` and `Index3D::to_bytes`. The crate preserves the meaning of
+`Index2D::to_bytes`, `Index3D::to_bytes`, `SimdIndex2D::to_bytes`, and
+`SimdIndex3D::to_bytes`. The crate preserves the meaning of
 `format_version = 1`; incompatible changes should use a new version value.

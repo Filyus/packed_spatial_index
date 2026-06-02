@@ -377,6 +377,57 @@ impl<'a> ByteWriter<'a> {
         }
     }
 
+    /// Write 2D box records from structure-of-arrays columns (one `[min_x, min_y,
+    /// max_x, max_y]` record per node). Produces the same bytes as
+    /// [`write_bounds2d_slice`](Self::write_bounds2d_slice) on an equivalent AoS slice.
+    #[cfg(feature = "simd")]
+    pub(crate) fn write_soa_bounds_2d(
+        &mut self,
+        min_xs: &[f64],
+        min_ys: &[f64],
+        max_xs: &[f64],
+        max_ys: &[f64],
+    ) {
+        debug_assert_eq!(min_xs.len(), min_ys.len());
+        debug_assert_eq!(min_xs.len(), max_xs.len());
+        debug_assert_eq!(min_xs.len(), max_ys.len());
+        for i in 0..min_xs.len() {
+            self.write_f64(min_xs[i]);
+            self.write_f64(min_ys[i]);
+            self.write_f64(max_xs[i]);
+            self.write_f64(max_ys[i]);
+        }
+    }
+
+    /// Write 3D box records from structure-of-arrays columns (one `[min_x, min_y,
+    /// min_z, max_x, max_y, max_z]` record per node). Produces the same bytes as
+    /// [`write_bounds3d_slice`](Self::write_bounds3d_slice) on an equivalent AoS slice.
+    #[cfg(feature = "simd")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_soa_bounds_3d(
+        &mut self,
+        min_xs: &[f64],
+        min_ys: &[f64],
+        min_zs: &[f64],
+        max_xs: &[f64],
+        max_ys: &[f64],
+        max_zs: &[f64],
+    ) {
+        debug_assert_eq!(min_xs.len(), min_ys.len());
+        debug_assert_eq!(min_xs.len(), min_zs.len());
+        debug_assert_eq!(min_xs.len(), max_xs.len());
+        debug_assert_eq!(min_xs.len(), max_ys.len());
+        debug_assert_eq!(min_xs.len(), max_zs.len());
+        for i in 0..min_xs.len() {
+            self.write_f64(min_xs[i]);
+            self.write_f64(min_ys[i]);
+            self.write_f64(min_zs[i]);
+            self.write_f64(max_xs[i]);
+            self.write_f64(max_ys[i]);
+            self.write_f64(max_zs[i]);
+        }
+    }
+
     /// Write a slice of `usize` as little-endian `u64`. Bulk-copied on 64-bit
     /// little-endian targets (where `usize` and `u64` share a layout); other targets
     /// fall back to per-element widening writes.

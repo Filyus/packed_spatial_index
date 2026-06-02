@@ -11,7 +11,8 @@ It is built for read-heavy workloads where the full set of boxes is known up
 front: build once, then run many window/intersection searches. The default
 `Index2D` and `Index3D` use packed Hilbert R-tree layouts. With the `simd`
 feature, `SimdIndex2D` and `SimdIndex3D` store boxes in structure-of-arrays form
-and use SIMD intersection checks.
+and use SIMD intersection checks. Scalar and SIMD indexes share the same
+canonical byte format for owned persistence.
 
 ```rust
 use packed_spatial_index::{Index2DBuilder, Bounds2D};
@@ -53,9 +54,9 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - 2D and 3D axis-aligned bounding boxes are supported.
 - Search results are item indices, not stored payloads or geometries.
 - Result ordering is not a stable API guarantee.
-- Persistence is defined for canonical `Index2D` and `Index3D` formats.
-  `SimdIndex2D` and `SimdIndex3D` can be rebuilt from source boxes but do not
-  have stable SoA file formats yet.
+- Persistence uses canonical `Index2D` and `Index3D` byte layouts.
+  `SimdIndex2D` and `SimdIndex3D` can save and load those same bytes, but there
+  is no separate zero-copy SoA view format yet.
 - Nearest-neighbor search is exact over indexed bounds; approximate KNN and dynamic
   spatial joins are out of scope for now.
 
@@ -70,9 +71,9 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - `Index2D` is the default read-only index.
 - `Index3D` is the scalar read-only 3D index.
 - `Index2DView` and `Index3DView` are zero-copy read-only views over bytes
-  produced by `Index2D::to_bytes` and `Index3D::to_bytes`.
+  produced by scalar or SIMD `to_bytes` methods.
 - `SimdIndex2D` and `SimdIndex3D` are available with the `simd` feature and have
-  the same search API as their scalar counterparts.
+  the same search API and owned persistence API as their scalar counterparts.
 - `SearchWorkspace` reuses result and traversal buffers.
 - `Point2D`, `Point3D`, and `NeighborWorkspace` support nearest-neighbor searches.
 - `SortKey2D` selects the public build ordering curve. `Hilbert` is the stable default.
@@ -172,8 +173,10 @@ assert_eq!(view.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 ```
 
 3D persistence uses the same header and sections, with a dimension flag and
-six `f64` coordinates per stored bounds. SIMD indexes are not persisted as
-separate SoA formats yet.
+six `f64` coordinates per stored bounds. With the `simd` feature,
+`SimdIndex2D` and `SimdIndex3D` read and write the same canonical bytes as the
+scalar indexes. Loading a SIMD index is an owned load that scatters canonical
+box records into SoA columns; zero-copy views remain scalar-only.
 
 The binary layout is documented in [`FORMAT.md`](FORMAT.md).
 
@@ -196,7 +199,7 @@ Both features are enabled by default:
 - `parallel`: adaptive rayon-based index builds through `Index2DBuilder::parallel`
   and `Index3DBuilder::parallel`.
 - `simd`: SoA index and SIMD search paths through `SimdIndex2D` and
-  `SimdIndex3D`.
+  `SimdIndex3D`, plus owned persistence through the canonical byte format.
 
 Minimal build:
 
@@ -231,18 +234,19 @@ reported as `LoadError` instead of relying on caller-side invariants.
 
 ## Performance Notes
 
-Recent local Criterion runs, lower is better. The workload uses 100,000 random
-AABBs and 1,000 random search windows; build and search competitors are measured
-in the same benchmark suite on the same generated inputs.
+Recent local Criterion runs, lower is better. The 2D competitor workload uses
+100,000 random AABBs and 1,000 random search windows; build and search
+competitors are measured in the same benchmark suite on the same generated
+inputs. Persistence rows use the canonical byte format for 100,000 boxes.
 
 | Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: | ---: |
 | Full build | 70.18 ms | 8.95 ms | 3.18 ms serial / 2.20 ms parallel | - |
 | Search batch | 555.83 us | 341.56 us | 416.15 us | 128.64 us |
-| Serialize built tree (fresh buffer) | - | - | 413.09 us | - |
-| Serialize built tree (reused buffer) | 131.93 us | - | 68.35 us | - |
-| Load owned tree | 740.23 us | - | 620.03 us | - |
-| Load zero-copy view | - | - | 37.01 us | - |
+| Serialize built tree (fresh buffer) | - | - | 407.64 us | 689.42 us |
+| Serialize built tree (reused buffer) | 131.93 us | - | 68.78 us | 140.21 us |
+| Load owned tree | 740.23 us | - | 607.62 us | 935.51 us |
+| Load zero-copy view | - | - | 37.59 us | n/a |
 
 Scalar `Index2D` search versus `static_aabb2d_index` is dataset-sensitive.
 Two local search runs with the same item/query counts but different generated
@@ -275,31 +279,51 @@ The build workload uses 100,000 boxes with `node_size = 16`; search and KNN use
 
 | Persistence | `Index2D` | `Index3D` | 3D speed |
 | --- | ---: | ---: | ---: |
-| Serialize built tree | 556.79 us | 909.29 us | 0.61x |
-| Load owned tree | 585.02 us | 875.21 us | 0.67x |
-| Load zero-copy view | 35.636 us | 35.743 us | 1.00x |
+| Serialize built tree (fresh buffer) | 407.64 us | 562.55 us | 0.72x |
+| Serialize built tree (reused buffer) | 68.78 us | 96.51 us | 0.71x |
+| Load owned tree | 607.62 us | 819.04 us | 0.74x |
+| Load zero-copy view | 37.59 us | 37.66 us | 1.00x |
+
+| SIMD persistence | `SimdIndex2D` | `SimdIndex3D` | 3D speed |
+| --- | ---: | ---: | ---: |
+| Serialize built tree (fresh buffer) | 689.42 us | 973.17 us | 0.71x |
+| Serialize built tree (reused buffer) | 140.21 us | 240.51 us | 0.58x |
+| Load owned tree | 935.51 us | 1.3083 ms | 0.72x |
+
+Recent local 3D SIMD run. The speed column is scalar/serial latency divided by
+SIMD/parallel latency, so values above `1.00x` mean the SIMD or parallel path is
+faster.
+
+| Stage | Dataset / mode | Baseline | SIMD / parallel | Speed |
+| --- | --- | ---: | ---: | ---: |
+| Search batch | uniform XYZ | `Index3D` 389.13 us | `SimdIndex3D` 129.08 us | 3.01x |
+| Search batch | flat Z | `Index3D` 1.8443 ms | `SimdIndex3D` 1.1514 ms | 1.60x |
+| Build `finish_simd` | uniform XYZ, 200k boxes | serial 10.632 ms | parallel 6.5412 ms | 1.63x |
 
 The short version:
 
 - `Index2D` is the general-purpose path;
-- `SimdIndex2D` is best for heavier query batches where SIMD work amortizes well;
+- `SimdIndex2D` and `SimdIndex3D` are best for heavier query batches where SIMD
+  work amortizes well;
 - scalar `Index2D` search versus `static_aabb2d_index` depends on the generated
   data and query distribution, while `Index2D` build is faster in these runs;
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
   can be faster when Z meaningfully prunes the tree;
+- SIMD persistence uses the same canonical bytes as scalar persistence; it pays
+  an SoA gather/scatter cost but avoids a second file format;
 - `any` is often much faster than collecting full result sets when all you need is existence;
 - AVX-512 is not always the fastest path in parallel workloads because CPU frequency behavior matters.
 - `flatgeobuf2d_bench` compares against FlatGeobuf's packed Hilbert R-tree;
 - `index2d_bench` compares build/search paths against `static_aabb2d_index`;
-- `index3d_bench` covers scalar 3D build/search/KNN, persistence, loaded views,
-  node sizes, and hidden Morton baseline;
-- `persistence_knn2d_bench` covers persistence, loaded views, and KNN.
+- `index3d_bench` covers 3D build/search/KNN, SIMD search/build, persistence,
+  loaded views, node sizes, and hidden Morton baseline;
+- `persistence_knn2d_bench` covers scalar/SIMD persistence, loaded views, and KNN.
 
 Run the focused benchmark suites with:
 
 ```bash
 cargo bench --bench index2d_bench --no-default-features --features parallel,simd
-cargo bench --bench index3d_bench --no-default-features
+cargo bench --bench index3d_bench --no-default-features --features parallel,simd
 cargo bench --bench persistence_knn2d_bench --no-default-features --features simd
 cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd
 ```

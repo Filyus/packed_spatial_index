@@ -34,13 +34,18 @@ first publish is the only local-token exception.
 After the first version exists on crates.io, configure Trusted Publishing on
 the crate page:
 
-- provider: `GitHub Actions`;
-- repository: `Filyus/packed_spatial_index`;
-- workflow file: `publish.yml`;
-- environment: `release`.
+- Publisher: `GitHub`;
+- Repository owner: `Filyus`;
+- Repository name: `packed_spatial_index`;
+- Workflow filename: `publish.yml`;
+- Environment name: `release`.
 
-In GitHub, create the `release` environment. If the repository plan supports
-required reviewers for environments, require approval there too.
+The crates.io form should show that the workflow file was found at
+`.github/workflows/publish.yml`. The environment field is optional on crates.io,
+but this repository's publish workflow uses `environment: release`, so configure
+that exact GitHub Actions environment in the repository settings. If the
+repository plan supports required reviewers for environments, require approval
+there too.
 
 ## Updates
 

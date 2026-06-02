@@ -56,7 +56,7 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - Result ordering is not a stable API guarantee.
 - Persistence uses canonical `Index2D` and `Index3D` byte layouts.
   `SimdIndex2D` and `SimdIndex3D` can save and load those same bytes, but there
-  is no separate zero-copy SoA view format yet.
+  is no separate persisted SoA byte format.
 - Nearest-neighbor search is exact over indexed boxes; approximate KNN and dynamic
   spatial joins are out of scope for now.
 
@@ -79,23 +79,293 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - `SortKey2D` selects the public build ordering curve. `Hilbert` is the stable default.
 - `SortKey3D` does the same for 3D. `Hilbert` is the stable default.
 
-Search APIs:
+## Querying
 
-- `extent()` returns the total item box, or `None` for an empty index.
-- `search(query)` allocates and returns a `Vec<usize>`.
-- `search_into(query, &mut results)` reuses a result buffer.
-- `search_with(query, &mut workspace)` reuses result and traversal buffers.
-- `any(query)`, `first(query)`, and `visit(query, visitor)` support early exit.
+Searches take a `Box2D` or `Box3D` and return indices into the item list you
+added to the builder. Result order is intentionally unspecified.
 
-Nearest-neighbor APIs:
+### `search`
 
-- `neighbors(point, max_results)` returns nearest item indices.
-- `neighbors_within(point, max_results, max_distance)` caps the search radius.
-- `neighbors_into(...)` and `neighbors_with(...)` reuse buffers.
-- `visit_neighbors(point, max_distance, visitor)` visits `(index, distance_squared)` pairs.
+Allocates a fresh `Vec<usize>` and returns all overlaps. This is the simplest
+choice for one-off queries.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let hits = index.search(Box2D::new(0.0, 0.0, 2.0, 2.0));
+assert_eq!(hits, vec![0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `search_into`
+
+Reuses your result `Vec`, clearing it before writing new hits.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let mut results = Vec::new();
+index.search_into(Box2D::new(0.0, 0.0, 2.0, 2.0), &mut results);
+assert_eq!(results, vec![0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `search_with`
+
+Reuses both the result buffer and the internal traversal stack through a
+`SearchWorkspace`. This is the best fit for hot query loops.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, SearchWorkspace};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+
+let mut workspace = SearchWorkspace::new();
+let hits = index.search_with(Box2D::new(0.0, 0.0, 2.0, 2.0), &mut workspace);
+assert_eq!(hits, &[0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `any`
+
+Checks whether at least one item overlaps the query.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let query = Box2D::new(0.0, 0.0, 2.0, 2.0);
+
+assert!(index.any(query));
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `first`
+
+Returns one matching item index found by traversal.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let query = Box2D::new(0.0, 0.0, 2.0, 2.0);
+
+assert_eq!(index.first(query), Some(0));
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `visit`
+
+Calls your visitor for each match and lets it stop early with
+`ControlFlow::Break`.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+use std::ops::ControlFlow;
+#
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let query = Box2D::new(0.0, 0.0, 2.0, 2.0);
+let first_even = index.visit(query, |item| {
+    if item % 2 == 0 {
+        ControlFlow::Break(item)
+    } else {
+        ControlFlow::Continue(())
+    }
+});
+assert_eq!(first_even, ControlFlow::Break(0));
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `extent`
+
+`extent()` returns the total box covering every item, or `None` for an empty
+index.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+assert_eq!(index.extent(), Some(Box2D::new(0.0, 0.0, 6.0, 6.0)));
+
+let empty = Index2DBuilder::new(0).finish()?;
+assert_eq!(empty.extent(), None);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### Nearest Neighbors
+
+Nearest-neighbor queries are exact over boxes. Distance is zero when the point is
+inside a box, otherwise it is the Euclidean distance to the nearest point on the
+box.
+
+### `neighbors`
+
+Returns the nearest item indices with no distance limit.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, Point2D};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let point = Point2D::new(5.5, 5.5);
+
+let nearest = index.neighbors(point, 1);
+assert_eq!(nearest, vec![1]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `neighbors_within`
+
+Returns nearest item indices within a maximum distance.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, Point2D};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let point = Point2D::new(5.5, 5.5);
+
+let nearby = index.neighbors_within(point, 8, 2.0);
+assert_eq!(nearby, vec![1]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `neighbors_into`
+
+Reuses your result `Vec` for repeated KNN queries.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, Point2D};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let mut results = Vec::new();
+index.neighbors_into(Point2D::new(5.5, 5.5), 4, f64::INFINITY, &mut results);
+assert_eq!(results, vec![1, 0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `neighbors_with`
+
+Reuses both result and queue buffers through a `NeighborWorkspace`.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, NeighborWorkspace, Point2D};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let mut workspace = NeighborWorkspace::new();
+let hits = index.neighbors_with(Point2D::new(5.5, 5.5), 4, f64::INFINITY, &mut workspace);
+assert_eq!(hits, &[1, 0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### `visit_neighbors`
+
+Visits `(index, distance_squared)` pairs in nearest-first order and can stop
+early with `ControlFlow::Break`.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, Point2D};
+use std::ops::ControlFlow;
+#
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let close = index.visit_neighbors(Point2D::new(5.5, 5.5), 10.0, |item, distance_squared| {
+    if distance_squared <= 1.0 {
+        ControlFlow::Break(item)
+    } else {
+        ControlFlow::Continue(())
+    }
+});
+assert_eq!(close, ControlFlow::Break(1));
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
 
 Results are returned in nondecreasing distance order. Ties between equal-distance
 items are not stable across index layouts.
+
+## Common Tasks
+
+### Find boxes that contain a point
+
+Search with a zero-size query box at that point. Box overlap is inclusive, so
+items touching the point are included.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, Point2D};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 2.0, 2.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let point = Point2D::new(1.0, 1.0);
+let query = Box2D::new(point.x, point.y, point.x, point.y);
+
+assert_eq!(index.search(query), vec![0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+For 3D, use `Box3D::new(x, y, z, x, y, z)` in the same way.
+
+### Keep payloads outside the index
+
+The index returns item indices. Store your own payloads in the same order as the
+boxes you add to the builder.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+let payloads = ["park", "station"];
+let boxes = [
+    Box2D::new(0.0, 0.0, 2.0, 2.0),
+    Box2D::new(5.0, 5.0, 6.0, 6.0),
+];
+
+let mut builder = Index2DBuilder::new(boxes.len());
+for bounds in boxes {
+    builder.add(bounds);
+}
+let index = builder.finish()?;
+
+let names: Vec<_> = index
+    .search(Box2D::new(0.0, 0.0, 3.0, 3.0))
+    .into_iter()
+    .map(|item| payloads[item])
+    .collect();
+
+assert_eq!(names, vec!["park"]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+### Choose a query method
+
+- Use `search` for simple one-off queries.
+- Use `search_with` or `neighbors_with` inside tight loops.
+- Use `any`, `first`, `visit`, or `visit_neighbors` when you can stop early.
+- Use `Index2DView` or `Index3DView` when loading persisted bytes without
+  allocating an owned index.
 
 ## Builder
 

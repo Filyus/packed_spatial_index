@@ -2,9 +2,9 @@
 
 Releases are intentionally two-step:
 
-1. `Release-plz PR` prepares a draft release PR with the version bump and
+1. `Release: prepare PR` prepares a draft release PR with the version bump and
    `CHANGELOG.md` update.
-2. `Publish to crates.io` publishes the reviewed version and creates the
+2. `Release: publish crate` publishes the reviewed version and creates the
    annotated `v<version>` tag.
 
 `release-plz` is configured in PR-only mode. It does not publish crates, push
@@ -16,10 +16,10 @@ Use this path after the crate already exists on crates.io and Trusted Publishing
 is configured.
 
 1. Push normal changes to `main` and wait for CI to pass.
-2. Run the `Release-plz PR` workflow from `main` with `dry_run: true`.
+2. Run the `Release: prepare PR` workflow from `main` with `dry_run: true`.
 3. Read the workflow log. It should show the version/changelog changes it would
    prepare as a local `git diff`, without opening a PR.
-4. If the dry run looks right, run `Release-plz PR` again with
+4. If the dry run looks right, run `Release: prepare PR` again with
    `dry_run: false`.
 5. Review the draft release PR:
    - check the version bump;
@@ -28,7 +28,7 @@ is configured.
    - keep the PR as the only version/changelog change for that release.
 6. Merge the release PR.
 7. Wait for CI on `main` to pass.
-8. Run the `Publish to crates.io` workflow from `main`.
+8. Run the `Release: publish crate` workflow from `main`.
 9. Set `version` to the exact `Cargo.toml` package version, for example
    `0.3.1`.
 10. For a dry run, keep `publish` as `false`; `confirm` can stay empty.
@@ -61,17 +61,19 @@ Trusted Publishing for normal updates.
    ```
 
 4. Revoke the token.
-5. Run the `Create release tag` workflow from `main`:
-   - `version`: the exact `Cargo.toml` package version;
-   - `confirm`: `tag packed_spatial_index`.
+5. Create and push the annotated release tag:
+
+   ```bash
+   version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+   git tag -a "v$version" -m "packed_spatial_index $version"
+   git push origin "v$version"
+   ```
+
 6. Configure Trusted Publishing before the next release.
 
-If the local publish succeeds but tag creation is interrupted, rerun only the
-`Create release tag` workflow from `main`. Use it only when the version is
-already published on crates.io and the `v<version>` tag is missing. The workflow
-checks that it is running from `main`, `Cargo.toml` has the requested version,
-the version exists on crates.io, the remote tag is absent, and `confirm` is
-exactly `tag packed_spatial_index`.
+If the local publish succeeds but tag creation is interrupted, create the tag
+manually only after checking that the version is already published on crates.io
+and the `v<version>` tag is missing.
 
 ## One-Time Setup
 
@@ -89,12 +91,12 @@ Enable:
 - `Read and write permissions`;
 - `Allow GitHub Actions to create and approve pull requests`.
 
-This is required so `Release-plz PR` can create and update draft release PRs
+This is required so `Release: prepare PR` can create and update draft release PRs
 with `GITHUB_TOKEN`.
 
 ### Release Environment Approval
 
-The `Publish to crates.io` workflow uses `environment: release` for the real
+The `Release: publish crate` workflow uses `environment: release` for the real
 publish job. Configure that environment with required reviewers so a real
 publish cannot proceed without a GitHub approval after preflight succeeds.
 

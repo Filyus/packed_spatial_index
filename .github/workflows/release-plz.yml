@@ -35,11 +35,23 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install release-plz for dry run
+        if: ${{ inputs.dry_run }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz
+
+      - name: Preview release-plz changes
+        if: ${{ inputs.dry_run }}
+        run: |
+          release-plz update --config release-plz.toml
+          git diff -- Cargo.toml CHANGELOG.md
+
       - name: Run release-plz release-pr
+        if: ${{ !inputs.dry_run }}
         uses: release-plz/action@v0.5
         with:
           command: release-pr
           config: release-plz.toml
-          dry_run: ${{ inputs.dry_run }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -46,7 +46,7 @@ in repository settings; require reviewers there when the plan supports it.
 1. Push normal changes to `main` and wait for CI to pass.
 2. Run the `Release-plz PR` workflow from `main` with `dry_run: true`.
 3. Read the workflow log. It should show the version/changelog changes it would
-   prepare, without opening a PR.
+   prepare as a local `git diff`, without opening a PR.
 4. If the dry run looks right, run `Release-plz PR` again with
    `dry_run: false`.
 5. Review the draft release PR:

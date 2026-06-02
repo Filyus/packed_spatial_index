@@ -1,63 +1,68 @@
 # Releasing
 
-Releases are intentionally manual and use crates.io Trusted Publishing for
-updates after the first version.
+Releases are manual and controlled through GitHub Actions. Normal CI already
+runs on every `main` commit. The publish workflow creates the annotated
+`v<version>` tag after a successful publish; the tag workflow exists for the
+first local-token release and other tag-only recovery cases.
 
 ## First Release
 
-Trusted Publishing can only be configured after the crate exists on crates.io.
-For the first release:
+Trusted Publishing is configured after the crate exists on crates.io, so the
+first publish is the only local-token exception.
 
-1. Create a short-lived crates.io token with only `publish-new`.
-2. Run the GitHub Actions `Publish to crates.io` workflow with:
-   - `version`: the current `Cargo.toml` version;
-   - `publish`: `false`.
-3. If the workflow passes, publish locally:
+1. Push the release commit to `main` and wait for CI to pass.
+2. Create a short-lived crates.io token:
+   - expiration: short, for example one day;
+   - scope: `publish-new`;
+   - crate restriction: unrestricted, because the crate does not exist yet.
+3. Publish locally:
 
    ```bash
-   cargo login
+   cargo login <token>
    cargo publish
    cargo logout
    ```
 
-4. Tag the published commit:
-
-   ```bash
-   git tag -a v0.3.0 -m "packed_spatial_index 0.3.0"
-   git push origin v0.3.0
-   ```
-
-5. Revoke the crates.io token.
+4. Revoke the token.
+5. Run the `Create release tag` workflow from `main`:
+   - `version`: the exact `Cargo.toml` package version;
+   - `confirm`: `tag packed_spatial_index`.
+6. Configure Trusted Publishing for future releases.
 
 ## Trusted Publishing Setup
 
-After the first release, configure the crate on crates.io:
+After the first version exists on crates.io, configure Trusted Publishing on
+the crate page:
 
-- Provider: `GitHub Actions`
-- Repository: `Filyus/packed_spatial_index`
-- Workflow file: `publish.yml`
-- Environment: `release`
+- provider: `GitHub Actions`;
+- repository: `Filyus/packed_spatial_index`;
+- workflow file: `publish.yml`;
+- environment: `release`.
 
-In GitHub, create the `release` environment and require a reviewer before
-deployment. This keeps the publish job manual even after the workflow has
-already been started. If the repository plan does not support required
-reviewers for environments, keep the environment anyway for the crates.io
-Trusted Publishing claim; the workflow still requires an explicit `publish:
-true` input and confirmation phrase.
+In GitHub, create the `release` environment. If the repository plan supports
+required reviewers for environments, require approval there too.
 
-## Updating
+## Updates
 
-1. Update `Cargo.toml` version and release notes.
-2. Merge the release commit to `main`.
+1. Update `Cargo.toml` version. If the minor version changes, update the README
+   install snippet too.
+2. Push the release commit to `main` and wait for CI to pass.
 3. Run the `Publish to crates.io` workflow from `main`.
-4. Set `version` to the exact `Cargo.toml` version.
-5. Keep `publish` as `false` for a dry run, or set it to `true` to publish.
-6. For a real publish, set `confirm` to `publish packed_spatial_index`.
+4. Set `version` to the exact `Cargo.toml` package version, for example
+   `0.3.1`.
+5. For a dry run, keep `publish` as `false`; `confirm` can stay empty.
+6. For a real publish, set:
+   - `publish`: `true`;
+   - `confirm`: `publish packed_spatial_index`.
 7. Approve the `release` environment when GitHub asks for confirmation.
 
-The workflow validates that it is running from `main`, checks the requested
-version against `Cargo.toml`, runs formatting/tests/clippy/docs, performs
-`cargo publish --dry-run`, rejects already-published versions and existing
-release tags, checks the confirmation phrase, and only then requests a
-short-lived crates.io token. After a successful CI publish it creates and pushes
-the annotated `v<version>` git tag.
+If `version` is mistyped, the workflow fails before publishing. The confirmation
+phrase deliberately does not include the version; the version is checked only
+against `Cargo.toml`.
+
+## Tag-Only Workflow
+
+Use `Create release tag` only after the version is already published on
+crates.io and the `v<version>` tag is missing. It checks `main`, `Cargo.toml`,
+crates.io, the remote tag list, and the `tag packed_spatial_index` confirmation
+phrase before pushing the tag.

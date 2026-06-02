@@ -1,4 +1,4 @@
-name: "First release: create tag"
+name: "First release only: create tag"
 
 on:
   workflow_dispatch:

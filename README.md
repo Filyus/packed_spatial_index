@@ -227,7 +227,7 @@ in the same benchmark suite on the same generated inputs.
 | Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: | ---: |
 | Full build | 70.18 ms | 8.95 ms | 3.18 ms serial / 2.20 ms parallel | - |
-| Search batch | 562.87 us | 343.01 us | 432.39 us | 134.32 us |
+| Search batch | 545.03 us | 326.07 us | 403.98 us | 124.39 us |
 | Serialize built tree | 132.33 us | - | 535.67 us | - |
 | Load owned tree | 681.84 us | - | 525.20 us | - |
 | Load zero-copy view | - | - | 37.00 us | - |
@@ -238,8 +238,8 @@ inputs showed opposite scalar ordering:
 
 | Search batch | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: |
-| `flatgeobuf2d_bench`, seed `0xF6B` | 343.01 us | 432.39 us | 134.32 us |
-| `index2d_bench`, seed `0xB0B` | 646.21 us | 324.39 us | 130.31 us |
+| `flatgeobuf2d_bench`, seed `0xF6B` | 326.07 us | 403.98 us | 124.39 us |
+| `index2d_bench`, seed `0xB0B` | 638.73 us | 313.70 us | 125.86 us |
 
 Recent local 2D-vs-3D Criterion run. Lower latency is better. The `3D speed`
 column is `2D latency / 3D latency`, so values above `1.00x` mean 3D is faster.

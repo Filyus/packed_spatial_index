@@ -215,6 +215,15 @@ fn bench_persistence(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(index_bytes.len() as u64));
     group.bench_function("index_to_bytes", |b| b.iter(|| black_box(index.to_bytes())));
+    // Buffer-reusing path, the fair counterpart to FlatGeobuf's `stream_write` into a
+    // reused `Vec` (both avoid re-allocating the output buffer each call).
+    group.bench_function("index_to_bytes_into", |b| {
+        let mut out = Vec::with_capacity(index_bytes.len());
+        b.iter(|| {
+            index.to_bytes_into(&mut out);
+            black_box(out.len())
+        })
+    });
     group.bench_function("index_from_bytes_owned", |b| {
         b.iter(|| black_box(Index2D::from_bytes(&index_bytes).unwrap()))
     });

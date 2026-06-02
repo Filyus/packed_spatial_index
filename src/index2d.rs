@@ -105,10 +105,37 @@ impl Index2D {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.to_bytes_into(&mut out);
+        out
+    }
+
+    /// Serialize into a caller-provided buffer, reusing its allocation.
+    ///
+    /// Equivalent to [`to_bytes`](Self::to_bytes) but writes into `out` (cleared
+    /// first). Reusing one buffer across many serializations avoids repeated
+    /// multi-megabyte allocation and page-faulting, which dominates the cost for large
+    /// indexes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2D, Index2DBuilder, Bounds2D};
+    ///
+    /// let mut builder = Index2DBuilder::new(1);
+    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// let index = builder.finish()?;
+    ///
+    /// let mut buffer = Vec::new();
+    /// index.to_bytes_into(&mut buffer);
+    /// assert_eq!(buffer, index.to_bytes());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
         let level_count = self.level_bounds.len();
         let num_nodes = self.boxes.len();
         let len = serialized_len(level_count, num_nodes).expect("serialized index is too large");
-        let mut bytes = ByteWriter::with_len(len);
+        let mut bytes = ByteWriter::new(out, len);
         bytes.write_magic();
         bytes.write_format_version();
         bytes.write_header_len();
@@ -117,19 +144,10 @@ impl Index2D {
         bytes.write_u64(self.num_items as u64);
         bytes.write_u64(num_nodes as u64);
         bytes.write_u64(level_count as u64);
-        for &bound in &self.level_bounds {
-            bytes.write_u64(bound as u64);
-        }
-        for b in &self.boxes {
-            bytes.write_f64(b.min_x);
-            bytes.write_f64(b.min_y);
-            bytes.write_f64(b.max_x);
-            bytes.write_f64(b.max_y);
-        }
-        for &index in &self.indices {
-            bytes.write_u64(index as u64);
-        }
-        bytes.finish()
+        bytes.write_usize_slice_as_u64(&self.level_bounds);
+        bytes.write_bounds2d_slice(&self.boxes);
+        bytes.write_usize_slice_as_u64(&self.indices);
+        bytes.finish();
     }
 
     /// Load an owned index from bytes previously produced by [`Index2D::to_bytes`].

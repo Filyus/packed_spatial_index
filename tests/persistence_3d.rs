@@ -55,6 +55,26 @@ fn persistence_3d_round_trip_and_view_agree() {
 }
 
 #[test]
+fn to_bytes_into_3d_matches_owned_serialization_and_reuses_capacity() {
+    let mut rng = StdRng::seed_from_u64(0x3DB17E);
+    let boxes = random_boxes_3d(&mut rng, 128);
+    let index = build_index_3d(&boxes, 8);
+    let expected = index.to_bytes();
+
+    let mut bytes = Vec::with_capacity(expected.len() + 128);
+    bytes.extend_from_slice(b"stale bytes that must be cleared");
+    let capacity = bytes.capacity();
+
+    index.to_bytes_into(&mut bytes);
+    assert_eq!(bytes, expected);
+    assert_eq!(bytes.capacity(), capacity);
+
+    index.to_bytes_into(&mut bytes);
+    assert_eq!(bytes, expected);
+    assert_eq!(bytes.capacity(), capacity);
+}
+
+#[test]
 fn persistence_3d_handles_edge_shapes() {
     let cases: Vec<Vec<Bounds3D>> = vec![
         Vec::new(),

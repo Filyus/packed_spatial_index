@@ -83,10 +83,21 @@ impl Index3D {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.to_bytes_into(&mut out);
+        out
+    }
+
+    /// Serialize into a caller-provided buffer, reusing its allocation.
+    ///
+    /// Equivalent to [`to_bytes`](Self::to_bytes) but writes into `out` (cleared
+    /// first). Reusing one buffer across many serializations avoids repeated
+    /// multi-megabyte allocation and page-faulting.
+    pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
         let level_count = self.level_bounds.len();
         let num_nodes = self.boxes.len();
         let len = serialized_len_3d(level_count, num_nodes).expect("serialized index is too large");
-        let mut bytes = ByteWriter::with_len(len);
+        let mut bytes = ByteWriter::new(out, len);
         bytes.write_magic();
         bytes.write_format_version();
         bytes.write_header_len();
@@ -95,21 +106,10 @@ impl Index3D {
         bytes.write_u64(self.num_items as u64);
         bytes.write_u64(num_nodes as u64);
         bytes.write_u64(level_count as u64);
-        for &bound in &self.level_bounds {
-            bytes.write_u64(bound as u64);
-        }
-        for b in &self.boxes {
-            bytes.write_f64(b.min_x);
-            bytes.write_f64(b.min_y);
-            bytes.write_f64(b.min_z);
-            bytes.write_f64(b.max_x);
-            bytes.write_f64(b.max_y);
-            bytes.write_f64(b.max_z);
-        }
-        for &index in &self.indices {
-            bytes.write_u64(index as u64);
-        }
-        bytes.finish()
+        bytes.write_usize_slice_as_u64(&self.level_bounds);
+        bytes.write_bounds3d_slice(&self.boxes);
+        bytes.write_usize_slice_as_u64(&self.indices);
+        bytes.finish();
     }
 
     /// Load an owned 3D index from bytes previously produced by [`Index3D::to_bytes`].

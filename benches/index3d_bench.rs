@@ -502,8 +502,22 @@ fn bench_dimension_persistence(c: &mut Criterion) {
     group.bench_function("2d_to_bytes_100000", |b| {
         b.iter(|| black_box(index2d.to_bytes()))
     });
+    group.bench_function("2d_to_bytes_into_100000", |b| {
+        let mut out = Vec::with_capacity(bytes2d.len());
+        b.iter(|| {
+            index2d.to_bytes_into(&mut out);
+            black_box(out.len())
+        })
+    });
     group.bench_function("3d_to_bytes_100000", |b| {
         b.iter(|| black_box(index3d.to_bytes()))
+    });
+    group.bench_function("3d_to_bytes_into_100000", |b| {
+        let mut out = Vec::with_capacity(bytes3d.len());
+        b.iter(|| {
+            index3d.to_bytes_into(&mut out);
+            black_box(out.len())
+        })
     });
     group.bench_function("2d_from_bytes_owned_100000", |b| {
         b.iter(|| black_box(Index2D::from_bytes(&bytes2d).unwrap()))
@@ -610,6 +624,13 @@ fn bench_persistence(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(bytes.len() as u64));
         group.bench_with_input(BenchmarkId::new("to_bytes", n), &index, |b, index| {
             b.iter(|| black_box(index.to_bytes()))
+        });
+        group.bench_with_input(BenchmarkId::new("to_bytes_into", n), &index, |b, index| {
+            let mut out = Vec::with_capacity(bytes.len());
+            b.iter(|| {
+                index.to_bytes_into(&mut out);
+                black_box(out.len())
+            })
         });
         group.bench_with_input(
             BenchmarkId::new("from_bytes_owned", n),

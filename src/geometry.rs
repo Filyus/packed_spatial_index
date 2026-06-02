@@ -75,6 +75,10 @@ impl Error for BoundsError {}
 /// assert!(!a.contains(b));
 /// # Ok::<(), BoundsError>(())
 /// ```
+// `repr(C)` guarantees the field layout is exactly `[min_x, min_y, max_x, max_y]` as
+// four contiguous, unpadded `f64`. This matches the on-disk box record, so on
+// little-endian targets the box array can be serialized with a single bulk memcpy.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds2D {
     /// Minimum x coordinate.
@@ -203,6 +207,9 @@ impl Bounds2D {
 /// assert!(!a.contains(b));
 /// # Ok::<(), BoundsError>(())
 /// ```
+// `repr(C)` guarantees `[min_x, min_y, min_z, max_x, max_y, max_z]` as six contiguous,
+// unpadded `f64`, matching the on-disk box record for single-memcpy serialization.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds3D {
     /// Minimum x coordinate.

@@ -1,5 +1,7 @@
 use std::{error::Error, fmt};
 
+use crate::geometry::{Bounds2D, Bounds3D};
+
 /// Error returned when loading an index from bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadError {
@@ -264,19 +266,20 @@ fn serialized_len_for_dimensions(
         .ok_or(LoadError::IntegerOverflow)
 }
 
-pub(crate) struct ByteWriter {
-    bytes: Vec<u8>,
-    offset: usize,
+pub(crate) struct ByteWriter<'a> {
+    bytes: &'a mut Vec<u8>,
     len: usize,
 }
 
-impl ByteWriter {
-    pub(crate) fn with_len(len: usize) -> Self {
-        Self {
-            bytes: vec![0; len],
-            offset: 0,
-            len,
-        }
+impl<'a> ByteWriter<'a> {
+    /// Write into a caller-owned buffer. The buffer is cleared and reserved to at least
+    /// `len` bytes; reusing the same buffer across calls amortizes the allocation and
+    /// page-fault cost, which dominates serialization of large indexes. Every byte is
+    /// written exactly once via `extend_from_slice`, so the buffer is never zero-filled.
+    pub(crate) fn new(bytes: &'a mut Vec<u8>, len: usize) -> Self {
+        bytes.clear();
+        bytes.reserve_exact(len);
+        Self { bytes, len }
     }
 
     pub(crate) fn write_magic(&mut self) {
@@ -304,22 +307,117 @@ impl ByteWriter {
         self.write_bytes(&value.to_le_bytes());
     }
 
+    // Only the big-endian bounds-writing fallback uses this; on little-endian targets
+    // the bulk memcpy path makes it dead, so suppress the lint there.
     #[inline]
+    #[cfg_attr(target_endian = "little", allow(dead_code))]
     pub(crate) fn write_f64(&mut self, value: f64) {
         self.write_bytes(&value.to_le_bytes());
     }
 
-    pub(crate) fn finish(self) -> Vec<u8> {
-        debug_assert_eq!(self.offset, self.len);
-        self.bytes
+    /// Write 2D bounds as little-endian box records.
+    ///
+    /// On little-endian targets the slice is copied in one bulk memcpy. Other targets
+    /// fall back to per-field writes.
+    #[inline]
+    pub(crate) fn write_bounds2d_slice(&mut self, values: &[Bounds2D]) {
+        #[cfg(target_endian = "little")]
+        {
+            debug_assert_eq!(
+                core::mem::size_of::<Bounds2D>(),
+                4 * core::mem::size_of::<f64>()
+            );
+            debug_assert_eq!(
+                core::mem::align_of::<Bounds2D>(),
+                core::mem::align_of::<f64>()
+            );
+            // SAFETY: `Bounds2D` is `repr(C)` with exactly four contiguous `f64`
+            // fields in the persisted order and no padding; on little-endian targets
+            // those native bytes are the little-endian file encoding.
+            unsafe { self.write_raw_slice_bytes(values) };
+        }
+        #[cfg(not(target_endian = "little"))]
+        for bounds in values {
+            self.write_f64(bounds.min_x);
+            self.write_f64(bounds.min_y);
+            self.write_f64(bounds.max_x);
+            self.write_f64(bounds.max_y);
+        }
+    }
+
+    /// Write 3D bounds as little-endian box records.
+    ///
+    /// On little-endian targets the slice is copied in one bulk memcpy. Other targets
+    /// fall back to per-field writes.
+    #[inline]
+    pub(crate) fn write_bounds3d_slice(&mut self, values: &[Bounds3D]) {
+        #[cfg(target_endian = "little")]
+        {
+            debug_assert_eq!(
+                core::mem::size_of::<Bounds3D>(),
+                6 * core::mem::size_of::<f64>()
+            );
+            debug_assert_eq!(
+                core::mem::align_of::<Bounds3D>(),
+                core::mem::align_of::<f64>()
+            );
+            // SAFETY: `Bounds3D` is `repr(C)` with exactly six contiguous `f64`
+            // fields in the persisted order and no padding; on little-endian targets
+            // those native bytes are the little-endian file encoding.
+            unsafe { self.write_raw_slice_bytes(values) };
+        }
+        #[cfg(not(target_endian = "little"))]
+        for bounds in values {
+            self.write_f64(bounds.min_x);
+            self.write_f64(bounds.min_y);
+            self.write_f64(bounds.min_z);
+            self.write_f64(bounds.max_x);
+            self.write_f64(bounds.max_y);
+            self.write_f64(bounds.max_z);
+        }
+    }
+
+    /// Write a slice of `usize` as little-endian `u64`. Bulk-copied on 64-bit
+    /// little-endian targets (where `usize` and `u64` share a layout); other targets
+    /// fall back to per-element widening writes.
+    #[inline]
+    pub(crate) fn write_usize_slice_as_u64(&mut self, values: &[usize]) {
+        #[cfg(all(target_endian = "little", target_pointer_width = "64"))]
+        {
+            // SAFETY: on a 64-bit little-endian target `usize` has the same size and
+            // byte order as `u64`, so the slice's bytes equal the LE encoding that the
+            // per-element `write_u64` path would produce.
+            unsafe { self.write_raw_slice_bytes(values) };
+        }
+        #[cfg(not(all(target_endian = "little", target_pointer_width = "64")))]
+        for &value in values {
+            self.write_u64(value as u64);
+        }
+    }
+
+    pub(crate) fn finish(self) {
+        debug_assert_eq!(self.bytes.len(), self.len);
     }
 
     #[inline]
     fn write_bytes(&mut self, source: &[u8]) {
-        let end = self.offset + source.len();
-        debug_assert!(end <= self.len);
-        self.bytes[self.offset..end].copy_from_slice(source);
-        self.offset = end;
+        debug_assert!(self.bytes.len() + source.len() <= self.len);
+        // Capacity is pre-reserved in `new`, so this appends without reallocating
+        // and without re-zeroing the destination.
+        self.bytes.extend_from_slice(source);
+    }
+
+    #[inline]
+    unsafe fn write_raw_slice_bytes<T>(&mut self, values: &[T]) {
+        // SAFETY: the caller guarantees that `values` can be persisted by copying its
+        // native bytes directly. The slice itself is valid and initialized.
+        let source = unsafe {
+            core::slice::from_raw_parts(
+                values.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(values),
+            )
+        };
+        self.write_bytes(source);
     }
 }
 

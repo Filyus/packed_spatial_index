@@ -155,6 +155,10 @@ builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
 let index = builder.finish()?;
 
 let bytes = index.to_bytes();
+let mut reusable = Vec::new();
+index.to_bytes_into(&mut reusable);
+assert_eq!(reusable, bytes);
+
 let owned = Index2D::from_bytes(&bytes)?;
 let view = Index2DView::from_bytes(&bytes)?;
 
@@ -174,11 +178,11 @@ The binary layout is documented in [`FORMAT.md`](FORMAT.md).
 Runnable examples cover the public paths:
 
 ```bash
-cargo run --example basic
+cargo run --example basic_2d
 cargo run --example basic_3d
-cargo run --example persistence
-cargo run --example knn
-cargo run --example reuse_workspace
+cargo run --example persistence_2d
+cargo run --example knn_2d
+cargo run --example reuse_workspace_2d
 ```
 
 ## Features
@@ -212,6 +216,8 @@ paths:
 
 - unaligned little-endian reads for validated `Index2DView` and `Index3DView`
   byte buffers;
+- bulk byte copies for `repr(C)` bounds and index sections when serializing on
+  compatible little-endian targets;
 - x86/x86_64 prefetch intrinsics used only by hidden benchmark/experimental paths;
 - AVX-512 loads in the `simd` feature, guarded by runtime CPU feature detection.
 
@@ -227,10 +233,11 @@ in the same benchmark suite on the same generated inputs.
 | Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: | ---: |
 | Full build | 70.18 ms | 8.95 ms | 3.18 ms serial / 2.20 ms parallel | - |
-| Search batch | 545.03 us | 326.07 us | 403.98 us | 124.39 us |
-| Serialize built tree | 132.33 us | - | 535.67 us | - |
-| Load owned tree | 681.84 us | - | 525.20 us | - |
-| Load zero-copy view | - | - | 37.00 us | - |
+| Search batch | 555.83 us | 341.56 us | 416.15 us | 128.64 us |
+| Serialize built tree (fresh buffer) | - | - | 413.09 us | - |
+| Serialize built tree (reused buffer) | 131.93 us | - | 68.35 us | - |
+| Load owned tree | 740.23 us | - | 620.03 us | - |
+| Load zero-copy view | - | - | 37.01 us | - |
 
 Scalar `Index2D` search versus `static_aabb2d_index` is dataset-sensitive.
 Two local search runs with the same item/query counts but different generated
@@ -238,8 +245,8 @@ inputs showed opposite scalar ordering:
 
 | Search batch | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: |
-| `flatgeobuf2d_bench`, seed `0xF6B` | 326.07 us | 403.98 us | 124.39 us |
-| `index2d_bench`, seed `0xB0B` | 638.73 us | 313.70 us | 125.86 us |
+| `flatgeobuf2d_bench`, seed `0xF6B` | 341.56 us | 416.15 us | 128.64 us |
+| `index2d_bench`, seed `0xB0B` | 643.85 us | 311.72 us | 126.21 us |
 
 Recent local 2D-vs-3D Criterion run. Lower latency is better. The `3D speed`
 column is `2D latency / 3D latency`, so values above `1.00x` mean 3D is faster.

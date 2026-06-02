@@ -35,6 +35,11 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
       - name: Install release-plz for dry run
         if: ${{ inputs.dry_run }}
         uses: taiki-e/install-action@v2

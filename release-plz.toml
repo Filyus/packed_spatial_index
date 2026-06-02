@@ -34,20 +34,24 @@ All notable changes to this crate are documented here.
 """
 body = """
 ## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{%- for group, commits in commits | group_by(attribute="group") %}
 
-{% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | striptags | trim }}
 
-{% for commit in commits %}
-- {{ commit.message | upper_first }}{% if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}) {% endfor %}){% endif %}
-{% endfor %}
-
-{% endfor %}
+{%- for commit in commits %}
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}{%- if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}) {% endfor -%}){% endif %}
+{%- endfor %}
+{%- endfor %}
 """
 trim = true
 tag_pattern = "v[0-9].*"
 sort_commits = "oldest"
 protect_breaking_commits = true
+commit_preprocessors = [
+  # Keep our `domain1, domain2: description` commit style readable in release
+  # notes by letting git-cliff parse it as `domain1: description`.
+  { pattern = "^([A-Za-z0-9_-]+)(?:, [A-Za-z0-9_-]+)+: (.*)", replace = "${1}: ${2}" },
+]
 
 # Changelog groups use hidden HTML prefixes to keep release notes ordered by
 # user impact. The template strips them before rendering.

@@ -231,10 +231,38 @@ AABBs and 1,000 random search windows.
 | Load owned tree | 733.06 us | 548.26 us | - |
 | Load zero-copy view | - | 35.59 us | - |
 
+Recent local 2D-vs-3D Criterion run. Lower latency is better. The `3D speed`
+column is `2D latency / 3D latency`, so values above `1.00x` mean 3D is faster.
+The build workload uses 100,000 boxes with `node_size = 16`; search and KNN use
+1,000 query windows or points.
+
+| Stage | Dataset / mode | `Index2D` | `Index3D` | 3D speed |
+| --- | --- | ---: | ---: | ---: |
+| Hilbert encode | production 2D LUT vs 3D nibble | 739.90 us | 983.42 us | 0.75x |
+| Build | planar XY | 2.7433 ms | 4.5660 ms | 0.60x |
+| Build | uniform XYZ | 3.4270 ms | 5.1252 ms | 0.67x |
+| Search batch | planar XY | 466.41 us | 636.37 us | 0.73x |
+| Search batch | uniform XYZ | 495.82 us | 391.32 us | 1.27x |
+
+| KNN batch | Dataset / mode | `Index2D` | `Index3D` | 3D speed |
+| --- | --- | ---: | ---: | ---: |
+| Top-1 | planar XY | 973.85 us | 1.2445 ms | 0.78x |
+| Top-10 | planar XY | 1.9378 ms | 2.5625 ms | 0.76x |
+| Top-1 | uniform XYZ | 1.0028 ms | 1.8530 ms | 0.54x |
+| Top-10 | uniform XYZ | 2.0221 ms | 4.1143 ms | 0.49x |
+
+| Persistence | `Index2D` | `Index3D` | 3D speed |
+| --- | ---: | ---: | ---: |
+| Serialize built tree | 556.79 us | 909.29 us | 0.61x |
+| Load owned tree | 585.02 us | 875.21 us | 0.67x |
+| Load zero-copy view | 35.636 us | 35.743 us | 1.00x |
+
 The short version:
 
 - `Index2D` is the general-purpose path;
 - `SimdIndex2D` is best for heavier query batches where SIMD work amortizes well;
+- `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
+  can be faster when Z meaningfully prunes the tree;
 - `any` is often much faster than collecting full result sets when all you need is existence;
 - AVX-512 is not always the fastest path in parallel workloads because CPU frequency behavior matters.
 - `flatgeobuf2d_bench` compares against FlatGeobuf's packed Hilbert R-tree;

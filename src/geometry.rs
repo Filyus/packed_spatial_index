@@ -311,16 +311,6 @@ impl Bounds3D {
     }
 
     #[inline]
-    pub(crate) fn extend(&mut self, other: Bounds3D) {
-        self.min_x = self.min_x.min(other.min_x);
-        self.min_y = self.min_y.min(other.min_y);
-        self.min_z = self.min_z.min(other.min_z);
-        self.max_x = self.max_x.max(other.max_x);
-        self.max_y = self.max_y.max(other.max_y);
-        self.max_z = self.max_z.max(other.max_z);
-    }
-
-    #[inline]
     pub(crate) fn distance_squared_to(&self, point: Point3D) -> f64 {
         let dx = axis_distance(point.x, self.min_x, self.max_x);
         let dy = axis_distance(point.y, self.min_y, self.max_y);

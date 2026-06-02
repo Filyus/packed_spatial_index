@@ -182,7 +182,14 @@ impl Index3DBuilder {
                 let mut node_bounds = empty_bounds_3d();
                 let mut children = 0usize;
                 while children < node_size && read_pos < level_end {
-                    node_bounds.extend(boxes[read_pos]);
+                    // Field-wise aggregation benchmarks faster than a helper in this build hot path.
+                    let bounds = boxes[read_pos];
+                    node_bounds.min_x = node_bounds.min_x.min(bounds.min_x);
+                    node_bounds.min_y = node_bounds.min_y.min(bounds.min_y);
+                    node_bounds.min_z = node_bounds.min_z.min(bounds.min_z);
+                    node_bounds.max_x = node_bounds.max_x.max(bounds.max_x);
+                    node_bounds.max_y = node_bounds.max_y.max(bounds.max_y);
+                    node_bounds.max_z = node_bounds.max_z.max(bounds.max_z);
                     read_pos += 1;
                     children += 1;
                 }
@@ -222,7 +229,12 @@ fn build_single_node_index_3d(
 ) -> Index3D {
     let mut root = empty_bounds_3d();
     for &bounds in &boxes {
-        root.extend(bounds);
+        root.min_x = root.min_x.min(bounds.min_x);
+        root.min_y = root.min_y.min(bounds.min_y);
+        root.min_z = root.min_z.min(bounds.min_z);
+        root.max_x = root.max_x.max(bounds.max_x);
+        root.max_y = root.max_y.max(bounds.max_y);
+        root.max_z = root.max_z.max(bounds.max_z);
     }
     boxes.push(root);
 
@@ -242,7 +254,12 @@ fn build_single_node_index_3d(
 fn extent_3d(items: &[Bounds3D]) -> Bounds3D {
     let mut extent = empty_bounds_3d();
     for &bounds in items {
-        extent.extend(bounds);
+        extent.min_x = extent.min_x.min(bounds.min_x);
+        extent.min_y = extent.min_y.min(bounds.min_y);
+        extent.min_z = extent.min_z.min(bounds.min_z);
+        extent.max_x = extent.max_x.max(bounds.max_x);
+        extent.max_y = extent.max_y.max(bounds.max_y);
+        extent.max_z = extent.max_z.max(bounds.max_z);
     }
     extent
 }

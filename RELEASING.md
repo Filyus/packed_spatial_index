@@ -144,15 +144,9 @@ crate, do the first publish locally with a short-lived token:
    - `confirm`: `tag packed_spatial_index`.
 6. Configure Trusted Publishing before the next release.
 
-## Tag-Only Fallback
-
-Use `Create release tag` only when the version is already published on
-crates.io and the `v<version>` tag is missing.
-
-The workflow checks:
-
-- it is running from `main`;
-- `Cargo.toml` has the requested version;
-- that version exists on crates.io;
-- the remote tag does not exist yet;
-- `confirm` is exactly `tag packed_spatial_index`.
+If the local publish succeeds but tag creation is interrupted, rerun only the
+`Create release tag` workflow from `main`. Use it only when the version is
+already published on crates.io and the `v<version>` tag is missing. The workflow
+checks that it is running from `main`, `Cargo.toml` has the requested version,
+the version exists on crates.io, the remote tag is absent, and `confirm` is
+exactly `tag packed_spatial_index`.

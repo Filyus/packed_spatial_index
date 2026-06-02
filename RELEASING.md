@@ -41,6 +41,57 @@ The crates.io form should show that the workflow file exists at
 `.github/workflows/publish.yml`. The `release` GitHub environment should exist
 in repository settings; require reviewers there when the plan supports it.
 
+### Release Environment Approval
+
+The `Publish to crates.io` workflow uses `environment: release` for the real
+publish job. Configure that environment with required reviewers so a real
+publish cannot proceed without a GitHub approval after preflight succeeds.
+
+For this repository the expected environment settings are:
+
+- Environment name: `release`;
+- Required reviewers: `Filyus`;
+- Prevent self-review: disabled, so the repository owner can approve their own
+  manually triggered publish;
+- Wait timer: `0`;
+- Deployment branch policy: none. The workflow itself checks that it runs from
+  `main`.
+
+To configure another personal repository through `gh`:
+
+```powershell
+$owner = "Filyus"
+$repo = "packed_spatial_index"
+$reviewer = "Filyus"
+$reviewerId = gh api "users/$reviewer" --jq ".id"
+
+@"
+{
+  "wait_timer": 0,
+  "prevent_self_review": false,
+  "reviewers": [
+    { "type": "User", "id": $reviewerId }
+  ],
+  "deployment_branch_policy": null,
+  "can_admins_bypass": true
+}
+"@ | gh api -X PUT "repos/$owner/$repo/environments/release" --input -
+```
+
+Then verify:
+
+```powershell
+gh api "repos/$owner/$repo/environments/release" `
+  --jq ".protection_rules"
+```
+
+For organization repositories, use a team reviewer instead of a user reviewer
+when that better matches ownership:
+
+```json
+{ "type": "Team", "id": 123456 }
+```
+
 ## Normal Release
 
 1. Push normal changes to `main` and wait for CI to pass.

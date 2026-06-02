@@ -53,10 +53,10 @@ pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use geometry::{BoundsError, Box2D, Box3D, Point2D, Point3D};
 pub use index2d::{Index2D, Index2DView};
 #[cfg(feature = "simd")]
-pub use index2d_soa::SimdIndex2D;
+pub use index2d_soa::{SimdIndex2D, SimdIndex2DView};
 pub use index3d::{Index3D, Index3DView};
 #[cfg(feature = "simd")]
-pub use index3d_soa::SimdIndex3D;
+pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
 pub use neighbors::NeighborWorkspace;
 pub use persistence::LoadError;
 pub use sort2d::SortKey2D;

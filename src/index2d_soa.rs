@@ -1113,3 +1113,485 @@ fn reorder_parallel_soa_2d(
             *idx = orig as usize;
         });
 }
+
+/// Byte size of one persisted 2D box record (`[min_x, min_y, max_x, max_y]`).
+const RECORD_2D: usize = 32;
+
+/// Assemble one coordinate column for four consecutive 2D box records into a SIMD
+/// vector. The four records are contiguous (128 bytes), so the strided reads stay
+/// within the same cache lines.
+#[inline]
+fn lane4_2d(entries: &[u8], base: usize, field: usize) -> f64x4 {
+    let o = base + field;
+    f64x4::from([
+        read_f64_le_unchecked(entries, o),
+        read_f64_le_unchecked(entries, o + RECORD_2D),
+        read_f64_le_unchecked(entries, o + 2 * RECORD_2D),
+        read_f64_le_unchecked(entries, o + 3 * RECORD_2D),
+    ])
+}
+
+/// Zero-copy SIMD view over bytes produced by [`SimdIndex2D::to_bytes`] or
+/// [`Index2D::to_bytes`](crate::Index2D::to_bytes).
+///
+/// Like [`Index2DView`](crate::Index2DView) it borrows the buffer without
+/// allocating owned tree storage, but the traversal uses `wide::f64x4` overlap
+/// tests, assembling lane vectors from four contiguous box records. Ideal for
+/// querying memory-mapped indexes without allocating.
+///
+/// Nearest-neighbor results are returned in nondecreasing distance order. Ties
+/// between equal-distance items are not stable across index layouts.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{Index2DBuilder, SimdIndex2DView, Box2D};
+///
+/// let mut builder = Index2DBuilder::new(1);
+/// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+/// let bytes = builder.finish_simd().unwrap().to_bytes();
+///
+/// let view = SimdIndex2DView::from_bytes(&bytes)?;
+/// assert_eq!(view.search(Box2D::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct SimdIndex2DView<'a> {
+    node_size: usize,
+    num_items: usize,
+    num_nodes: usize,
+    level_count: usize,
+    level_bounds: &'a [u8],
+    entries: &'a [u8],
+    indices: &'a [u8],
+}
+
+impl<'a> SimdIndex2DView<'a> {
+    /// Borrow a zero-copy view over the canonical `PSINDEX` 2D bytes.
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
+        let parsed = parse_index_bytes(bytes)?;
+        Ok(Self {
+            node_size: parsed.node_size,
+            num_items: parsed.num_items,
+            num_nodes: parsed.num_nodes,
+            level_count: parsed.level_count,
+            level_bounds: parsed.level_bounds,
+            entries: parsed.entries,
+            indices: parsed.indices,
+        })
+    }
+
+    /// Return the number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.num_items
+    }
+
+    /// Return the packed node size.
+    pub fn node_size(&self) -> usize {
+        self.node_size
+    }
+
+    /// Return the total extent of indexed items, or `None` for an empty view.
+    pub fn extent(&self) -> Option<Box2D> {
+        if self.num_items == 0 {
+            None
+        } else {
+            Some(self.box_at(self.num_nodes - 1))
+        }
+    }
+
+    #[inline]
+    fn index_at(&self, pos: usize) -> usize {
+        read_u64_le_unchecked(self.indices, pos * 8) as usize
+    }
+
+    #[inline]
+    fn box_at(&self, pos: usize) -> Box2D {
+        let b = pos * RECORD_2D;
+        Box2D::new(
+            read_f64_le_unchecked(self.entries, b),
+            read_f64_le_unchecked(self.entries, b + 8),
+            read_f64_le_unchecked(self.entries, b + 16),
+            read_f64_le_unchecked(self.entries, b + 24),
+        )
+    }
+
+    #[inline]
+    fn level_bound_unchecked(&self, index: usize) -> usize {
+        read_u64_le_unchecked(self.level_bounds, index * 8) as usize
+    }
+
+    #[inline]
+    fn upper_bound_level(&self, node_index: usize) -> usize {
+        let mut lo = 0usize;
+        let mut hi = self.level_count - 1;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.level_bound_unchecked(mid) > node_index {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        lo
+    }
+
+    /// Return the indices of all items whose boxes intersect `query`.
+    pub fn search(&self, query: Box2D) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_into(query, &mut out);
+        out
+    }
+
+    /// Search with a reusable result buffer.
+    pub fn search_into(&self, query: Box2D, out: &mut Vec<usize>) {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        out.clear();
+        let _: ControlFlow<()> = self.try_visit(query, &mut stack, |index| {
+            out.push(index);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Search with reusable result and traversal buffers.
+    pub fn search_with<'b>(&self, query: Box2D, workspace: &'b mut SearchWorkspace) -> &'b [usize] {
+        workspace.results.clear();
+        let results = &mut workspace.results;
+        let _: ControlFlow<()> = self.try_visit(query, &mut workspace.stack, |index| {
+            results.push(index);
+            ControlFlow::Continue(())
+        });
+        &workspace.results
+    }
+
+    /// Return `true` if at least one item intersects `query`.
+    pub fn any(&self, query: Box2D) -> bool {
+        self.visit(query, |_| ControlFlow::Break(())).is_break()
+    }
+
+    /// Return one intersecting item, if any.
+    pub fn first(&self, query: Box2D) -> Option<usize> {
+        match self.visit(query, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// Visit intersecting items without collecting a result `Vec`.
+    pub fn visit<B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.try_visit(query, &mut stack, visitor)
+    }
+
+    fn try_visit<B, F>(
+        &self,
+        query: Box2D,
+        stack: &mut Vec<usize>,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+        let qmxx = f64x4::splat(query.max_x);
+        let qmnx = f64x4::splat(query.min_x);
+        let qmxy = f64x4::splat(query.max_y);
+        let qmny = f64x4::splat(query.min_y);
+
+        let mut node_index = self.num_nodes - 1;
+        let mut level = self.level_count - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
+            let is_leaf = node_index < self.num_items;
+
+            let mut pos = node_index;
+            while pos + 4 <= end {
+                let base = pos * RECORD_2D;
+                let mask = lane4_2d(self.entries, base, 0).simd_le(qmxx)
+                    & lane4_2d(self.entries, base, 16).simd_ge(qmnx)
+                    & lane4_2d(self.entries, base, 8).simd_le(qmxy)
+                    & lane4_2d(self.entries, base, 24).simd_ge(qmny);
+                let bits = mask.to_bitmask();
+                if bits != 0 {
+                    for k in 0..4 {
+                        if bits & (1 << k) != 0 {
+                            let p = pos + k;
+                            let index = self.index_at(p);
+                            if is_leaf {
+                                visitor(index)?;
+                            } else {
+                                stack.push(index);
+                                stack.push(level - 1);
+                            }
+                        }
+                    }
+                }
+                pos += 4;
+            }
+
+            while pos < end {
+                if self.box_at(pos).overlaps(query) {
+                    let index = self.index_at(pos);
+                    if is_leaf {
+                        visitor(index)?;
+                    } else {
+                        stack.push(index);
+                        stack.push(level - 1);
+                    }
+                }
+                pos += 1;
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    #[inline]
+    fn distance_squared_to(&self, pos: usize, point: Point2D) -> f64 {
+        let b = self.box_at(pos);
+        let dx = axis_distance(point.x, b.min_x, b.max_x);
+        let dy = axis_distance(point.y, b.min_y, b.max_y);
+        dx * dx + dy * dy
+    }
+
+    /// Return up to `max_results` item indices nearest to `point`.
+    pub fn neighbors(&self, point: Point2D, max_results: usize) -> Vec<usize> {
+        self.neighbors_within(point, max_results, f64::INFINITY)
+    }
+
+    /// Return up to `max_results` item indices within `max_distance` of `point`.
+    pub fn neighbors_within(
+        &self,
+        point: Point2D,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_into(point, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// Nearest-neighbor search with a reusable result buffer.
+    pub fn neighbors_into(
+        &self,
+        point: Point2D,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        results.clear();
+        if max_results == 0 {
+            return;
+        }
+        if max_results == 1 {
+            let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+            if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
+                results.push(index);
+            }
+            return;
+        }
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
+    }
+
+    /// Nearest-neighbor search with reusable result and priority-queue buffers.
+    pub fn neighbors_with<'b>(
+        &self,
+        point: Point2D,
+        max_results: usize,
+        max_distance: f64,
+        workspace: &'b mut NeighborWorkspace,
+    ) -> &'b [usize] {
+        workspace.results.clear();
+        if max_results == 0 {
+            workspace.queue.clear();
+            workspace.node_queue.clear();
+            return &workspace.results;
+        }
+        if max_results == 1 {
+            workspace.queue.clear();
+            if let Some(index) =
+                self.nearest_one_with_queue(point, max_distance, &mut workspace.node_queue)
+            {
+                workspace.results.push(index);
+            }
+            return &workspace.results;
+        }
+        workspace.node_queue.clear();
+        self.collect_neighbors_with_queue(
+            point,
+            max_results,
+            max_distance,
+            &mut workspace.results,
+            &mut workspace.queue,
+        );
+        &workspace.results
+    }
+
+    /// Visit items in nondecreasing squared-distance order from `point`.
+    pub fn visit_neighbors<B, F>(
+        &self,
+        point: Point2D,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
+    }
+
+    fn collect_neighbors_with_queue(
+        &self,
+        point: Point2D,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+        queue: &mut BinaryHeap<NeighborState>,
+    ) {
+        queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return;
+        };
+        if self.num_items == 0 {
+            return;
+        }
+
+        let mut node_index = self.num_nodes - 1;
+        loop {
+            let upper = self.upper_bound_level(node_index);
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
+            let is_leaf = node_index < self.num_items;
+            for pos in node_index..end {
+                let dist = self.distance_squared_to(pos, point);
+                if dist > max_dist_sq {
+                    continue;
+                }
+                queue.push(NeighborState::new(self.index_at(pos), is_leaf, dist));
+            }
+
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist_sq {
+                    queue.clear();
+                    return;
+                }
+                if state.is_leaf {
+                    results.push(state.index);
+                    if results.len() == max_results {
+                        return;
+                    }
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+            if !continue_search {
+                return;
+            }
+        }
+    }
+
+    fn visit_neighbors_with_queue<B, F>(
+        &self,
+        point: Point2D,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return ControlFlow::Continue(());
+        };
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.num_nodes - 1;
+        loop {
+            let upper = self.upper_bound_level(node_index);
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
+            let is_leaf = node_index < self.num_items;
+
+            for pos in node_index..end {
+                let dist = self.distance_squared_to(pos, point);
+                if dist > max_dist_sq {
+                    continue;
+                }
+                queue.push(NeighborState::new(self.index_at(pos), is_leaf, dist));
+            }
+
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist_sq {
+                    queue.clear();
+                    return ControlFlow::Continue(());
+                }
+                if state.is_leaf {
+                    visitor(state.index, state.dist)?;
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+            if !continue_search {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    fn nearest_one_with_queue(
+        &self,
+        point: Point2D,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborNodeState>,
+    ) -> Option<usize> {
+        queue.clear();
+        let mut best_dist = max_distance_squared(max_distance)?;
+        if self.num_items == 0 {
+            return None;
+        }
+        let mut best_index = None;
+        let mut node_index = self.num_nodes - 1;
+        loop {
+            let upper = self.upper_bound_level(node_index);
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
+            let is_leaf = node_index < self.num_items;
+            for pos in node_index..end {
+                let dist = self.distance_squared_to(pos, point);
+                if dist > best_dist {
+                    continue;
+                }
+                if is_leaf {
+                    if dist == 0.0 {
+                        return Some(self.index_at(pos));
+                    }
+                    best_dist = dist;
+                    best_index = Some(self.index_at(pos));
+                } else {
+                    queue.push(NeighborNodeState::new(self.index_at(pos), dist));
+                }
+            }
+            match queue.pop() {
+                Some(state) if state.dist <= best_dist => node_index = state.index,
+                _ => return best_index,
+            }
+        }
+    }
+}

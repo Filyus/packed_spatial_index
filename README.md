@@ -94,6 +94,9 @@ Nearest-neighbor APIs:
 - `neighbors_into(...)` and `neighbors_with(...)` reuse buffers.
 - `visit_neighbors(point, max_distance, visitor)` visits `(index, distance_squared)` pairs.
 
+Results are returned in nondecreasing distance order. Ties between equal-distance
+items are not stable across index layouts.
+
 ## Builder
 
 ```rust
@@ -176,7 +179,8 @@ assert_eq!(view.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 six `f64` coordinates per stored box. With the `simd` feature,
 `SimdIndex2D` and `SimdIndex3D` read and write the same canonical bytes as the
 scalar indexes. Loading a SIMD index is an owned load that scatters canonical
-box records into SoA columns; zero-copy views remain scalar-only.
+box records into SoA columns. `SimdIndex2DView` and `SimdIndex3DView` borrow the
+same canonical bytes for zero-copy SIMD-over-AoS queries.
 
 The binary layout is documented in [`FORMAT.md`](FORMAT.md).
 
@@ -206,7 +210,8 @@ Both features are enabled by default:
 - `parallel`: adaptive rayon-based index builds through `Index2DBuilder::parallel`
   and `Index3DBuilder::parallel`.
 - `simd`: SoA index and SIMD search paths through `SimdIndex2D` and
-  `SimdIndex3D`, plus owned persistence through the canonical byte format.
+  `SimdIndex3D`, plus owned and zero-copy SIMD persistence through the canonical
+  byte format.
 
 Minimal build:
 

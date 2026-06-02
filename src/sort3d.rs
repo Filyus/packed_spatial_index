@@ -77,7 +77,7 @@ pub(crate) fn encode_sort_by_key_3d(
     match sort_key {
         ExperimentalSortKey3D::Hilbert => encode_sort_with_encoder_3d(
             items,
-            encode_hilbert3_nibble,
+            encode_hilbert3_nibble_lut,
             HILBERT_AXIS_MAX,
             HILBERT_KEY_BITS,
             context,
@@ -277,7 +277,7 @@ pub fn encode_morton3(x: u32, y: u32, z: u32) -> u64 {
 
 #[doc(hidden)]
 #[inline]
-pub fn encode_hilbert3(x: u32, y: u32, z: u32) -> u64 {
+pub fn encode_hilbert3_pair_lut(x: u32, y: u32, z: u32) -> u64 {
     let mut index = 0u64;
     let mut state = 0usize;
 
@@ -295,11 +295,11 @@ pub fn encode_hilbert3(x: u32, y: u32, z: u32) -> u64 {
 
 /// Coarsened 4-bit-per-axis ("nibble") pair LUT: 24 states x 4096 (xnib<<8|ynib<<4|znib)
 /// entries. Each entry packs the next state in the high bits and 12 output bits
-/// (4 Hilbert levels x 3 bits) in the low bits. Lets [`encode_hilbert3_nibble`] consume
+/// (4 Hilbert levels x 3 bits) in the low bits. Lets [`encode_hilbert3_nibble_lut`] consume
 /// 4 levels per step (4 steps for 16 bits) instead of the 2-level pair LUT's 8 steps.
-static HILBERT3_QUAD_LUT: [u32; 24 * 4096] = build_hilbert3_quad_lut();
+static HILBERT3_NIBBLE_LUT: [u32; 24 * 4096] = build_hilbert3_nibble_lut();
 
-const fn build_hilbert3_quad_lut() -> [u32; 24 * 4096] {
+const fn build_hilbert3_nibble_lut() -> [u32; 24 * 4096] {
     let mut table = [0u32; 24 * 4096];
     let mut state = 0usize;
     while state < 24 {
@@ -327,10 +327,11 @@ const fn build_hilbert3_quad_lut() -> [u32; 24 * 4096] {
 }
 
 /// Nibble-coarsened encoder: 4 levels per step (4 steps), one lookup into the larger
-/// 384 KiB [`HILBERT3_QUAD_LUT`] per step. Bit-for-bit identical to [`encode_hilbert3`].
+/// 384 KiB [`HILBERT3_NIBBLE_LUT`] per step. Bit-for-bit identical to
+/// [`encode_hilbert3_pair_lut`].
 #[doc(hidden)]
 #[inline]
-pub fn encode_hilbert3_nibble(x: u32, y: u32, z: u32) -> u64 {
+pub fn encode_hilbert3_nibble_lut(x: u32, y: u32, z: u32) -> u64 {
     let mut index = 0u64;
     let mut state = 0usize;
 
@@ -338,7 +339,7 @@ pub fn encode_hilbert3_nibble(x: u32, y: u32, z: u32) -> u64 {
     while shift > 0 {
         shift -= 4;
         let m = (((x >> shift) & 0xf) << 8) | (((y >> shift) & 0xf) << 4) | ((z >> shift) & 0xf);
-        let entry = HILBERT3_QUAD_LUT[state * 4096 + m as usize];
+        let entry = HILBERT3_NIBBLE_LUT[state * 4096 + m as usize];
         index = (index << 12) | u64::from(entry & 0xfff);
         state = (entry >> 12) as usize;
     }
@@ -470,8 +471,8 @@ mod tests {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             let z = (seed & HILBERT_AXIS_MAX as u64) as u32;
             assert_eq!(
-                encode_hilbert3_nibble(x, y, z),
-                encode_hilbert3(x, y, z),
+                encode_hilbert3_nibble_lut(x, y, z),
+                encode_hilbert3_pair_lut(x, y, z),
                 "nibble mismatch at ({x}, {y}, {z})"
             );
         }
@@ -511,7 +512,7 @@ mod tests {
             for y in 0..32 {
                 for z in 0..32 {
                     assert_eq!(
-                        encode_hilbert3(x, y, z),
+                        encode_hilbert3_pair_lut(x, y, z),
                         encode_hilbert3_stepwise(x, y, z),
                         "dense mismatch at ({x}, {y}, {z})"
                     );
@@ -528,7 +529,7 @@ mod tests {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             let z = (seed & HILBERT_AXIS_MAX as u64) as u32;
             assert_eq!(
-                encode_hilbert3(x, y, z),
+                encode_hilbert3_pair_lut(x, y, z),
                 encode_hilbert3_stepwise(x, y, z),
                 "sample mismatch at ({x}, {y}, {z})"
             );

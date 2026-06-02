@@ -238,7 +238,7 @@ The build workload uses 100,000 boxes with `node_size = 16`; search and KNN use
 
 | Stage | Dataset / mode | `Index2D` | `Index3D` | 3D speed |
 | --- | --- | ---: | ---: | ---: |
-| Hilbert encode | production 2D LUT vs 3D nibble | 739.90 us | 983.42 us | 0.75x |
+| Hilbert encode | production 2D LUT vs 3D nibble LUT | 739.90 us | 983.42 us | 0.75x |
 | Build | planar XY | 2.7433 ms | 4.5660 ms | 0.60x |
 | Build | uniform XYZ | 3.4270 ms | 5.1252 ms | 0.67x |
 | Search batch | planar XY | 466.41 us | 636.37 us | 0.73x |

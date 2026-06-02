@@ -235,21 +235,28 @@ fn bench_dimension_encode(c: &mut Criterion) {
             black_box(checksum);
         });
     });
-    group.bench_function("hilbert3d_lut", |b| {
+    group.bench_function("hilbert3d_pair_lut", |b| {
         b.iter(|| {
             let mut checksum = 0u64;
             for &(x, y, z) in &coords3d {
-                checksum ^= experimental::encode_hilbert3(black_box(x), black_box(y), black_box(z));
+                checksum ^= experimental::encode_hilbert3_pair_lut(
+                    black_box(x),
+                    black_box(y),
+                    black_box(z),
+                );
             }
             black_box(checksum);
         });
     });
-    group.bench_function("hilbert3d_nibble", |b| {
+    group.bench_function("hilbert3d_nibble_lut", |b| {
         b.iter(|| {
             let mut checksum = 0u64;
             for &(x, y, z) in &coords3d {
-                checksum ^=
-                    experimental::encode_hilbert3_nibble(black_box(x), black_box(y), black_box(z));
+                checksum ^= experimental::encode_hilbert3_nibble_lut(
+                    black_box(x),
+                    black_box(y),
+                    black_box(z),
+                );
             }
             black_box(checksum);
         });

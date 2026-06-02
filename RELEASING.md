@@ -1,17 +1,81 @@
 # Releasing
 
-Releases are manual and controlled through GitHub Actions. Normal CI already
-runs on every `main` commit. `release-plz` is configured only to prepare draft
-release PRs; publishing, tag creation, and GitHub Releases remain handled by
-the explicit manual workflows below.
+Releases are intentionally two-step:
 
-## First Release
+1. `Release-plz PR` prepares a draft release PR with the version bump and
+   `CHANGELOG.md` update.
+2. `Publish to crates.io` publishes the reviewed version and creates the
+   annotated `v<version>` tag.
 
-Trusted Publishing is configured after the crate exists on crates.io, so the
-first publish is the only local-token exception.
+`release-plz` is configured in PR-only mode. It does not publish crates, push
+tags, or create GitHub Releases.
+
+## One-Time Setup
+
+### GitHub Actions Permissions
+
+In the GitHub repository settings, open:
+
+`Settings` -> `Actions` -> `General` -> `Workflow permissions`
+
+Enable:
+
+- `Read and write permissions`;
+- `Allow GitHub Actions to create and approve pull requests`.
+
+This is required so `Release-plz PR` can create and update draft release PRs
+with `GITHUB_TOKEN`.
+
+### Trusted Publishing
+
+Trusted Publishing is already the expected publishing path for normal updates.
+The crates.io Trusted Publisher entry should be:
+
+- Publisher: `GitHub`;
+- Repository owner: `Filyus`;
+- Repository name: `packed_spatial_index`;
+- Workflow filename: `publish.yml`;
+- Environment name: `release`.
+
+The crates.io form should show that the workflow file exists at
+`.github/workflows/publish.yml`. The `release` GitHub environment should exist
+in repository settings; require reviewers there when the plan supports it.
+
+## Normal Release
+
+1. Push normal changes to `main` and wait for CI to pass.
+2. Run the `Release-plz PR` workflow from `main` with `dry_run: true`.
+3. Read the workflow log. It should show the version/changelog changes it would
+   prepare, without opening a PR.
+4. If the dry run looks right, run `Release-plz PR` again with
+   `dry_run: false`.
+5. Review the draft release PR:
+   - check the version bump;
+   - edit `CHANGELOG.md` if the generated notes need a clearer user-facing
+     summary;
+   - keep the PR as the only version/changelog change for that release.
+6. Merge the release PR.
+7. Wait for CI on `main` to pass.
+8. Run the `Publish to crates.io` workflow from `main`.
+9. Set `version` to the exact `Cargo.toml` package version, for example
+   `0.3.1`.
+10. For a dry run, keep `publish` as `false`; `confirm` can stay empty.
+11. For the real publish, set:
+    - `publish`: `true`;
+    - `confirm`: `publish packed_spatial_index`.
+12. Approve the `release` environment when GitHub asks for confirmation.
+
+If the requested version does not match `Cargo.toml`, the publish workflow fails
+before publishing. The confirmation phrase deliberately does not include the
+version; the workflow checks the version separately.
+
+## First Release Fallback
+
+Trusted Publishing cannot publish a crate that does not exist yet. For a new
+crate, do the first publish locally with a short-lived token:
 
 1. Push the release commit to `main` and wait for CI to pass.
-2. Create a short-lived crates.io token:
+2. Create a crates.io token:
    - expiration: short, for example one day;
    - scope: `publish-new`;
    - crate restriction: unrestricted, because the crate does not exist yet.
@@ -27,56 +91,17 @@ first publish is the only local-token exception.
 5. Run the `Create release tag` workflow from `main`:
    - `version`: the exact `Cargo.toml` package version;
    - `confirm`: `tag packed_spatial_index`.
-6. Configure Trusted Publishing for future releases.
+6. Configure Trusted Publishing before the next release.
 
-## Trusted Publishing Setup
+## Tag-Only Fallback
 
-After the first version exists on crates.io, configure Trusted Publishing on
-the crate page:
+Use `Create release tag` only when the version is already published on
+crates.io and the `v<version>` tag is missing.
 
-- Publisher: `GitHub`;
-- Repository owner: `Filyus`;
-- Repository name: `packed_spatial_index`;
-- Workflow filename: `publish.yml`;
-- Environment name: `release`.
+The workflow checks:
 
-The crates.io form should show that the workflow file was found at
-`.github/workflows/publish.yml`. The environment field is optional on crates.io,
-but this repository's publish workflow uses `environment: release`, so configure
-that exact GitHub Actions environment in the repository settings. If the
-repository plan supports required reviewers for environments, require approval
-there too.
-
-## Updates
-
-Before using `Release-plz PR`, GitHub repository settings must allow GitHub
-Actions to create pull requests with `GITHUB_TOKEN`. The workflow is manual and
-does not publish, push tags, or create GitHub Releases.
-
-1. Run the `Release-plz PR` workflow from `main` with `dry_run: true` and read
-   the log.
-2. If the dry run looks right, run `Release-plz PR` again with `dry_run: false`.
-   It may open or update a draft release PR that changes `Cargo.toml` and
-   `CHANGELOG.md`.
-3. Review the generated changelog and version bump. Edit the draft PR if the
-   release notes need a more user-facing summary.
-4. Merge the release PR and wait for CI on `main` to pass.
-5. Run the `Publish to crates.io` workflow from `main`.
-6. Set `version` to the exact `Cargo.toml` package version, for example
-   `0.3.1`.
-7. For a dry run, keep `publish` as `false`; `confirm` can stay empty.
-8. For a real publish, set:
-   - `publish`: `true`;
-   - `confirm`: `publish packed_spatial_index`.
-9. Approve the `release` environment when GitHub asks for confirmation.
-
-If `version` is mistyped, the workflow fails before publishing. The confirmation
-phrase deliberately does not include the version; the version is checked only
-against `Cargo.toml`.
-
-## Tag-Only Workflow
-
-Use `Create release tag` only after the version is already published on
-crates.io and the `v<version>` tag is missing. It checks `main`, `Cargo.toml`,
-crates.io, the remote tag list, and the `tag packed_spatial_index` confirmation
-phrase before pushing the tag.
+- it is running from `main`;
+- `Cargo.toml` has the requested version;
+- that version exists on crates.io;
+- the remote tag does not exist yet;
+- `confirm` is exactly `tag packed_spatial_index`.

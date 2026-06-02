@@ -7,7 +7,7 @@
 //!  * For queries, the query batch itself is parallelized (read-only), so the comparison is symmetric:
 //!    both the baseline crate and `Index2D` benefit.
 
-use std::hint::black_box;
+use std::{hint::black_box, ops::ControlFlow};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use packed_spatial_index::experimental::ExperimentalSortKey2D;
@@ -193,6 +193,45 @@ fn bench_query(c: &mut Criterion) {
             black_box(total)
         })
     });
+    group.bench_function("simd_any_wide4_serial", |b| {
+        let mut stack = Vec::new();
+        b.iter(|| {
+            let mut total = 0usize;
+            for q in &queries {
+                total += usize::from(
+                    simd.visit_simd(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
+                        .is_break(),
+                );
+            }
+            black_box(total)
+        })
+    });
+    group.bench_function("simd_any_wide4_alloc_serial", |b| {
+        b.iter(|| {
+            let mut total = 0usize;
+            for q in &queries {
+                let mut stack = Vec::with_capacity(NODE_SIZE);
+                total += usize::from(
+                    simd.visit_simd(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
+                        .is_break(),
+                );
+            }
+            black_box(total)
+        })
+    });
+    group.bench_function("simd_any_avx512_reused_serial", |b| {
+        let mut stack = Vec::new();
+        b.iter(|| {
+            let mut total = 0usize;
+            for q in &queries {
+                total += usize::from(
+                    simd.visit_avx512(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
+                        .is_break(),
+                );
+            }
+            black_box(total)
+        })
+    });
     group.bench_function("simd_simd_prefetch_serial", |b| {
         let (mut buf, mut stack) = (Vec::new(), Vec::new());
         b.iter(|| {
@@ -289,6 +328,34 @@ fn bench_query(c: &mut Criterion) {
             let total: usize = queries
                 .par_iter()
                 .map(|q| usize::from(simd.any(to_bounds(q))))
+                .sum();
+            black_box(total)
+        })
+    });
+    group.bench_function("simd_any_wide4_parallel", |b| {
+        b.iter(|| {
+            let total: usize = queries
+                .par_iter()
+                .map_init(Vec::new, |stack, q| {
+                    usize::from(
+                        simd.visit_simd(to_bounds(q), stack, |_| ControlFlow::Break(()))
+                            .is_break(),
+                    )
+                })
+                .sum();
+            black_box(total)
+        })
+    });
+    group.bench_function("simd_any_avx512_reused_parallel", |b| {
+        b.iter(|| {
+            let total: usize = queries
+                .par_iter()
+                .map_init(Vec::new, |stack, q| {
+                    usize::from(
+                        simd.visit_avx512(to_bounds(q), stack, |_| ControlFlow::Break(()))
+                            .is_break(),
+                    )
+                })
                 .sum();
             black_box(total)
         })

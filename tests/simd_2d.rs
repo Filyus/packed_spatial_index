@@ -146,9 +146,22 @@ fn simd_index_search_matches_reference() {
     let reference = reference.build().unwrap();
     let simd = builder.finish_simd().unwrap();
 
-    let (mut scalar, mut simd_out, mut simd_prefetch, mut avx) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let (mut st1, mut st2, mut st3, mut st4) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut scalar, mut simd_out, mut simd_prefetch, mut avx, mut visit_wide, mut visit_avx) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let (mut st1, mut st2, mut st3, mut st4, mut st5, mut st6) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     for _ in 0..500 {
         let qx: f64 = rng.random_range(0.0..1000.0);
         let qy: f64 = rng.random_range(0.0..1000.0);
@@ -161,14 +174,34 @@ fn simd_index_search_matches_reference() {
         simd.search_simd(query, &mut simd_out, &mut st2);
         simd.search_simd_prefetch(query, &mut simd_prefetch, &mut st3);
         simd.search_avx512(query, &mut avx, &mut st4);
+        visit_wide.clear();
+        visit_avx.clear();
+        assert!(
+            simd.visit_simd(query, &mut st5, |idx| {
+                visit_wide.push(idx);
+                ControlFlow::<()>::Continue(())
+            })
+            .is_continue()
+        );
+        assert!(
+            simd.visit_avx512(query, &mut st6, |idx| {
+                visit_avx.push(idx);
+                ControlFlow::<()>::Continue(())
+            })
+            .is_continue()
+        );
         expected.sort_unstable();
         scalar.sort_unstable();
         simd_out.sort_unstable();
         simd_prefetch.sort_unstable();
         avx.sort_unstable();
+        visit_wide.sort_unstable();
+        visit_avx.sort_unstable();
         assert_eq!(expected, scalar, "SoA-scalar != reference");
         assert_eq!(expected, simd_out, "SoA-SIMD != reference");
         assert_eq!(expected, simd_prefetch, "SoA-SIMD-prefetch != reference");
         assert_eq!(expected, avx, "SoA-AVX512 != reference");
+        assert_eq!(expected, visit_wide, "SoA-visit-wide != reference");
+        assert_eq!(expected, visit_avx, "SoA-visit-AVX512 != reference");
     }
 }

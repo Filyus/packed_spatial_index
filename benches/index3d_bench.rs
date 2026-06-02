@@ -5,6 +5,8 @@
 //! experimental baseline for layout/build-speed decisions.
 
 use std::hint::black_box;
+#[cfg(feature = "simd")]
+use std::ops::ControlFlow;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use packed_spatial_index::experimental::{self, ExperimentalSortKey2D, ExperimentalSortKey3D};
@@ -644,6 +646,54 @@ fn bench_simd_search(c: &mut Criterion) {
                 let mut total = 0usize;
                 for &query in &queries {
                     total += simd.search_with(query, &mut workspace).len();
+                }
+                black_box(total);
+            });
+        });
+        group.bench_function(format!("{}_simd_any", kind.name()), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for &query in &queries {
+                    total += usize::from(simd.any(query));
+                }
+                black_box(total);
+            });
+        });
+        group.bench_function(format!("{}_simd_any_wide4", kind.name()), |b| {
+            let mut stack = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for &query in &queries {
+                    total += usize::from(
+                        simd.visit_simd(query, &mut stack, |_| ControlFlow::Break(()))
+                            .is_break(),
+                    );
+                }
+                black_box(total);
+            });
+        });
+        group.bench_function(format!("{}_simd_any_wide4_alloc", kind.name()), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for &query in &queries {
+                    let mut stack = Vec::with_capacity(16);
+                    total += usize::from(
+                        simd.visit_simd(query, &mut stack, |_| ControlFlow::Break(()))
+                            .is_break(),
+                    );
+                }
+                black_box(total);
+            });
+        });
+        group.bench_function(format!("{}_simd_any_avx512_reused", kind.name()), |b| {
+            let mut stack = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for &query in &queries {
+                    total += usize::from(
+                        simd.visit_avx512(query, &mut stack, |_| ControlFlow::Break(()))
+                            .is_break(),
+                    );
                 }
                 black_box(total);
             });

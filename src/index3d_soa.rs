@@ -493,7 +493,7 @@ impl SimdIndex3D {
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_simd(query, &mut stack, visitor)
+        self.visit_avx512(query, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queue(
@@ -667,6 +667,27 @@ impl SimdIndex3D {
         self.visit_simd_impl::<B, F>(query, stack, visitor)
     }
 
+    /// AVX-512 visitor path, falling back to [`visit_simd`](SimdIndex3D::visit_simd).
+    #[doc(hidden)]
+    pub fn visit_avx512<B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx512f") {
+                // SAFETY: this branch is selected only after checking avx512f availability.
+                return unsafe { self.visit_avx512_impl::<B, F>(query, stack, visitor) };
+            }
+        }
+        self.visit_simd(query, stack, visitor)
+    }
+
     /// Element-by-element traversal (SoA layout, branchless `overlaps`).
     #[doc(hidden)]
     pub fn search_scalar(&self, query: Box3D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
@@ -828,6 +849,92 @@ impl SimdIndex3D {
                     }
                 }
                 pos += 4;
+            }
+
+            while pos < end {
+                if self.hit_scalar(pos, query) {
+                    let index = self.indices[pos];
+                    if is_leaf {
+                        visitor(index)?;
+                    } else {
+                        stack.push(index);
+                        stack.push(level - 1);
+                    }
+                }
+                pos += 1;
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f")]
+    unsafe fn visit_avx512_impl<B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        use std::arch::x86_64::*;
+
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+        let qmxx_v = _mm512_set1_pd(query.max_x);
+        let qmnx_v = _mm512_set1_pd(query.min_x);
+        let qmxy_v = _mm512_set1_pd(query.max_y);
+        let qmny_v = _mm512_set1_pd(query.min_y);
+        let qmxz_v = _mm512_set1_pd(query.max_z);
+        let qmnz_v = _mm512_set1_pd(query.min_z);
+
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+
+            let mut pos = node_index;
+            while pos + 8 <= end {
+                // SAFETY: `pos + 8 <= end`, and `end` is bounded by the array length.
+                let (mnx, mxx, mny, mxy, mnz, mxz) = unsafe {
+                    (
+                        _mm512_loadu_pd(self.min_xs.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.max_xs.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.min_ys.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.max_ys.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.min_zs.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.max_zs.as_ptr().add(pos)),
+                    )
+                };
+                let m1 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mnx, qmxx_v);
+                let m2 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxx, qmnx_v);
+                let m3 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mny, qmxy_v);
+                let m4 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxy, qmny_v);
+                let m5 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mnz, qmxz_v);
+                let m6 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxz, qmnz_v);
+                let mut bits: u8 = m1 & m2 & m3 & m4 & m5 & m6;
+                while bits != 0 {
+                    let k = bits.trailing_zeros() as usize;
+                    let index = self.indices[pos + k];
+                    if is_leaf {
+                        visitor(index)?;
+                    } else {
+                        stack.push(index);
+                        stack.push(level - 1);
+                    }
+                    bits &= bits - 1;
+                }
+                pos += 8;
             }
 
             while pos < end {

@@ -182,8 +182,10 @@ fn simd3d_search_apis_agree_with_aos() {
     let (aos, simd) = build_pair(&boxes, 16);
 
     let mut rng = StdRng::seed_from_u64(0x9999);
-    let (mut scalar, mut wide, mut avx) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut s1, mut s2, mut s3) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut scalar, mut wide, mut avx, mut visit_wide, mut visit_avx) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut s1, mut s2, mut s3, mut s4, mut s5) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut workspace = SearchWorkspace::new();
 
     for _ in 0..400 {
@@ -200,6 +202,22 @@ fn simd3d_search_apis_agree_with_aos() {
         simd.search_scalar(query, &mut scalar, &mut s1);
         simd.search_simd(query, &mut wide, &mut s2);
         simd.search_avx512(query, &mut avx, &mut s3);
+        visit_wide.clear();
+        visit_avx.clear();
+        assert!(
+            simd.visit_simd(query, &mut s4, |idx| {
+                visit_wide.push(idx);
+                ControlFlow::<()>::Continue(())
+            })
+            .is_continue()
+        );
+        assert!(
+            simd.visit_avx512(query, &mut s5, |idx| {
+                visit_avx.push(idx);
+                ControlFlow::<()>::Continue(())
+            })
+            .is_continue()
+        );
         let mut high = simd.search(query);
         let mut into = Vec::new();
         simd.search_into(query, &mut into);
@@ -208,6 +226,8 @@ fn simd3d_search_apis_agree_with_aos() {
         scalar.sort_unstable();
         wide.sort_unstable();
         avx.sort_unstable();
+        visit_wide.sort_unstable();
+        visit_avx.sort_unstable();
         high.sort_unstable();
         into.sort_unstable();
         with.sort_unstable();
@@ -215,6 +235,8 @@ fn simd3d_search_apis_agree_with_aos() {
         assert_eq!(expected, scalar, "SoA-scalar != AoS");
         assert_eq!(expected, wide, "SoA-wide != AoS");
         assert_eq!(expected, avx, "SoA-AVX512 != AoS");
+        assert_eq!(expected, visit_wide, "SoA-visit-wide != AoS");
+        assert_eq!(expected, visit_avx, "SoA-visit-AVX512 != AoS");
         assert_eq!(expected, high, "SoA-search != AoS");
         assert_eq!(expected, into, "SoA-search_into != AoS");
         assert_eq!(expected, with, "SoA-search_with != AoS");

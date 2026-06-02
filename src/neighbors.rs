@@ -5,11 +5,11 @@ use std::collections::BinaryHeap;
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Index2DBuilder, NeighborWorkspace, Point2D, Bounds2D};
+/// use packed_spatial_index::{Index2DBuilder, NeighborWorkspace, Point2D, Box2D};
 ///
 /// let mut builder = Index2DBuilder::new(2);
-/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-/// builder.add(Bounds2D::new(10.0, 10.0, 11.0, 11.0));
+/// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Box2D::new(10.0, 10.0, 11.0, 11.0));
 /// let index = builder.finish().unwrap();
 ///
 /// let mut workspace = NeighborWorkspace::new();

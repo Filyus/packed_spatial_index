@@ -3,7 +3,7 @@ use std::{error::Error, fmt};
 /// Spatial coordinates are `f64`, matching the reference default.
 pub(crate) type Num = f64;
 
-/// Error returned by [`Bounds2D::try_new`] for inverted or unordered bounds.
+/// Error returned by [`Box2D::try_new`] and [`Box3D::try_new`] for invalid coordinate bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BoundsError {
     /// Bounds do not satisfy `min_x <= max_x` and `min_y <= max_y`.
@@ -56,19 +56,19 @@ impl fmt::Display for BoundsError {
 
 impl Error for BoundsError {}
 
-/// Axis-aligned 2D bounds stored as `(min_x, min_y, max_x, max_y)`.
+/// Axis-aligned 2D box stored as `(min_x, min_y, max_x, max_y)`.
 ///
-/// Bounds are inclusive: boxes that touch at an edge or corner overlap.
-/// [`Bounds2D::new`] is a cheap constructor and does not validate or reorder
-/// bounds; use [`Bounds2D::try_new`] when accepting unchecked input.
+/// Boxes are inclusive: boxes that touch at an edge or corner overlap.
+/// [`Box2D::new`] is a cheap constructor and does not validate or reorder
+/// coordinate bounds; use [`Box2D::try_new`] when accepting unchecked input.
 ///
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Point2D, Bounds2D, BoundsError};
+/// use packed_spatial_index::{Point2D, Box2D, BoundsError};
 ///
-/// let a = Bounds2D::new(0.0, 0.0, 1.0, 1.0);
-/// let b = Bounds2D::try_new(1.0, 1.0, 2.0, 2.0)?;
+/// let a = Box2D::new(0.0, 0.0, 1.0, 1.0);
+/// let b = Box2D::try_new(1.0, 1.0, 2.0, 2.0)?;
 ///
 /// assert!(a.overlaps(b));
 /// assert!(a.contains_point(Point2D::new(0.5, 0.5)));
@@ -80,7 +80,7 @@ impl Error for BoundsError {}
 // little-endian targets the box array can be serialized with a single bulk memcpy.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Bounds2D {
+pub struct Box2D {
     /// Minimum x coordinate.
     pub min_x: f64,
     /// Minimum y coordinate.
@@ -91,11 +91,11 @@ pub struct Bounds2D {
     pub max_y: f64,
 }
 
-impl Bounds2D {
-    /// Create bounds from `[min_x, min_y, max_x, max_y]`.
+impl Box2D {
+    /// Create a box from `[min_x, min_y, max_x, max_y]`.
     ///
-    /// This constructor does not validate or reorder bounds. Prefer
-    /// [`Bounds2D::try_new`] for data that may contain inverted bounds or `NaN`.
+    /// This constructor does not validate or reorder coordinates. Prefer
+    /// [`Box2D::try_new`] for data that may contain inverted coordinate bounds or `NaN`.
     #[inline]
     pub const fn new(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Self {
         Self {
@@ -106,7 +106,7 @@ impl Bounds2D {
         }
     }
 
-    /// Try to create validated bounds.
+    /// Try to create a validated box.
     ///
     /// Returns [`BoundsError::InvalidBounds`] when `min_x > max_x`, `min_y > max_y`,
     /// or any bound is `NaN`.
@@ -114,13 +114,13 @@ impl Bounds2D {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Bounds2D, BoundsError};
+    /// use packed_spatial_index::{Box2D, BoundsError};
     ///
-    /// let bounds = Bounds2D::try_new(0.0, 0.0, 1.0, 1.0)?;
-    /// assert_eq!(bounds, Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// let box2d = Box2D::try_new(0.0, 0.0, 1.0, 1.0)?;
+    /// assert_eq!(box2d, Box2D::new(0.0, 0.0, 1.0, 1.0));
     ///
     /// assert!(matches!(
-    ///     Bounds2D::try_new(2.0, 0.0, 1.0, 1.0),
+    ///     Box2D::try_new(2.0, 0.0, 1.0, 1.0),
     ///     Err(BoundsError::InvalidBounds { .. })
     /// ));
     /// # Ok::<(), BoundsError>(())
@@ -144,12 +144,12 @@ impl Bounds2D {
         }
     }
 
-    /// Return `true` when these bounds overlap `other`.
+    /// Return `true` when this box overlaps `other`.
     ///
     /// Edges are inclusive: boxes that only touch at an edge or corner
     /// are considered overlapping.
     #[inline]
-    pub fn overlaps(&self, other: Bounds2D) -> bool {
+    pub fn overlaps(&self, other: Box2D) -> bool {
         // Branchless: compute all four comparisons and combine them with bitwise `&`
         // to remove hard-to-predict floating-point branches from the traversal loop.
         (self.min_x <= other.max_x)
@@ -158,18 +158,18 @@ impl Bounds2D {
             & (self.max_y >= other.min_y)
     }
 
-    /// Return `true` when these bounds fully contain `other`.
+    /// Return `true` when this box fully contains `other`.
     ///
     /// Edges are inclusive.
     #[inline]
-    pub fn contains(&self, other: Bounds2D) -> bool {
+    pub fn contains(&self, other: Box2D) -> bool {
         (self.min_x <= other.min_x)
             & (self.min_y <= other.min_y)
             & (self.max_x >= other.max_x)
             & (self.max_y >= other.max_y)
     }
 
-    /// Return `true` when these bounds contain `point`.
+    /// Return `true` when this box contains `point`.
     ///
     /// Edges are inclusive.
     #[inline]
@@ -188,19 +188,19 @@ impl Bounds2D {
     }
 }
 
-/// Axis-aligned 3D bounds stored as `(min_x, min_y, min_z, max_x, max_y, max_z)`.
+/// Axis-aligned 3D box stored as `(min_x, min_y, min_z, max_x, max_y, max_z)`.
 ///
-/// Bounds are inclusive: boxes that touch at a face, edge, or corner overlap.
-/// [`Bounds3D::new`] is a cheap constructor and does not validate or reorder
-/// bounds; use [`Bounds3D::try_new`] when accepting unchecked input.
+/// Boxes are inclusive: boxes that touch at a face, edge, or corner overlap.
+/// [`Box3D::new`] is a cheap constructor and does not validate or reorder
+/// coordinate bounds; use [`Box3D::try_new`] when accepting unchecked input.
 ///
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Bounds3D, Point3D, BoundsError};
+/// use packed_spatial_index::{Box3D, Point3D, BoundsError};
 ///
-/// let a = Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
-/// let b = Bounds3D::try_new(1.0, 1.0, 1.0, 2.0, 2.0, 2.0)?;
+/// let a = Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
+/// let b = Box3D::try_new(1.0, 1.0, 1.0, 2.0, 2.0, 2.0)?;
 ///
 /// assert!(a.overlaps(b));
 /// assert!(a.contains_point(Point3D::new(0.5, 0.5, 0.5)));
@@ -211,7 +211,7 @@ impl Bounds2D {
 // unpadded `f64`, matching the on-disk box record for single-memcpy serialization.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Bounds3D {
+pub struct Box3D {
     /// Minimum x coordinate.
     pub min_x: f64,
     /// Minimum y coordinate.
@@ -226,11 +226,11 @@ pub struct Bounds3D {
     pub max_z: f64,
 }
 
-impl Bounds3D {
-    /// Create bounds from `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+impl Box3D {
+    /// Create a box from `[min_x, min_y, min_z, max_x, max_y, max_z]`.
     ///
-    /// This constructor does not validate or reorder bounds. Prefer
-    /// [`Bounds3D::try_new`] for data that may contain inverted bounds or `NaN`.
+    /// This constructor does not validate or reorder coordinates. Prefer
+    /// [`Box3D::try_new`] for data that may contain inverted coordinate bounds or `NaN`.
     #[inline]
     pub const fn new(
         min_x: f64,
@@ -250,7 +250,7 @@ impl Bounds3D {
         }
     }
 
-    /// Try to create validated 3D bounds.
+    /// Try to create a validated 3D box.
     ///
     /// Returns [`BoundsError::InvalidBounds3D`] when any axis is inverted or
     /// any bound is `NaN`.
@@ -277,12 +277,12 @@ impl Bounds3D {
         }
     }
 
-    /// Return `true` when these bounds overlap `other`.
+    /// Return `true` when this box overlaps `other`.
     ///
     /// Edges are inclusive: boxes that only touch at a face, edge, or corner
     /// are considered overlapping.
     #[inline]
-    pub fn overlaps(&self, other: Bounds3D) -> bool {
+    pub fn overlaps(&self, other: Box3D) -> bool {
         (self.min_x <= other.max_x)
             & (self.max_x >= other.min_x)
             & (self.min_y <= other.max_y)
@@ -291,11 +291,11 @@ impl Bounds3D {
             & (self.max_z >= other.min_z)
     }
 
-    /// Return `true` when these bounds fully contain `other`.
+    /// Return `true` when this box fully contains `other`.
     ///
     /// Edges are inclusive.
     #[inline]
-    pub fn contains(&self, other: Bounds3D) -> bool {
+    pub fn contains(&self, other: Box3D) -> bool {
         (self.min_x <= other.min_x)
             & (self.min_y <= other.min_y)
             & (self.min_z <= other.min_z)
@@ -304,7 +304,7 @@ impl Bounds3D {
             & (self.max_z >= other.max_z)
     }
 
-    /// Return `true` when these bounds contain `point`.
+    /// Return `true` when this box contains `point`.
     ///
     /// Edges are inclusive.
     #[inline]

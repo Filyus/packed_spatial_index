@@ -1,6 +1,6 @@
 //! SoA index variant with SIMD searches (available with the `simd` feature).
 //!
-//! Boxes are stored as four separate arrays (`min_x[]`, `min_y[]`, `max_x[]`,
+//! items are stored as four separate arrays (`min_x[]`, `min_y[]`, `max_x[]`,
 //! `max_y[]`). The tree is built exactly like the AoS version; only the layout
 //! and search implementation differ.
 
@@ -11,7 +11,7 @@ use wide::{CmpGe, CmpLe, f64x4};
 use crate::{
     builder2d::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Bounds2D, Point2D},
+    geometry::{Box2D, Point2D},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     persistence::{
         ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -24,7 +24,7 @@ use crate::{
 
 type Num = f64;
 
-pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> SimdIndex2D {
+pub(crate) fn build_simd_index(config: BuildConfig, items: Vec<Box2D>) -> SimdIndex2D {
     let node_size = config.node_size;
     let num_items = config.num_items;
     let TreeLayout {
@@ -46,7 +46,7 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> Sim
     }
 
     if num_items <= node_size {
-        return build_single_node_soa(node_size, num_items, level_bounds, boxes);
+        return build_single_node_soa(node_size, num_items, level_bounds, items);
     }
 
     let mut min_xs = vec![0.0f64; num_nodes];
@@ -57,7 +57,7 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> Sim
 
     let (mut e_min_x, mut e_min_y) = (f64::INFINITY, f64::INFINITY);
     let (mut e_max_x, mut e_max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for b in &boxes {
+    for b in &items {
         e_min_x = e_min_x.min(b.min_x);
         e_min_y = e_min_y.min(b.min_y);
         e_max_x = e_max_x.max(b.max_x);
@@ -79,7 +79,7 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> Sim
         #[cfg(feature = "parallel")]
         use_parallel,
     };
-    let order = encode_sort_by_key(&boxes, config.sort_key, context);
+    let order = encode_sort_by_key(&items, config.sort_key, context);
 
     #[cfg(feature = "parallel")]
     let scattered_in_parallel = if use_parallel {
@@ -90,7 +90,7 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> Sim
             &mut max_ys[..num_items],
             &mut indices[..num_items],
             &order,
-            &boxes,
+            &items,
         );
         true
     } else {
@@ -101,7 +101,7 @@ pub(crate) fn build_simd_index(config: BuildConfig, boxes: Vec<Bounds2D>) -> Sim
 
     if !scattered_in_parallel {
         for (slot, &(_, orig)) in order.iter().enumerate() {
-            let b = boxes[orig as usize];
+            let b = items[orig as usize];
             min_xs[slot] = b.min_x;
             min_ys[slot] = b.min_y;
             max_xs[slot] = b.max_x;
@@ -151,7 +151,7 @@ fn build_single_node_soa(
     node_size: usize,
     num_items: usize,
     level_bounds: Vec<usize>,
-    boxes: Vec<Bounds2D>,
+    items: Vec<Box2D>,
 ) -> SimdIndex2D {
     let mut min_xs = Vec::with_capacity(num_items + 1);
     let mut min_ys = Vec::with_capacity(num_items + 1);
@@ -161,7 +161,7 @@ fn build_single_node_soa(
 
     let (mut root_min_x, mut root_min_y) = (f64::INFINITY, f64::INFINITY);
     let (mut root_max_x, mut root_max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for (idx, b) in boxes.into_iter().enumerate() {
+    for (idx, b) in items.into_iter().enumerate() {
         min_xs.push(b.min_x);
         min_ys.push(b.min_y);
         max_xs.push(b.max_x);
@@ -196,18 +196,18 @@ fn build_single_node_soa(
 ///
 /// Created through [`Index2DBuilder::finish_simd`](crate::Index2DBuilder::finish_simd).
 /// It has the same public search and nearest-neighbor API as [`Index2D`](crate::Index2D),
-/// but stores bounds in structure-of-arrays form for SIMD traversal.
+/// but stores box coordinates in structure-of-arrays form for SIMD traversal.
 ///
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Index2DBuilder, Bounds2D};
+/// use packed_spatial_index::{Index2DBuilder, Box2D};
 ///
 /// let mut builder = Index2DBuilder::new(1);
-/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
 ///
 /// let index = builder.finish_simd().unwrap();
-/// assert_eq!(index.search(Bounds2D::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
+/// assert_eq!(index.search(Box2D::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
 /// ```
 pub struct SimdIndex2D {
     node_size: usize,
@@ -227,12 +227,12 @@ impl SimdIndex2D {
     }
 
     /// Return the total extent of indexed items, or `None` for an empty index.
-    pub fn extent(&self) -> Option<Bounds2D> {
+    pub fn extent(&self) -> Option<Box2D> {
         if self.num_items == 0 {
             None
         } else {
             let last = self.min_xs.len() - 1;
-            Some(Bounds2D::new(
+            Some(Box2D::new(
                 self.min_xs[last],
                 self.min_ys[last],
                 self.max_xs[last],
@@ -249,7 +249,7 @@ impl SimdIndex2D {
     /// Serialize into the stable little-endian `PSINDEX` format.
     ///
     /// The output is byte-identical to [`Index2D::to_bytes`](crate::Index2D::to_bytes)
-    /// for the same boxes, so a `SimdIndex2D` and an `Index2D` are interchangeable on
+    /// for the same items, so a `SimdIndex2D` and an `Index2D` are interchangeable on
     /// disk: either can load bytes produced by the other.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -274,7 +274,7 @@ impl SimdIndex2D {
         bytes.write_u64(num_nodes as u64);
         bytes.write_u64(level_count as u64);
         bytes.write_usize_slice_as_u64(&self.level_bounds);
-        bytes.write_soa_bounds_2d(&self.min_xs, &self.min_ys, &self.max_xs, &self.max_ys);
+        bytes.write_soa_boxes_2d(&self.min_xs, &self.min_ys, &self.max_xs, &self.max_ys);
         bytes.write_usize_slice_as_u64(&self.indices);
         bytes.finish();
     }
@@ -298,10 +298,10 @@ impl SimdIndex2D {
         let mut indices = Vec::with_capacity(num_nodes);
         for i in 0..num_nodes {
             let off = i * 32; // four f64 per 2D box record
-            min_xs.push(read_f64_le_unchecked(parsed.boxes, off));
-            min_ys.push(read_f64_le_unchecked(parsed.boxes, off + 8));
-            max_xs.push(read_f64_le_unchecked(parsed.boxes, off + 16));
-            max_ys.push(read_f64_le_unchecked(parsed.boxes, off + 24));
+            min_xs.push(read_f64_le_unchecked(parsed.entries, off));
+            min_ys.push(read_f64_le_unchecked(parsed.entries, off + 8));
+            max_xs.push(read_f64_le_unchecked(parsed.entries, off + 16));
+            max_ys.push(read_f64_le_unchecked(parsed.entries, off + 24));
             indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
         }
 
@@ -336,10 +336,10 @@ impl SimdIndex2D {
         }
     }
 
-    /// Return the indices of all items whose bounds intersect `bounds`.
-    pub fn search(&self, bounds: Bounds2D) -> Vec<usize> {
+    /// Return the indices of all items whose boxes intersect `query`.
+    pub fn search(&self, query: Box2D) -> Vec<usize> {
         let mut out = Vec::new();
-        self.search_into(bounds, &mut out);
+        self.search_into(query, &mut out);
         out
     }
 
@@ -347,29 +347,25 @@ impl SimdIndex2D {
     ///
     /// This automatically chooses the widest available SIMD implementation: AVX-512
     /// on supporting x86-64 CPUs, otherwise AVX2/SSE through `wide`.
-    pub fn search_into(&self, bounds: Bounds2D, out: &mut Vec<usize>) {
+    pub fn search_into(&self, query: Box2D, out: &mut Vec<usize>) {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_avx512(bounds, out, &mut stack);
+        self.search_avx512(query, out, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
-    pub fn search_with<'a>(
-        &self,
-        bounds: Bounds2D,
-        workspace: &'a mut SearchWorkspace,
-    ) -> &'a [usize] {
-        self.search_avx512(bounds, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'a>(&self, query: Box2D, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
+        self.search_avx512(query, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `bounds`.
-    pub fn any(&self, bounds: Bounds2D) -> bool {
-        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
+    /// Return `true` if at least one item intersects `query`.
+    pub fn any(&self, query: Box2D) -> bool {
+        self.visit(query, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
-    pub fn first(&self, bounds: Bounds2D) -> Option<usize> {
-        match self.visit(bounds, ControlFlow::Break) {
+    pub fn first(&self, query: Box2D) -> Option<usize> {
+        match self.visit(query, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -466,12 +462,12 @@ impl SimdIndex2D {
     }
 
     /// Visit intersecting items without collecting a result `Vec`.
-    pub fn visit<B, F>(&self, bounds: Bounds2D, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_simd(bounds, &mut stack, visitor)
+        self.visit_simd(query, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queue(
@@ -634,33 +630,33 @@ impl SimdIndex2D {
     #[doc(hidden)]
     pub fn visit_simd<B, F>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         stack: &mut Vec<usize>,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_simd_impl::<false, B, F>(bounds, stack, visitor)
+        self.visit_simd_impl::<false, B, F>(query, stack, visitor)
     }
 
     /// Experimental prefetch variant of [`visit_simd`](SimdIndex2D::visit_simd).
     #[doc(hidden)]
     pub fn visit_simd_prefetch<B, F>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         stack: &mut Vec<usize>,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_simd_impl::<true, B, F>(bounds, stack, visitor)
+        self.visit_simd_impl::<true, B, F>(query, stack, visitor)
     }
 
     /// Element-by-element traversal (SoA layout, branchless `overlaps`).
     #[doc(hidden)]
-    pub fn search_scalar(&self, bounds: Bounds2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    pub fn search_scalar(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
         out.clear();
         stack.clear();
         if self.num_items == 0 {
@@ -672,10 +668,10 @@ impl SimdIndex2D {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
-                let hit = (self.min_xs[pos] <= bounds.max_x)
-                    & (self.max_xs[pos] >= bounds.min_x)
-                    & (self.min_ys[pos] <= bounds.max_y)
-                    & (self.max_ys[pos] >= bounds.min_y);
+                let hit = (self.min_xs[pos] <= query.max_x)
+                    & (self.max_xs[pos] >= query.min_x)
+                    & (self.min_ys[pos] <= query.max_y)
+                    & (self.max_ys[pos] >= query.min_y);
                 if !hit {
                     continue;
                 }
@@ -698,24 +694,19 @@ impl SimdIndex2D {
 
     /// AVX2/SSE path through `wide::f64x4`.
     #[doc(hidden)]
-    pub fn search_simd(&self, bounds: Bounds2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        self.search_simd_impl::<false>(bounds, out, stack);
+    pub fn search_simd(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        self.search_simd_impl::<false>(query, out, stack);
     }
 
     /// AVX2/SSE path with prefetch for the next node from the stack.
     #[doc(hidden)]
-    pub fn search_simd_prefetch(
-        &self,
-        bounds: Bounds2D,
-        out: &mut Vec<usize>,
-        stack: &mut Vec<usize>,
-    ) {
-        self.search_simd_impl::<true>(bounds, out, stack);
+    pub fn search_simd_prefetch(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        self.search_simd_impl::<true>(query, out, stack);
     }
 
     fn search_simd_impl<const PREFETCH: bool>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         out: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
@@ -724,10 +715,10 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return;
         }
-        let qmxx_v = f64x4::splat(bounds.max_x);
-        let qmnx_v = f64x4::splat(bounds.min_x);
-        let qmxy_v = f64x4::splat(bounds.max_y);
-        let qmny_v = f64x4::splat(bounds.min_y);
+        let qmxx_v = f64x4::splat(query.max_x);
+        let qmnx_v = f64x4::splat(query.min_x);
+        let qmxy_v = f64x4::splat(query.max_y);
+        let qmny_v = f64x4::splat(query.min_y);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -764,10 +755,10 @@ impl SimdIndex2D {
             }
 
             while pos < end {
-                let hit = (self.min_xs[pos] <= bounds.max_x)
-                    & (self.max_xs[pos] >= bounds.min_x)
-                    & (self.min_ys[pos] <= bounds.max_y)
-                    & (self.max_ys[pos] >= bounds.min_y);
+                let hit = (self.min_xs[pos] <= query.max_x)
+                    & (self.max_xs[pos] >= query.min_x)
+                    & (self.min_ys[pos] <= query.max_y)
+                    & (self.max_ys[pos] >= query.min_y);
                 if hit {
                     let index = self.indices[pos];
                     if is_leaf {
@@ -794,7 +785,7 @@ impl SimdIndex2D {
 
     fn visit_simd_impl<const PREFETCH: bool, B, F>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -805,10 +796,10 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        let qmxx_v = f64x4::splat(bounds.max_x);
-        let qmnx_v = f64x4::splat(bounds.min_x);
-        let qmxy_v = f64x4::splat(bounds.max_y);
-        let qmny_v = f64x4::splat(bounds.min_y);
+        let qmxx_v = f64x4::splat(query.max_x);
+        let qmnx_v = f64x4::splat(query.min_x);
+        let qmxy_v = f64x4::splat(query.max_y);
+        let qmny_v = f64x4::splat(query.min_y);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -845,10 +836,10 @@ impl SimdIndex2D {
             }
 
             while pos < end {
-                let hit = (self.min_xs[pos] <= bounds.max_x)
-                    & (self.max_xs[pos] >= bounds.min_x)
-                    & (self.min_ys[pos] <= bounds.max_y)
-                    & (self.max_ys[pos] >= bounds.min_y);
+                let hit = (self.min_xs[pos] <= query.max_x)
+                    & (self.max_xs[pos] >= query.min_x)
+                    & (self.min_ys[pos] <= query.max_y)
+                    & (self.max_ys[pos] >= query.min_y);
                 if hit {
                     let index = self.indices[pos];
                     if is_leaf {
@@ -875,23 +866,23 @@ impl SimdIndex2D {
 
     /// AVX-512 path, falling back to [`search_simd`](SimdIndex2D::search_simd).
     #[doc(hidden)]
-    pub fn search_avx512(&self, bounds: Bounds2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    pub fn search_avx512(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx512f") {
                 // SAFETY: this branch is selected only after checking avx512f availability.
-                unsafe { self.search_avx512_impl(bounds, out, stack) };
+                unsafe { self.search_avx512_impl(query, out, stack) };
                 return;
             }
         }
-        self.search_simd(bounds, out, stack);
+        self.search_simd(query, out, stack);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
     unsafe fn search_avx512_impl(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         out: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
@@ -902,10 +893,10 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return;
         }
-        let qmxx_v = _mm512_set1_pd(bounds.max_x);
-        let qmnx_v = _mm512_set1_pd(bounds.min_x);
-        let qmxy_v = _mm512_set1_pd(bounds.max_y);
-        let qmny_v = _mm512_set1_pd(bounds.min_y);
+        let qmxx_v = _mm512_set1_pd(query.max_x);
+        let qmnx_v = _mm512_set1_pd(query.min_x);
+        let qmxy_v = _mm512_set1_pd(query.max_y);
+        let qmny_v = _mm512_set1_pd(query.min_y);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -944,10 +935,10 @@ impl SimdIndex2D {
             }
 
             while pos < end {
-                let hit = (self.min_xs[pos] <= bounds.max_x)
-                    & (self.max_xs[pos] >= bounds.min_x)
-                    & (self.min_ys[pos] <= bounds.max_y)
-                    & (self.max_ys[pos] >= bounds.min_y);
+                let hit = (self.min_xs[pos] <= query.max_x)
+                    & (self.max_xs[pos] >= query.min_x)
+                    & (self.min_ys[pos] <= query.max_y)
+                    & (self.max_ys[pos] >= query.min_y);
                 if hit {
                     let index = self.indices[pos];
                     if is_leaf {
@@ -997,7 +988,7 @@ fn reorder_parallel_soa_2d(
     max_ys: &mut [f64],
     indices: &mut [usize],
     order: &[(u32, u32)],
-    items: &[Bounds2D],
+    items: &[Box2D],
 ) {
     use rayon::prelude::*;
 

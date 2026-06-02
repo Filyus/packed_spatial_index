@@ -2,7 +2,7 @@ mod common;
 
 use common::{bounds, random_boxes};
 use packed_spatial_index::experimental::{ENCODERS, ExperimentalSortKey2D, lut};
-use packed_spatial_index::{Bounds2D, Index2DBuilder, SortKey2D};
+use packed_spatial_index::{Box2D, Index2DBuilder, SortKey2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use static_aabb2d_index::{StaticAABB2DIndexBuilder, hilbert_xy_to_index};
@@ -85,7 +85,7 @@ fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey2D) 
         .experimental_sort_key(choice);
     for b in &boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        index.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        index.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
@@ -95,7 +95,7 @@ fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey2D) 
         let qy: f64 = rng.random_range(0.0..1000.0);
         let qw: f64 = rng.random_range(1.0..100.0);
         let qh: f64 = rng.random_range(1.0..100.0);
-        let query = Bounds2D::new(qx, qy, qx + qw, qy + qh);
+        let query = Box2D::new(qx, qy, qx + qw, qy + qh);
 
         let mut expected = reference.query(qx, qy, qx + qw, qy + qh);
         let mut actual = index.search(query);
@@ -143,7 +143,7 @@ fn public_sort_keys_match_reference() {
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
 
-    let query = Bounds2D::new(250.0, 250.0, 750.0, 750.0);
+    let query = Box2D::new(250.0, 250.0, 750.0, 750.0);
     let mut expected = reference.query(query.min_x, query.min_y, query.max_x, query.max_y);
     let mut actual = index.search(query);
     expected.sort_unstable();

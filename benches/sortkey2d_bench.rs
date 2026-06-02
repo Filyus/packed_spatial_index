@@ -8,7 +8,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use packed_spatial_index::experimental::{self, ExperimentalSortKey2D, radix_sort_pairs};
-use packed_spatial_index::{Bounds2D, Index2DBuilder};
+use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -28,7 +28,7 @@ const KEYS: &[(&str, ExperimentalSortKey2D)] = &[
     ("morton", ExperimentalSortKey2D::Morton),
 ];
 
-fn gen_boxes(n: usize) -> Vec<Bounds2D> {
+fn gen_boxes(n: usize) -> Vec<Box2D> {
     let mut rng = StdRng::seed_from_u64(0xB0B);
     (0..n)
         .map(|_| {
@@ -36,12 +36,12 @@ fn gen_boxes(n: usize) -> Vec<Bounds2D> {
             let cy: f64 = rng.random_range(0.0..10_000.0);
             let w: f64 = rng.random_range(0.1..20.0);
             let h: f64 = rng.random_range(0.1..20.0);
-            Bounds2D::new(cx, cy, cx + w, cy + h)
+            Box2D::new(cx, cy, cx + w, cy + h)
         })
         .collect()
 }
 
-fn normalized_points(boxes: &[Bounds2D]) -> Vec<(u16, u16)> {
+fn normalized_points(boxes: &[Box2D]) -> Vec<(u16, u16)> {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;

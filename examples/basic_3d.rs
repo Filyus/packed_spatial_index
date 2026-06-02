@@ -1,10 +1,10 @@
-use packed_spatial_index::{Bounds3D, Index3DBuilder, Point3D};
+use packed_spatial_index::{Box3D, Index3DBuilder, Point3D};
 
 fn main() {
     let boxes = [
-        Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
-        Bounds3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0),
-        Bounds3D::new(0.5, 0.5, 0.5, 2.0, 2.0, 2.0),
+        Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+        Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0),
+        Box3D::new(0.5, 0.5, 0.5, 2.0, 2.0, 2.0),
     ];
 
     let mut builder = Index3DBuilder::new(boxes.len());
@@ -13,7 +13,7 @@ fn main() {
     }
     let index = builder.finish().unwrap();
 
-    let mut hits = index.search(Bounds3D::new(0.0, 0.0, 0.0, 1.5, 1.5, 1.5));
+    let mut hits = index.search(Box3D::new(0.0, 0.0, 0.0, 1.5, 1.5, 1.5));
     hits.sort_unstable();
     assert_eq!(hits, vec![0, 2]);
 

@@ -10,14 +10,14 @@
 //!
 //! # Quick Start
 //! ```
-//! use packed_spatial_index::{Index2DBuilder, Bounds2D};
+//! use packed_spatial_index::{Index2DBuilder, Box2D};
 //!
 //! let mut builder = Index2DBuilder::new(2);
-//! builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-//! builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
+//! builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+//! builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
 //! let index = builder.finish().unwrap();
 //!
-//! assert_eq!(index.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+//! assert_eq!(index.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 //! ```
 //!
 //! # Cargo Features
@@ -50,7 +50,7 @@ pub use builder3d::Index3DBuilder;
 pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
-pub use geometry::{Bounds2D, Bounds3D, BoundsError, Point2D, Point3D};
+pub use geometry::{BoundsError, Box2D, Box3D, Point2D, Point3D};
 pub use index2d::{Index2D, Index2DView};
 #[cfg(feature = "simd")]
 pub use index2d_soa::SimdIndex2D;

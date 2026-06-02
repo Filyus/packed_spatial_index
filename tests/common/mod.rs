@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use packed_spatial_index::{Bounds2D, Index2D, Index2DBuilder, Point2D};
+use packed_spatial_index::{Box2D, Index2D, Index2DBuilder, Point2D};
 use rand::RngExt;
 use rand::rngs::StdRng;
 
-pub fn bounds(coords: [f64; 4]) -> Bounds2D {
-    Bounds2D::new(coords[0], coords[1], coords[2], coords[3])
+pub fn bounds(coords: [f64; 4]) -> Box2D {
+    Box2D::new(coords[0], coords[1], coords[2], coords[3])
 }
 
 pub fn random_boxes(rng: &mut StdRng, n: usize) -> Vec<[f64; 4]> {
@@ -23,7 +23,7 @@ pub fn random_boxes(rng: &mut StdRng, n: usize) -> Vec<[f64; 4]> {
 pub fn build_index(boxes: &[[f64; 4]], node_size: usize) -> Index2D {
     let mut builder = Index2DBuilder::new(boxes.len()).node_size(node_size);
     for b in boxes {
-        builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish().unwrap()
 }

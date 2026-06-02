@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use packed_spatial_index::experimental::ExperimentalSortKey2D;
-use packed_spatial_index::{Bounds2D, Index2DBuilder};
+use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -70,7 +70,7 @@ fn main() {
                 .node_size(NODE_SIZE)
                 .experimental_sort_key(*key);
             for r in &boxes {
-                b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
+                b.add(Box2D::new(r[0], r[1], r[2], r[3]));
             }
             let candidate = b.finish().unwrap();
             let candidate_t = t0.elapsed();
@@ -85,7 +85,7 @@ fn main() {
         let mut total_visited = 0usize;
         let mut total_results = 0usize;
         for q in &queries {
-            let (res, vis) = index.search_visited(Bounds2D::new(q[0], q[1], q[2], q[3]));
+            let (res, vis) = index.search_visited(Box2D::new(q[0], q[1], q[2], q[3]));
             total_results += res;
             total_visited += vis;
         }
@@ -101,7 +101,7 @@ fn main() {
         let mut buf = Vec::new();
         for _ in 0..REPEATS {
             for q in &queries {
-                index.search_into(Bounds2D::new(q[0], q[1], q[2], q[3]), &mut buf);
+                index.search_into(Box2D::new(q[0], q[1], q[2], q[3]), &mut buf);
                 sink += buf.len();
             }
         }

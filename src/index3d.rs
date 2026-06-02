@@ -8,7 +8,7 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Bounds3D, Point3D},
+    geometry::{Box3D, Point3D},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     persistence::{
         ByteWriter, LoadError, parse_index3d_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -26,16 +26,16 @@ use crate::{
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Bounds3D, Index3DBuilder};
+/// use packed_spatial_index::{Box3D, Index3DBuilder};
 ///
 /// let mut builder = Index3DBuilder::new(2);
-/// builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
-/// builder.add(Bounds3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+/// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+/// builder.add(Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
 /// let index = builder.finish().unwrap();
 ///
 /// assert_eq!(index.num_items(), 2);
 /// assert_eq!(
-///     index.search(Bounds3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)),
+///     index.search(Box3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)),
 ///     vec![0]
 /// );
 /// ```
@@ -43,7 +43,7 @@ pub struct Index3D {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
     pub(crate) level_bounds: Vec<usize>,
-    pub(crate) boxes: Vec<Bounds3D>,
+    pub(crate) entries: Vec<Box3D>,
     pub(crate) indices: Vec<usize>,
 }
 
@@ -54,8 +54,8 @@ impl Index3D {
     }
 
     /// Return the total extent of indexed items, or `None` for an empty index.
-    pub fn extent(&self) -> Option<Bounds3D> {
-        self.boxes.last().copied()
+    pub fn extent(&self) -> Option<Box3D> {
+        self.entries.last().copied()
     }
 
     /// Return the packed node size used by this index.
@@ -68,17 +68,17 @@ impl Index3D {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Bounds3D, Index3D, Index3DBuilder, Index3DView};
+    /// use packed_spatial_index::{Box3D, Index3D, Index3DBuilder, Index3DView};
     ///
     /// let mut builder = Index3DBuilder::new(1);
-    /// builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
     /// let index = builder.finish()?;
     ///
     /// let bytes = index.to_bytes();
     /// let owned = Index3D::from_bytes(&bytes)?;
     /// let view = Index3DView::from_bytes(&bytes)?;
     ///
-    /// let query = Bounds3D::new(0.5, 0.5, 0.5, 0.5, 0.5, 0.5);
+    /// let query = Box3D::new(0.5, 0.5, 0.5, 0.5, 0.5, 0.5);
     /// assert_eq!(owned.search(query), view.search(query));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -95,7 +95,7 @@ impl Index3D {
     /// multi-megabyte allocation and page-faulting.
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
         let level_count = self.level_bounds.len();
-        let num_nodes = self.boxes.len();
+        let num_nodes = self.entries.len();
         let len = serialized_len_3d(level_count, num_nodes).expect("serialized index is too large");
         let mut bytes = ByteWriter::new(out, len);
         bytes.write_magic();
@@ -107,7 +107,7 @@ impl Index3D {
         bytes.write_u64(num_nodes as u64);
         bytes.write_u64(level_count as u64);
         bytes.write_usize_slice_as_u64(&self.level_bounds);
-        bytes.write_bounds3d_slice(&self.boxes);
+        bytes.write_box3d_slice(&self.entries);
         bytes.write_usize_slice_as_u64(&self.indices);
         bytes.finish();
     }
@@ -121,9 +121,9 @@ impl Index3D {
             level_bounds.push(view.level_bound_unchecked(i));
         }
 
-        let mut boxes = Vec::with_capacity(view.num_nodes);
+        let mut entries = Vec::with_capacity(view.num_nodes);
         for i in 0..view.num_nodes {
-            boxes.push(view.box_at_unchecked(i));
+            entries.push(view.entry_at_unchecked(i));
         }
 
         let mut indices = Vec::with_capacity(view.num_nodes);
@@ -135,22 +135,22 @@ impl Index3D {
             node_size: view.node_size,
             num_items: view.num_items,
             level_bounds,
-            boxes,
+            entries,
             indices,
         })
     }
 
-    /// Return the indices of all items whose bounds intersect `bounds`.
-    pub fn search(&self, bounds: Bounds3D) -> Vec<usize> {
+    /// Return the indices of all items whose boxes intersect `query`.
+    pub fn search(&self, query: Box3D) -> Vec<usize> {
         let mut results = Vec::new();
-        self.search_into(bounds, &mut results);
+        self.search_into(query, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, bounds: Bounds3D, results: &mut Vec<usize>) {
+    pub fn search_into(&self, query: Box3D, results: &mut Vec<usize>) {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(bounds, results, &mut stack);
+        self.search_into_stack(query, results, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
@@ -158,42 +158,38 @@ impl Index3D {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Bounds3D, Index3DBuilder, SearchWorkspace};
+    /// use packed_spatial_index::{Box3D, Index3DBuilder, SearchWorkspace};
     ///
     /// let mut builder = Index3DBuilder::new(1);
-    /// builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
     /// let index = builder.finish().unwrap();
     ///
     /// let mut workspace = SearchWorkspace::new();
     /// let hits = index.search_with(
-    ///     Bounds3D::new(0.5, 0.5, 0.5, 0.5, 0.5, 0.5),
+    ///     Box3D::new(0.5, 0.5, 0.5, 0.5, 0.5, 0.5),
     ///     &mut workspace,
     /// );
     /// assert_eq!(hits, &[0]);
     /// ```
-    pub fn search_with<'a>(
-        &self,
-        bounds: Bounds3D,
-        workspace: &'a mut SearchWorkspace,
-    ) -> &'a [usize] {
-        self.search_into_stack(bounds, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'a>(&self, query: Box3D, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
+        self.search_into_stack(query, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `bounds`.
+    /// Return `true` if at least one item intersects `query`.
     ///
     /// This is an early-exit path: traversal stops at the first hit and does not
     /// allocate a result `Vec`.
-    pub fn any(&self, bounds: Bounds3D) -> bool {
-        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
+    pub fn any(&self, query: Box3D) -> bool {
+        self.visit(query, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
     ///
     /// Tree traversal order is not part of the API, so this returns just some
     /// first found item, not the minimum insertion index.
-    pub fn first(&self, bounds: Bounds3D) -> Option<usize> {
-        match self.visit(bounds, ControlFlow::Break) {
+    pub fn first(&self, query: Box3D) -> Option<usize> {
+        match self.visit(query, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -204,11 +200,11 @@ impl Index3D {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Bounds3D, Index3DBuilder, Point3D};
+    /// use packed_spatial_index::{Box3D, Index3DBuilder, Point3D};
     ///
     /// let mut builder = Index3DBuilder::new(2);
-    /// builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
-    /// builder.add(Bounds3D::new(10.0, 10.0, 10.0, 11.0, 11.0, 11.0));
+    /// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// builder.add(Box3D::new(10.0, 10.0, 10.0, 11.0, 11.0, 11.0));
     /// let index = builder.finish().unwrap();
     ///
     /// assert_eq!(index.neighbors(Point3D::new(10.25, 10.25, 10.25), 1), vec![1]);
@@ -318,12 +314,12 @@ impl Index3D {
     /// The visitor receives item positions in the original insertion order.
     /// Return [`ControlFlow::Continue`] to continue traversal or
     /// [`ControlFlow::Break`] for early exit with a user-provided value.
-    pub fn visit<B, F>(&self, bounds: Bounds3D, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(bounds, &mut stack, visitor)
+        self.visit_with_stack(query, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queues(
@@ -344,8 +340,8 @@ impl Index3D {
             return;
         }
 
-        let root_index = self.boxes.len() - 1;
-        let root_dist = self.boxes[root_index].distance_squared_to(point);
+        let root_index = self.entries.len() - 1;
+        let root_dist = self.entries[root_index].distance_squared_to(point);
         if root_dist > max_dist_sq {
             return;
         }
@@ -368,14 +364,14 @@ impl Index3D {
 
                 if is_leaf {
                     for pos in node.index..end {
-                        let dist = self.boxes[pos].distance_squared_to(point);
+                        let dist = self.entries[pos].distance_squared_to(point);
                         if dist <= max_dist_sq {
                             item_queue.push(NeighborState::new(self.indices[pos], true, dist));
                         }
                     }
                 } else {
                     for pos in node.index..end {
-                        let dist = self.boxes[pos].distance_squared_to(point);
+                        let dist = self.entries[pos].distance_squared_to(point);
                         if dist <= max_dist_sq {
                             node_queue.push(NeighborNodeState::new(self.indices[pos], dist));
                         }
@@ -403,14 +399,14 @@ impl Index3D {
         }
 
         let mut best_index = None;
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         loop {
             let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
             let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let dist = self.boxes[pos].distance_squared_to(point);
+                let dist = self.entries[pos].distance_squared_to(point);
                 if dist > best_dist {
                     continue;
                 }
@@ -450,14 +446,14 @@ impl Index3D {
             return ControlFlow::Continue(());
         }
 
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         loop {
             let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
             let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let dist = self.boxes[pos].distance_squared_to(point);
+                let dist = self.entries[pos].distance_squared_to(point);
                 if dist > max_dist_sq {
                     continue;
                 }
@@ -489,7 +485,7 @@ impl Index3D {
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
         &self,
-        bounds: Bounds3D,
+        query: Box3D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -501,25 +497,25 @@ impl Index3D {
             return ControlFlow::Continue(());
         }
 
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
-            let node_boxes = &self.boxes[node_index..end];
+            let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
 
             if is_leaf {
-                for (b, &index) in node_boxes.iter().zip(node_indices) {
-                    if !b.overlaps(bounds) {
+                for (b, &index) in node_entries.iter().zip(node_indices) {
+                    if !b.overlaps(query) {
                         continue;
                     }
                     visitor(index)?;
                 }
             } else {
                 let child_level = level - 1;
-                for (b, &index) in node_boxes.iter().zip(node_indices).rev() {
-                    if !b.overlaps(bounds) {
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !b.overlaps(query) {
                         continue;
                     }
                     stack.push(index);
@@ -540,12 +536,12 @@ impl Index3D {
     #[doc(hidden)]
     pub fn search_into_stack(
         &self,
-        bounds: Bounds3D,
+        query: Box3D,
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
         results.clear();
-        let _: ControlFlow<()> = self.visit_with_stack(bounds, stack, |index| {
+        let _: ControlFlow<()> = self.visit_with_stack(query, stack, |index| {
             results.push(index);
             ControlFlow::Continue(())
         });
@@ -553,14 +549,14 @@ impl Index3D {
 
     /// Diagnostics: returns `(result_count, intersection_check_count)`.
     #[doc(hidden)]
-    pub fn search_visited(&self, bounds: Bounds3D) -> (usize, usize) {
+    pub fn search_visited(&self, query: Box3D) -> (usize, usize) {
         let mut results = 0usize;
         let mut visited = 0usize;
         if self.num_items == 0 {
             return (0, 0);
         }
 
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
 
@@ -569,7 +565,7 @@ impl Index3D {
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
                 visited += 1;
-                if !self.boxes[pos].overlaps(bounds) {
+                if !self.entries[pos].overlaps(query) {
                     continue;
                 }
                 if is_leaf {
@@ -599,14 +595,14 @@ impl Index3D {
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Bounds3D, Index3DBuilder, Index3DView};
+/// use packed_spatial_index::{Box3D, Index3DBuilder, Index3DView};
 ///
 /// let mut builder = Index3DBuilder::new(1);
-/// builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+/// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
 /// let bytes = builder.finish().unwrap().to_bytes();
 ///
 /// let view = Index3DView::from_bytes(&bytes).unwrap();
-/// assert_eq!(view.search(Bounds3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)), vec![0]);
+/// assert_eq!(view.search(Box3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)), vec![0]);
 /// ```
 pub struct Index3DView<'a> {
     node_size: usize,
@@ -614,7 +610,7 @@ pub struct Index3DView<'a> {
     num_nodes: usize,
     level_count: usize,
     level_bounds: &'a [u8],
-    boxes: &'a [u8],
+    entries: &'a [u8],
     indices: &'a [u8],
 }
 
@@ -624,10 +620,10 @@ impl<'a> Index3DView<'a> {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Bounds3D, Index3DBuilder, Index3DView};
+    /// use packed_spatial_index::{Box3D, Index3DBuilder, Index3DView};
     ///
     /// let mut builder = Index3DBuilder::new(1);
-    /// builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
     /// let bytes = builder.finish()?.to_bytes();
     ///
     /// let view = Index3DView::from_bytes(&bytes)?;
@@ -642,7 +638,7 @@ impl<'a> Index3DView<'a> {
             num_nodes: parsed.num_nodes,
             level_count: parsed.level_count,
             level_bounds: parsed.level_bounds,
-            boxes: parsed.boxes,
+            entries: parsed.entries,
             indices: parsed.indices,
         })
     }
@@ -653,11 +649,11 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Return the total extent of indexed items, or `None` for an empty view.
-    pub fn extent(&self) -> Option<Bounds3D> {
+    pub fn extent(&self) -> Option<Box3D> {
         if self.num_items == 0 {
             None
         } else {
-            Some(self.box_at_unchecked(self.num_nodes - 1))
+            Some(self.entry_at_unchecked(self.num_nodes - 1))
         }
     }
 
@@ -666,37 +662,33 @@ impl<'a> Index3DView<'a> {
         self.node_size
     }
 
-    /// Return the indices of all items whose bounds intersect `bounds`.
-    pub fn search(&self, bounds: Bounds3D) -> Vec<usize> {
+    /// Return the indices of all items whose boxes intersect `query`.
+    pub fn search(&self, query: Box3D) -> Vec<usize> {
         let mut results = Vec::new();
-        self.search_into(bounds, &mut results);
+        self.search_into(query, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, bounds: Bounds3D, results: &mut Vec<usize>) {
+    pub fn search_into(&self, query: Box3D, results: &mut Vec<usize>) {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(bounds, results, &mut stack);
+        self.search_into_stack(query, results, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
-    pub fn search_with<'b>(
-        &self,
-        bounds: Bounds3D,
-        workspace: &'b mut SearchWorkspace,
-    ) -> &'b [usize] {
-        self.search_into_stack(bounds, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'b>(&self, query: Box3D, workspace: &'b mut SearchWorkspace) -> &'b [usize] {
+        self.search_into_stack(query, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `bounds`.
-    pub fn any(&self, bounds: Bounds3D) -> bool {
-        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
+    /// Return `true` if at least one item intersects `query`.
+    pub fn any(&self, query: Box3D) -> bool {
+        self.visit(query, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
-    pub fn first(&self, bounds: Bounds3D) -> Option<usize> {
-        match self.visit(bounds, ControlFlow::Break) {
+    pub fn first(&self, query: Box3D) -> Option<usize> {
+        match self.visit(query, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -801,12 +793,12 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Visit intersecting items without collecting a result `Vec`.
-    pub fn visit<B, F>(&self, bounds: Bounds3D, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(bounds, &mut stack, visitor)
+        self.visit_with_stack(query, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queues(
@@ -828,7 +820,9 @@ impl<'a> Index3DView<'a> {
         }
 
         let root_index = self.num_nodes - 1;
-        let root_dist = self.box_at_unchecked(root_index).distance_squared_to(point);
+        let root_dist = self
+            .entry_at_unchecked(root_index)
+            .distance_squared_to(point);
         if root_dist > max_dist_sq {
             return;
         }
@@ -852,7 +846,7 @@ impl<'a> Index3DView<'a> {
 
                 if is_leaf {
                     for pos in node.index..end {
-                        let b = self.box_at_unchecked(pos);
+                        let b = self.entry_at_unchecked(pos);
                         let dist = b.distance_squared_to(point);
                         if dist <= max_dist_sq {
                             item_queue.push(NeighborState::new(
@@ -864,7 +858,7 @@ impl<'a> Index3DView<'a> {
                     }
                 } else {
                     for pos in node.index..end {
-                        let b = self.box_at_unchecked(pos);
+                        let b = self.entry_at_unchecked(pos);
                         let dist = b.distance_squared_to(point);
                         if dist <= max_dist_sq {
                             node_queue
@@ -902,7 +896,7 @@ impl<'a> Index3DView<'a> {
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let b = self.box_at_unchecked(pos);
+                let b = self.entry_at_unchecked(pos);
                 let dist = b.distance_squared_to(point);
                 if dist > best_dist {
                     continue;
@@ -928,7 +922,7 @@ impl<'a> Index3DView<'a> {
     #[doc(hidden)]
     pub fn search_into_stack(
         &self,
-        bounds: Bounds3D,
+        query: Box3D,
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
@@ -946,8 +940,8 @@ impl<'a> Index3DView<'a> {
 
             if is_leaf {
                 for pos in node_index..end {
-                    let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(bounds) {
+                    let b = self.entry_at_unchecked(pos);
+                    if !b.overlaps(query) {
                         continue;
                     }
                     results.push(self.index_at_unchecked(pos));
@@ -955,8 +949,8 @@ impl<'a> Index3DView<'a> {
             } else {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
-                    let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(bounds) {
+                    let b = self.entry_at_unchecked(pos);
+                    if !b.overlaps(query) {
                         continue;
                     }
                     stack.push(self.index_at_unchecked(pos));
@@ -976,7 +970,7 @@ impl<'a> Index3DView<'a> {
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
         &self,
-        bounds: Bounds3D,
+        query: Box3D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -996,8 +990,8 @@ impl<'a> Index3DView<'a> {
 
             if is_leaf {
                 for pos in node_index..end {
-                    let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(bounds) {
+                    let b = self.entry_at_unchecked(pos);
+                    if !b.overlaps(query) {
                         continue;
                     }
                     visitor(self.index_at_unchecked(pos))?;
@@ -1005,8 +999,8 @@ impl<'a> Index3DView<'a> {
             } else {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
-                    let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(bounds) {
+                    let b = self.entry_at_unchecked(pos);
+                    if !b.overlaps(query) {
                         continue;
                     }
                     stack.push(self.index_at_unchecked(pos));
@@ -1049,7 +1043,7 @@ impl<'a> Index3DView<'a> {
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let b = self.box_at_unchecked(pos);
+                let b = self.entry_at_unchecked(pos);
                 let dist = b.distance_squared_to(point);
                 if dist > max_dist_sq {
                     continue;
@@ -1102,15 +1096,15 @@ impl<'a> Index3DView<'a> {
     }
 
     #[inline]
-    fn box_at_unchecked(&self, index: usize) -> Bounds3D {
+    fn entry_at_unchecked(&self, index: usize) -> Box3D {
         let offset = index * 48;
-        Bounds3D::new(
-            read_f64_le_unchecked(self.boxes, offset),
-            read_f64_le_unchecked(self.boxes, offset + 8),
-            read_f64_le_unchecked(self.boxes, offset + 16),
-            read_f64_le_unchecked(self.boxes, offset + 24),
-            read_f64_le_unchecked(self.boxes, offset + 32),
-            read_f64_le_unchecked(self.boxes, offset + 40),
+        Box3D::new(
+            read_f64_le_unchecked(self.entries, offset),
+            read_f64_le_unchecked(self.entries, offset + 8),
+            read_f64_le_unchecked(self.entries, offset + 16),
+            read_f64_le_unchecked(self.entries, offset + 24),
+            read_f64_le_unchecked(self.entries, offset + 32),
+            read_f64_le_unchecked(self.entries, offset + 40),
         )
     }
 

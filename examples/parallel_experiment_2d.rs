@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use packed_spatial_index::experimental::ExperimentalSortKey2D;
-use packed_spatial_index::{Bounds2D, Index2DBuilder};
+use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -43,7 +43,7 @@ fn build(boxes: &[[f64; 4]], mode: BuildMode) -> packed_spatial_index::Index2D {
         BuildMode::ParallelForced => b.parallel(true).parallel_min_items(0),
     };
     for r in boxes {
-        b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
+        b.add(Box2D::new(r[0], r[1], r[2], r[3]));
     }
     b.finish().unwrap()
 }
@@ -71,7 +71,7 @@ fn main() {
         for _ in 0..300 {
             let qx: f64 = rng.random_range(0.0..10_000.0);
             let qy: f64 = rng.random_range(0.0..10_000.0);
-            let query = Bounds2D::new(qx, qy, qx + 150.0, qy + 150.0);
+            let query = Box2D::new(qx, qy, qx + 150.0, qy + 150.0);
             let mut a = s.search(query);
             let mut b = p.search(query);
             a.sort_unstable();

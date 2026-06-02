@@ -1,6 +1,6 @@
 //! SoA 3D index variant with SIMD searches (available with the `simd` feature).
 //!
-//! Boxes are stored as six separate arrays (`min_x[]`, `min_y[]`, `min_z[]`,
+//! items are stored as six separate arrays (`min_x[]`, `min_y[]`, `min_z[]`,
 //! `max_x[]`, `max_y[]`, `max_z[]`). The tree is built exactly like the AoS
 //! [`Index3D`](crate::Index3D); only the layout and search implementation differ.
 //! This mirrors [`SimdIndex2D`](crate::SimdIndex2D) with an added Z axis.
@@ -12,7 +12,7 @@ use wide::{CmpGe, CmpLe, f64x4};
 use crate::{
     builder3d::BuildConfig3D,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Bounds3D, Point3D},
+    geometry::{Box3D, Point3D},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     persistence::{
         ByteWriter, LoadError, parse_index3d_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -25,7 +25,7 @@ use crate::{
 
 type Num = f64;
 
-pub(crate) fn build_simd_index_3d(config: BuildConfig3D, boxes: Vec<Bounds3D>) -> SimdIndex3D {
+pub(crate) fn build_simd_index_3d(config: BuildConfig3D, items: Vec<Box3D>) -> SimdIndex3D {
     let node_size = config.node_size;
     let num_items = config.num_items;
     let TreeLayout {
@@ -38,7 +38,7 @@ pub(crate) fn build_simd_index_3d(config: BuildConfig3D, boxes: Vec<Bounds3D>) -
     }
 
     if num_items <= node_size {
-        return build_single_node_soa_3d(node_size, num_items, level_bounds, boxes);
+        return build_single_node_soa_3d(node_size, num_items, level_bounds, items);
     }
 
     let mut min_xs = vec![0.0f64; num_nodes];
@@ -49,7 +49,7 @@ pub(crate) fn build_simd_index_3d(config: BuildConfig3D, boxes: Vec<Bounds3D>) -
     let mut max_zs = vec![0.0f64; num_nodes];
     let mut indices = vec![0usize; num_nodes];
 
-    let extent = extent_3d(&boxes);
+    let extent = extent_3d(&items);
 
     #[cfg(feature = "parallel")]
     let use_parallel = config.parallel && num_items >= config.parallel_min_items;
@@ -57,7 +57,7 @@ pub(crate) fn build_simd_index_3d(config: BuildConfig3D, boxes: Vec<Bounds3D>) -
     let context = SortKey3DContext::new(extent, config.radix, config.radix_bits);
     #[cfg(feature = "parallel")]
     let context = context.parallel(use_parallel);
-    let order = encode_sort_by_key_3d(&boxes, config.sort_key, context);
+    let order = encode_sort_by_key_3d(&items, config.sort_key, context);
 
     #[cfg(feature = "parallel")]
     let scattered_in_parallel = if use_parallel {
@@ -70,7 +70,7 @@ pub(crate) fn build_simd_index_3d(config: BuildConfig3D, boxes: Vec<Bounds3D>) -
             &mut max_zs[..num_items],
             &mut indices[..num_items],
             &order,
-            &boxes,
+            &items,
         );
         true
     } else {
@@ -81,7 +81,7 @@ pub(crate) fn build_simd_index_3d(config: BuildConfig3D, boxes: Vec<Bounds3D>) -
 
     if !scattered_in_parallel {
         for (slot, &(_, orig)) in order.iter().enumerate() {
-            let b = boxes[orig];
+            let b = items[orig];
             min_xs[slot] = b.min_x;
             min_ys[slot] = b.min_y;
             min_zs[slot] = b.min_z;
@@ -140,7 +140,7 @@ fn build_single_node_soa_3d(
     node_size: usize,
     num_items: usize,
     level_bounds: Vec<usize>,
-    boxes: Vec<Bounds3D>,
+    items: Vec<Box3D>,
 ) -> SimdIndex3D {
     let mut min_xs = Vec::with_capacity(num_items + 1);
     let mut min_ys = Vec::with_capacity(num_items + 1);
@@ -152,7 +152,7 @@ fn build_single_node_soa_3d(
 
     let (mut rmnx, mut rmny, mut rmnz) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
     let (mut rmxx, mut rmxy, mut rmxz) = (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for (idx, b) in boxes.into_iter().enumerate() {
+    for (idx, b) in items.into_iter().enumerate() {
         min_xs.push(b.min_x);
         min_ys.push(b.min_y);
         min_zs.push(b.min_z);
@@ -191,10 +191,10 @@ fn build_single_node_soa_3d(
     }
 }
 
-fn extent_3d(boxes: &[Bounds3D]) -> Bounds3D {
+fn extent_3d(items: &[Box3D]) -> Box3D {
     let (mut mnx, mut mny, mut mnz) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
     let (mut mxx, mut mxy, mut mxz) = (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for b in boxes {
+    for b in items {
         mnx = mnx.min(b.min_x);
         mny = mny.min(b.min_y);
         mnz = mnz.min(b.min_z);
@@ -202,25 +202,25 @@ fn extent_3d(boxes: &[Bounds3D]) -> Bounds3D {
         mxy = mxy.max(b.max_y);
         mxz = mxz.max(b.max_z);
     }
-    Bounds3D::new(mnx, mny, mnz, mxx, mxy, mxz)
+    Box3D::new(mnx, mny, mnz, mxx, mxy, mxz)
 }
 
 /// Finished read-only SIMD 3D index.
 ///
 /// Created through [`Index3DBuilder::finish_simd`](crate::Index3DBuilder::finish_simd).
 /// It has the same public search and nearest-neighbor API as [`Index3D`](crate::Index3D),
-/// but stores bounds in structure-of-arrays form for SIMD traversal.
+/// but stores box coordinates in structure-of-arrays form for SIMD traversal.
 ///
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Index3DBuilder, Bounds3D};
+/// use packed_spatial_index::{Index3DBuilder, Box3D};
 ///
 /// let mut builder = Index3DBuilder::new(1);
-/// builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+/// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
 ///
 /// let index = builder.finish_simd().unwrap();
-/// assert_eq!(index.search(Bounds3D::new(0.5, 0.5, 0.5, 0.5, 0.5, 0.5)), vec![0]);
+/// assert_eq!(index.search(Box3D::new(0.5, 0.5, 0.5, 0.5, 0.5, 0.5)), vec![0]);
 /// ```
 pub struct SimdIndex3D {
     node_size: usize,
@@ -257,12 +257,12 @@ impl SimdIndex3D {
     }
 
     /// Return the total extent of indexed items, or `None` for an empty index.
-    pub fn extent(&self) -> Option<Bounds3D> {
+    pub fn extent(&self) -> Option<Box3D> {
         if self.num_items == 0 {
             None
         } else {
             let last = self.min_xs.len() - 1;
-            Some(Bounds3D::new(
+            Some(Box3D::new(
                 self.min_xs[last],
                 self.min_ys[last],
                 self.min_zs[last],
@@ -281,7 +281,7 @@ impl SimdIndex3D {
     /// Serialize into the stable little-endian `PSINDEX` 3D format.
     ///
     /// The output is byte-identical to [`Index3D::to_bytes`](crate::Index3D::to_bytes)
-    /// for the same boxes, so a `SimdIndex3D` and an `Index3D` are interchangeable on
+    /// for the same items, so a `SimdIndex3D` and an `Index3D` are interchangeable on
     /// disk: either can load bytes produced by the other.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -306,7 +306,7 @@ impl SimdIndex3D {
         bytes.write_u64(num_nodes as u64);
         bytes.write_u64(level_count as u64);
         bytes.write_usize_slice_as_u64(&self.level_bounds);
-        bytes.write_soa_bounds_3d(
+        bytes.write_soa_boxes_3d(
             &self.min_xs,
             &self.min_ys,
             &self.min_zs,
@@ -339,12 +339,12 @@ impl SimdIndex3D {
         let mut indices = Vec::with_capacity(num_nodes);
         for i in 0..num_nodes {
             let off = i * 48; // six f64 per 3D box record
-            min_xs.push(read_f64_le_unchecked(parsed.boxes, off));
-            min_ys.push(read_f64_le_unchecked(parsed.boxes, off + 8));
-            min_zs.push(read_f64_le_unchecked(parsed.boxes, off + 16));
-            max_xs.push(read_f64_le_unchecked(parsed.boxes, off + 24));
-            max_ys.push(read_f64_le_unchecked(parsed.boxes, off + 32));
-            max_zs.push(read_f64_le_unchecked(parsed.boxes, off + 40));
+            min_xs.push(read_f64_le_unchecked(parsed.entries, off));
+            min_ys.push(read_f64_le_unchecked(parsed.entries, off + 8));
+            min_zs.push(read_f64_le_unchecked(parsed.entries, off + 16));
+            max_xs.push(read_f64_le_unchecked(parsed.entries, off + 24));
+            max_ys.push(read_f64_le_unchecked(parsed.entries, off + 32));
+            max_zs.push(read_f64_le_unchecked(parsed.entries, off + 40));
             indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
         }
 
@@ -362,10 +362,10 @@ impl SimdIndex3D {
         })
     }
 
-    /// Return the indices of all items whose bounds intersect `bounds`.
-    pub fn search(&self, bounds: Bounds3D) -> Vec<usize> {
+    /// Return the indices of all items whose boxes intersect `query`.
+    pub fn search(&self, query: Box3D) -> Vec<usize> {
         let mut out = Vec::new();
-        self.search_into(bounds, &mut out);
+        self.search_into(query, &mut out);
         out
     }
 
@@ -373,29 +373,25 @@ impl SimdIndex3D {
     ///
     /// This automatically chooses the widest available SIMD implementation: AVX-512
     /// on supporting x86-64 CPUs, otherwise AVX2/SSE through `wide`.
-    pub fn search_into(&self, bounds: Bounds3D, out: &mut Vec<usize>) {
+    pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_avx512(bounds, out, &mut stack);
+        self.search_avx512(query, out, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
-    pub fn search_with<'a>(
-        &self,
-        bounds: Bounds3D,
-        workspace: &'a mut SearchWorkspace,
-    ) -> &'a [usize] {
-        self.search_avx512(bounds, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'a>(&self, query: Box3D, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
+        self.search_avx512(query, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `bounds`.
-    pub fn any(&self, bounds: Bounds3D) -> bool {
-        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
+    /// Return `true` if at least one item intersects `query`.
+    pub fn any(&self, query: Box3D) -> bool {
+        self.visit(query, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
-    pub fn first(&self, bounds: Bounds3D) -> Option<usize> {
-        match self.visit(bounds, ControlFlow::Break) {
+    pub fn first(&self, query: Box3D) -> Option<usize> {
+        match self.visit(query, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -492,12 +488,12 @@ impl SimdIndex3D {
     }
 
     /// Visit intersecting items without collecting a result `Vec`.
-    pub fn visit<B, F>(&self, bounds: Bounds3D, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_simd(bounds, &mut stack, visitor)
+        self.visit_simd(query, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queue(
@@ -661,19 +657,19 @@ impl SimdIndex3D {
     #[doc(hidden)]
     pub fn visit_simd<B, F>(
         &self,
-        bounds: Bounds3D,
+        query: Box3D,
         stack: &mut Vec<usize>,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_simd_impl::<B, F>(bounds, stack, visitor)
+        self.visit_simd_impl::<B, F>(query, stack, visitor)
     }
 
     /// Element-by-element traversal (SoA layout, branchless `overlaps`).
     #[doc(hidden)]
-    pub fn search_scalar(&self, bounds: Bounds3D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    pub fn search_scalar(&self, query: Box3D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
         out.clear();
         stack.clear();
         if self.num_items == 0 {
@@ -685,7 +681,7 @@ impl SimdIndex3D {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
-                if !self.hit_scalar(pos, bounds) {
+                if !self.hit_scalar(pos, query) {
                     continue;
                 }
                 let index = self.indices[pos];
@@ -706,29 +702,29 @@ impl SimdIndex3D {
     }
 
     #[inline]
-    fn hit_scalar(&self, pos: usize, bounds: Bounds3D) -> bool {
-        (self.min_xs[pos] <= bounds.max_x)
-            & (self.max_xs[pos] >= bounds.min_x)
-            & (self.min_ys[pos] <= bounds.max_y)
-            & (self.max_ys[pos] >= bounds.min_y)
-            & (self.min_zs[pos] <= bounds.max_z)
-            & (self.max_zs[pos] >= bounds.min_z)
+    fn hit_scalar(&self, pos: usize, query: Box3D) -> bool {
+        (self.min_xs[pos] <= query.max_x)
+            & (self.max_xs[pos] >= query.min_x)
+            & (self.min_ys[pos] <= query.max_y)
+            & (self.max_ys[pos] >= query.min_y)
+            & (self.min_zs[pos] <= query.max_z)
+            & (self.max_zs[pos] >= query.min_z)
     }
 
     /// AVX2/SSE path through `wide::f64x4`.
     #[doc(hidden)]
-    pub fn search_simd(&self, bounds: Bounds3D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    pub fn search_simd(&self, query: Box3D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
         out.clear();
         stack.clear();
         if self.num_items == 0 {
             return;
         }
-        let qmxx_v = f64x4::splat(bounds.max_x);
-        let qmnx_v = f64x4::splat(bounds.min_x);
-        let qmxy_v = f64x4::splat(bounds.max_y);
-        let qmny_v = f64x4::splat(bounds.min_y);
-        let qmxz_v = f64x4::splat(bounds.max_z);
-        let qmnz_v = f64x4::splat(bounds.min_z);
+        let qmxx_v = f64x4::splat(query.max_x);
+        let qmnx_v = f64x4::splat(query.min_x);
+        let qmxy_v = f64x4::splat(query.max_y);
+        let qmny_v = f64x4::splat(query.min_y);
+        let qmxz_v = f64x4::splat(query.max_z);
+        let qmnz_v = f64x4::splat(query.min_z);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -762,7 +758,7 @@ impl SimdIndex3D {
             }
 
             while pos < end {
-                if self.hit_scalar(pos, bounds) {
+                if self.hit_scalar(pos, query) {
                     let index = self.indices[pos];
                     if is_leaf {
                         out.push(index);
@@ -785,7 +781,7 @@ impl SimdIndex3D {
 
     fn visit_simd_impl<B, F>(
         &self,
-        bounds: Bounds3D,
+        query: Box3D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -796,12 +792,12 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        let qmxx_v = f64x4::splat(bounds.max_x);
-        let qmnx_v = f64x4::splat(bounds.min_x);
-        let qmxy_v = f64x4::splat(bounds.max_y);
-        let qmny_v = f64x4::splat(bounds.min_y);
-        let qmxz_v = f64x4::splat(bounds.max_z);
-        let qmnz_v = f64x4::splat(bounds.min_z);
+        let qmxx_v = f64x4::splat(query.max_x);
+        let qmnx_v = f64x4::splat(query.min_x);
+        let qmxy_v = f64x4::splat(query.max_y);
+        let qmny_v = f64x4::splat(query.min_y);
+        let qmxz_v = f64x4::splat(query.max_z);
+        let qmnz_v = f64x4::splat(query.min_z);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -835,7 +831,7 @@ impl SimdIndex3D {
             }
 
             while pos < end {
-                if self.hit_scalar(pos, bounds) {
+                if self.hit_scalar(pos, query) {
                     let index = self.indices[pos];
                     if is_leaf {
                         visitor(index)?;
@@ -858,23 +854,23 @@ impl SimdIndex3D {
 
     /// AVX-512 path, falling back to [`search_simd`](SimdIndex3D::search_simd).
     #[doc(hidden)]
-    pub fn search_avx512(&self, bounds: Bounds3D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    pub fn search_avx512(&self, query: Box3D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx512f") {
                 // SAFETY: this branch is selected only after checking avx512f availability.
-                unsafe { self.search_avx512_impl(bounds, out, stack) };
+                unsafe { self.search_avx512_impl(query, out, stack) };
                 return;
             }
         }
-        self.search_simd(bounds, out, stack);
+        self.search_simd(query, out, stack);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
     unsafe fn search_avx512_impl(
         &self,
-        bounds: Bounds3D,
+        query: Box3D,
         out: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
@@ -885,12 +881,12 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return;
         }
-        let qmxx_v = _mm512_set1_pd(bounds.max_x);
-        let qmnx_v = _mm512_set1_pd(bounds.min_x);
-        let qmxy_v = _mm512_set1_pd(bounds.max_y);
-        let qmny_v = _mm512_set1_pd(bounds.min_y);
-        let qmxz_v = _mm512_set1_pd(bounds.max_z);
-        let qmnz_v = _mm512_set1_pd(bounds.min_z);
+        let qmxx_v = _mm512_set1_pd(query.max_x);
+        let qmnx_v = _mm512_set1_pd(query.min_x);
+        let qmxy_v = _mm512_set1_pd(query.max_y);
+        let qmny_v = _mm512_set1_pd(query.min_y);
+        let qmxz_v = _mm512_set1_pd(query.max_z);
+        let qmnz_v = _mm512_set1_pd(query.min_z);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -933,7 +929,7 @@ impl SimdIndex3D {
             }
 
             while pos < end {
-                if self.hit_scalar(pos, bounds) {
+                if self.hit_scalar(pos, query) {
                     let index = self.indices[pos];
                     if is_leaf {
                         out.push(index);
@@ -984,7 +980,7 @@ fn reorder_parallel_soa_3d(
     max_zs: &mut [f64],
     indices: &mut [usize],
     order: &[(u64, usize)],
-    items: &[Bounds3D],
+    items: &[Box3D],
 ) {
     use rayon::prelude::*;
 

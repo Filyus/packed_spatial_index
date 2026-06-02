@@ -5,12 +5,12 @@
 //! format, so bytes written by one must load into the other.
 
 use packed_spatial_index::{
-    Bounds2D, Bounds3D, Index2D, Index2DBuilder, Index3D, Index3DBuilder, SimdIndex2D, SimdIndex3D,
+    Box2D, Box3D, Index2D, Index2DBuilder, Index3D, Index3DBuilder, SimdIndex2D, SimdIndex3D,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
-fn boxes_2d(n: usize, seed: u64) -> Vec<Bounds2D> {
+fn boxes_2d(n: usize, seed: u64) -> Vec<Box2D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
@@ -18,12 +18,12 @@ fn boxes_2d(n: usize, seed: u64) -> Vec<Bounds2D> {
             let y: f64 = rng.random_range(0.0..1_000.0);
             let w: f64 = rng.random_range(0.1..20.0);
             let h: f64 = rng.random_range(0.1..20.0);
-            Bounds2D::new(x, y, x + w, y + h)
+            Box2D::new(x, y, x + w, y + h)
         })
         .collect()
 }
 
-fn boxes_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
+fn boxes_3d(n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
@@ -33,7 +33,7 @@ fn boxes_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
             let dx: f64 = rng.random_range(0.1..20.0);
             let dy: f64 = rng.random_range(0.1..20.0);
             let dz: f64 = rng.random_range(0.1..20.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect()
 }
@@ -68,7 +68,7 @@ fn simd2d_bytes_match_aos_and_round_trip() {
         let x: f64 = rng.random_range(0.0..1_000.0);
         let y: f64 = rng.random_range(0.0..1_000.0);
         let w: f64 = rng.random_range(1.0..100.0);
-        let q = Bounds2D::new(x, y, x + w, y + w);
+        let q = Box2D::new(x, y, x + w, y + w);
 
         let mut expected = aos.search(q);
         expected.sort_unstable();
@@ -112,7 +112,7 @@ fn simd3d_bytes_match_aos_and_round_trip() {
         let y: f64 = rng.random_range(0.0..1_000.0);
         let z: f64 = rng.random_range(0.0..1_000.0);
         let w: f64 = rng.random_range(1.0..120.0);
-        let q = Bounds3D::new(x, y, z, x + w, y + w, z + w);
+        let q = Box3D::new(x, y, z, x + w, y + w, z + w);
 
         let mut expected = aos.search(q);
         expected.sort_unstable();

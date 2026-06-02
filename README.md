@@ -15,14 +15,14 @@ and use SIMD intersection checks. Scalar and SIMD indexes share the same
 canonical byte format for owned persistence.
 
 ```rust
-use packed_spatial_index::{Index2DBuilder, Bounds2D};
+use packed_spatial_index::{Index2DBuilder, Box2D};
 
 let mut builder = Index2DBuilder::new(2);
-builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
+builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
 
 let index = builder.finish()?;
-let hits = index.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0));
+let hits = index.search(Box2D::new(0.0, 0.0, 2.0, 2.0));
 
 assert_eq!(hits, vec![0]);
 # Ok::<(), packed_spatial_index::BuildError>(())
@@ -57,15 +57,15 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 - Persistence uses canonical `Index2D` and `Index3D` byte layouts.
   `SimdIndex2D` and `SimdIndex3D` can save and load those same bytes, but there
   is no separate zero-copy SoA view format yet.
-- Nearest-neighbor search is exact over indexed bounds; approximate KNN and dynamic
+- Nearest-neighbor search is exact over indexed boxes; approximate KNN and dynamic
   spatial joins are out of scope for now.
 
 ## Main Types
 
-- `Bounds2D` is the public AABB type, with inclusive `overlaps`, `contains`, and
-  `contains_point` helpers. `Bounds2D::new` is unchecked; use `Bounds2D::try_new` for
-  untrusted bounds.
-- `Bounds3D` and `Point3D` are the equivalent scalar 3D geometry types.
+- `Box2D` is the public AABB type, with inclusive `overlaps`, `contains`, and
+  `contains_point` helpers. `Box2D::new` is unchecked; use `Box2D::try_new` for
+  untrusted coordinate bounds.
+- `Box3D` and `Point3D` are the equivalent scalar 3D geometry types.
 - `Index2DBuilder` builds either `Index2D` or, with `simd`, `SimdIndex2D`.
 - `Index3DBuilder` builds either `Index3D` or, with `simd`, `SimdIndex3D`.
 - `Index2D` is the default read-only index.
@@ -81,11 +81,11 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 
 Search APIs:
 
-- `extent()` returns the total item bounds, or `None` for an empty index.
-- `search(bounds)` allocates and returns a `Vec<usize>`.
-- `search_into(bounds, &mut results)` reuses a result buffer.
-- `search_with(bounds, &mut workspace)` reuses result and traversal buffers.
-- `any(bounds)`, `first(bounds)`, and `visit(bounds, visitor)` support early exit.
+- `extent()` returns the total item box, or `None` for an empty index.
+- `search(query)` allocates and returns a `Vec<usize>`.
+- `search_into(query, &mut results)` reuses a result buffer.
+- `search_with(query, &mut workspace)` reuses result and traversal buffers.
+- `any(query)`, `first(query)`, and `visit(query, visitor)` support early exit.
 
 Nearest-neighbor APIs:
 
@@ -97,14 +97,14 @@ Nearest-neighbor APIs:
 ## Builder
 
 ```rust
-use packed_spatial_index::{DEFAULT_NODE_SIZE, Index2DBuilder, Bounds2D, SortKey2D};
+use packed_spatial_index::{DEFAULT_NODE_SIZE, Index2DBuilder, Box2D, SortKey2D};
 
 let mut builder = Index2DBuilder::new(10_000)
     .node_size(DEFAULT_NODE_SIZE)
     .sort_key(SortKey2D::Hilbert);
 
-builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
+builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
 ```
 
 With `parallel` enabled:
@@ -119,9 +119,9 @@ let builder = Index2DBuilder::new(100_000)
 With `simd` enabled:
 
 ```rust
-# use packed_spatial_index::{Index2DBuilder, Bounds2D};
+# use packed_spatial_index::{Index2DBuilder, Box2D};
 let mut builder = Index2DBuilder::new(1);
-builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
 let simd_index = builder.finish_simd()?;
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
@@ -132,15 +132,15 @@ The same `finish_simd()` method is available on `Index3DBuilder` and returns
 3D uses the same builder/search shape:
 
 ```rust
-use packed_spatial_index::{Bounds3D, Index3DBuilder, Point3D};
+use packed_spatial_index::{Box3D, Index3DBuilder, Point3D};
 
 let mut builder = Index3DBuilder::new(2);
-builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
-builder.add(Bounds3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+builder.add(Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
 
 let index = builder.finish()?;
 assert_eq!(
-    index.search(Bounds3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)),
+    index.search(Box3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)),
     vec![0]
 );
 assert_eq!(index.neighbors(Point3D::new(5.5, 5.5, 5.5), 1), vec![1]);
@@ -153,10 +153,10 @@ assert_eq!(index.neighbors(Point3D::new(5.5, 5.5, 5.5), 1), vec![1]);
 and loaded back either as owned indexes or as zero-copy views:
 
 ```rust
-use packed_spatial_index::{Index2D, Index2DBuilder, Index2DView, Bounds2D};
+use packed_spatial_index::{Index2D, Index2DBuilder, Index2DView, Box2D};
 
 let mut builder = Index2DBuilder::new(1);
-builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
 let index = builder.finish()?;
 
 let bytes = index.to_bytes();
@@ -167,13 +167,13 @@ assert_eq!(reusable, bytes);
 let owned = Index2D::from_bytes(&bytes)?;
 let view = Index2DView::from_bytes(&bytes)?;
 
-assert_eq!(owned.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
-assert_eq!(view.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+assert_eq!(owned.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+assert_eq!(view.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 3D persistence uses the same header and sections, with a dimension flag and
-six `f64` coordinates per stored bounds. With the `simd` feature,
+six `f64` coordinates per stored box. With the `simd` feature,
 `SimdIndex2D` and `SimdIndex3D` read and write the same canonical bytes as the
 scalar indexes. Loading a SIMD index is an owned load that scatters canonical
 box records into SoA columns; zero-copy views remain scalar-only.
@@ -231,7 +231,7 @@ paths:
 
 - unaligned little-endian reads for validated `Index2DView` and `Index3DView`
   byte buffers;
-- bulk byte copies for `repr(C)` bounds and index sections when serializing on
+- bulk byte copies for `repr(C)` boxes and index sections when serializing on
   compatible little-endian targets;
 - x86/x86_64 prefetch intrinsics used only by hidden benchmark/experimental paths;
 - AVX-512 loads in the `simd` feature, guarded by runtime CPU feature detection.

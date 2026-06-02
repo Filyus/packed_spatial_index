@@ -1,20 +1,20 @@
 //! Static spatial index implementation for 2D AABBs:
 //! a packed Hilbert R-tree in the style of flatbush / `static_aabb2d_index`.
 //!
-//! The public API is intentionally small: collect bounds with [`crate::Index2DBuilder`],
+//! The public API is intentionally small: add boxes with [`crate::Index2DBuilder`],
 //! call [`crate::Index2DBuilder::finish`], then search the finished [`Index2D`].
 //!
 //! # Example
 //! ```
-//! use packed_spatial_index::{Index2DBuilder, Bounds2D};
+//! use packed_spatial_index::{Index2DBuilder, Box2D};
 //!
 //! let mut builder = Index2DBuilder::new(3);
-//! builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-//! builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
-//! builder.add(Bounds2D::new(0.5, 0.5, 2.0, 2.0));
+//! builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+//! builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+//! builder.add(Box2D::new(0.5, 0.5, 2.0, 2.0));
 //! let index = builder.finish().unwrap();
 //!
-//! let hits = index.search(Bounds2D::new(0.0, 0.0, 1.5, 1.5));
+//! let hits = index.search(Box2D::new(0.0, 0.0, 1.5, 1.5));
 //! assert!(hits.contains(&0) && hits.contains(&2));
 //! assert!(!hits.contains(&1));
 //! ```
@@ -22,7 +22,7 @@
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
-use crate::geometry::{Bounds2D, Point2D};
+use crate::geometry::{Box2D, Point2D};
 use crate::neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared};
 use crate::persistence::{
     ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -31,14 +31,14 @@ use crate::persistence::{
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 
 #[inline]
-fn prefetch_aos_node(boxes: &[Bounds2D], indices: &[usize], node_index: usize, node_size: usize) {
-    if node_index < boxes.len() {
-        prefetch_read(boxes.as_ptr().wrapping_add(node_index));
+fn prefetch_aos_node(entries: &[Box2D], indices: &[usize], node_index: usize, node_size: usize) {
+    if node_index < entries.len() {
+        prefetch_read(entries.as_ptr().wrapping_add(node_index));
         prefetch_read(indices.as_ptr().wrapping_add(node_index));
     }
-    let next_line = node_index.saturating_add((64 / std::mem::size_of::<Bounds2D>()).max(1));
-    if node_size > 1 && next_line < boxes.len() {
-        prefetch_read(boxes.as_ptr().wrapping_add(next_line));
+    let next_line = node_index.saturating_add((64 / std::mem::size_of::<Box2D>()).max(1));
+    if node_size > 1 && next_line < entries.len() {
+        prefetch_read(entries.as_ptr().wrapping_add(next_line));
         prefetch_read(indices.as_ptr().wrapping_add(next_line));
     }
 }
@@ -51,21 +51,21 @@ fn prefetch_aos_node(boxes: &[Bounds2D], indices: &[usize], node_index: usize, n
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Index2DBuilder, Bounds2D};
+/// use packed_spatial_index::{Index2DBuilder, Box2D};
 ///
 /// let mut builder = Index2DBuilder::new(2);
-/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-/// builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
+/// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
 /// let index = builder.finish().unwrap();
 ///
 /// assert_eq!(index.num_items(), 2);
-/// assert_eq!(index.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// assert_eq!(index.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 /// ```
 pub struct Index2D {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
     pub(crate) level_bounds: Vec<usize>,
-    pub(crate) boxes: Vec<Bounds2D>,
+    pub(crate) entries: Vec<Box2D>,
     pub(crate) indices: Vec<usize>,
 }
 
@@ -76,8 +76,8 @@ impl Index2D {
     }
 
     /// Return the total extent of indexed items, or `None` for an empty index.
-    pub fn extent(&self) -> Option<Bounds2D> {
-        self.boxes.last().copied()
+    pub fn extent(&self) -> Option<Box2D> {
+        self.entries.last().copied()
     }
 
     /// Return the packed node size used by this index.
@@ -90,17 +90,17 @@ impl Index2D {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Index2D, Index2DBuilder, Index2DView, Bounds2D};
+    /// use packed_spatial_index::{Index2D, Index2DBuilder, Index2DView, Box2D};
     ///
     /// let mut builder = Index2DBuilder::new(1);
-    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
     /// let index = builder.finish()?;
     ///
     /// let bytes = index.to_bytes();
     /// let owned = Index2D::from_bytes(&bytes)?;
     /// let view = Index2DView::from_bytes(&bytes)?;
     ///
-    /// let query = Bounds2D::new(0.5, 0.5, 0.5, 0.5);
+    /// let query = Box2D::new(0.5, 0.5, 0.5, 0.5);
     /// assert_eq!(owned.search(query), view.search(query));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -120,10 +120,10 @@ impl Index2D {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Index2D, Index2DBuilder, Bounds2D};
+    /// use packed_spatial_index::{Index2D, Index2DBuilder, Box2D};
     ///
     /// let mut builder = Index2DBuilder::new(1);
-    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
     /// let index = builder.finish()?;
     ///
     /// let mut buffer = Vec::new();
@@ -133,7 +133,7 @@ impl Index2D {
     /// ```
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
         let level_count = self.level_bounds.len();
-        let num_nodes = self.boxes.len();
+        let num_nodes = self.entries.len();
         let len = serialized_len(level_count, num_nodes).expect("serialized index is too large");
         let mut bytes = ByteWriter::new(out, len);
         bytes.write_magic();
@@ -145,7 +145,7 @@ impl Index2D {
         bytes.write_u64(num_nodes as u64);
         bytes.write_u64(level_count as u64);
         bytes.write_usize_slice_as_u64(&self.level_bounds);
-        bytes.write_bounds2d_slice(&self.boxes);
+        bytes.write_box2d_slice(&self.entries);
         bytes.write_usize_slice_as_u64(&self.indices);
         bytes.finish();
     }
@@ -159,9 +159,9 @@ impl Index2D {
             level_bounds.push(view.level_bound_unchecked(i));
         }
 
-        let mut boxes = Vec::with_capacity(view.num_nodes);
+        let mut entries = Vec::with_capacity(view.num_nodes);
         for i in 0..view.num_nodes {
-            boxes.push(view.box_at_unchecked(i));
+            entries.push(view.entry_at_unchecked(i));
         }
 
         let mut indices = Vec::with_capacity(view.num_nodes);
@@ -173,22 +173,22 @@ impl Index2D {
             node_size: view.node_size,
             num_items: view.num_items,
             level_bounds,
-            boxes,
+            entries,
             indices,
         })
     }
 
-    /// Return the indices of all items whose bounds intersect `bounds`.
-    pub fn search(&self, bounds: Bounds2D) -> Vec<usize> {
+    /// Return the indices of all items whose boxes intersect `query`.
+    pub fn search(&self, query: Box2D) -> Vec<usize> {
         let mut results = Vec::new();
-        self.search_into(bounds, &mut results);
+        self.search_into(query, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, bounds: Bounds2D, results: &mut Vec<usize>) {
+    pub fn search_into(&self, query: Box2D, results: &mut Vec<usize>) {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(bounds, results, &mut stack);
+        self.search_into_stack(query, results, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
@@ -196,40 +196,36 @@ impl Index2D {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Index2DBuilder, Bounds2D, SearchWorkspace};
+    /// use packed_spatial_index::{Index2DBuilder, Box2D, SearchWorkspace};
     ///
     /// let mut builder = Index2DBuilder::new(1);
-    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
     /// let index = builder.finish().unwrap();
     ///
     /// let mut workspace = SearchWorkspace::with_capacity(8, 8);
-    /// let hits = index.search_with(Bounds2D::new(0.0, 0.0, 2.0, 2.0), &mut workspace);
+    /// let hits = index.search_with(Box2D::new(0.0, 0.0, 2.0, 2.0), &mut workspace);
     /// assert_eq!(hits, &[0]);
     /// assert_eq!(workspace.results(), &[0]);
     /// ```
-    pub fn search_with<'a>(
-        &self,
-        bounds: Bounds2D,
-        workspace: &'a mut SearchWorkspace,
-    ) -> &'a [usize] {
-        self.search_into_stack(bounds, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'a>(&self, query: Box2D, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
+        self.search_into_stack(query, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `bounds`.
+    /// Return `true` if at least one item intersects `query`.
     ///
     /// This is an early-exit path: traversal stops at the first hit and does not
     /// allocate a result `Vec`.
-    pub fn any(&self, bounds: Bounds2D) -> bool {
-        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
+    pub fn any(&self, query: Box2D) -> bool {
+        self.visit(query, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
     ///
     /// Tree traversal order is not part of the API, so this returns just some first
     /// found item, not the minimum insertion index.
-    pub fn first(&self, bounds: Bounds2D) -> Option<usize> {
-        match self.visit(bounds, ControlFlow::Break) {
+    pub fn first(&self, query: Box2D) -> Option<usize> {
+        match self.visit(query, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -240,11 +236,11 @@ impl Index2D {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Index2DBuilder, Point2D, Bounds2D};
+    /// use packed_spatial_index::{Index2DBuilder, Point2D, Box2D};
     ///
     /// let mut builder = Index2DBuilder::new(2);
-    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-    /// builder.add(Bounds2D::new(10.0, 10.0, 11.0, 11.0));
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(10.0, 10.0, 11.0, 11.0));
     /// let index = builder.finish().unwrap();
     ///
     /// assert_eq!(index.neighbors(Point2D::new(10.25, 10.25), 1), vec![1]);
@@ -360,22 +356,22 @@ impl Index2D {
     /// ```
     /// use std::ops::ControlFlow;
     ///
-    /// use packed_spatial_index::{Index2DBuilder, Bounds2D};
+    /// use packed_spatial_index::{Index2DBuilder, Box2D};
     ///
     /// let mut builder = Index2DBuilder::new(2);
-    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-    /// builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
     /// let index = builder.finish().unwrap();
     ///
-    /// let found = index.visit(Bounds2D::new(5.0, 5.0, 6.0, 6.0), ControlFlow::Break);
+    /// let found = index.visit(Box2D::new(5.0, 5.0, 6.0, 6.0), ControlFlow::Break);
     /// assert_eq!(found, ControlFlow::Break(1));
     /// ```
-    pub fn visit<B, F>(&self, bounds: Bounds2D, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(bounds, &mut stack, visitor)
+        self.visit_with_stack(query, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queues(
@@ -396,8 +392,8 @@ impl Index2D {
             return;
         }
 
-        let root_index = self.boxes.len() - 1;
-        let root_dist = self.boxes[root_index].distance_squared_to(point);
+        let root_index = self.entries.len() - 1;
+        let root_dist = self.entries[root_index].distance_squared_to(point);
         if root_dist > max_dist_sq {
             return;
         }
@@ -420,7 +416,7 @@ impl Index2D {
 
                 if is_leaf {
                     for pos in node.index..end {
-                        let b = self.boxes[pos];
+                        let b = self.entries[pos];
                         let dist = b.distance_squared_to(point);
                         if dist <= max_dist_sq {
                             item_queue.push(NeighborState::new(self.indices[pos], true, dist));
@@ -428,7 +424,7 @@ impl Index2D {
                     }
                 } else {
                     for pos in node.index..end {
-                        let b = self.boxes[pos];
+                        let b = self.entries[pos];
                         let dist = b.distance_squared_to(point);
                         if dist <= max_dist_sq {
                             node_queue.push(NeighborNodeState::new(self.indices[pos], dist));
@@ -457,14 +453,14 @@ impl Index2D {
         }
 
         let mut best_index = None;
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         loop {
             let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
             let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let b = self.boxes[pos];
+                let b = self.entries[pos];
                 let dist = b.distance_squared_to(point);
                 if dist > best_dist {
                     continue;
@@ -505,14 +501,14 @@ impl Index2D {
             return ControlFlow::Continue(());
         }
 
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         loop {
             let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
             let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let b = self.boxes[pos];
+                let b = self.entries[pos];
                 let dist = b.distance_squared_to(point);
                 if dist > max_dist_sq {
                     continue;
@@ -545,55 +541,55 @@ impl Index2D {
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         stack: &mut Vec<usize>,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<false, B, F>(bounds, stack, visitor)
+        self.visit_with_stack_impl::<false, B, F>(query, stack, visitor)
     }
 
     /// Experimental prefetch variant of [`visit_with_stack`](Index2D::visit_with_stack).
     #[doc(hidden)]
     pub fn visit_with_stack_prefetch<B, F>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         stack: &mut Vec<usize>,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<true, B, F>(bounds, stack, visitor)
+        self.visit_with_stack_impl::<true, B, F>(query, stack, visitor)
     }
 
     /// Hottest path: both result buffer and traversal stack are reused by the caller.
     #[doc(hidden)]
     pub fn search_into_stack(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        self.search_into_stack_impl::<false>(bounds, results, stack);
+        self.search_into_stack_impl::<false>(query, results, stack);
     }
 
     /// Traversal variant that prefetches the next node from the stack.
     #[doc(hidden)]
     pub fn search_into_stack_prefetch(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        self.search_into_stack_impl::<true>(bounds, results, stack);
+        self.search_into_stack_impl::<true>(query, results, stack);
     }
 
     fn search_into_stack_impl<const PREFETCH: bool>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
@@ -603,26 +599,26 @@ impl Index2D {
             return;
         }
 
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
 
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
-            let node_boxes = &self.boxes[node_index..end];
+            let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
 
             if is_leaf {
-                for (b, &index) in node_boxes.iter().zip(node_indices) {
-                    if !b.overlaps(bounds) {
+                for (b, &index) in node_entries.iter().zip(node_indices) {
+                    if !b.overlaps(query) {
                         continue;
                     }
                     results.push(index);
                 }
             } else {
                 let child_level = level - 1;
-                for (b, &index) in node_boxes.iter().zip(node_indices).rev() {
-                    if !b.overlaps(bounds) {
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !b.overlaps(query) {
                         continue;
                     }
                     stack.push(index);
@@ -633,7 +629,7 @@ impl Index2D {
             if stack.len() > 1 {
                 if PREFETCH {
                     prefetch_aos_node(
-                        &self.boxes,
+                        &self.entries,
                         &self.indices,
                         stack[stack.len() - 2],
                         self.node_size,
@@ -649,7 +645,7 @@ impl Index2D {
 
     fn visit_with_stack_impl<const PREFETCH: bool, B, F>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -661,26 +657,26 @@ impl Index2D {
             return ControlFlow::Continue(());
         }
 
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
 
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
-            let node_boxes = &self.boxes[node_index..end];
+            let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
 
             if is_leaf {
-                for (b, &index) in node_boxes.iter().zip(node_indices) {
-                    if !b.overlaps(bounds) {
+                for (b, &index) in node_entries.iter().zip(node_indices) {
+                    if !b.overlaps(query) {
                         continue;
                     }
                     visitor(index)?;
                 }
             } else {
                 let child_level = level - 1;
-                for (b, &index) in node_boxes.iter().zip(node_indices).rev() {
-                    if !b.overlaps(bounds) {
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !b.overlaps(query) {
                         continue;
                     }
                     stack.push(index);
@@ -691,7 +687,7 @@ impl Index2D {
             if stack.len() > 1 {
                 if PREFETCH {
                     prefetch_aos_node(
-                        &self.boxes,
+                        &self.entries,
                         &self.indices,
                         stack[stack.len() - 2],
                         self.node_size,
@@ -707,14 +703,14 @@ impl Index2D {
 
     /// Diagnostics: returns `(result_count, intersection_check_count)`.
     #[doc(hidden)]
-    pub fn search_visited(&self, bounds: Bounds2D) -> (usize, usize) {
+    pub fn search_visited(&self, query: Box2D) -> (usize, usize) {
         let mut results = 0usize;
         let mut visited = 0usize;
         if self.num_items == 0 {
             return (0, 0);
         }
 
-        let mut node_index = self.boxes.len() - 1;
+        let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
 
@@ -723,8 +719,8 @@ impl Index2D {
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
                 visited += 1;
-                let b = &self.boxes[pos];
-                if !b.overlaps(bounds) {
+                let b = &self.entries[pos];
+                if !b.overlaps(query) {
                     continue;
                 }
                 let index = self.indices[pos];
@@ -755,14 +751,14 @@ impl Index2D {
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Index2DBuilder, Index2DView, Bounds2D};
+/// use packed_spatial_index::{Index2DBuilder, Index2DView, Box2D};
 ///
 /// let mut builder = Index2DBuilder::new(1);
-/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
 /// let bytes = builder.finish().unwrap().to_bytes();
 ///
 /// let view = Index2DView::from_bytes(&bytes).unwrap();
-/// assert_eq!(view.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// assert_eq!(view.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 /// ```
 pub struct Index2DView<'a> {
     node_size: usize,
@@ -770,7 +766,7 @@ pub struct Index2DView<'a> {
     num_nodes: usize,
     level_count: usize,
     level_bounds: &'a [u8],
-    boxes: &'a [u8],
+    entries: &'a [u8],
     indices: &'a [u8],
 }
 
@@ -780,10 +776,10 @@ impl<'a> Index2DView<'a> {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Index2DBuilder, Index2DView, Bounds2D};
+    /// use packed_spatial_index::{Index2DBuilder, Index2DView, Box2D};
     ///
     /// let mut builder = Index2DBuilder::new(1);
-    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
     /// let bytes = builder.finish()?.to_bytes();
     ///
     /// let view = Index2DView::from_bytes(&bytes)?;
@@ -798,7 +794,7 @@ impl<'a> Index2DView<'a> {
             num_nodes: parsed.num_nodes,
             level_count: parsed.level_count,
             level_bounds: parsed.level_bounds,
-            boxes: parsed.boxes,
+            entries: parsed.entries,
             indices: parsed.indices,
         })
     }
@@ -809,11 +805,11 @@ impl<'a> Index2DView<'a> {
     }
 
     /// Return the total extent of indexed items, or `None` for an empty view.
-    pub fn extent(&self) -> Option<Bounds2D> {
+    pub fn extent(&self) -> Option<Box2D> {
         if self.num_items == 0 {
             None
         } else {
-            Some(self.box_at_unchecked(self.num_nodes - 1))
+            Some(self.entry_at_unchecked(self.num_nodes - 1))
         }
     }
 
@@ -822,37 +818,33 @@ impl<'a> Index2DView<'a> {
         self.node_size
     }
 
-    /// Return the indices of all items whose bounds intersect `bounds`.
-    pub fn search(&self, bounds: Bounds2D) -> Vec<usize> {
+    /// Return the indices of all items whose boxes intersect `query`.
+    pub fn search(&self, query: Box2D) -> Vec<usize> {
         let mut results = Vec::new();
-        self.search_into(bounds, &mut results);
+        self.search_into(query, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, bounds: Bounds2D, results: &mut Vec<usize>) {
+    pub fn search_into(&self, query: Box2D, results: &mut Vec<usize>) {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(bounds, results, &mut stack);
+        self.search_into_stack(query, results, &mut stack);
     }
 
     /// Search with reusable result and traversal buffers.
-    pub fn search_with<'b>(
-        &self,
-        bounds: Bounds2D,
-        workspace: &'b mut SearchWorkspace,
-    ) -> &'b [usize] {
-        self.search_into_stack(bounds, &mut workspace.results, &mut workspace.stack);
+    pub fn search_with<'b>(&self, query: Box2D, workspace: &'b mut SearchWorkspace) -> &'b [usize] {
+        self.search_into_stack(query, &mut workspace.results, &mut workspace.stack);
         &workspace.results
     }
 
-    /// Return `true` if at least one item intersects `bounds`.
-    pub fn any(&self, bounds: Bounds2D) -> bool {
-        self.visit(bounds, |_| ControlFlow::Break(())).is_break()
+    /// Return `true` if at least one item intersects `query`.
+    pub fn any(&self, query: Box2D) -> bool {
+        self.visit(query, |_| ControlFlow::Break(())).is_break()
     }
 
     /// Return one intersecting item, if any.
-    pub fn first(&self, bounds: Bounds2D) -> Option<usize> {
-        match self.visit(bounds, ControlFlow::Break) {
+    pub fn first(&self, query: Box2D) -> Option<usize> {
+        match self.visit(query, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -957,12 +949,12 @@ impl<'a> Index2DView<'a> {
     }
 
     /// Visit intersecting items without collecting a result `Vec`.
-    pub fn visit<B, F>(&self, bounds: Bounds2D, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(bounds, &mut stack, visitor)
+        self.visit_with_stack(query, &mut stack, visitor)
     }
 
     fn collect_neighbors_with_queues(
@@ -984,7 +976,9 @@ impl<'a> Index2DView<'a> {
         }
 
         let root_index = self.num_nodes - 1;
-        let root_dist = self.box_at_unchecked(root_index).distance_squared_to(point);
+        let root_dist = self
+            .entry_at_unchecked(root_index)
+            .distance_squared_to(point);
         if root_dist > max_dist_sq {
             return;
         }
@@ -1008,7 +1002,7 @@ impl<'a> Index2DView<'a> {
 
                 if is_leaf {
                     for pos in node.index..end {
-                        let b = self.box_at_unchecked(pos);
+                        let b = self.entry_at_unchecked(pos);
                         let dist = b.distance_squared_to(point);
                         if dist <= max_dist_sq {
                             item_queue.push(NeighborState::new(
@@ -1020,7 +1014,7 @@ impl<'a> Index2DView<'a> {
                     }
                 } else {
                     for pos in node.index..end {
-                        let b = self.box_at_unchecked(pos);
+                        let b = self.entry_at_unchecked(pos);
                         let dist = b.distance_squared_to(point);
                         if dist <= max_dist_sq {
                             node_queue
@@ -1058,7 +1052,7 @@ impl<'a> Index2DView<'a> {
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let b = self.box_at_unchecked(pos);
+                let b = self.entry_at_unchecked(pos);
                 let dist = b.distance_squared_to(point);
                 if dist > best_dist {
                     continue;
@@ -1084,7 +1078,7 @@ impl<'a> Index2DView<'a> {
     #[doc(hidden)]
     pub fn search_into_stack(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
@@ -1102,8 +1096,8 @@ impl<'a> Index2DView<'a> {
 
             if is_leaf {
                 for pos in node_index..end {
-                    let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(bounds) {
+                    let b = self.entry_at_unchecked(pos);
+                    if !b.overlaps(query) {
                         continue;
                     }
                     let index = self.index_at_unchecked(pos);
@@ -1112,8 +1106,8 @@ impl<'a> Index2DView<'a> {
             } else {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
-                    let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(bounds) {
+                    let b = self.entry_at_unchecked(pos);
+                    if !b.overlaps(query) {
                         continue;
                     }
                     let index = self.index_at_unchecked(pos);
@@ -1134,7 +1128,7 @@ impl<'a> Index2DView<'a> {
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
         &self,
-        bounds: Bounds2D,
+        query: Box2D,
         stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
@@ -1154,8 +1148,8 @@ impl<'a> Index2DView<'a> {
 
             if is_leaf {
                 for pos in node_index..end {
-                    let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(bounds) {
+                    let b = self.entry_at_unchecked(pos);
+                    if !b.overlaps(query) {
                         continue;
                     }
                     let index = self.index_at_unchecked(pos);
@@ -1164,8 +1158,8 @@ impl<'a> Index2DView<'a> {
             } else {
                 let child_level = level - 1;
                 for pos in (node_index..end).rev() {
-                    let b = self.box_at_unchecked(pos);
-                    if !b.overlaps(bounds) {
+                    let b = self.entry_at_unchecked(pos);
+                    if !b.overlaps(query) {
                         continue;
                     }
                     let index = self.index_at_unchecked(pos);
@@ -1209,7 +1203,7 @@ impl<'a> Index2DView<'a> {
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let b = self.box_at_unchecked(pos);
+                let b = self.entry_at_unchecked(pos);
                 let dist = b.distance_squared_to(point);
                 if dist > max_dist_sq {
                     continue;
@@ -1262,13 +1256,13 @@ impl<'a> Index2DView<'a> {
     }
 
     #[inline]
-    fn box_at_unchecked(&self, index: usize) -> Bounds2D {
+    fn entry_at_unchecked(&self, index: usize) -> Box2D {
         let offset = index * 32;
-        Bounds2D::new(
-            read_f64_le_unchecked(self.boxes, offset),
-            read_f64_le_unchecked(self.boxes, offset + 8),
-            read_f64_le_unchecked(self.boxes, offset + 16),
-            read_f64_le_unchecked(self.boxes, offset + 24),
+        Box2D::new(
+            read_f64_le_unchecked(self.entries, offset),
+            read_f64_le_unchecked(self.entries, offset + 8),
+            read_f64_le_unchecked(self.entries, offset + 16),
+            read_f64_le_unchecked(self.entries, offset + 24),
         )
     }
 

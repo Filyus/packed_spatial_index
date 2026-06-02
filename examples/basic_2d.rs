@@ -1,10 +1,10 @@
-use packed_spatial_index::{Bounds2D, Index2DBuilder};
+use packed_spatial_index::{Box2D, Index2DBuilder};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let boxes = [
-        Bounds2D::new(0.0, 0.0, 1.0, 1.0),
-        Bounds2D::new(5.0, 5.0, 6.0, 6.0),
-        Bounds2D::new(0.5, 0.5, 2.0, 2.0),
+        Box2D::new(0.0, 0.0, 1.0, 1.0),
+        Box2D::new(5.0, 5.0, 6.0, 6.0),
+        Box2D::new(0.5, 0.5, 2.0, 2.0),
     ];
 
     let mut builder = Index2DBuilder::new(boxes.len());
@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let index = builder.finish()?;
-    let hits = index.search(Bounds2D::new(0.0, 0.0, 1.5, 1.5));
+    let hits = index.search(Box2D::new(0.0, 0.0, 1.5, 1.5));
 
     println!("{hits:?}");
     Ok(())

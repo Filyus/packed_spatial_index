@@ -1,7 +1,7 @@
 mod common;
 
 use common::{build_index, random_boxes};
-use packed_spatial_index::{Bounds2D, Index2D, Index2DView, LoadError, Point2D};
+use packed_spatial_index::{Box2D, Index2D, Index2DView, LoadError, Point2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -30,7 +30,7 @@ fn persistence_round_trip_and_view_agree() {
     for _ in 0..100 {
         let qx: f64 = rng.random_range(0.0..1000.0);
         let qy: f64 = rng.random_range(0.0..1000.0);
-        let query = Bounds2D::new(qx, qy, qx + 40.0, qy + 40.0);
+        let query = Box2D::new(qx, qy, qx + 40.0, qy + 40.0);
 
         let mut expected = index.search(query);
         let mut owned = loaded.search(query);
@@ -97,7 +97,7 @@ fn persistence_handles_edge_shapes() {
         let view = Index2DView::from_bytes(&bytes).unwrap();
         assert_eq!(loaded.extent(), index.extent());
         assert_eq!(view.extent(), index.extent());
-        let query = Bounds2D::new(-100.0, -100.0, 100.0, 100.0);
+        let query = Box2D::new(-100.0, -100.0, 100.0, 100.0);
         assert_eq!(index.search(query), loaded.search(query));
         assert_eq!(index.search(query), view.search(query));
         assert_eq!(

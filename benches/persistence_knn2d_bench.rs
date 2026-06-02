@@ -10,7 +10,7 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use packed_spatial_index::experimental::ExperimentalSortKey2D;
 use packed_spatial_index::{
-    Bounds2D, Index2D, Index2DBuilder, Index2DView, NeighborWorkspace, Point2D, SearchWorkspace,
+    Box2D, Index2D, Index2DBuilder, Index2DView, NeighborWorkspace, Point2D, SearchWorkspace,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -89,8 +89,8 @@ fn make_points(n: usize, seed: u64) -> Vec<Point2D> {
         .collect()
 }
 
-fn to_bounds(q: &[f64; 4]) -> Bounds2D {
-    Bounds2D::new(q[0], q[1], q[2], q[3])
+fn to_bounds(q: &[f64; 4]) -> Box2D {
+    Box2D::new(q[0], q[1], q[2], q[3])
 }
 
 fn build_index(boxes: &[[f64; 4]]) -> Index2D {
@@ -98,7 +98,7 @@ fn build_index(boxes: &[[f64; 4]]) -> Index2D {
         .node_size(NODE_SIZE)
         .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     for b in boxes {
-        builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish().unwrap()
 }
@@ -108,7 +108,7 @@ fn build_simd_index(boxes: &[[f64; 4]]) -> packed_spatial_index::SimdIndex2D {
         .node_size(NODE_SIZE)
         .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     for b in boxes {
-        builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     builder.finish_simd().unwrap()
 }

@@ -3,7 +3,7 @@ use crate::config::DEFAULT_PARALLEL_MIN_ITEMS;
 use crate::{
     build::BuildError,
     config::DEFAULT_NODE_SIZE,
-    geometry::{Bounds2D, Num},
+    geometry::{Box2D, Num},
     index2d::Index2D,
     sort2d::{
         DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, SortKeyContext, encode_sort_by_key,
@@ -17,14 +17,14 @@ use crate::{
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Index2DBuilder, Bounds2D};
+/// use packed_spatial_index::{Index2DBuilder, Box2D};
 ///
 /// let mut builder = Index2DBuilder::new(2);
-/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-/// builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
+/// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
 ///
 /// let index = builder.finish().unwrap();
-/// assert_eq!(index.search(Bounds2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+/// assert_eq!(index.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 /// ```
 #[must_use = "Index2DBuilder methods return an updated builder; assign the result or chain the call"]
 pub struct Index2DBuilder {
@@ -37,7 +37,7 @@ pub struct Index2DBuilder {
     parallel: bool,
     #[cfg(feature = "parallel")]
     parallel_min_items: usize,
-    boxes: Vec<Bounds2D>,
+    items: Vec<Box2D>,
 }
 
 #[derive(Clone, Copy)]
@@ -67,7 +67,7 @@ impl Index2DBuilder {
             parallel: false,
             #[cfg(feature = "parallel")]
             parallel_min_items: DEFAULT_PARALLEL_MIN_ITEMS,
-            boxes: Vec::with_capacity(count.saturating_add(1)),
+            items: Vec::with_capacity(count.saturating_add(1)),
         }
     }
 
@@ -124,17 +124,17 @@ impl Index2DBuilder {
         self
     }
 
-    /// Add item bounds.
+    /// Add one indexed box.
     #[inline]
-    pub fn add(&mut self, bounds: Bounds2D) {
-        self.boxes.push(bounds);
+    pub fn add(&mut self, item: Box2D) {
+        self.items.push(item);
     }
 
     /// Pack the tree and return the finished index.
     pub fn finish(self) -> Result<Index2D, BuildError> {
-        if self.boxes.len() != self.num_items {
+        if self.items.len() != self.num_items {
             return Err(BuildError::ItemCount {
-                added: self.boxes.len(),
+                added: self.items.len(),
                 expected: self.num_items,
             });
         }
@@ -146,25 +146,25 @@ impl Index2DBuilder {
     /// # Example
     ///
     /// ```
-    /// use packed_spatial_index::{Index2DBuilder, Bounds2D};
+    /// use packed_spatial_index::{Index2DBuilder, Box2D};
     ///
     /// let mut builder = Index2DBuilder::new(1);
-    /// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
     ///
     /// let index = builder.finish_simd().unwrap();
-    /// assert_eq!(index.search(Bounds2D::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
+    /// assert_eq!(index.search(Box2D::new(0.5, 0.5, 0.5, 0.5)), vec![0]);
     /// ```
     #[cfg(feature = "simd")]
     pub fn finish_simd(self) -> Result<crate::SimdIndex2D, BuildError> {
-        if self.boxes.len() != self.num_items {
+        if self.items.len() != self.num_items {
             return Err(BuildError::ItemCount {
-                added: self.boxes.len(),
+                added: self.items.len(),
                 expected: self.num_items,
             });
         }
         Ok(crate::index2d_soa::build_simd_index(
             self.config(),
-            self.boxes,
+            self.items,
         ))
     }
 
@@ -196,18 +196,18 @@ impl Index2DBuilder {
                 node_size,
                 num_items,
                 level_bounds,
-                boxes: Vec::new(),
+                entries: Vec::new(),
                 indices: Vec::new(),
             };
         }
 
         if num_items <= node_size {
-            return build_single_node_index(node_size, num_items, level_bounds, self.boxes);
+            return build_single_node_index(node_size, num_items, level_bounds, self.items);
         }
 
-        let mut boxes: Vec<Bounds2D> = vec![Bounds2D::new(0.0, 0.0, 0.0, 0.0); num_nodes];
+        let mut entries: Vec<Box2D> = vec![Box2D::new(0.0, 0.0, 0.0, 0.0); num_nodes];
         let mut indices: Vec<usize> = vec![0usize; num_nodes];
-        let items = &self.boxes;
+        let items = &self.items;
 
         #[cfg(feature = "parallel")]
         let use_parallel = self.parallel && num_items >= self.parallel_min_items;
@@ -240,19 +240,19 @@ impl Index2DBuilder {
 
         #[cfg(feature = "parallel")]
         if use_parallel {
-            reorder_parallel(&mut boxes, &mut indices, &order, items, num_items);
+            reorder_parallel(&mut entries, &mut indices, &order, items, num_items);
         } else {
-            reorder_serial(&mut boxes, &mut indices, &order, items);
+            reorder_serial(&mut entries, &mut indices, &order, items);
         }
         #[cfg(not(feature = "parallel"))]
-        reorder_serial(&mut boxes, &mut indices, &order, items);
+        reorder_serial(&mut entries, &mut indices, &order, items);
 
         let mut read_pos = 0usize;
         let mut write_pos = num_items;
         for &level_end in &level_bounds[0..level_bounds.len() - 1] {
             while read_pos < level_end {
                 let node_index = read_pos;
-                let mut node_bounds = Bounds2D::new(
+                let mut node_bounds = Box2D::new(
                     Num::INFINITY,
                     Num::INFINITY,
                     Num::NEG_INFINITY,
@@ -260,7 +260,7 @@ impl Index2DBuilder {
                 );
                 let mut j = 0;
                 while j < node_size && read_pos < level_end {
-                    let b = boxes[read_pos];
+                    let b = entries[read_pos];
                     read_pos += 1;
                     node_bounds.min_x = node_bounds.min_x.min(b.min_x);
                     node_bounds.min_y = node_bounds.min_y.min(b.min_y);
@@ -268,7 +268,7 @@ impl Index2DBuilder {
                     node_bounds.max_y = node_bounds.max_y.max(b.max_y);
                     j += 1;
                 }
-                boxes[write_pos] = node_bounds;
+                entries[write_pos] = node_bounds;
                 indices[write_pos] = node_index;
                 write_pos += 1;
             }
@@ -278,20 +278,20 @@ impl Index2DBuilder {
             node_size,
             num_items,
             level_bounds,
-            boxes,
+            entries,
             indices,
         }
     }
 }
 
 fn reorder_serial(
-    boxes: &mut [Bounds2D],
+    entries: &mut [Box2D],
     indices: &mut [usize],
     order: &[(u32, u32)],
-    items: &[Bounds2D],
+    items: &[Box2D],
 ) {
     for (slot, &(_, orig)) in order.iter().enumerate() {
-        boxes[slot] = items[orig as usize];
+        entries[slot] = items[orig as usize];
         indices[slot] = orig as usize;
     }
 }
@@ -300,21 +300,21 @@ fn build_single_node_index(
     node_size: usize,
     num_items: usize,
     level_bounds: Vec<usize>,
-    mut boxes: Vec<Bounds2D>,
+    mut entries: Vec<Box2D>,
 ) -> Index2D {
-    let mut root = Bounds2D::new(
+    let mut root = Box2D::new(
         Num::INFINITY,
         Num::INFINITY,
         Num::NEG_INFINITY,
         Num::NEG_INFINITY,
     );
-    for b in &boxes {
+    for b in &entries {
         root.min_x = root.min_x.min(b.min_x);
         root.min_y = root.min_y.min(b.min_y);
         root.max_x = root.max_x.max(b.max_x);
         root.max_y = root.max_y.max(b.max_y);
     }
-    boxes.push(root);
+    entries.push(root);
 
     let mut indices = Vec::with_capacity(num_items + 1);
     indices.extend(0..num_items);
@@ -324,22 +324,22 @@ fn build_single_node_index(
         node_size,
         num_items,
         level_bounds,
-        boxes,
+        entries,
         indices,
     }
 }
 
 #[cfg(feature = "parallel")]
 fn reorder_parallel(
-    boxes: &mut [Bounds2D],
+    entries: &mut [Box2D],
     indices: &mut [usize],
     order: &[(u32, u32)],
-    items: &[Bounds2D],
+    items: &[Box2D],
     num_items: usize,
 ) {
     use rayon::prelude::*;
 
-    boxes[..num_items]
+    entries[..num_items]
         .par_iter_mut()
         .zip(indices[..num_items].par_iter_mut())
         .zip(order.par_iter())

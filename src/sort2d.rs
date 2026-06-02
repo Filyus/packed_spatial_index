@@ -1,4 +1,4 @@
-use crate::{geometry::Bounds2D, hilbert2d as hilbert};
+use crate::{geometry::Box2D, hilbert2d as hilbert};
 
 pub(crate) const DEFAULT_RADIX_BITS: u32 = 8;
 const MIN_RADIX_BITS: u32 = 1;
@@ -52,17 +52,17 @@ pub(crate) struct SortKeyContext {
 }
 
 pub(crate) fn encode_sort_serial<F>(
-    items: &[Bounds2D],
+    items: &[Box2D],
     encode: &F,
     radix: bool,
     radix_bits: u32,
 ) -> Vec<(u32, u32)>
 where
-    F: Fn(usize, &Bounds2D) -> (u32, u32),
+    F: Fn(usize, &Box2D) -> (u32, u32),
 {
     let mut order: Vec<(u32, u32)> = Vec::with_capacity(items.len());
-    for (i, b) in items.iter().enumerate() {
-        order.push(encode(i, b));
+    for (i, item) in items.iter().enumerate() {
+        order.push(encode(i, item));
     }
     if radix {
         radix_sort_u32(&mut order, radix_bits);
@@ -74,7 +74,7 @@ where
 
 #[cfg(feature = "parallel")]
 pub(crate) fn encode_sort_by_key(
-    items: &[Bounds2D],
+    items: &[Box2D],
     sort_key: ExperimentalSortKey2D,
     context: SortKeyContext,
 ) -> Vec<(u32, u32)> {
@@ -92,7 +92,7 @@ pub(crate) fn encode_sort_by_key(
 
 #[cfg(not(feature = "parallel"))]
 pub(crate) fn encode_sort_by_key(
-    items: &[Bounds2D],
+    items: &[Box2D],
     sort_key: ExperimentalSortKey2D,
     context: SortKeyContext,
 ) -> Vec<(u32, u32)> {
@@ -110,16 +110,16 @@ pub(crate) fn encode_sort_by_key(
 
 #[cfg(feature = "parallel")]
 fn encode_sort_with_encoder<F>(
-    items: &[Bounds2D],
+    items: &[Box2D],
     key_fn: F,
     context: SortKeyContext,
 ) -> Vec<(u32, u32)>
 where
     F: Fn(u16, u16) -> u32 + Copy + Sync,
 {
-    let encode = |i: usize, b: &Bounds2D| -> (u32, u32) {
-        let hx = hilbert_coord(context.scaled_width, b.min_x, b.max_x, context.min_x);
-        let hy = hilbert_coord(context.scaled_height, b.min_y, b.max_y, context.min_y);
+    let encode = |i: usize, item: &Box2D| -> (u32, u32) {
+        let hx = hilbert_coord(context.scaled_width, item.min_x, item.max_x, context.min_x);
+        let hy = hilbert_coord(context.scaled_height, item.min_y, item.max_y, context.min_y);
         (key_fn(hx, hy), i as u32)
     };
 
@@ -132,16 +132,16 @@ where
 
 #[cfg(not(feature = "parallel"))]
 fn encode_sort_with_encoder<F>(
-    items: &[Bounds2D],
+    items: &[Box2D],
     key_fn: F,
     context: SortKeyContext,
 ) -> Vec<(u32, u32)>
 where
     F: Fn(u16, u16) -> u32 + Copy,
 {
-    let encode = |i: usize, b: &Bounds2D| -> (u32, u32) {
-        let hx = hilbert_coord(context.scaled_width, b.min_x, b.max_x, context.min_x);
-        let hy = hilbert_coord(context.scaled_height, b.min_y, b.max_y, context.min_y);
+    let encode = |i: usize, item: &Box2D| -> (u32, u32) {
+        let hx = hilbert_coord(context.scaled_width, item.min_x, item.max_x, context.min_x);
+        let hy = hilbert_coord(context.scaled_height, item.min_y, item.max_y, context.min_y);
         (key_fn(hx, hy), i as u32)
     };
 
@@ -149,22 +149,22 @@ where
 }
 
 #[cfg(feature = "parallel")]
-pub(crate) fn encode_sort_parallel<F>(items: &[Bounds2D], encode: &F) -> Vec<(u32, u32)>
+pub(crate) fn encode_sort_parallel<F>(items: &[Box2D], encode: &F) -> Vec<(u32, u32)>
 where
-    F: Fn(usize, &Bounds2D) -> (u32, u32) + Sync,
+    F: Fn(usize, &Box2D) -> (u32, u32) + Sync,
 {
     use rayon::prelude::*;
 
     let mut order: Vec<(u32, u32)> = items
         .par_iter()
         .enumerate()
-        .map(|(i, b)| encode(i, b))
+        .map(|(i, item)| encode(i, item))
         .collect();
     order.par_sort_unstable_by_key(|&(h, _)| h);
     order
 }
 
-/// Normalize the bbox center into `[0, 65535]` (Hilbert encoder input), with saturation.
+/// Normalize the box center into `[0, 65535]` (Hilbert encoder input), with saturation.
 #[inline]
 pub(crate) fn hilbert_coord(scaled: f64, lo: f64, hi: f64, extent_min: f64) -> u16 {
     let value = scaled * (0.5 * (lo + hi) - extent_min);

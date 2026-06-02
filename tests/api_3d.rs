@@ -2,18 +2,18 @@ use std::ops::ControlFlow;
 
 use packed_spatial_index::experimental::ExperimentalSortKey3D;
 use packed_spatial_index::{
-    Bounds3D, BoundsError, BuildError, DEFAULT_NODE_SIZE, Index3DBuilder, NeighborWorkspace,
-    Point3D, SearchWorkspace,
+    BoundsError, Box3D, BuildError, DEFAULT_NODE_SIZE, Index3DBuilder, NeighborWorkspace, Point3D,
+    SearchWorkspace,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
 #[test]
 fn bounds3d_helpers_use_inclusive_edges() {
-    let outer = Bounds3D::new(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
-    let inner = Bounds3D::new(2.0, 2.0, 2.0, 4.0, 4.0, 4.0);
-    let touching = Bounds3D::new(10.0, 10.0, 10.0, 12.0, 12.0, 12.0);
-    let outside = Bounds3D::new(11.0, 11.0, 11.0, 12.0, 12.0, 12.0);
+    let outer = Box3D::new(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
+    let inner = Box3D::new(2.0, 2.0, 2.0, 4.0, 4.0, 4.0);
+    let touching = Box3D::new(10.0, 10.0, 10.0, 12.0, 12.0, 12.0);
+    let outside = Box3D::new(11.0, 11.0, 11.0, 12.0, 12.0, 12.0);
 
     assert!(outer.contains(inner));
     assert!(outer.overlaps(touching));
@@ -26,15 +26,15 @@ fn bounds3d_helpers_use_inclusive_edges() {
 #[test]
 fn bounds3d_try_new_validates_bounds() {
     assert_eq!(
-        Bounds3D::try_new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
-        Ok(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0))
+        Box3D::try_new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+        Ok(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0))
     );
     assert!(matches!(
-        Bounds3D::try_new(2.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+        Box3D::try_new(2.0, 0.0, 0.0, 1.0, 1.0, 1.0),
         Err(BoundsError::InvalidBounds3D { .. })
     ));
     assert!(matches!(
-        Bounds3D::try_new(0.0, 0.0, f64::NAN, 1.0, 1.0, 1.0),
+        Box3D::try_new(0.0, 0.0, f64::NAN, 1.0, 1.0, 1.0),
         Err(BoundsError::InvalidBounds3D { .. })
     ));
 }
@@ -42,7 +42,7 @@ fn bounds3d_try_new_validates_bounds() {
 #[test]
 fn index3d_finish_reports_count_mismatch() {
     let mut builder = Index3DBuilder::new(2);
-    builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
 
     assert!(matches!(
         builder.finish(),
@@ -58,7 +58,7 @@ fn index3d_default_builder_uses_exported_node_size() {
     let mut builder = Index3DBuilder::new(DEFAULT_NODE_SIZE + 1);
     for i in 0..=DEFAULT_NODE_SIZE {
         let x = i as f64;
-        builder.add(Bounds3D::new(x, x, x, x + 0.5, x + 0.5, x + 0.5));
+        builder.add(Box3D::new(x, x, x, x + 0.5, x + 0.5, x + 0.5));
     }
     let index = builder.finish().unwrap();
     assert_eq!(index.node_size(), DEFAULT_NODE_SIZE);
@@ -72,20 +72,20 @@ fn index3d_empty_and_small_indexes_behave() {
     assert_eq!(empty.extent(), None);
     assert!(
         empty
-            .search(Bounds3D::new(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0))
+            .search(Box3D::new(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0))
             .is_empty()
     );
-    assert!(!empty.any(Bounds3D::new(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0)));
+    assert!(!empty.any(Box3D::new(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0)));
     assert_eq!(
-        empty.first(Bounds3D::new(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0)),
+        empty.first(Box3D::new(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0)),
         None
     );
     assert!(empty.neighbors(Point3D::new(0.0, 0.0, 0.0), 1).is_empty());
 
     let boxes = [
-        Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
-        Bounds3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0),
-        Bounds3D::new(-1.0, -1.0, -1.0, 0.5, 0.5, 0.5),
+        Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+        Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0),
+        Box3D::new(-1.0, -1.0, -1.0, 0.5, 0.5, 0.5),
     ];
     let mut builder = Index3DBuilder::new(boxes.len());
     for bounds in boxes {
@@ -94,10 +94,10 @@ fn index3d_empty_and_small_indexes_behave() {
     let index = builder.finish().unwrap();
     assert_eq!(
         index.extent(),
-        Some(Bounds3D::new(-1.0, -1.0, -1.0, 6.0, 6.0, 6.0))
+        Some(Box3D::new(-1.0, -1.0, -1.0, 6.0, 6.0, 6.0))
     );
 
-    let mut hits = index.search(Bounds3D::new(-0.25, -0.25, -0.25, 2.0, 2.0, 2.0));
+    let mut hits = index.search(Box3D::new(-0.25, -0.25, -0.25, 2.0, 2.0, 2.0));
     hits.sort_unstable();
     assert_eq!(hits, vec![0, 2]);
 }
@@ -106,7 +106,7 @@ fn index3d_empty_and_small_indexes_behave() {
 fn index3d_search_apis_agree() {
     let boxes = random_boxes_3d(257, 0x3D);
     let index = build_index_3d(&boxes, 16, ExperimentalSortKey3D::Hilbert);
-    let query = Bounds3D::new(250.0, 250.0, 250.0, 650.0, 650.0, 650.0);
+    let query = Box3D::new(250.0, 250.0, 250.0, 650.0, 650.0, 650.0);
 
     let mut expected = brute_force_search(&boxes, query);
     expected.sort_unstable();
@@ -204,10 +204,10 @@ fn index3d_neighbors_match_brute_force() {
 #[test]
 fn index3d_neighbor_apis_agree_and_support_early_exit() {
     let boxes = [
-        Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
-        Bounds3D::new(10.0, 10.0, 10.0, 11.0, 11.0, 11.0),
-        Bounds3D::new(3.0, 3.0, 3.0, 4.0, 4.0, 4.0),
-        Bounds3D::new(-5.0, -5.0, -5.0, -4.0, -4.0, -4.0),
+        Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+        Box3D::new(10.0, 10.0, 10.0, 11.0, 11.0, 11.0),
+        Box3D::new(3.0, 3.0, 3.0, 4.0, 4.0, 4.0),
+        Box3D::new(-5.0, -5.0, -5.0, -4.0, -4.0, -4.0),
     ];
     let index = build_index_3d(&boxes, 2, ExperimentalSortKey3D::Hilbert);
     let point = Point3D::new(3.25, 3.25, 3.25);
@@ -271,7 +271,7 @@ fn index3d_parallel_build_matches_serial() {
 }
 
 fn build_index_3d(
-    boxes: &[Bounds3D],
+    boxes: &[Box3D],
     node_size: usize,
     sort_key: ExperimentalSortKey3D,
 ) -> packed_spatial_index::Index3D {
@@ -284,7 +284,7 @@ fn build_index_3d(
     builder.finish().unwrap()
 }
 
-fn random_boxes_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
+fn random_boxes_3d(n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
@@ -294,12 +294,12 @@ fn random_boxes_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
             let dx: f64 = rng.random_range(0.1..20.0);
             let dy: f64 = rng.random_range(0.1..20.0);
             let dz: f64 = rng.random_range(0.1..20.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect()
 }
 
-fn random_queries_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
+fn random_queries_3d(n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
@@ -309,7 +309,7 @@ fn random_queries_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
             let dx: f64 = rng.random_range(10.0..120.0);
             let dy: f64 = rng.random_range(10.0..120.0);
             let dz: f64 = rng.random_range(10.0..120.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect()
 }
@@ -327,7 +327,7 @@ fn random_points_3d(n: usize, seed: u64) -> Vec<Point3D> {
         .collect()
 }
 
-fn brute_force_search(items: &[Bounds3D], query: Bounds3D) -> Vec<usize> {
+fn brute_force_search(items: &[Box3D], query: Box3D) -> Vec<usize> {
     items
         .iter()
         .copied()
@@ -337,7 +337,7 @@ fn brute_force_search(items: &[Bounds3D], query: Bounds3D) -> Vec<usize> {
 }
 
 fn brute_force_neighbors(
-    items: &[Bounds3D],
+    items: &[Box3D],
     point: Point3D,
     max_results: usize,
     max_distance: f64,
@@ -361,7 +361,7 @@ fn brute_force_neighbors(
         .collect()
 }
 
-fn distance_squared_to(bounds: Bounds3D, point: Point3D) -> f64 {
+fn distance_squared_to(bounds: Box3D, point: Point3D) -> f64 {
     let dx = axis_distance(point.x, bounds.min_x, bounds.max_x);
     let dy = axis_distance(point.y, bounds.min_y, bounds.max_y);
     let dz = axis_distance(point.z, bounds.min_z, bounds.max_z);

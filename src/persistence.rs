@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use crate::geometry::{Bounds2D, Bounds3D};
+use crate::geometry::{Box2D, Box3D};
 
 /// Error returned when loading an index from bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +64,7 @@ pub(crate) struct ParsedIndexBytes<'a> {
     pub(crate) num_nodes: usize,
     pub(crate) level_count: usize,
     pub(crate) level_bounds: &'a [u8],
-    pub(crate) boxes: &'a [u8],
+    pub(crate) entries: &'a [u8],
     pub(crate) indices: &'a [u8],
 }
 
@@ -130,18 +130,18 @@ fn parse_index_bytes_with_flags(
     let level_bounds_len = level_count
         .checked_mul(8)
         .ok_or(LoadError::IntegerOverflow)?;
-    let boxes_len = num_nodes
+    let entries_len = num_nodes
         .checked_mul(dimensions)
         .and_then(|len| len.checked_mul(16))
         .ok_or(LoadError::IntegerOverflow)?;
     let indices_len = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
 
     let level_start = FORMAT_HEADER_LEN;
-    let boxes_start = level_start
+    let entries_start = level_start
         .checked_add(level_bounds_len)
         .ok_or(LoadError::IntegerOverflow)?;
-    let indices_start = boxes_start
-        .checked_add(boxes_len)
+    let indices_start = entries_start
+        .checked_add(entries_len)
         .ok_or(LoadError::IntegerOverflow)?;
     let end = indices_start
         .checked_add(indices_len)
@@ -152,8 +152,8 @@ fn parse_index_bytes_with_flags(
         num_items,
         num_nodes,
         level_count,
-        level_bounds: &bytes[level_start..boxes_start],
-        boxes: &bytes[boxes_start..indices_start],
+        level_bounds: &bytes[level_start..entries_start],
+        entries: &bytes[entries_start..indices_start],
         indices: &bytes[indices_start..end],
     };
     validate_level_bounds(&parsed)?;
@@ -254,14 +254,14 @@ fn serialized_len_for_dimensions(
     let levels = level_count
         .checked_mul(8)
         .ok_or(LoadError::IntegerOverflow)?;
-    let boxes = num_nodes
+    let entries = num_nodes
         .checked_mul(dimensions)
         .and_then(|len| len.checked_mul(16))
         .ok_or(LoadError::IntegerOverflow)?;
     let indices = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
     FORMAT_HEADER_LEN
         .checked_add(levels)
-        .and_then(|len| len.checked_add(boxes))
+        .and_then(|len| len.checked_add(entries))
         .and_then(|len| len.checked_add(indices))
         .ok_or(LoadError::IntegerOverflow)
 }
@@ -307,7 +307,7 @@ impl<'a> ByteWriter<'a> {
         self.write_bytes(&value.to_le_bytes());
     }
 
-    // Only the big-endian bounds-writing fallback uses this; on little-endian targets
+    // Only the big-endian box-writing fallback uses this; on little-endian targets
     // the bulk memcpy path makes it dead, so suppress the lint there.
     #[inline]
     #[cfg_attr(target_endian = "little", allow(dead_code))]
@@ -315,73 +315,67 @@ impl<'a> ByteWriter<'a> {
         self.write_bytes(&value.to_le_bytes());
     }
 
-    /// Write 2D bounds as little-endian box records.
+    /// Write 2D boxes as little-endian box records.
     ///
     /// On little-endian targets the slice is copied in one bulk memcpy. Other targets
     /// fall back to per-field writes.
     #[inline]
-    pub(crate) fn write_bounds2d_slice(&mut self, values: &[Bounds2D]) {
+    pub(crate) fn write_box2d_slice(&mut self, values: &[Box2D]) {
         #[cfg(target_endian = "little")]
         {
             debug_assert_eq!(
-                core::mem::size_of::<Bounds2D>(),
+                core::mem::size_of::<Box2D>(),
                 4 * core::mem::size_of::<f64>()
             );
-            debug_assert_eq!(
-                core::mem::align_of::<Bounds2D>(),
-                core::mem::align_of::<f64>()
-            );
-            // SAFETY: `Bounds2D` is `repr(C)` with exactly four contiguous `f64`
+            debug_assert_eq!(core::mem::align_of::<Box2D>(), core::mem::align_of::<f64>());
+            // SAFETY: `Box2D` is `repr(C)` with exactly four contiguous `f64`
             // fields in the persisted order and no padding; on little-endian targets
             // those native bytes are the little-endian file encoding.
             unsafe { self.write_raw_slice_bytes(values) };
         }
         #[cfg(not(target_endian = "little"))]
-        for bounds in values {
-            self.write_f64(bounds.min_x);
-            self.write_f64(bounds.min_y);
-            self.write_f64(bounds.max_x);
-            self.write_f64(bounds.max_y);
+        for item in values {
+            self.write_f64(item.min_x);
+            self.write_f64(item.min_y);
+            self.write_f64(item.max_x);
+            self.write_f64(item.max_y);
         }
     }
 
-    /// Write 3D bounds as little-endian box records.
+    /// Write 3D boxes as little-endian box records.
     ///
     /// On little-endian targets the slice is copied in one bulk memcpy. Other targets
     /// fall back to per-field writes.
     #[inline]
-    pub(crate) fn write_bounds3d_slice(&mut self, values: &[Bounds3D]) {
+    pub(crate) fn write_box3d_slice(&mut self, values: &[Box3D]) {
         #[cfg(target_endian = "little")]
         {
             debug_assert_eq!(
-                core::mem::size_of::<Bounds3D>(),
+                core::mem::size_of::<Box3D>(),
                 6 * core::mem::size_of::<f64>()
             );
-            debug_assert_eq!(
-                core::mem::align_of::<Bounds3D>(),
-                core::mem::align_of::<f64>()
-            );
-            // SAFETY: `Bounds3D` is `repr(C)` with exactly six contiguous `f64`
+            debug_assert_eq!(core::mem::align_of::<Box3D>(), core::mem::align_of::<f64>());
+            // SAFETY: `Box3D` is `repr(C)` with exactly six contiguous `f64`
             // fields in the persisted order and no padding; on little-endian targets
             // those native bytes are the little-endian file encoding.
             unsafe { self.write_raw_slice_bytes(values) };
         }
         #[cfg(not(target_endian = "little"))]
-        for bounds in values {
-            self.write_f64(bounds.min_x);
-            self.write_f64(bounds.min_y);
-            self.write_f64(bounds.min_z);
-            self.write_f64(bounds.max_x);
-            self.write_f64(bounds.max_y);
-            self.write_f64(bounds.max_z);
+        for item in values {
+            self.write_f64(item.min_x);
+            self.write_f64(item.min_y);
+            self.write_f64(item.min_z);
+            self.write_f64(item.max_x);
+            self.write_f64(item.max_y);
+            self.write_f64(item.max_z);
         }
     }
 
     /// Write 2D box records from structure-of-arrays columns (one `[min_x, min_y,
     /// max_x, max_y]` record per node). Produces the same bytes as
-    /// [`write_bounds2d_slice`](Self::write_bounds2d_slice) on an equivalent AoS slice.
+    /// [`write_box2d_slice`](Self::write_box2d_slice) on an equivalent AoS slice.
     #[cfg(feature = "simd")]
-    pub(crate) fn write_soa_bounds_2d(
+    pub(crate) fn write_soa_boxes_2d(
         &mut self,
         min_xs: &[f64],
         min_ys: &[f64],
@@ -401,10 +395,10 @@ impl<'a> ByteWriter<'a> {
 
     /// Write 3D box records from structure-of-arrays columns (one `[min_x, min_y,
     /// min_z, max_x, max_y, max_z]` record per node). Produces the same bytes as
-    /// [`write_bounds3d_slice`](Self::write_bounds3d_slice) on an equivalent AoS slice.
+    /// [`write_box3d_slice`](Self::write_box3d_slice) on an equivalent AoS slice.
     #[cfg(feature = "simd")]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn write_soa_bounds_3d(
+    pub(crate) fn write_soa_boxes_3d(
         &mut self,
         min_xs: &[f64],
         min_ys: &[f64],

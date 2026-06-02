@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use packed_spatial_index::experimental::ExperimentalSortKey3D;
-use packed_spatial_index::{Bounds3D, Index3DBuilder};
+use packed_spatial_index::{Box3D, Index3DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -16,7 +16,7 @@ const REPS: usize = 200;
 
 fn main() {
     let mut rng = StdRng::seed_from_u64(0x3D0B);
-    let boxes: Vec<Bounds3D> = (0..N)
+    let boxes: Vec<Box3D> = (0..N)
         .map(|_| {
             let x: f64 = rng.random_range(0.0..10_000.0);
             let y: f64 = rng.random_range(0.0..10_000.0);
@@ -24,7 +24,7 @@ fn main() {
             let dx: f64 = rng.random_range(0.1..20.0);
             let dy: f64 = rng.random_range(0.1..20.0);
             let dz: f64 = rng.random_range(0.1..20.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect();
 
@@ -42,13 +42,13 @@ fn main() {
     let simd = simd.finish_simd().unwrap();
 
     let mut qrng = StdRng::seed_from_u64(0x3ACE);
-    let queries: Vec<Bounds3D> = (0..NQ)
+    let queries: Vec<Box3D> = (0..NQ)
         .map(|_| {
             let x: f64 = qrng.random_range(0.0..10_000.0);
             let y: f64 = qrng.random_range(0.0..10_000.0);
             let z: f64 = qrng.random_range(0.0..10_000.0);
             let w: f64 = qrng.random_range(10.0..200.0);
-            Bounds3D::new(x, y, z, x + w, y + w, z + w)
+            Box3D::new(x, y, z, x + w, y + w, z + w)
         })
         .collect();
 

@@ -6,14 +6,14 @@
 /// # Example
 ///
 /// ```
-/// use packed_spatial_index::{Index2DBuilder, Bounds2D, SearchWorkspace};
+/// use packed_spatial_index::{Index2DBuilder, Box2D, SearchWorkspace};
 ///
 /// let mut builder = Index2DBuilder::new(1);
-/// builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
 /// let index = builder.finish().unwrap();
 ///
 /// let mut workspace = SearchWorkspace::new();
-/// let hits = index.search_with(Bounds2D::new(0.5, 0.5, 0.5, 0.5), &mut workspace);
+/// let hits = index.search_with(Box2D::new(0.5, 0.5, 0.5, 0.5), &mut workspace);
 /// assert_eq!(hits, &[0]);
 /// ```
 #[derive(Debug, Default)]

@@ -4,7 +4,7 @@
 //! query results as the serial build and the AoS reference. Tree layout may differ
 //! on tie-breaking, so results are compared as sorted sets, not byte-for-byte.
 
-use packed_spatial_index::{Bounds2D, Bounds3D, Index2DBuilder, Index3DBuilder};
+use packed_spatial_index::{Box2D, Box3D, Index2DBuilder, Index3DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -12,13 +12,13 @@ use rand::{RngExt, SeedableRng};
 fn simd2d_parallel_build_matches_serial() {
     let n = 20_000usize;
     let mut rng = StdRng::seed_from_u64(0x2A11);
-    let boxes: Vec<Bounds2D> = (0..n)
+    let boxes: Vec<Box2D> = (0..n)
         .map(|_| {
             let x: f64 = rng.random_range(0.0..2_000.0);
             let y: f64 = rng.random_range(0.0..2_000.0);
             let w: f64 = rng.random_range(0.1..25.0);
             let h: f64 = rng.random_range(0.1..25.0);
-            Bounds2D::new(x, y, x + w, y + h)
+            Box2D::new(x, y, x + w, y + h)
         })
         .collect();
 
@@ -45,7 +45,7 @@ fn simd2d_parallel_build_matches_serial() {
         let x: f64 = rng.random_range(0.0..2_000.0);
         let y: f64 = rng.random_range(0.0..2_000.0);
         let w: f64 = rng.random_range(1.0..120.0);
-        let q = Bounds2D::new(x, y, x + w, y + w);
+        let q = Box2D::new(x, y, x + w, y + w);
         let mut expected = aos.search(q);
         expected.sort_unstable();
         let mut s = serial.search(q);
@@ -61,7 +61,7 @@ fn simd2d_parallel_build_matches_serial() {
 fn simd3d_parallel_build_matches_serial() {
     let n = 20_000usize;
     let mut rng = StdRng::seed_from_u64(0x2A33);
-    let boxes: Vec<Bounds3D> = (0..n)
+    let boxes: Vec<Box3D> = (0..n)
         .map(|_| {
             let x: f64 = rng.random_range(0.0..2_000.0);
             let y: f64 = rng.random_range(0.0..2_000.0);
@@ -69,7 +69,7 @@ fn simd3d_parallel_build_matches_serial() {
             let dx: f64 = rng.random_range(0.1..25.0);
             let dy: f64 = rng.random_range(0.1..25.0);
             let dz: f64 = rng.random_range(0.1..25.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect();
 
@@ -97,7 +97,7 @@ fn simd3d_parallel_build_matches_serial() {
         let y: f64 = rng.random_range(0.0..2_000.0);
         let z: f64 = rng.random_range(0.0..2_000.0);
         let w: f64 = rng.random_range(1.0..150.0);
-        let q = Bounds3D::new(x, y, z, x + w, y + w, z + w);
+        let q = Box3D::new(x, y, z, x + w, y + w, z + w);
         let mut expected = aos.search(q);
         expected.sort_unstable();
         let mut s = serial.search(q);

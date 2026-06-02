@@ -5,7 +5,7 @@ mod common;
 use common::random_boxes;
 use packed_spatial_index::experimental::ExperimentalSortKey2D;
 use packed_spatial_index::{
-    Bounds2D, BuildError, Index2DBuilder, NeighborWorkspace, Point2D, SearchWorkspace,
+    Box2D, BuildError, Index2DBuilder, NeighborWorkspace, Point2D, SearchWorkspace,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -17,7 +17,7 @@ fn simd_empty_and_small_indexes_behave_like_aos() {
     let empty = Index2DBuilder::new(0).finish_simd().unwrap();
     assert_eq!(empty.num_items(), 0);
     assert_eq!(empty.extent(), None);
-    assert!(empty.search(Bounds2D::new(-1.0, -1.0, 1.0, 1.0)).is_empty());
+    assert!(empty.search(Box2D::new(-1.0, -1.0, 1.0, 1.0)).is_empty());
 
     let boxes = [
         [0.0, 0.0, 1.0, 1.0],
@@ -27,15 +27,15 @@ fn simd_empty_and_small_indexes_behave_like_aos() {
     let mut aos = Index2DBuilder::new(boxes.len());
     let mut simd = Index2DBuilder::new(boxes.len());
     for b in boxes {
-        aos.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
-        simd.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        aos.add(Box2D::new(b[0], b[1], b[2], b[3]));
+        simd.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     let aos = aos.finish().unwrap();
     let simd = simd.finish_simd().unwrap();
 
     assert_eq!(simd.extent(), aos.extent());
 
-    let query = Bounds2D::new(-0.25, -0.25, 2.25, 2.25);
+    let query = Box2D::new(-0.25, -0.25, 2.25, 2.25);
     let mut expected = aos.search(query);
     let mut actual = simd.search(query);
     expected.sort_unstable();
@@ -46,7 +46,7 @@ fn simd_empty_and_small_indexes_behave_like_aos() {
 #[test]
 fn simd_finish_reports_count_mismatch() {
     let mut builder = Index2DBuilder::new(2);
-    builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
 
     assert!(matches!(
         builder.finish_simd(),
@@ -60,12 +60,12 @@ fn simd_finish_reports_count_mismatch() {
 #[test]
 fn simd_search_apis_agree_with_aos() {
     let mut builder = Index2DBuilder::new(3);
-    builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-    builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
-    builder.add(Bounds2D::new(0.5, 0.5, 2.0, 2.0));
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    builder.add(Box2D::new(0.5, 0.5, 2.0, 2.0));
     let simd = builder.finish_simd().unwrap();
 
-    let query = Bounds2D::new(0.0, 0.0, 2.0, 2.0);
+    let query = Box2D::new(0.0, 0.0, 2.0, 2.0);
     let mut expected = simd.search(query);
     expected.sort_unstable();
 
@@ -80,9 +80,9 @@ fn simd_search_apis_agree_with_aos() {
     assert_eq!(expected, with);
 
     assert!(simd.any(query));
-    assert!(!simd.any(Bounds2D::new(10.0, 10.0, 11.0, 11.0)));
+    assert!(!simd.any(Box2D::new(10.0, 10.0, 11.0, 11.0)));
     assert!(matches!(simd.first(query), Some(0 | 2)));
-    assert_eq!(simd.first(Bounds2D::new(10.0, 10.0, 11.0, 11.0)), None);
+    assert_eq!(simd.first(Box2D::new(10.0, 10.0, 11.0, 11.0)), None);
 
     let mut visited = Vec::new();
     let completed: ControlFlow<()> = simd.visit(query, |idx| {
@@ -102,8 +102,8 @@ fn simd_neighbors_match_aos() {
     let mut aos_builder = Index2DBuilder::new(boxes.len()).node_size(16);
     let mut simd_builder = Index2DBuilder::new(boxes.len()).node_size(16);
     for b in &boxes {
-        aos_builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
-        simd_builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        aos_builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
+        simd_builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     let aos = aos_builder.finish().unwrap();
     let simd = simd_builder.finish_simd().unwrap();
@@ -141,7 +141,7 @@ fn simd_index_search_matches_reference() {
         .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     for b in &boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        builder.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let simd = builder.finish_simd().unwrap();
@@ -154,7 +154,7 @@ fn simd_index_search_matches_reference() {
         let qy: f64 = rng.random_range(0.0..1000.0);
         let qw: f64 = rng.random_range(1.0..100.0);
         let qh: f64 = rng.random_range(1.0..100.0);
-        let query = Bounds2D::new(qx, qy, qx + qw, qy + qh);
+        let query = Box2D::new(qx, qy, qx + qw, qy + qh);
 
         let mut expected = reference.query(qx, qy, qx + qw, qy + qh);
         simd.search_scalar(query, &mut scalar, &mut st1);

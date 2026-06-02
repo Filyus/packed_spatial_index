@@ -1,6 +1,6 @@
 use packed_spatial_index::{
-    Bounds2D, Bounds3D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
-    LoadError, Point3D,
+    Box2D, Box3D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView, LoadError,
+    Point3D,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -31,7 +31,7 @@ fn persistence_3d_round_trip_and_view_agree() {
         let qx: f64 = rng.random_range(0.0..1000.0);
         let qy: f64 = rng.random_range(0.0..1000.0);
         let qz: f64 = rng.random_range(0.0..1000.0);
-        let query = Bounds3D::new(qx, qy, qz, qx + 40.0, qy + 40.0, qz + 40.0);
+        let query = Box3D::new(qx, qy, qz, qx + 40.0, qy + 40.0, qz + 40.0);
 
         let mut expected = index.search(query);
         let mut owned = loaded.search(query);
@@ -76,18 +76,18 @@ fn to_bytes_into_3d_matches_owned_serialization_and_reuses_capacity() {
 
 #[test]
 fn persistence_3d_handles_edge_shapes() {
-    let cases: Vec<Vec<Bounds3D>> = vec![
+    let cases: Vec<Vec<Box3D>> = vec![
         Vec::new(),
-        vec![Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)],
+        vec![Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)],
         vec![
-            Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
-            Bounds3D::new(2.0, 2.0, 2.0, 3.0, 3.0, 3.0),
-            Bounds3D::new(4.0, 4.0, 4.0, 5.0, 5.0, 5.0),
+            Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+            Box3D::new(2.0, 2.0, 2.0, 3.0, 3.0, 3.0),
+            Box3D::new(4.0, 4.0, 4.0, 5.0, 5.0, 5.0),
         ],
         vec![
-            Bounds3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
-            Bounds3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
-            Bounds3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+            Box3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+            Box3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+            Box3D::new(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
         ],
     ];
 
@@ -98,7 +98,7 @@ fn persistence_3d_handles_edge_shapes() {
         let view = Index3DView::from_bytes(&bytes).unwrap();
         assert_eq!(loaded.extent(), index.extent());
         assert_eq!(view.extent(), index.extent());
-        let query = Bounds3D::new(-100.0, -100.0, -100.0, 100.0, 100.0, 100.0);
+        let query = Box3D::new(-100.0, -100.0, -100.0, 100.0, 100.0, 100.0);
         assert_eq!(index.search(query), loaded.search(query));
         assert_eq!(index.search(query), view.search(query));
         assert_eq!(
@@ -115,7 +115,7 @@ fn persistence_3d_handles_edge_shapes() {
 #[test]
 fn persistence_rejects_cross_dimension_buffers() {
     let mut builder = Index2DBuilder::new(1);
-    builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
     let bytes_2d = builder.finish().unwrap().to_bytes();
     assert!(matches!(
         Index3DView::from_bytes(&bytes_2d),
@@ -123,7 +123,7 @@ fn persistence_rejects_cross_dimension_buffers() {
     ));
 
     let mut builder = Index3DBuilder::new(1);
-    builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
     let bytes_3d = builder.finish().unwrap().to_bytes();
     assert!(matches!(
         Index2DView::from_bytes(&bytes_3d),
@@ -133,10 +133,10 @@ fn persistence_rejects_cross_dimension_buffers() {
 
 #[test]
 fn persistence_3d_rejects_malformed_buffers() {
-    let boxes: Vec<Bounds3D> = (0..40)
+    let boxes: Vec<Box3D> = (0..40)
         .map(|i| {
             let x = i as f64;
-            Bounds3D::new(x, x, x, x + 0.5, x + 0.5, x + 0.5)
+            Box3D::new(x, x, x, x + 0.5, x + 0.5, x + 0.5)
         })
         .collect();
     let bytes = build_index_3d(&boxes, 4).to_bytes();
@@ -216,7 +216,7 @@ fn persistence_3d_rejects_malformed_buffers() {
     ));
 }
 
-fn build_index_3d(boxes: &[Bounds3D], node_size: usize) -> Index3D {
+fn build_index_3d(boxes: &[Box3D], node_size: usize) -> Index3D {
     let mut builder = Index3DBuilder::new(boxes.len()).node_size(node_size);
     for &bounds in boxes {
         builder.add(bounds);
@@ -224,7 +224,7 @@ fn build_index_3d(boxes: &[Bounds3D], node_size: usize) -> Index3D {
     builder.finish().unwrap()
 }
 
-fn random_boxes_3d(rng: &mut StdRng, n: usize) -> Vec<Bounds3D> {
+fn random_boxes_3d(rng: &mut StdRng, n: usize) -> Vec<Box3D> {
     (0..n)
         .map(|_| {
             let x: f64 = rng.random_range(0.0..1000.0);
@@ -233,7 +233,7 @@ fn random_boxes_3d(rng: &mut StdRng, n: usize) -> Vec<Bounds3D> {
             let dx: f64 = rng.random_range(0.1..20.0);
             let dy: f64 = rng.random_range(0.1..20.0);
             let dz: f64 = rng.random_range(0.1..20.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect()
 }

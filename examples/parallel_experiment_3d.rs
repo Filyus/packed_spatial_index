@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use packed_spatial_index::experimental::ExperimentalSortKey3D;
-use packed_spatial_index::{Bounds3D, Index3D, Index3DBuilder};
+use packed_spatial_index::{Box3D, Index3D, Index3DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -17,7 +17,7 @@ enum BuildMode {
     ParallelForced,
 }
 
-fn gen_boxes(n: usize) -> Vec<Bounds3D> {
+fn gen_boxes(n: usize) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(0x3D0B);
     (0..n)
         .map(|_| {
@@ -27,12 +27,12 @@ fn gen_boxes(n: usize) -> Vec<Bounds3D> {
             let dx: f64 = rng.random_range(0.1..20.0);
             let dy: f64 = rng.random_range(0.1..20.0);
             let dz: f64 = rng.random_range(0.1..20.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect()
 }
 
-fn build(boxes: &[Bounds3D], mode: BuildMode) -> Index3D {
+fn build(boxes: &[Box3D], mode: BuildMode) -> Index3D {
     let mut builder = Index3DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
         .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
@@ -47,7 +47,7 @@ fn build(boxes: &[Bounds3D], mode: BuildMode) -> Index3D {
     builder.finish().unwrap()
 }
 
-fn time_build(boxes: &[Bounds3D], mode: BuildMode, reps: usize) -> f64 {
+fn time_build(boxes: &[Box3D], mode: BuildMode, reps: usize) -> f64 {
     let mut best = f64::INFINITY;
     for _ in 0..reps {
         let start = Instant::now();
@@ -71,7 +71,7 @@ fn main() {
             let x: f64 = rng.random_range(0.0..10_000.0);
             let y: f64 = rng.random_range(0.0..10_000.0);
             let z: f64 = rng.random_range(0.0..10_000.0);
-            let query = Bounds3D::new(x, y, z, x + 150.0, y + 150.0, z + 150.0);
+            let query = Box3D::new(x, y, z, x + 150.0, y + 150.0, z + 150.0);
             let mut a = serial.search(query);
             let mut b = parallel.search(query);
             a.sort_unstable();

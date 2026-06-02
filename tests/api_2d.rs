@@ -3,7 +3,7 @@ use packed_spatial_index::DEFAULT_PARALLEL_MIN_ITEMS;
 #[cfg(feature = "parallel")]
 use packed_spatial_index::experimental::ExperimentalSortKey2D;
 use packed_spatial_index::{
-    Bounds2D, BoundsError, BuildError, DEFAULT_NODE_SIZE, Index2DBuilder, SearchWorkspace,
+    BoundsError, Box2D, BuildError, DEFAULT_NODE_SIZE, Index2DBuilder, SearchWorkspace,
 };
 #[cfg(feature = "parallel")]
 use rand::rngs::StdRng;
@@ -14,10 +14,10 @@ use std::ops::ControlFlow;
 
 #[test]
 fn bounds_helpers_use_inclusive_edges() {
-    let outer = Bounds2D::new(0.0, 0.0, 10.0, 10.0);
-    let inner = Bounds2D::new(2.0, 2.0, 4.0, 4.0);
-    let touching = Bounds2D::new(10.0, 10.0, 12.0, 12.0);
-    let outside = Bounds2D::new(11.0, 11.0, 12.0, 12.0);
+    let outer = Box2D::new(0.0, 0.0, 10.0, 10.0);
+    let inner = Box2D::new(2.0, 2.0, 4.0, 4.0);
+    let touching = Box2D::new(10.0, 10.0, 12.0, 12.0);
+    let outside = Box2D::new(11.0, 11.0, 12.0, 12.0);
 
     assert!(outer.overlaps(inner));
     assert!(outer.overlaps(touching));
@@ -33,16 +33,16 @@ fn bounds_helpers_use_inclusive_edges() {
 #[test]
 fn bounds_try_new_validates_bounds() {
     assert_eq!(
-        Bounds2D::try_new(0.0, 0.0, 1.0, 1.0),
-        Ok(Bounds2D::new(0.0, 0.0, 1.0, 1.0))
+        Box2D::try_new(0.0, 0.0, 1.0, 1.0),
+        Ok(Box2D::new(0.0, 0.0, 1.0, 1.0))
     );
 
     assert!(matches!(
-        Bounds2D::try_new(2.0, 0.0, 1.0, 1.0),
+        Box2D::try_new(2.0, 0.0, 1.0, 1.0),
         Err(BoundsError::InvalidBounds { .. })
     ));
     assert!(matches!(
-        Bounds2D::try_new(0.0, f64::NAN, 1.0, 1.0),
+        Box2D::try_new(0.0, f64::NAN, 1.0, 1.0),
         Err(BoundsError::InvalidBounds { .. })
     ));
 }
@@ -51,7 +51,7 @@ fn bounds_try_new_validates_bounds() {
 fn default_builder_uses_exported_node_size() {
     let mut builder = Index2DBuilder::new(17);
     for i in 0..17 {
-        builder.add(Bounds2D::new(i as f64, 0.0, i as f64 + 0.5, 1.0));
+        builder.add(Box2D::new(i as f64, 0.0, i as f64 + 0.5, 1.0));
     }
     let index = builder.finish().unwrap();
     assert_eq!(index.node_size(), DEFAULT_NODE_SIZE);
@@ -72,7 +72,7 @@ fn empty_and_small_indexes_behave_like_reference() {
     assert_eq!(empty.num_items(), 0);
     assert_eq!(empty.extent(), None);
     assert_eq!(
-        empty.search(Bounds2D::new(-1.0, -1.0, 1.0, 1.0)),
+        empty.search(Box2D::new(-1.0, -1.0, 1.0, 1.0)),
         reference.query(-1.0, -1.0, 1.0, 1.0)
     );
 
@@ -85,14 +85,14 @@ fn empty_and_small_indexes_behave_like_reference() {
     let mut index = Index2DBuilder::new(boxes.len());
     for b in boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        index.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        index.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
 
-    assert_eq!(index.extent(), Some(Bounds2D::new(-1.0, -1.0, 3.0, 3.0)));
+    assert_eq!(index.extent(), Some(Box2D::new(-1.0, -1.0, 3.0, 3.0)));
 
-    let query = Bounds2D::new(-0.25, -0.25, 2.25, 2.25);
+    let query = Box2D::new(-0.25, -0.25, 2.25, 2.25);
     let mut expected = reference.query(query.min_x, query.min_y, query.max_x, query.max_y);
     let mut actual = index.search(query);
     expected.sort_unstable();
@@ -111,12 +111,12 @@ fn degenerate_extent_matches_reference() {
     let mut index = Index2DBuilder::new(boxes.len());
     for b in boxes {
         reference.add(b[0], b[1], b[2], b[3]);
-        index.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        index.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     let reference = reference.build().unwrap();
     let index = index.finish().unwrap();
 
-    let query = Bounds2D::new(9.0, 9.0, 11.0, 11.0);
+    let query = Box2D::new(9.0, 9.0, 11.0, 11.0);
     let mut expected = reference.query(query.min_x, query.min_y, query.max_x, query.max_y);
     let mut actual = index.search(query);
     expected.sort_unstable();
@@ -127,12 +127,12 @@ fn degenerate_extent_matches_reference() {
 #[test]
 fn search_apis_agree() {
     let mut builder = Index2DBuilder::new(3);
-    builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-    builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
-    builder.add(Bounds2D::new(0.5, 0.5, 2.0, 2.0));
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    builder.add(Box2D::new(0.5, 0.5, 2.0, 2.0));
     let index = builder.finish().unwrap();
 
-    let query = Bounds2D::new(0.0, 0.0, 2.0, 2.0);
+    let query = Box2D::new(0.0, 0.0, 2.0, 2.0);
     let mut expected = index.search(query);
     expected.sort_unstable();
 
@@ -148,9 +148,9 @@ fn search_apis_agree() {
     assert_eq!(workspace.results().len(), 2);
 
     assert!(index.any(query));
-    assert!(!index.any(Bounds2D::new(10.0, 10.0, 11.0, 11.0)));
+    assert!(!index.any(Box2D::new(10.0, 10.0, 11.0, 11.0)));
     assert!(matches!(index.first(query), Some(0 | 2)));
-    assert_eq!(index.first(Bounds2D::new(10.0, 10.0, 11.0, 11.0)), None);
+    assert_eq!(index.first(Box2D::new(10.0, 10.0, 11.0, 11.0)), None);
 
     let mut visited = Vec::new();
     let completed: ControlFlow<()> = index.visit(query, |idx| {
@@ -173,24 +173,24 @@ fn search_apis_agree() {
 #[test]
 fn hidden_stack_paths_reuse_and_clear_buffers() {
     let mut builder = Index2DBuilder::new(2);
-    builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
-    builder.add(Bounds2D::new(5.0, 5.0, 6.0, 6.0));
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
     let index = builder.finish().unwrap();
 
     let mut out = vec![usize::MAX];
     let mut stack = vec![usize::MAX, usize::MAX];
-    index.search_into_stack(Bounds2D::new(10.0, 10.0, 11.0, 11.0), &mut out, &mut stack);
+    index.search_into_stack(Box2D::new(10.0, 10.0, 11.0, 11.0), &mut out, &mut stack);
     assert!(out.is_empty());
     assert!(stack.is_empty());
 
-    index.search_into_stack_prefetch(Bounds2D::new(0.0, 0.0, 2.0, 2.0), &mut out, &mut stack);
+    index.search_into_stack_prefetch(Box2D::new(0.0, 0.0, 2.0, 2.0), &mut out, &mut stack);
     assert_eq!(out, vec![0]);
 }
 
 #[test]
 fn finish_reports_count_mismatch() {
     let mut builder = Index2DBuilder::new(2);
-    builder.add(Bounds2D::new(0.0, 0.0, 1.0, 1.0));
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
 
     assert!(matches!(
         builder.finish(),
@@ -220,8 +220,8 @@ fn parallel_build_matches_serial() {
         .parallel(true)
         .parallel_min_items(0);
     for b in &boxes {
-        serial.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
-        parallel.add(Bounds2D::new(b[0], b[1], b[2], b[3]));
+        serial.add(Box2D::new(b[0], b[1], b[2], b[3]));
+        parallel.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
     let serial = serial.finish().unwrap();
     let parallel = parallel.finish().unwrap();
@@ -229,7 +229,7 @@ fn parallel_build_matches_serial() {
     for _ in 0..200 {
         let qx: f64 = rng.random_range(0.0..10_000.0);
         let qy: f64 = rng.random_range(0.0..10_000.0);
-        let query = Bounds2D::new(qx, qy, qx + 150.0, qy + 150.0);
+        let query = Box2D::new(qx, qy, qx + 150.0, qy + 150.0);
         let mut a = serial.search(query);
         let mut b = parallel.search(query);
         a.sort_unstable();

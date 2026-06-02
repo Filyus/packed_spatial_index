@@ -11,7 +11,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use packed_spatial_index::experimental::ExperimentalSortKey2D;
-use packed_spatial_index::{Bounds2D, Index2D, Index2DBuilder};
+use packed_spatial_index::{Box2D, Index2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
@@ -57,7 +57,7 @@ fn build_mine(boxes: &[[f64; 4]], mode: BuildMode) {
         BuildMode::ParallelForced => b.parallel(true).parallel_min_items(0),
     };
     for r in boxes {
-        b.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
+        b.add(Box2D::new(r[0], r[1], r[2], r[3]));
     }
     black_box(b.finish().unwrap());
 }
@@ -102,8 +102,8 @@ fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
         .collect()
 }
 
-fn to_bounds(q: &[f64; 4]) -> Bounds2D {
-    Bounds2D::new(q[0], q[1], q[2], q[3])
+fn to_bounds(q: &[f64; 4]) -> Box2D {
+    Box2D::new(q[0], q[1], q[2], q[3])
 }
 
 fn bench_query(c: &mut Criterion) {
@@ -119,8 +119,8 @@ fn bench_query(c: &mut Criterion) {
         .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
     for r in &boxes {
         rb.add(r[0], r[1], r[2], r[3]);
-        mb.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
-        sb.add(Bounds2D::new(r[0], r[1], r[2], r[3]));
+        mb.add(Box2D::new(r[0], r[1], r[2], r[3]));
+        sb.add(Box2D::new(r[0], r[1], r[2], r[3]));
     }
     let reference: StaticAABB2DIndex<f64> = rb.build().unwrap();
     let packed: Index2D = mb.finish().unwrap();

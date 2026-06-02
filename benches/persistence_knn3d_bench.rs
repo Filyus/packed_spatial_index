@@ -9,7 +9,7 @@ use std::ops::ControlFlow;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use packed_spatial_index::experimental::ExperimentalSortKey3D;
 use packed_spatial_index::{
-    Bounds3D, Index3D, Index3DBuilder, Index3DView, NeighborWorkspace, Point3D, SearchWorkspace,
+    Box3D, Index3D, Index3DBuilder, Index3DView, NeighborWorkspace, Point3D, SearchWorkspace,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -49,7 +49,7 @@ const KNN_CASES: &[KnnCase] = &[
     },
 ];
 
-fn gen_boxes(n: usize, seed: u64) -> Vec<Bounds3D> {
+fn gen_boxes(n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
@@ -59,12 +59,12 @@ fn gen_boxes(n: usize, seed: u64) -> Vec<Bounds3D> {
             let dx: f64 = rng.random_range(0.1..20.0);
             let dy: f64 = rng.random_range(0.1..20.0);
             let dz: f64 = rng.random_range(0.1..20.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect()
 }
 
-fn make_queries(n: usize, seed: u64) -> Vec<Bounds3D> {
+fn make_queries(n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
@@ -72,7 +72,7 @@ fn make_queries(n: usize, seed: u64) -> Vec<Bounds3D> {
             let y: f64 = rng.random_range(0.0..10_000.0);
             let z: f64 = rng.random_range(0.0..10_000.0);
             let w: f64 = rng.random_range(10.0..200.0);
-            Bounds3D::new(x, y, z, x + w, y + w, z + w)
+            Box3D::new(x, y, z, x + w, y + w, z + w)
         })
         .collect()
 }
@@ -90,7 +90,7 @@ fn make_points(n: usize, seed: u64) -> Vec<Point3D> {
         .collect()
 }
 
-fn build_index(boxes: &[Bounds3D]) -> Index3D {
+fn build_index(boxes: &[Box3D]) -> Index3D {
     let mut builder = Index3DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
         .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
@@ -100,7 +100,7 @@ fn build_index(boxes: &[Bounds3D]) -> Index3D {
     builder.finish().unwrap()
 }
 
-fn build_simd_index(boxes: &[Bounds3D]) -> packed_spatial_index::SimdIndex3D {
+fn build_simd_index(boxes: &[Box3D]) -> packed_spatial_index::SimdIndex3D {
     let mut builder = Index3DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
         .experimental_sort_key(ExperimentalSortKey3D::Hilbert);

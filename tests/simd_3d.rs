@@ -1,14 +1,14 @@
 #![cfg(feature = "simd")]
 
 use packed_spatial_index::{
-    Bounds3D, BuildError, Index3D, Index3DBuilder, NeighborWorkspace, Point3D, SearchWorkspace,
+    Box3D, BuildError, Index3D, Index3DBuilder, NeighborWorkspace, Point3D, SearchWorkspace,
     SimdIndex3D,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::ops::ControlFlow;
 
-fn random_boxes_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
+fn random_boxes_3d(n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
@@ -18,12 +18,12 @@ fn random_boxes_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
             let dx: f64 = rng.random_range(0.1..20.0);
             let dy: f64 = rng.random_range(0.1..20.0);
             let dz: f64 = rng.random_range(0.1..20.0);
-            Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+            Box3D::new(x, y, z, x + dx, y + dy, z + dz)
         })
         .collect()
 }
 
-fn flat_z_boxes_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
+fn flat_z_boxes_3d(n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
@@ -31,23 +31,23 @@ fn flat_z_boxes_3d(n: usize, seed: u64) -> Vec<Bounds3D> {
             let y: f64 = rng.random_range(0.0..1_000.0);
             let dx: f64 = rng.random_range(0.1..20.0);
             let dy: f64 = rng.random_range(0.1..20.0);
-            Bounds3D::new(x, y, 10.0, x + dx, y + dy, 10.0)
+            Box3D::new(x, y, 10.0, x + dx, y + dy, 10.0)
         })
         .collect()
 }
 
-fn degenerate_boxes_3d() -> Vec<Bounds3D> {
+fn degenerate_boxes_3d() -> Vec<Box3D> {
     (0..96)
         .map(|i| {
             let x = (i % 12) as f64;
             let y = ((i / 12) % 8) as f64;
             let z = (i % 4) as f64;
-            Bounds3D::new(x, y, z, x, y, z)
+            Box3D::new(x, y, z, x, y, z)
         })
         .collect()
 }
 
-fn build_pair(boxes: &[Bounds3D], node_size: usize) -> (Index3D, SimdIndex3D) {
+fn build_pair(boxes: &[Box3D], node_size: usize) -> (Index3D, SimdIndex3D) {
     let mut aos = Index3DBuilder::new(boxes.len()).node_size(node_size);
     let mut simd = Index3DBuilder::new(boxes.len()).node_size(node_size);
     for &b in boxes {
@@ -57,7 +57,7 @@ fn build_pair(boxes: &[Bounds3D], node_size: usize) -> (Index3D, SimdIndex3D) {
     (aos.finish().unwrap(), simd.finish_simd().unwrap())
 }
 
-fn assert_search_paths_match_aos(boxes: &[Bounds3D], node_size: usize) {
+fn assert_search_paths_match_aos(boxes: &[Box3D], node_size: usize) {
     let (aos, simd) = build_pair(boxes, node_size);
     let extent = aos.extent().unwrap();
     let mid_x = (extent.min_x + extent.max_x) * 0.5;
@@ -65,7 +65,7 @@ fn assert_search_paths_match_aos(boxes: &[Bounds3D], node_size: usize) {
     let mid_z = (extent.min_z + extent.max_z) * 0.5;
     let queries = [
         extent,
-        Bounds3D::new(
+        Box3D::new(
             extent.min_x - 10.0,
             extent.min_y - 10.0,
             extent.min_z - 10.0,
@@ -73,7 +73,7 @@ fn assert_search_paths_match_aos(boxes: &[Bounds3D], node_size: usize) {
             extent.min_y - 1.0,
             extent.min_z - 1.0,
         ),
-        Bounds3D::new(
+        Box3D::new(
             mid_x - 25.0,
             mid_y - 25.0,
             mid_z - 25.0,
@@ -81,7 +81,7 @@ fn assert_search_paths_match_aos(boxes: &[Bounds3D], node_size: usize) {
             mid_y + 25.0,
             mid_z + 25.0,
         ),
-        Bounds3D::new(
+        Box3D::new(
             extent.min_x,
             extent.min_y,
             mid_z,
@@ -89,7 +89,7 @@ fn assert_search_paths_match_aos(boxes: &[Bounds3D], node_size: usize) {
             extent.max_y,
             mid_z,
         ),
-        Bounds3D::new(
+        Box3D::new(
             extent.min_x,
             extent.min_y,
             extent.min_z,
@@ -138,7 +138,7 @@ fn simd3d_empty_and_small_indexes_behave_like_aos() {
     assert_eq!(empty.extent(), None);
     assert!(
         empty
-            .search(Bounds3D::new(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0))
+            .search(Box3D::new(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0))
             .is_empty()
     );
 
@@ -154,7 +154,7 @@ fn simd3d_empty_and_small_indexes_behave_like_aos() {
 
     assert_eq!(simd.extent(), aos.extent());
 
-    let query = Bounds3D::new(0.0, 0.0, 0.0, 1_000.0, 1_000.0, 1_000.0);
+    let query = Box3D::new(0.0, 0.0, 0.0, 1_000.0, 1_000.0, 1_000.0);
     let mut expected = aos.search(query);
     let mut actual = simd.search(query);
     expected.sort_unstable();
@@ -165,7 +165,7 @@ fn simd3d_empty_and_small_indexes_behave_like_aos() {
 #[test]
 fn simd3d_finish_reports_count_mismatch() {
     let mut builder = Index3DBuilder::new(2);
-    builder.add(Bounds3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
 
     assert!(matches!(
         builder.finish_simd(),
@@ -191,7 +191,7 @@ fn simd3d_search_apis_agree_with_aos() {
         let y: f64 = rng.random_range(0.0..1_000.0);
         let z: f64 = rng.random_range(0.0..1_000.0);
         let w: f64 = rng.random_range(1.0..150.0);
-        let query = Bounds3D::new(x, y, z, x + w, y + w, z + w);
+        let query = Box3D::new(x, y, z, x + w, y + w, z + w);
 
         let mut expected = aos.search(query);
         expected.sort_unstable();

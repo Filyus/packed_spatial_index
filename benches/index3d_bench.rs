@@ -9,7 +9,7 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use packed_spatial_index::experimental::{self, ExperimentalSortKey2D, ExperimentalSortKey3D};
 use packed_spatial_index::{
-    Bounds2D, Bounds3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
+    Box2D, Box3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
     NeighborWorkspace, Point2D, Point3D, SearchWorkspace,
 };
 use rand::rngs::StdRng;
@@ -41,7 +41,7 @@ impl DatasetKind {
 }
 
 fn build_index(
-    boxes: &[Bounds3D],
+    boxes: &[Box3D],
     node_size: usize,
     sort_key: ExperimentalSortKey3D,
     parallel: bool,
@@ -61,7 +61,7 @@ fn build_index(
     builder.finish().unwrap()
 }
 
-fn build_index2d(boxes: &[Bounds2D], node_size: usize) -> Index2D {
+fn build_index2d(boxes: &[Box2D], node_size: usize) -> Index2D {
     let mut builder = Index2DBuilder::new(boxes.len())
         .node_size(node_size)
         .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
@@ -71,7 +71,7 @@ fn build_index2d(boxes: &[Bounds2D], node_size: usize) -> Index2D {
     builder.finish().unwrap()
 }
 
-fn gen_boxes(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
+fn gen_boxes(kind: DatasetKind, n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     match kind {
         DatasetKind::PlanarXY => (0..n)
@@ -80,7 +80,7 @@ fn gen_boxes(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
                 let y = rng.random_range(0.0..10_000.0);
                 let dx = rng.random_range(1.0..40.0);
                 let dy = rng.random_range(1.0..40.0);
-                Bounds3D::new(x, y, 0.0, x + dx, y + dy, 0.0)
+                Box3D::new(x, y, 0.0, x + dx, y + dy, 0.0)
             })
             .collect(),
         DatasetKind::Uniform => (0..n)
@@ -115,7 +115,7 @@ fn gen_boxes(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
     }
 }
 
-fn gen_queries(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
+fn gen_queries(kind: DatasetKind, n: usize, seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| match kind {
@@ -124,7 +124,7 @@ fn gen_queries(kind: DatasetKind, n: usize, seed: u64) -> Vec<Bounds3D> {
                 let y = rng.random_range(0.0..10_000.0);
                 let dx = rng.random_range(50.0..300.0);
                 let dy = rng.random_range(50.0..300.0);
-                Bounds3D::new(x, y, 0.0, x + dx, y + dy, 0.0)
+                Box3D::new(x, y, 0.0, x + dx, y + dy, 0.0)
             }
             DatasetKind::Uniform => random_box(
                 &mut rng,
@@ -179,17 +179,17 @@ fn gen_points(kind: DatasetKind, n: usize, seed: u64) -> Vec<Point3D> {
         .collect()
 }
 
-fn project_boxes_2d(boxes: &[Bounds3D]) -> Vec<Bounds2D> {
+fn project_boxes_2d(boxes: &[Box3D]) -> Vec<Box2D> {
     boxes
         .iter()
-        .map(|b| Bounds2D::new(b.min_x, b.min_y, b.max_x, b.max_y))
+        .map(|b| Box2D::new(b.min_x, b.min_y, b.max_x, b.max_y))
         .collect()
 }
 
-fn project_queries_2d(queries: &[Bounds3D]) -> Vec<Bounds2D> {
+fn project_queries_2d(queries: &[Box3D]) -> Vec<Box2D> {
     queries
         .iter()
-        .map(|b| Bounds2D::new(b.min_x, b.min_y, b.max_x, b.max_y))
+        .map(|b| Box2D::new(b.min_x, b.min_y, b.max_x, b.max_y))
         .collect()
 }
 
@@ -203,14 +203,14 @@ fn random_box(
     y_range: std::ops::Range<f64>,
     z_range: std::ops::Range<f64>,
     size_range: std::ops::Range<f64>,
-) -> Bounds3D {
+) -> Box3D {
     let x = rng.random_range(x_range);
     let y = rng.random_range(y_range);
     let z = rng.random_range(z_range);
     let dx = rng.random_range(size_range.clone());
     let dy = rng.random_range(size_range.clone());
     let dz = rng.random_range(size_range);
-    Bounds3D::new(x, y, z, x + dx, y + dy, z + dz)
+    Box3D::new(x, y, z, x + dx, y + dy, z + dz)
 }
 
 fn bench_dimension_encode(c: &mut Criterion) {

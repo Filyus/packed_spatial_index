@@ -1,4 +1,4 @@
-use crate::geometry::Bounds3D;
+use crate::geometry::Box3D;
 
 const DEFAULT_RADIX_BITS_3D: u32 = 8;
 const MIN_RADIX_BITS: u32 = 1;
@@ -44,7 +44,7 @@ impl From<SortKey3D> for ExperimentalSortKey3D {
 
 #[derive(Clone, Copy)]
 pub(crate) struct SortKey3DContext {
-    pub(crate) extent: Bounds3D,
+    pub(crate) extent: Box3D,
     pub(crate) radix: bool,
     pub(crate) radix_bits: u32,
     #[cfg(feature = "parallel")]
@@ -52,7 +52,7 @@ pub(crate) struct SortKey3DContext {
 }
 
 impl SortKey3DContext {
-    pub(crate) fn new(extent: Bounds3D, radix: bool, radix_bits: u32) -> Self {
+    pub(crate) fn new(extent: Box3D, radix: bool, radix_bits: u32) -> Self {
         Self {
             extent,
             radix,
@@ -70,7 +70,7 @@ impl SortKey3DContext {
 }
 
 pub(crate) fn encode_sort_by_key_3d(
-    items: &[Bounds3D],
+    items: &[Box3D],
     sort_key: ExperimentalSortKey3D,
     context: SortKey3DContext,
 ) -> Vec<(u64, usize)> {
@@ -93,7 +93,7 @@ pub(crate) fn encode_sort_by_key_3d(
 }
 
 fn encode_sort_with_encoder_3d<F>(
-    items: &[Bounds3D],
+    items: &[Box3D],
     key_fn: F,
     axis_max: u32,
     key_bits: u32,
@@ -107,24 +107,24 @@ where
     let scale_y = axis_scale(context.extent.min_y, context.extent.max_y, axis_max);
     let scale_z = axis_scale(context.extent.min_z, context.extent.max_z, axis_max);
 
-    let encode = |i: usize, bounds: &Bounds3D| -> (u64, usize) {
+    let encode = |i: usize, item: &Box3D| -> (u64, usize) {
         let x = normalize_center(
-            bounds.min_x,
-            bounds.max_x,
+            item.min_x,
+            item.max_x,
             context.extent.min_x,
             scale_x,
             axis_max,
         );
         let y = normalize_center(
-            bounds.min_y,
-            bounds.max_y,
+            item.min_y,
+            item.max_y,
             context.extent.min_y,
             scale_y,
             axis_max,
         );
         let z = normalize_center(
-            bounds.min_z,
-            bounds.max_z,
+            item.min_z,
+            item.max_z,
             context.extent.min_z,
             scale_z,
             axis_max,
@@ -141,18 +141,18 @@ where
 }
 
 pub(crate) fn encode_sort_serial_3d<F>(
-    items: &[Bounds3D],
+    items: &[Box3D],
     encode: &F,
     radix: bool,
     radix_bits: u32,
     key_bits: u32,
 ) -> Vec<(u64, usize)>
 where
-    F: Fn(usize, &Bounds3D) -> (u64, usize),
+    F: Fn(usize, &Box3D) -> (u64, usize),
 {
     let mut order = Vec::with_capacity(items.len());
-    for (i, bounds) in items.iter().enumerate() {
-        order.push(encode(i, bounds));
+    for (i, item) in items.iter().enumerate() {
+        order.push(encode(i, item));
     }
     if radix {
         radix_sort_pairs_u64_with_used_bits(&mut order, radix_bits, key_bits);
@@ -163,16 +163,16 @@ where
 }
 
 #[cfg(feature = "parallel")]
-pub(crate) fn encode_sort_parallel_3d<F>(items: &[Bounds3D], encode: &F) -> Vec<(u64, usize)>
+pub(crate) fn encode_sort_parallel_3d<F>(items: &[Box3D], encode: &F) -> Vec<(u64, usize)>
 where
-    F: Fn(usize, &Bounds3D) -> (u64, usize) + Sync,
+    F: Fn(usize, &Box3D) -> (u64, usize) + Sync,
 {
     use rayon::prelude::*;
 
     let mut order: Vec<(u64, usize)> = items
         .par_iter()
         .enumerate()
-        .map(|(i, bounds)| encode(i, bounds))
+        .map(|(i, item)| encode(i, item))
         .collect();
     order.par_sort_unstable_by_key(|&(key, _)| key);
     order

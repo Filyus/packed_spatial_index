@@ -223,13 +223,13 @@ reported as `LoadError` instead of relying on caller-side invariants.
 Recent local Criterion run, lower is better. The workload uses 100,000 random
 AABBs and 1,000 random search windows.
 
-| Benchmark | FlatGeobuf packed R-tree | `Index2D` | `SimdIndex2D` |
-| --- | ---: | ---: | ---: |
-| Full build | 48.03 ms | 2.64 ms serial / 2.06 ms parallel | - |
-| Search batch | 568.23 us | 418.81 us | 136.27 us |
-| Serialize built tree | 132.73 us | 523.98 us | - |
-| Load owned tree | 733.06 us | 548.26 us | - |
-| Load zero-copy view | - | 35.59 us | - |
+| Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
+| --- | ---: | ---: | ---: | ---: |
+| Full build | 48.05 ms | 6.38 ms | 2.68 ms serial / 2.06 ms parallel | - |
+| Search batch | 563.79 us | 647.35 us | 425.08 us | 136.48 us |
+| Serialize built tree | 131.32 us | - | 510.70 us | - |
+| Load owned tree | 729.00 us | - | 550.03 us | - |
+| Load zero-copy view | - | - | 35.68 us | - |
 
 Recent local 2D-vs-3D Criterion run. Lower latency is better. The `3D speed`
 column is `2D latency / 3D latency`, so values above `1.00x` mean 3D is faster.

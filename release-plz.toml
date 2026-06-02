@@ -12,7 +12,10 @@ git_release_enable = false
 git_tag_enable = false
 publish = false
 release_always = false
-release_commits = "^(api|build|bounds3d|sort3d|simd|simd3d|persistence|knn|perf|search|sortkey|bench|benches|test|tests|docs|refactor|layout|ci|deps|edition|meta|package)(,|:)"
+# The first commit domain drives release notes. Keep this broad enough for
+# module/public-type domains (`index3d:`, `views:`, `hilbert:`), while skipped
+# release housekeeping domains stay out of this regex.
+release_commits = "^(api|builder|builder2d|builder3d|index|index2d|index3d|2d|3d|box|boxes|box2d|box3d|bounds|bounds2d|bounds3d|point|points|point2d|point3d|geometry|config|default|defaults|error|errors|safety|unsafe|simd|simd2d|simd3d|simd-view|simd-views|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse|persistence|persist|serialize|serialization|deserialize|load|loader|view|views|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy|knn|neighbor|neighbors|nearest|search|visitor|visit|traversal|workspace|perf|performance|parallel|radix|node|nodes|node-size|node_size|nodesize|prefetch|sort|sort2d|sort3d|sortkey|hilbert|hilbert2d|morton|encoder|encoders|encoding|bench|benches|benchmark|benchmarks|flatgeobuf|static-aabb|static_aabb|compare|comparison|test|tests|correctness|fuzz|fuzzing|refactor|layout|tree|internal|module|modules|docs|doc|readme|rustdoc|example|examples|build|ci|deps|dependency|dependencies|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(,|:)"
 pr_branch_prefix = "release-plz-"
 pr_draft = true
 pr_labels = ["release"]
@@ -93,32 +96,29 @@ tag_pattern = "v[0-9].*"
 sort_commits = "oldest"
 protect_breaking_commits = true
 
+# `build:` is reserved for Cargo/build-system work. Use `builder:` for
+# Index2DBuilder/Index3DBuilder API changes.
 commit_parsers = [
-  { message = "^api(?:,|:)", group = "API" },
-  { message = "^bounds3d(?:,|:)", group = "3D" },
-  { message = "^sort3d(?:,|:)", group = "3D" },
-  { message = "^simd(?:,|:)", group = "SIMD" },
-  { message = "^simd3d(?:,|:)", group = "SIMD" },
-  { message = "^persistence(?:,|:)", group = "Persistence" },
-  { message = "^knn(?:,|:)", group = "Nearest Neighbors" },
-  { message = "^perf(?:,|:)", group = "Performance" },
-  { message = "^search(?:,|:)", group = "Performance" },
-  { message = "^sortkey(?:,|:)", group = "Performance" },
-  { message = "^bench(?:,|:)", group = "Benchmarks" },
-  { message = "^benches(?:,|:)", group = "Benchmarks" },
-  { message = "^test(?:,|:)", group = "Tests" },
-  { message = "^tests(?:,|:)", group = "Tests" },
-  { message = "^refactor(?:,|:)", group = "Refactoring" },
-  { message = "^layout(?:,|:)", group = "Refactoring" },
-  { message = "^docs(?:,|:)", group = "Documentation" },
-  { message = "^build(?:,|:)", group = "Build, CI, and Packaging" },
-  { message = "^ci(?:,|:)", group = "Build, CI, and Packaging" },
-  { message = "^deps(?:,|:)", group = "Build, CI, and Packaging" },
-  { message = "^edition(?:,|:)", group = "Build, CI, and Packaging" },
-  { message = "^meta(?:,|:)", group = "Build, CI, and Packaging" },
-  { message = "^package(?:,|:)", group = "Build, CI, and Packaging" },
   { message = "^release(?:,|:)", skip = true },
   { message = "^repo(?:,|:)", skip = true },
+  { message = "^changelog(?:,|:)", skip = true },
+  { message = "^(api|builder|config|defaults?|errors?)(?:,|:)", group = "API" },
+  { message = "^(2d|index2d|builder2d|sort2d|hilbert2d|box2d|bounds2d|point2d)(?:,|:)", group = "2D" },
+  { message = "^(3d|index3d|builder3d|sort3d|box3d|bounds3d|point3d)(?:,|:)", group = "3D" },
+  { message = "^(index)(?:,|:)", group = "Indexes" },
+  { message = "^(geometry|boxes?|bounds|points?)(?:,|:)", group = "Geometry" },
+  { message = "^(safety|unsafe)(?:,|:)", group = "Safety" },
+  { message = "^(simd|simd2d|simd3d|simd-views?|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse)(?:,|:)", group = "SIMD" },
+  { message = "^(persistence|persist|serialize|serialization|deserialize|load|loader|views?|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy)(?:,|:)", group = "Persistence" },
+  { message = "^(knn|neighbors?|nearest)(?:,|:)", group = "Nearest Neighbors" },
+  { message = "^(search|visitor|visit|traversal|workspace)(?:,|:)", group = "Search" },
+  { message = "^(perf|performance|parallel|radix|nodes?|node-size|node_size|nodesize|prefetch)(?:,|:)", group = "Performance" },
+  { message = "^(sort|sortkey|hilbert|morton|encoders?|encoding)(?:,|:)", group = "Sorting and Encoding" },
+  { message = "^(bench|benches|benchmarks?|flatgeobuf|static-aabb|static_aabb|compare|comparison)(?:,|:)", group = "Benchmarks" },
+  { message = "^(test|tests|correctness|fuzz|fuzzing)(?:,|:)", group = "Tests" },
+  { message = "^(refactor|layout|tree|internal|modules?)(?:,|:)", group = "Refactoring" },
+  { message = "^(docs?|readme|rustdoc|examples?)(?:,|:)", group = "Documentation" },
+  { message = "^(build|ci|deps|dependencies?|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(?:,|:)", group = "Build, CI, and Packaging" },
 ]
 
 link_parsers = [

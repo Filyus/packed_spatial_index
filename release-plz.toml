@@ -34,7 +34,7 @@ body = """
 
 {% for group, commits in commits | group_by(attribute="group") %}
 {% set clean_group = group | striptags | trim %}
-{% if clean_group != "Documentation" and clean_group != "Build, CI, and Packaging" %}
+{% if clean_group != "Documentation" and clean_group != "Tests" and clean_group != "Refactoring" and clean_group != "Build, CI, and Packaging" %}
 ### {{ clean_group }}
 
 {% for commit in commits %}
@@ -46,6 +46,28 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 {% set clean_group = group | striptags | trim %}
 {% if clean_group == "Documentation" %}
+### {{ clean_group }}
+
+{% for commit in commits %}
+- {{ commit.message | upper_first }}{% if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}) {% endfor %}){% endif %}
+{% endfor %}
+
+{% endif %}
+{% endfor %}
+{% for group, commits in commits | group_by(attribute="group") %}
+{% set clean_group = group | striptags | trim %}
+{% if clean_group == "Tests" %}
+### {{ clean_group }}
+
+{% for commit in commits %}
+- {{ commit.message | upper_first }}{% if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}) {% endfor %}){% endif %}
+{% endfor %}
+
+{% endif %}
+{% endfor %}
+{% for group, commits in commits | group_by(attribute="group") %}
+{% set clean_group = group | striptags | trim %}
+{% if clean_group == "Refactoring" %}
 ### {{ clean_group }}
 
 {% for commit in commits %}

@@ -1,4 +1,4 @@
-name: "Release: publish crate"
+name: "Release 2: publish crate"
 
 on:
   workflow_dispatch:

@@ -102,26 +102,31 @@ fn encode_sort_with_encoder_3d<F>(
 where
     F: Fn(u32, u32, u32) -> u64 + Copy + Sync,
 {
+    // Mirror the 2D path: compute reciprocal scales once, then multiply per item.
+    let scale_x = axis_scale(context.extent.min_x, context.extent.max_x, axis_max);
+    let scale_y = axis_scale(context.extent.min_y, context.extent.max_y, axis_max);
+    let scale_z = axis_scale(context.extent.min_z, context.extent.max_z, axis_max);
+
     let encode = |i: usize, bounds: &Bounds3D| -> (u64, usize) {
         let x = normalize_center(
             bounds.min_x,
             bounds.max_x,
             context.extent.min_x,
-            context.extent.max_x,
+            scale_x,
             axis_max,
         );
         let y = normalize_center(
             bounds.min_y,
             bounds.max_y,
             context.extent.min_y,
-            context.extent.max_y,
+            scale_y,
             axis_max,
         );
         let z = normalize_center(
             bounds.min_z,
             bounds.max_z,
             context.extent.min_z,
-            context.extent.max_z,
+            scale_z,
             axis_max,
         );
         (key_fn(x, y, z), i)
@@ -243,13 +248,18 @@ fn radix_sort_pairs_u64_with_used_bits(a: &mut [(u64, usize)], bits: u32, used_b
 }
 
 #[inline]
-fn normalize_center(min: f64, max: f64, extent_min: f64, extent_max: f64, axis_max: u32) -> u32 {
+fn axis_scale(extent_min: f64, extent_max: f64, axis_max: u32) -> f64 {
     let width = extent_max - extent_min;
     if width <= 0.0 || !width.is_finite() {
-        return 0;
+        0.0
+    } else {
+        f64::from(axis_max) / width
     }
+}
 
-    let normalized = ((0.5 * (min + max) - extent_min) / width) * f64::from(axis_max);
+#[inline]
+fn normalize_center(min: f64, max: f64, extent_min: f64, scale: f64, axis_max: u32) -> u32 {
+    let normalized = (0.5 * (min + max) - extent_min) * scale;
     if normalized.is_nan() || normalized <= 0.0 {
         0
     } else if normalized >= f64::from(axis_max) {

@@ -1,7 +1,7 @@
 //! Experiment: effect of `node_size` on builds and queries (AoS / AVX2 / AVX-512).
 //! Larger node_size makes the tree shallower (less traversal), but puts more boxes per node (more
 //! checks); for SIMD, larger nodes amortize better. Search for the optimum.
-//! Run: `cargo run --release --example nodesize_experiment`
+//! Run: `cargo run --release --example nodesize_experiment_2d`
 
 use std::time::Instant;
 

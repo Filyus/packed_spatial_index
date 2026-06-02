@@ -1,12 +1,11 @@
-use std::{error::Error, fmt};
-
 #[cfg(feature = "parallel")]
 use crate::config::DEFAULT_PARALLEL_MIN_ITEMS;
 use crate::{
+    build::BuildError,
     config::DEFAULT_NODE_SIZE,
     geometry::{Bounds2D, Num},
-    index::Index2D,
-    sort::{
+    index2d::Index2D,
+    sort2d::{
         DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, SortKeyContext, encode_sort_by_key,
         normalize_radix_bits,
     },
@@ -53,31 +52,6 @@ pub(crate) struct BuildConfig {
     #[cfg(feature = "parallel")]
     pub(crate) parallel_min_items: usize,
 }
-
-/// Build error for finishing an index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BuildError {
-    /// The builder received the wrong number of items.
-    ItemCount {
-        /// Number actually added through `add`.
-        added: usize,
-        /// Expected by `Index2DBuilder::new(count)`.
-        expected: usize,
-    },
-}
-
-impl fmt::Display for BuildError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            BuildError::ItemCount { added, expected } => write!(
-                f,
-                "added item count must match declared count (added {added}, expected {expected})"
-            ),
-        }
-    }
-}
-
-impl Error for BuildError {}
 
 impl Index2DBuilder {
     /// Create a builder for exactly `count` items with [`DEFAULT_NODE_SIZE`].
@@ -187,7 +161,7 @@ impl Index2DBuilder {
                 expected: self.num_items,
             });
         }
-        Ok(crate::index_soa::build_simd_index(
+        Ok(crate::index2d_soa::build_simd_index(
             self.config(),
             self.boxes,
         ))

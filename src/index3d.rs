@@ -9,12 +9,12 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Bounds3D, Point3D},
-    index::{SearchWorkspace, upper_bound_level},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     persistence::{
         ByteWriter, LoadError, parse_index3d_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
         serialized_len_3d,
     },
+    traversal::{SearchWorkspace, upper_bound_level},
 };
 
 /// Finished static read-only 3D index.

@@ -1,4 +1,4 @@
-use crate::{geometry::Bounds2D, hilbert};
+use crate::{geometry::Bounds2D, hilbert2d as hilbert};
 
 pub(crate) const DEFAULT_RADIX_BITS: u32 = 8;
 const MIN_RADIX_BITS: u32 = 1;

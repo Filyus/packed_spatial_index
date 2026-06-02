@@ -1,7 +1,7 @@
 #[cfg(feature = "parallel")]
 use crate::config::DEFAULT_PARALLEL_MIN_ITEMS;
 use crate::{
-    builder::BuildError,
+    build::BuildError,
     config::DEFAULT_NODE_SIZE,
     geometry::Bounds3D,
     index3d::Index3D,

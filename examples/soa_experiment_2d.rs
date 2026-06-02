@@ -1,5 +1,5 @@
 //! Experiment: AoS queries (current Index2D) vs SoA scalar vs SoA SIMD (f64x4).
-//! Run: `cargo run --release --example soa_experiment`
+//! Run: `cargo run --release --example soa_experiment_2d`
 //! (faster with `RUSTFLAGS="-C target-cpu=native"`).
 
 use std::time::Instant;

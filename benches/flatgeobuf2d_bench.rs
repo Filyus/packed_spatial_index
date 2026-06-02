@@ -1,7 +1,7 @@
 //! Compare the core index against FlatGeobuf's packed Hilbert R-tree.
 //!
 //! Run:
-//!   cargo bench --bench flatgeobuf_bench --no-default-features --features parallel,simd
+//!   cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd
 
 use std::hint::black_box;
 use std::io::Cursor;

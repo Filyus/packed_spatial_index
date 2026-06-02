@@ -2,7 +2,7 @@
 //! versus single-threaded radix builds.
 //! NOTE: the multi-threaded variant changes the comparison base from the single-threaded crate;
 //! this demonstrates the speedup ceiling, not a strict algorithm-to-algorithm comparison.
-//! Run: `cargo run --release --example parallel_experiment`
+//! Run: `cargo run --release --example parallel_experiment_2d`
 
 use std::time::Instant;
 

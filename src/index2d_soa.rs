@@ -9,12 +9,12 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 use wide::{CmpGe, CmpLe, f64x4};
 
 use crate::{
-    builder::BuildConfig,
+    builder2d::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Bounds2D, Point2D},
-    index::{SearchWorkspace, prefetch_read, upper_bound_level},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
-    sort::{SortKeyContext, encode_sort_by_key},
+    sort2d::{SortKeyContext, encode_sort_by_key},
+    traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
 };
 
 type Num = f64;

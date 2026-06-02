@@ -237,19 +237,19 @@ The short version:
 - `SimdIndex2D` is best for heavier query batches where SIMD work amortizes well;
 - `any` is often much faster than collecting full result sets when all you need is existence;
 - AVX-512 is not always the fastest path in parallel workloads because CPU frequency behavior matters.
-- `flatgeobuf_bench` compares against FlatGeobuf's packed Hilbert R-tree;
-- `index_bench` compares build/search paths against `static_aabb2d_index`;
+- `flatgeobuf2d_bench` compares against FlatGeobuf's packed Hilbert R-tree;
+- `index2d_bench` compares build/search paths against `static_aabb2d_index`;
 - `index3d_bench` covers scalar 3D build/search/KNN, persistence, loaded views,
   node sizes, and hidden Morton baseline;
-- `persistence_knn_bench` covers persistence, loaded views, and KNN.
+- `persistence_knn2d_bench` covers persistence, loaded views, and KNN.
 
 Run the focused benchmark suites with:
 
 ```bash
-cargo bench --bench index_bench --no-default-features --features parallel,simd
+cargo bench --bench index2d_bench --no-default-features --features parallel,simd
 cargo bench --bench index3d_bench --no-default-features
-cargo bench --bench persistence_knn_bench --no-default-features --features simd
-cargo bench --bench flatgeobuf_bench --no-default-features --features parallel,simd
+cargo bench --bench persistence_knn2d_bench --no-default-features --features simd
+cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd
 ```
 
 ## Status

@@ -47,16 +47,16 @@ lto = true
 codegen-units = 1
 
 [[bench]]
-name = "hilbert_bench"
+name = "hilbert2d_bench"
 harness = false
 
 [[bench]]
-name = "index_bench"
+name = "index2d_bench"
 harness = false
 required-features = ["parallel", "simd"]
 
 [[bench]]
-name = "sortkey_bench"
+name = "sortkey2d_bench"
 harness = false
 
 [[bench]]
@@ -64,24 +64,24 @@ name = "index3d_bench"
 harness = false
 
 [[bench]]
-name = "persistence_knn_bench"
+name = "persistence_knn2d_bench"
 harness = false
 required-features = ["simd"]
 
 [[bench]]
-name = "flatgeobuf_bench"
+name = "flatgeobuf2d_bench"
 harness = false
 required-features = ["parallel", "simd"]
 
 # Examples that require specific features (skipped when the feature is disabled).
 [[example]]
-name = "parallel_experiment"
+name = "parallel_experiment_2d"
 required-features = ["parallel"]
 
 [[example]]
-name = "soa_experiment"
+name = "soa_experiment_2d"
 required-features = ["simd"]
 
 [[example]]
-name = "nodesize_experiment"
+name = "nodesize_experiment_2d"
 required-features = ["simd"]

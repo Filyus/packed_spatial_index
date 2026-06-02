@@ -1,7 +1,7 @@
 //! Persistence and nearest-neighbor benchmarks.
 //!
 //! Run:
-//!   cargo bench --bench persistence_knn_bench --no-default-features --features simd
+//!   cargo bench --bench persistence_knn2d_bench --no-default-features --features simd
 
 use std::ops::ControlFlow;
 

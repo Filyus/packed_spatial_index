@@ -23,42 +23,46 @@
 //! * `simd` (enabled by default): `SimdIndex2D` with SIMD searches through `wide`
 //!   and x86-64 AVX-512 intrinsics where available.
 
-mod builder;
+mod build;
+mod builder2d;
 mod builder3d;
 mod config;
 mod geometry;
-mod hilbert;
-mod index;
-mod index3d;
+mod hilbert2d;
+mod index2d;
 #[cfg(feature = "simd")]
-mod index_soa;
+mod index2d_soa;
+mod index3d;
 mod neighbors;
 mod persistence;
-mod sort;
+mod sort2d;
 mod sort3d;
+mod traversal;
 
-pub use builder::{BuildError, Index2DBuilder};
+pub use build::BuildError;
+pub use builder2d::Index2DBuilder;
 pub use builder3d::Index3DBuilder;
 pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use geometry::{Bounds2D, Bounds3D, BoundsError, Point2D, Point3D};
-pub use index::{Index2D, Index2DView, SearchWorkspace};
+pub use index2d::{Index2D, Index2DView};
 #[cfg(feature = "simd")]
-pub use index_soa::SimdIndex2D;
+pub use index2d_soa::SimdIndex2D;
 pub use index3d::{Index3D, Index3DView};
 pub use neighbors::NeighborWorkspace;
 pub use persistence::LoadError;
-pub use sort::SortKey2D;
+pub use sort2d::SortKey2D;
 pub use sort3d::SortKey3D;
+pub use traversal::SearchWorkspace;
 
 /// Experimental internals kept public for benchmarks and research notebooks.
 #[doc(hidden)]
 pub mod experimental {
-    pub use crate::hilbert::{
+    pub use crate::hilbert2d::{
         ENCODERS, HilbertFn, loop_rotation, lut, magic_bits, magic_bits_batch, morton,
     };
-    pub use crate::sort::{ExperimentalSortKey2D, radix_sort_pairs};
+    pub use crate::sort2d::{ExperimentalSortKey2D, radix_sort_pairs};
     pub use crate::sort3d::{
         ExperimentalSortKey3D, encode_hilbert3, encode_hilbert3_nibble, encode_morton3,
         radix_sort_pairs_u64,

@@ -96,29 +96,31 @@ tag_pattern = "v[0-9].*"
 sort_commits = "oldest"
 protect_breaking_commits = true
 
+# Changelog groups use hidden HTML prefixes to keep release notes ordered by
+# user impact. The template strips them before rendering.
 # `build:` is reserved for Cargo/build-system work. Use `builder:` for
 # Index2DBuilder/Index3DBuilder API changes.
 commit_parsers = [
   { message = "^release(?:,|:)", skip = true },
   { message = "^repo(?:,|:)", skip = true },
   { message = "^changelog(?:,|:)", skip = true },
-  { message = "^(api|builder|config|defaults?|errors?)(?:,|:)", group = "API" },
-  { message = "^(2d|index2d|builder2d|sort2d|hilbert2d|box2d|bounds2d|point2d)(?:,|:)", group = "2D" },
-  { message = "^(3d|index3d|builder3d|sort3d|box3d|bounds3d|point3d)(?:,|:)", group = "3D" },
-  { message = "^(index)(?:,|:)", group = "Indexes" },
-  { message = "^(geometry|boxes?|bounds|points?)(?:,|:)", group = "Geometry" },
-  { message = "^(safety|unsafe)(?:,|:)", group = "Safety" },
-  { message = "^(simd|simd2d|simd3d|simd-views?|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse)(?:,|:)", group = "SIMD" },
-  { message = "^(persistence|persist|serialize|serialization|deserialize|load|loader|views?|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy)(?:,|:)", group = "Persistence" },
-  { message = "^(knn|neighbors?|nearest)(?:,|:)", group = "Nearest Neighbors" },
-  { message = "^(search|visitor|visit|traversal|workspace)(?:,|:)", group = "Search" },
-  { message = "^(perf|performance|parallel|radix|nodes?|node-size|node_size|nodesize|prefetch)(?:,|:)", group = "Performance" },
-  { message = "^(sort|sortkey|hilbert|morton|encoders?|encoding)(?:,|:)", group = "Sorting and Encoding" },
-  { message = "^(bench|benches|benchmarks?|flatgeobuf|static-aabb|static_aabb|compare|comparison)(?:,|:)", group = "Benchmarks" },
-  { message = "^(test|tests|correctness|fuzz|fuzzing)(?:,|:)", group = "Tests" },
-  { message = "^(refactor|layout|tree|internal|modules?)(?:,|:)", group = "Refactoring" },
-  { message = "^(docs?|readme|rustdoc|examples?)(?:,|:)", group = "Documentation" },
-  { message = "^(build|ci|deps|dependencies?|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(?:,|:)", group = "Build, CI, and Packaging" },
+  { message = "^(api|builder|config|defaults?|errors?)(?:,|:)", group = "<!-- 00 --> API" },
+  { message = "^(safety|unsafe)(?:,|:)", group = "<!-- 01 --> Safety" },
+  { message = "^(2d|index2d|builder2d|sort2d|hilbert2d|box2d|bounds2d|point2d)(?:,|:)", group = "<!-- 02 --> 2D" },
+  { message = "^(3d|index3d|builder3d|sort3d|box3d|bounds3d|point3d)(?:,|:)", group = "<!-- 03 --> 3D" },
+  { message = "^(geometry|boxes?|bounds|points?)(?:,|:)", group = "<!-- 04 --> Geometry" },
+  { message = "^(index)(?:,|:)", group = "<!-- 05 --> Indexes" },
+  { message = "^(search|visitor|visit|traversal|workspace)(?:,|:)", group = "<!-- 06 --> Search" },
+  { message = "^(knn|neighbors?|nearest)(?:,|:)", group = "<!-- 07 --> Nearest Neighbors" },
+  { message = "^(persistence|persist|serialize|serialization|deserialize|load|loader|views?|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy)(?:,|:)", group = "<!-- 08 --> Persistence" },
+  { message = "^(simd|simd2d|simd3d|simd-views?|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse)(?:,|:)", group = "<!-- 09 --> SIMD" },
+  { message = "^(perf|performance|parallel|radix|nodes?|node-size|node_size|nodesize|prefetch)(?:,|:)", group = "<!-- 10 --> Performance" },
+  { message = "^(sort|sortkey|hilbert|morton|encoders?|encoding)(?:,|:)", group = "<!-- 11 --> Sorting and Encoding" },
+  { message = "^(bench|benches|benchmarks?|flatgeobuf|static-aabb|static_aabb|compare|comparison)(?:,|:)", group = "<!-- 20 --> Benchmarks" },
+  { message = "^(docs?|readme|rustdoc|examples?)(?:,|:)", group = "<!-- 90 --> Documentation" },
+  { message = "^(test|tests|correctness|fuzz|fuzzing)(?:,|:)", group = "<!-- 91 --> Tests" },
+  { message = "^(refactor|layout|tree|internal|modules?)(?:,|:)", group = "<!-- 92 --> Refactoring" },
+  { message = "^(build|ci|deps|dependencies?|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(?:,|:)", group = "<!-- 99 --> Build, CI, and Packaging" },
 ]
 
 link_parsers = [

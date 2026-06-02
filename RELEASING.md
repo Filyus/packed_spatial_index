@@ -2,8 +2,8 @@
 
 Releases are intentionally two-step:
 
-1. `Release: prepare version PR` prepares a draft release PR with the version
-   bump and `CHANGELOG.md` update.
+1. `Release: prepare version` prepares a draft release PR with the version bump
+   and `CHANGELOG.md` update.
 2. `Release: publish crate` publishes the reviewed version and creates the
    annotated `v<version>` tag.
 
@@ -16,11 +16,11 @@ Use this path after the crate already exists on crates.io and Trusted Publishing
 is configured.
 
 1. Push normal changes to `main` and wait for CI to pass.
-2. Run the `Release: prepare version PR` workflow from `main` with
+2. Run the `Release: prepare version` workflow from `main` with
    `dry_run: true`.
 3. Read the workflow log. It should show the version/changelog changes it would
    prepare as a local `git diff`, without opening a PR.
-4. If the dry run looks right, run `Release: prepare version PR` again with
+4. If the dry run looks right, run `Release: prepare version` again with
    `dry_run: false`.
 5. Review the draft release PR:
    - check the version bump;
@@ -87,7 +87,7 @@ Enable:
 - `Read and write permissions`;
 - `Allow GitHub Actions to create and approve pull requests`.
 
-This is required so `Release: prepare version PR` can create and update draft
+This is required so `Release: prepare version` can create and update draft
 release PRs with `GITHUB_TOKEN`.
 
 ### Release Environment Approval

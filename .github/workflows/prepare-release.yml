@@ -1,4 +1,4 @@
-name: "Release: prepare version PR"
+name: "Release: prepare version"
 
 on:
   workflow_dispatch:

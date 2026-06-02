@@ -41,6 +41,17 @@ jobs:
         with:
           tool: cargo-semver-checks
 
+      - name: Install nightly Rust for docs.rs check
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Verify docs.rs build
+        # docs.rs builds with nightly and `--cfg docsrs`; this path is not exercised
+        # by the stable doc check in ci.yml, so validate it before publishing (catches
+        # e.g. a removed/renamed `doc(auto_cfg)` feature gate breaking the docs build).
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: cargo +nightly doc --no-deps --all-features
+
       - name: Install release-plz for dry run
         if: ${{ inputs.dry_run }}
         uses: taiki-e/install-action@v2

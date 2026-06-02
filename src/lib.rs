@@ -25,6 +25,11 @@
 //! * `simd` (enabled by default): `SimdIndex2D` and `SimdIndex3D` with SIMD
 //!   searches through `wide` and x86-64 AVX-512 intrinsics where available.
 
+// On docs.rs (built with `--cfg docsrs` on nightly), auto-render "Available on
+// crate feature X" badges for feature-gated items from their `#[cfg]`s.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, doc(auto_cfg))]
+
 mod build;
 mod builder2d;
 mod builder3d;

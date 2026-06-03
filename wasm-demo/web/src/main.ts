@@ -951,7 +951,7 @@ function syncModeControls(): void {
 
 function syncZInputs(): void {
   const center = normalizeZ(Number(depthValueInput.value), WORLD_Z_SIZE * 0.5);
-  const thickness = normalizeThickness(Number(thicknessInput.value));
+  const thickness = normalizeThickness(thicknessInput.value);
   const half = thickness * 0.5;
   depthSlice = {
     min: center - half,
@@ -994,7 +994,8 @@ function normalizeZ(value: number, fallback: number): number {
   return value;
 }
 
-function normalizeThickness(value: number): number {
+function normalizeThickness(rawValue: string): number {
+  const value = rawValue.trim() === '' ? Number.NaN : Number(rawValue);
   if (!Number.isFinite(value)) {
     return 1000;
   }

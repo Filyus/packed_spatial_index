@@ -166,7 +166,7 @@ canvas {
 }
 
 .stage.is-3d #queryRect.is-match {
-  border-color: rgba(255, 255, 255, 0.9);
+  border-color: #20834a;
   background: transparent;
 }
 

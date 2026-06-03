@@ -13,9 +13,9 @@ The wrapper exposes the core 2D API used by the demo:
 - `extent`, `len`, `node_size`, and `is_empty`;
 - binary persistence round-trip with `to_bytes` and `from_bytes`.
 
-The 3D mode renders an XY projection of the data. Range queries still use full
-3D boxes via the Z range controls, and nearest-neighbor queries use the Z point
-control.
+The 3D mode renders an XY projection of the data. Range queries use the XY
+rectangle plus the current depth slice, and nearest-neighbor queries use the
+same depth value as the query point's Z coordinate.
 
 ## Run
 

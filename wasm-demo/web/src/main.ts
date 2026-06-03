@@ -19,10 +19,11 @@ type QueryPoint = {
   y: number;
 };
 
-type QueryZ = {
+type DepthSlice = {
   min: number;
   max: number;
-  point: number;
+  center: number;
+  thickness: number;
 };
 
 type Cluster = {
@@ -98,12 +99,10 @@ const modeSelect = mustQuery<HTMLSelectElement>('#mode');
 const resultModeSelect = mustQuery<HTMLSelectElement>('#resultMode');
 const neighborCountInput = mustQuery<HTMLInputElement>('#neighborCount');
 const maxDistanceInput = mustQuery<HTMLInputElement>('#maxDistance');
-const zMinInput = mustQuery<HTMLInputElement>('#zMin');
-const zMaxInput = mustQuery<HTMLInputElement>('#zMax');
-const zPointInput = mustQuery<HTMLInputElement>('#zPoint');
-const zMinLabel = mustParentLabel(zMinInput);
-const zMaxLabel = mustParentLabel(zMaxInput);
-const zPointLabel = mustParentLabel(zPointInput);
+const depthInput = mustQuery<HTMLInputElement>('#depth');
+const thicknessInput = mustQuery<HTMLInputElement>('#thickness');
+const depthLabel = mustParentLabel(depthInput);
+const thicknessLabel = mustParentLabel(thicknessInput);
 const distributionSelect = mustQuery<HTMLSelectElement>('#distribution');
 const roundtripButton = mustQuery<HTMLButtonElement>('#roundtrip');
 const regenerateButton = mustQuery<HTMLButtonElement>('#regenerate');
@@ -127,7 +126,7 @@ let hitClipCoords = new Float32Array();
 let hitBoxCoords = new Float32Array();
 let query: QueryRect | null = null;
 let queryPoint: QueryPoint | null = null;
-let queryZ: QueryZ = defaultQueryZ();
+let depthSlice: DepthSlice = defaultDepthSlice();
 let dragStart: { x: number; y: number } | null = null;
 let buildMs = 0;
 let queryMs = 0;
@@ -162,15 +161,11 @@ modeSelect.addEventListener('change', () => {
 resultModeSelect.addEventListener('change', search);
 neighborCountInput.addEventListener('change', search);
 maxDistanceInput.addEventListener('change', search);
-zMinInput.addEventListener('change', () => {
+depthInput.addEventListener('change', () => {
   syncZInputs();
   search();
 });
-zMaxInput.addEventListener('change', () => {
-  syncZInputs();
-  search();
-});
-zPointInput.addEventListener('change', () => {
+thicknessInput.addEventListener('change', () => {
   syncZInputs();
   search();
 });
@@ -266,7 +261,7 @@ function search(): void {
     const maxResults = normalizeNeighborCount(Number(neighborCountInput.value));
     hits =
       currentDimension() === '3d'
-        ? searchNearest3d(index as WasmIndex3D, queryPoint, queryZ.point, maxResults, maxDistance)
+        ? searchNearest3d(index as WasmIndex3D, queryPoint, depthSlice.center, maxResults, maxDistance)
         : searchNearest2d(index as WasmIndex2D, queryPoint, maxResults, maxDistance);
     queryMs = performance.now() - started;
     coreMs = queryMs;
@@ -282,7 +277,14 @@ function search(): void {
       const started = performance.now();
       const found =
         currentDimension() === '3d'
-          ? (index as WasmIndex3D).any(query.minX, query.minY, queryZ.min, query.maxX, query.maxY, queryZ.max)
+          ? (index as WasmIndex3D).any(
+              query.minX,
+              query.minY,
+              depthSlice.min,
+              query.maxX,
+              query.maxY,
+              depthSlice.max,
+            )
           : (index as WasmIndex2D).any(query.minX, query.minY, query.maxX, query.maxY);
       queryMs = performance.now() - started;
       coreMs = queryMs;
@@ -295,7 +297,14 @@ function search(): void {
       const started = performance.now();
       const first =
         currentDimension() === '3d'
-          ? (index as WasmIndex3D).first(query.minX, query.minY, queryZ.min, query.maxX, query.maxY, queryZ.max)
+          ? (index as WasmIndex3D).first(
+              query.minX,
+              query.minY,
+              depthSlice.min,
+              query.maxX,
+              query.maxY,
+              depthSlice.max,
+            )
           : (index as WasmIndex2D).first(query.minX, query.minY, query.maxX, query.maxY);
       queryMs = performance.now() - started;
       coreMs = queryMs;
@@ -310,10 +319,10 @@ function search(): void {
           ? ((index as WasmIndex3D).search_profile(
               query.minX,
               query.minY,
-              queryZ.min,
+              depthSlice.min,
               query.maxX,
               query.maxY,
-              queryZ.max,
+              depthSlice.max,
             ) as SearchProfile)
           : ((index as WasmIndex2D).search_profile(query.minX, query.minY, query.maxX, query.maxY) as SearchProfile);
       hits = profile.hits;
@@ -829,21 +838,22 @@ function syncModeControls(): void {
   neighborCountInput.disabled = !nearest;
   maxDistanceInput.disabled = !nearest;
   resultModeSelect.disabled = nearest;
-  zMinLabel.hidden = !is3d || nearest;
-  zMaxLabel.hidden = !is3d || nearest;
-  zPointLabel.hidden = !is3d || !nearest;
+  depthLabel.hidden = !is3d;
+  thicknessLabel.hidden = !is3d || nearest;
 }
 
 function syncZInputs(): void {
-  const min = normalizeZ(Number(zMinInput.value), WORLD_Z_SIZE * 0.32);
-  const max = normalizeZ(Number(zMaxInput.value), WORLD_Z_SIZE * 0.68);
-  const orderedMin = Math.min(min, max);
-  const orderedMax = Math.max(min, max);
-  const point = normalizeZ(Number(zPointInput.value), WORLD_Z_SIZE * 0.5);
-  queryZ = { min: orderedMin, max: orderedMax, point };
-  zMinInput.value = String(Math.round(queryZ.min));
-  zMaxInput.value = String(Math.round(queryZ.max));
-  zPointInput.value = String(Math.round(queryZ.point));
+  const center = normalizeZ(Number(depthInput.value), WORLD_Z_SIZE * 0.5);
+  const thickness = normalizeThickness(Number(thicknessInput.value));
+  const half = thickness * 0.5;
+  depthSlice = {
+    min: center - half,
+    max: center + half,
+    center,
+    thickness,
+  };
+  depthInput.value = String(Math.round(depthSlice.center));
+  thicknessInput.value = String(Math.round(depthSlice.thickness));
 }
 
 function normalizeNeighborCount(value: number): number {
@@ -866,7 +876,14 @@ function normalizeZ(value: number, fallback: number): number {
   if (!Number.isFinite(value)) {
     return fallback;
   }
-  return clampCoordinate(value, 0, WORLD_Z_SIZE);
+  return value;
+}
+
+function normalizeThickness(value: number): number {
+  if (!Number.isFinite(value)) {
+    return WORLD_Z_SIZE * 0.36;
+  }
+  return Math.max(0, value);
 }
 
 function resultLabel(): string {
@@ -882,11 +899,14 @@ function resultLabel(): string {
   return 'Hits';
 }
 
-function defaultQueryZ(): QueryZ {
+function defaultDepthSlice(): DepthSlice {
+  const center = WORLD_Z_SIZE * 0.5;
+  const thickness = WORLD_Z_SIZE * 0.36;
   return {
-    min: WORLD_Z_SIZE * 0.32,
-    max: WORLD_Z_SIZE * 0.68,
-    point: WORLD_Z_SIZE * 0.5,
+    min: center - thickness * 0.5,
+    max: center + thickness * 0.5,
+    center,
+    thickness,
   };
 }
 
@@ -935,7 +955,9 @@ function searchNearest3d(
 
 function statusText(message: string): string {
   if (currentDimension() === '3d') {
-    return `${message}; 3D shown as XY projection`;
+    return `${message}; 3D XY projection, depth ${Math.round(depthSlice.center).toLocaleString()} +/- ${Math.round(
+      depthSlice.thickness * 0.5,
+    ).toLocaleString()}`;
   }
   return message;
 }

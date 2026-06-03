@@ -15,7 +15,7 @@ release_always = false
 # The first commit domain drives release notes. Keep this broad enough for
 # module/public-type domains (`index3d:`, `views:`, `hilbert:`), while skipped
 # release housekeeping domains stay out of this regex.
-release_commits = "^(api|builder|builder2d|builder3d|index|index2d|index3d|2d|3d|box|boxes|box2d|box3d|bounds|bounds2d|bounds3d|point|points|point2d|point3d|geometry|config|default|defaults|error|errors|safety|unsafe|simd|simd2d|simd3d|simd-view|simd-views|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse|persistence|persist|serialize|serialization|deserialize|load|loader|view|views|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy|knn|neighbor|neighbors|nearest|search|visitor|visit|traversal|workspace|perf|performance|parallel|radix|node|nodes|node-size|node_size|nodesize|prefetch|sort|sort2d|sort3d|sortkey|hilbert|hilbert2d|morton|encoder|encoders|encoding|bench|benches|benchmark|benchmarks|flatgeobuf|static-aabb|static_aabb|compare|comparison|test|tests|correctness|fuzz|fuzzing|refactor|layout|tree|internal|module|modules|docs|doc|readme|rustdoc|example|examples|build|ci|deps|dependency|dependencies|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(,|:)"
+release_commits = "^(api|builder|builder2d|builder3d|index|index2d|index3d|2d|3d|box|boxes|box2d|box3d|bounds|bounds2d|bounds3d|point|points|point2d|point3d|geometry|config|default|defaults|error|errors|safety|unsafe|lint|lints|simd|simd2d|simd3d|simd-view|simd-views|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse|persistence|persist|serialize|serialization|deserialize|load|loader|view|views|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy|knn|neighbor|neighbors|nearest|search|visitor|visit|traversal|workspace|perf|performance|parallel|radix|node|nodes|node-size|node_size|nodesize|prefetch|sort|sort2d|sort3d|sortkey|hilbert|hilbert2d|morton|encoder|encoders|encoding|bench|benches|benchmark|benchmarks|flatgeobuf|static-aabb|static_aabb|compare|comparison|test|tests|correctness|fuzz|fuzzing|refactor|layout|tree|internal|module|modules|docs|doc|readme|rustdoc|example|examples|build|ci|deps|dependency|dependencies|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(,|:)"
 pr_branch_prefix = "release-plz-"
 pr_draft = true
 pr_labels = ["release"]
@@ -42,8 +42,9 @@ body = """
 - {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}{%- if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}) {% endfor -%}){% endif %}
 {%- endfor %}
 {%- endfor %}
+
 """
-trim = true
+trim = false
 tag_pattern = "v[0-9].*"
 sort_commits = "oldest"
 protect_breaking_commits = true
@@ -77,6 +78,7 @@ commit_parsers = [
   { message = "^(docs?|readme|rustdoc|examples?)(?:,|:)", group = "<!-- 90 --> Documentation" },
   { message = "^(test|tests|correctness|fuzz|fuzzing)(?:,|:)", group = "<!-- 91 --> Tests" },
   { message = "^(refactor|layout|tree|internal|modules?)(?:,|:)", group = "<!-- 92 --> Refactoring" },
+  { message = "^(lint|lints)(?:,|:)", group = "<!-- 93 --> Lint" },
   { message = "^(build|ci|deps|dependencies?|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(?:,|:)", group = "<!-- 99 --> Build, CI, and Packaging" },
 ]
 

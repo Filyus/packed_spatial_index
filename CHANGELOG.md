@@ -16,6 +16,7 @@ All notable changes to this crate are documented here.
 
 ### Lint
 - Require SAFETY comments on all unsafe blocks
+
 ## [0.3.2](https://github.com/Filyus/packed_spatial_index/compare/v0.3.1...v0.3.2) - 2026-06-02
 
 ### SIMD

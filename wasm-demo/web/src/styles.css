@@ -134,8 +134,8 @@ canvas {
   left: 0;
   top: 0;
   z-index: 2;
-  border: 2px solid #0f6b78;
-  background: rgba(15, 107, 120, 0.08);
+  border: 2px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.06);
   pointer-events: none;
   will-change: transform, width, height;
 }
@@ -184,7 +184,7 @@ canvas {
   z-index: 2;
   width: 16px;
   height: 16px;
-  border: 2px solid #0f6b78;
+  border: 2px solid rgba(255, 255, 255, 0.82);
   border-radius: 50%;
   pointer-events: none;
   will-change: transform;
@@ -194,7 +194,7 @@ canvas {
 #queryPoint::after {
   content: "";
   position: absolute;
-  background: #0f6b78;
+  background: rgba(255, 255, 255, 0.82);
 }
 
 #queryPoint::before {

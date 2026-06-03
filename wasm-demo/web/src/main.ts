@@ -83,14 +83,11 @@ type WebGlRenderer = {
 
 const WORLD_SIZE = 10_000;
 const WORLD_Z_SIZE = 10_000;
-const BACKGROUND = [247 / 255, 247 / 255, 242 / 255, 1] as const;
-const BACKGROUND_3D = [5 / 255, 7 / 255, 10 / 255, 1] as const;
-const POINT_COLOR = [37 / 255, 51 / 255, 63 / 255, 0.46] as const;
-const HIT_COLOR_3D = [1, 1, 1, 0.98] as const;
-const HIT_COLOR = [32 / 255, 131 / 255, 74 / 255, 0.95] as const;
-const BOX_COLOR = [37 / 255, 51 / 255, 63 / 255, 0.12] as const;
-const HIT_BOX_COLOR = [32 / 255, 131 / 255, 74 / 255, 0.62] as const;
-const HIT_BOX_COLOR_3D = [1, 1, 1, 0.72] as const;
+const BACKGROUND = [5 / 255, 7 / 255, 10 / 255, 1] as const;
+const POINT_COLOR = [68 / 255, 174 / 255, 210 / 255, 0.74] as const;
+const HIT_COLOR = [1, 1, 1, 0.98] as const;
+const BOX_COLOR = [68 / 255, 174 / 255, 210 / 255, 0.24] as const;
+const HIT_BOX_COLOR = [1, 1, 1, 0.72] as const;
 
 const stage = mustQuery<HTMLElement>('.stage');
 const glCanvas = mustQuery<HTMLCanvasElement>('#glCanvas');
@@ -400,8 +397,7 @@ function render(): void {
 
   const { gl } = renderer;
   gl.viewport(0, 0, glCanvas.width, glCanvas.height);
-  const background = currentDimension() === '3d' ? BACKGROUND_3D : BACKGROUND;
-  gl.clearColor(background[0], background[1], background[2], background[3]);
+  gl.clearColor(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], BACKGROUND[3]);
   gl.clear(gl.COLOR_BUFFER_BIT);
 
   if (currentGeometry() === 'boxes') {
@@ -410,7 +406,7 @@ function render(): void {
       renderer,
       renderer.hitBoxBuffer,
       hits.length,
-      currentDimension() === '3d' ? HIT_BOX_COLOR_3D : HIT_BOX_COLOR,
+      HIT_BOX_COLOR,
       false,
     );
   } else {
@@ -419,7 +415,7 @@ function render(): void {
       renderer,
       renderer.hitBuffer,
       hits.length,
-      currentDimension() === '3d' ? HIT_COLOR_3D : HIT_COLOR,
+      HIT_COLOR,
       hitSizeForCount(itemCount),
       false,
     );

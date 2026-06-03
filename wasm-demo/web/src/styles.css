@@ -111,13 +111,9 @@ button:hover {
   height: calc(100vh - 160px);
   border-radius: 8px;
   overflow: hidden;
-  background: #f7f7f2;
+  background: #05070a;
   touch-action: none;
   cursor: crosshair;
-}
-
-.stage.is-3d {
-  background: #05070a;
 }
 
 canvas {

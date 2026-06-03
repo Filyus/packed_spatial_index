@@ -4,6 +4,16 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+
+## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/v0.3.3...v0.4.0) - 2026-06-03
+
+### API
+- Avoid oversized layout panics
+
+### Benchmarks
+- Separate perf tools from examples
+
+
 ## [0.3.3](https://github.com/Filyus/packed_spatial_index/compare/v0.3.2...v0.3.3) - 2026-06-03
 
 ### Geometry

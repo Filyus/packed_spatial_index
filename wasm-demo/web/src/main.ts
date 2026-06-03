@@ -946,7 +946,7 @@ function syncModeControls(): void {
   neighborCountInput.disabled = !nearest;
   maxDistanceInput.disabled = !nearest;
   resultModeSelect.disabled = nearest;
-  thicknessLabel.hidden = !is3d || nearest;
+  thicknessInput.disabled = !is3d || nearest;
 }
 
 function syncZInputs(): void {
@@ -996,7 +996,7 @@ function normalizeZ(value: number, fallback: number): number {
 
 function normalizeThickness(value: number): number {
   if (!Number.isFinite(value)) {
-    return WORLD_Z_SIZE * 0.36;
+    return 1000;
   }
   return Math.max(0, value);
 }
@@ -1016,7 +1016,7 @@ function resultLabel(): string {
 
 function defaultDepthSlice(): DepthSlice {
   const center = WORLD_Z_SIZE * 0.5;
-  const thickness = WORLD_Z_SIZE * 0.36;
+  const thickness = 1000;
   return {
     min: center - thickness * 0.5,
     max: center + thickness * 0.5,

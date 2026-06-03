@@ -10,6 +10,7 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 use wide::{CmpGe, CmpLe, f64x4};
 
 use crate::{
+    build::BuildError,
     builder3d::BuildConfig3D,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box3D, Point3D},
@@ -20,25 +21,33 @@ use crate::{
     },
     sort3d::{SortKey3DContext, encode_sort_by_key_3d},
     traversal::{SearchWorkspace, upper_bound_level},
-    tree::{TreeLayout, compute_tree_layout},
+    tree::{TreeLayout, try_compute_tree_layout},
 };
 
 type Num = f64;
 
-pub(crate) fn build_simd_index_3d(config: BuildConfig3D, items: Vec<Box3D>) -> SimdIndex3D {
+pub(crate) fn build_simd_index_3d(
+    config: BuildConfig3D,
+    items: Vec<Box3D>,
+) -> Result<SimdIndex3D, BuildError> {
     let node_size = config.node_size;
     let num_items = config.num_items;
     let TreeLayout {
         level_bounds,
         num_nodes,
-    } = compute_tree_layout(num_items, node_size);
+    } = try_compute_tree_layout(num_items, node_size)?;
 
     if num_items == 0 {
-        return SimdIndex3D::empty(node_size, num_items, level_bounds);
+        return Ok(SimdIndex3D::empty(node_size, num_items, level_bounds));
     }
 
     if num_items <= node_size {
-        return build_single_node_soa_3d(node_size, num_items, level_bounds, items);
+        return Ok(build_single_node_soa_3d(
+            node_size,
+            num_items,
+            level_bounds,
+            items,
+        ));
     }
 
     let mut min_xs = vec![0.0f64; num_nodes];
@@ -122,7 +131,7 @@ pub(crate) fn build_simd_index_3d(config: BuildConfig3D, items: Vec<Box3D>) -> S
         }
     }
 
-    SimdIndex3D {
+    Ok(SimdIndex3D {
         node_size,
         num_items,
         level_bounds,
@@ -133,7 +142,7 @@ pub(crate) fn build_simd_index_3d(config: BuildConfig3D, items: Vec<Box3D>) -> S
         max_ys,
         max_zs,
         indices,
-    }
+    })
 }
 
 fn build_single_node_soa_3d(

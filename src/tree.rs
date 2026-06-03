@@ -1,3 +1,5 @@
+use crate::build::BuildError;
+
 pub(crate) const MIN_NODE_SIZE: usize = 2;
 pub(crate) const MAX_NODE_SIZE: usize = 65_535;
 
@@ -12,7 +14,10 @@ pub(crate) fn normalize_node_size(node_size: usize) -> usize {
     node_size.clamp(MIN_NODE_SIZE, MAX_NODE_SIZE)
 }
 
-pub(crate) fn compute_tree_layout(num_items: usize, node_size: usize) -> TreeLayout {
+pub(crate) fn try_compute_tree_layout(
+    num_items: usize,
+    node_size: usize,
+) -> Result<TreeLayout, BuildError> {
     debug_assert!(node_size >= MIN_NODE_SIZE);
     debug_assert!(node_size <= MAX_NODE_SIZE);
 
@@ -26,7 +31,7 @@ pub(crate) fn compute_tree_layout(num_items: usize, node_size: usize) -> TreeLay
             level_width = level_width.div_ceil(node_size);
             num_nodes = num_nodes
                 .checked_add(level_width)
-                .expect("packed tree node count overflow");
+                .ok_or(BuildError::TreeTooLarge)?;
             level_bounds.push(num_nodes);
             if level_width == 1 {
                 break;
@@ -34,40 +39,42 @@ pub(crate) fn compute_tree_layout(num_items: usize, node_size: usize) -> TreeLay
         }
     }
 
-    TreeLayout {
+    Ok(TreeLayout {
         level_bounds,
         num_nodes,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_tree_layout, normalize_node_size};
+    use crate::BuildError;
+
+    use super::{normalize_node_size, try_compute_tree_layout};
 
     #[test]
     fn empty_layout_has_leaf_level_only() {
-        let layout = compute_tree_layout(0, 16);
+        let layout = try_compute_tree_layout(0, 16).unwrap();
         assert_eq!(layout.level_bounds, vec![0]);
         assert_eq!(layout.num_nodes, 0);
     }
 
     #[test]
     fn single_node_layout_adds_root_node() {
-        let layout = compute_tree_layout(16, 16);
+        let layout = try_compute_tree_layout(16, 16).unwrap();
         assert_eq!(layout.level_bounds, vec![16, 17]);
         assert_eq!(layout.num_nodes, 17);
     }
 
     #[test]
     fn multi_level_layout_uses_integer_div_ceil() {
-        let layout = compute_tree_layout(257, 16);
+        let layout = try_compute_tree_layout(257, 16).unwrap();
         assert_eq!(layout.level_bounds, vec![257, 274, 276, 277]);
         assert_eq!(layout.num_nodes, 277);
     }
 
     #[test]
     fn multi_level_layout_respects_node_size() {
-        let layout = compute_tree_layout(65, 8);
+        let layout = try_compute_tree_layout(65, 8).unwrap();
         assert_eq!(layout.level_bounds, vec![65, 74, 76, 77]);
         assert_eq!(layout.num_nodes, 77);
     }
@@ -78,5 +85,13 @@ mod tests {
         assert_eq!(normalize_node_size(1), 2);
         assert_eq!(normalize_node_size(16), 16);
         assert_eq!(normalize_node_size(usize::MAX), 65_535);
+    }
+
+    #[test]
+    fn oversized_layout_reports_error() {
+        assert_eq!(
+            try_compute_tree_layout(usize::MAX, 2),
+            Err(BuildError::TreeTooLarge)
+        );
     }
 }

@@ -9,7 +9,7 @@ use crate::{
         DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, SortKeyContext, encode_sort_by_key,
         normalize_radix_bits,
     },
-    tree::{TreeLayout, compute_tree_layout, normalize_node_size},
+    tree::{TreeLayout, normalize_node_size, try_compute_tree_layout},
 };
 
 /// Builder for [`Index2D`] and, with the `simd` feature, `SimdIndex2D`.
@@ -67,7 +67,7 @@ impl Index2DBuilder {
             parallel: false,
             #[cfg(feature = "parallel")]
             parallel_min_items: DEFAULT_PARALLEL_MIN_ITEMS,
-            items: Vec::with_capacity(count.saturating_add(1)),
+            items: items_vec_with_root_capacity_2d(count),
         }
     }
 
@@ -138,7 +138,7 @@ impl Index2DBuilder {
                 expected: self.num_items,
             });
         }
-        Ok(self.build_unchecked())
+        self.build()
     }
 
     /// Pack the tree into the SIMD-accelerated SoA index.
@@ -162,10 +162,7 @@ impl Index2DBuilder {
                 expected: self.num_items,
             });
         }
-        Ok(crate::index2d_soa::build_simd_index(
-            self.config(),
-            self.items,
-        ))
+        crate::index2d_soa::build_simd_index(self.config(), self.items)
     }
 
     #[cfg(feature = "simd")]
@@ -183,26 +180,31 @@ impl Index2DBuilder {
         }
     }
 
-    fn build_unchecked(self) -> Index2D {
+    fn build(self) -> Result<Index2D, BuildError> {
         let node_size = self.node_size;
         let num_items = self.num_items;
         let TreeLayout {
             level_bounds,
             num_nodes,
-        } = compute_tree_layout(num_items, node_size);
+        } = try_compute_tree_layout(num_items, node_size)?;
 
         if num_items == 0 {
-            return Index2D {
+            return Ok(Index2D {
                 node_size,
                 num_items,
                 level_bounds,
                 entries: Vec::new(),
                 indices: Vec::new(),
-            };
+            });
         }
 
         if num_items <= node_size {
-            return build_single_node_index(node_size, num_items, level_bounds, self.items);
+            return Ok(build_single_node_index(
+                node_size,
+                num_items,
+                level_bounds,
+                self.items,
+            ));
         }
 
         let mut entries: Vec<Box2D> = vec![Box2D::new(0.0, 0.0, 0.0, 0.0); num_nodes];
@@ -266,13 +268,22 @@ impl Index2DBuilder {
             }
         }
 
-        Index2D {
+        Ok(Index2D {
             node_size,
             num_items,
             level_bounds,
             entries,
             indices,
-        }
+        })
+    }
+}
+
+fn items_vec_with_root_capacity_2d(count: usize) -> Vec<Box2D> {
+    let capacity = count.saturating_add(1);
+    if capacity <= (isize::MAX as usize) / std::mem::size_of::<Box2D>() {
+        Vec::with_capacity(capacity)
+    } else {
+        Vec::new()
     }
 }
 

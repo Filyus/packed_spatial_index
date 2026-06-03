@@ -85,6 +85,18 @@ fn index3d_finish_reports_count_mismatch() {
 }
 
 #[test]
+fn index3d_huge_builder_count_does_not_panic_on_construction() {
+    let builder = Index3DBuilder::new(usize::MAX);
+    assert!(matches!(
+        builder.finish(),
+        Err(BuildError::ItemCount {
+            added: 0,
+            expected: usize::MAX
+        })
+    ));
+}
+
+#[test]
 fn index3d_default_builder_uses_exported_node_size() {
     let mut builder = Index3DBuilder::new(DEFAULT_NODE_SIZE + 1);
     for i in 0..=DEFAULT_NODE_SIZE {

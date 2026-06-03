@@ -10,6 +10,8 @@ pub enum BuildError {
         /// Expected by `Index*Builder::new(count)`.
         expected: usize,
     },
+    /// The requested item count would overflow the packed tree layout.
+    TreeTooLarge,
 }
 
 impl fmt::Display for BuildError {
@@ -19,6 +21,7 @@ impl fmt::Display for BuildError {
                 f,
                 "added item count must match declared count (added {added}, expected {expected})"
             ),
+            BuildError::TreeTooLarge => write!(f, "packed tree is too large"),
         }
     }
 }

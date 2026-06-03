@@ -9,7 +9,7 @@ use crate::{
         ExperimentalSortKey3D, SortKey3D, SortKey3DContext, default_radix_bits_3d,
         encode_sort_by_key_3d, normalize_radix_bits_3d,
     },
-    tree::{TreeLayout, compute_tree_layout, normalize_node_size},
+    tree::{TreeLayout, normalize_node_size, try_compute_tree_layout},
 };
 
 /// Build parameters passed to the SoA/SIMD 3D builder.
@@ -70,7 +70,7 @@ impl Index3DBuilder {
             parallel: false,
             #[cfg(feature = "parallel")]
             parallel_min_items: DEFAULT_PARALLEL_MIN_ITEMS,
-            items: Vec::with_capacity(count.saturating_add(1)),
+            items: items_vec_with_root_capacity_3d(count),
         }
     }
 
@@ -141,7 +141,7 @@ impl Index3DBuilder {
                 expected: self.num_items,
             });
         }
-        Ok(self.build_unchecked())
+        self.build()
     }
 
     /// Pack the tree into the SIMD-accelerated SoA 3D index.
@@ -166,7 +166,7 @@ impl Index3DBuilder {
             });
         }
         let config = self.config();
-        Ok(crate::index3d_soa::build_simd_index_3d(config, self.items))
+        crate::index3d_soa::build_simd_index_3d(config, self.items)
     }
 
     #[cfg(feature = "simd")]
@@ -184,26 +184,31 @@ impl Index3DBuilder {
         }
     }
 
-    fn build_unchecked(self) -> Index3D {
+    fn build(self) -> Result<Index3D, BuildError> {
         let node_size = self.node_size;
         let num_items = self.num_items;
         let TreeLayout {
             level_bounds,
             num_nodes,
-        } = compute_tree_layout(num_items, node_size);
+        } = try_compute_tree_layout(num_items, node_size)?;
 
         if num_items == 0 {
-            return Index3D {
+            return Ok(Index3D {
                 node_size,
                 num_items,
                 level_bounds,
                 entries: Vec::new(),
                 indices: Vec::new(),
-            };
+            });
         }
 
         if num_items <= node_size {
-            return build_single_node_index_3d(node_size, num_items, level_bounds, self.items);
+            return Ok(build_single_node_index_3d(
+                node_size,
+                num_items,
+                level_bounds,
+                self.items,
+            ));
         }
 
         let mut entries = vec![Box3D::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0); num_nodes];
@@ -247,13 +252,22 @@ impl Index3DBuilder {
             }
         }
 
-        Index3D {
+        Ok(Index3D {
             node_size,
             num_items,
             level_bounds,
             entries,
             indices,
-        }
+        })
+    }
+}
+
+fn items_vec_with_root_capacity_3d(count: usize) -> Vec<Box3D> {
+    let capacity = count.saturating_add(1);
+    if capacity <= (isize::MAX as usize) / std::mem::size_of::<Box3D>() {
+        Vec::with_capacity(capacity)
+    } else {
+        Vec::new()
     }
 }
 

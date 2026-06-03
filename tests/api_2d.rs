@@ -237,6 +237,18 @@ fn finish_reports_count_mismatch() {
 }
 
 #[test]
+fn huge_builder_count_does_not_panic_on_construction() {
+    let builder = Index2DBuilder::new(usize::MAX);
+    assert!(matches!(
+        builder.finish(),
+        Err(BuildError::ItemCount {
+            added: 0,
+            expected: usize::MAX
+        })
+    ));
+}
+
+#[test]
 #[cfg(feature = "parallel")]
 fn parallel_build_matches_serial() {
     let mut rng = StdRng::seed_from_u64(7);

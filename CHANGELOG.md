@@ -14,7 +14,7 @@ All notable changes to this crate are documented here.
 - Add docs.rs feature badges and verify the docs.rs build
 - Clarify query API guidance
 
-### lint
+### Lint
 - Require SAFETY comments on all unsafe blocks
 ## [0.3.2](https://github.com/Filyus/packed_spatial_index/compare/v0.3.1...v0.3.2) - 2026-06-02
 

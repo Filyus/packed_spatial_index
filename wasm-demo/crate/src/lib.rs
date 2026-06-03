@@ -1,4 +1,4 @@
-use js_sys::{Float64Array, Object, Reflect, Uint32Array};
+use js_sys::{Float64Array, Object, Reflect, Uint8Array, Uint32Array};
 use packed_spatial_index::{
     Box2D, Index2DBuilder, NeighborWorkspace, Point2D, SearchWorkspace, SimdIndex2D,
 };
@@ -45,12 +45,7 @@ impl WasmIndex2D {
             .finish_simd()
             .map_err(|err| JsValue::from_str(&err.to_string()))?;
 
-        Ok(WasmIndex2D {
-            index,
-            workspace: SearchWorkspace::new(),
-            neighbor_workspace: NeighborWorkspace::new(),
-            len,
-        })
+        Ok(wrap_index(index))
     }
 
     pub fn len(&self) -> usize {
@@ -65,6 +60,33 @@ impl WasmIndex2D {
         self.index.node_size()
     }
 
+    pub fn extent(&self) -> Result<Object, JsValue> {
+        let out = Object::new();
+        match self.index.extent() {
+            Some(bounds) => {
+                Reflect::set(&out, &"empty".into(), &JsValue::FALSE)?;
+                Reflect::set(&out, &"minX".into(), &JsValue::from_f64(bounds.min_x))?;
+                Reflect::set(&out, &"minY".into(), &JsValue::from_f64(bounds.min_y))?;
+                Reflect::set(&out, &"maxX".into(), &JsValue::from_f64(bounds.max_x))?;
+                Reflect::set(&out, &"maxY".into(), &JsValue::from_f64(bounds.max_y))?;
+            }
+            None => {
+                Reflect::set(&out, &"empty".into(), &JsValue::TRUE)?;
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn to_bytes(&self) -> Uint8Array {
+        Uint8Array::from(self.index.to_bytes().as_slice())
+    }
+
+    pub fn from_bytes(bytes: &Uint8Array) -> Result<WasmIndex2D, JsValue> {
+        let index = SimdIndex2D::from_bytes(&bytes.to_vec())
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+        Ok(wrap_index(index))
+    }
+
     pub fn search(
         &mut self,
         min_x: f64,
@@ -77,13 +99,7 @@ impl WasmIndex2D {
         let hits = self
             .index
             .search_with(Box2D::new(min_x, min_y, max_x, max_y), &mut self.workspace);
-        let mut out = Vec::with_capacity(hits.len());
-        for &hit in hits {
-            let hit = u32::try_from(hit)
-                .map_err(|_| JsValue::from_str("hit index does not fit in Uint32Array"))?;
-            out.push(hit);
-        }
-        Ok(Uint32Array::from(out.as_slice()))
+        hits_to_uint32(hits)
     }
 
     pub fn search_profile(
@@ -137,6 +153,21 @@ impl WasmIndex2D {
         Ok(result)
     }
 
+    pub fn any(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Result<bool, JsValue> {
+        validate_query(min_x, min_y, max_x, max_y)?;
+        Ok(self.index.any(Box2D::new(min_x, min_y, max_x, max_y)))
+    }
+
+    pub fn first(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Result<i32, JsValue> {
+        validate_query(min_x, min_y, max_x, max_y)?;
+        match self.index.first(Box2D::new(min_x, min_y, max_x, max_y)) {
+            Some(hit) => {
+                i32::try_from(hit).map_err(|_| JsValue::from_str("hit index does not fit in i32"))
+            }
+            None => Ok(-1),
+        }
+    }
+
     pub fn neighbors(
         &mut self,
         x: f64,
@@ -155,13 +186,32 @@ impl WasmIndex2D {
             f64::INFINITY,
             &mut self.neighbor_workspace,
         );
-        let mut out = Vec::with_capacity(hits.len());
-        for &hit in hits {
-            let hit = u32::try_from(hit)
-                .map_err(|_| JsValue::from_str("hit index does not fit in Uint32Array"))?;
-            out.push(hit);
+        hits_to_uint32(hits)
+    }
+
+    pub fn neighbors_within(
+        &mut self,
+        x: f64,
+        y: f64,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Result<Uint32Array, JsValue> {
+        if !x.is_finite() || !y.is_finite() || !max_distance.is_finite() {
+            return Err(JsValue::from_str(
+                "query point and max_distance must be finite numbers",
+            ));
         }
-        Ok(Uint32Array::from(out.as_slice()))
+        if max_distance < 0.0 {
+            return Err(JsValue::from_str("max_distance must be non-negative"));
+        }
+
+        let hits = self.index.neighbors_with(
+            Point2D::new(x, y),
+            max_results,
+            max_distance,
+            &mut self.neighbor_workspace,
+        );
+        hits_to_uint32(hits)
     }
 }
 
@@ -187,12 +237,27 @@ fn build_from_boxes(coords: &[f64], node_size: usize) -> Result<WasmIndex2D, JsV
         .finish_simd()
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
 
-    Ok(WasmIndex2D {
+    Ok(wrap_index(index))
+}
+
+fn wrap_index(index: SimdIndex2D) -> WasmIndex2D {
+    let len = index.num_items();
+    WasmIndex2D {
         index,
         workspace: SearchWorkspace::new(),
         neighbor_workspace: NeighborWorkspace::new(),
         len,
-    })
+    }
+}
+
+fn hits_to_uint32(hits: &[usize]) -> Result<Uint32Array, JsValue> {
+    let mut out = Vec::with_capacity(hits.len());
+    for &hit in hits {
+        let hit = u32::try_from(hit)
+            .map_err(|_| JsValue::from_str("hit index does not fit in Uint32Array"))?;
+        out.push(hit);
+    }
+    Ok(Uint32Array::from(out.as_slice()))
 }
 
 fn validate_query(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Result<(), JsValue> {

@@ -40,8 +40,20 @@
           </select>
         </label>
         <label>
+          Result
+          <select id="resultMode">
+            <option value="all" selected>All</option>
+            <option value="any">Any</option>
+            <option value="first">First</option>
+          </select>
+        </label>
+        <label>
           Neighbors
           <input id="neighborCount" type="number" min="1" step="1" value="500" />
+        </label>
+        <label>
+          Radius
+          <input id="maxDistance" type="number" min="0" step="100" placeholder="Any" />
         </label>
         <label>
           Distribution
@@ -50,19 +62,21 @@
             <option value="clustered">Clustered</option>
           </select>
         </label>
+        <button id="roundtrip" type="button">Roundtrip</button>
         <button id="regenerate" type="button">Regenerate</button>
       </section>
       <section class="stage">
         <canvas id="glCanvas" width="1200" height="720"></canvas>
         <div id="queryRect" aria-hidden="true"></div>
         <div id="queryPoint" aria-hidden="true"></div>
+        <div id="firstHit" aria-hidden="true"></div>
         <section class="stats" aria-live="polite">
           <span>Build <b id="buildTime"></b></span>
           <span>Search <b id="queryTime"></b></span>
           <span>Core <b id="coreTime"></b></span>
           <span>u32 <b id="convertTime"></b></span>
           <span>JS copy <b id="copyTime"></b></span>
-          <span>Hits <b id="hitCount"></b></span>
+          <span><span id="resultLabel">Hits</span> <b id="hitCount"></b></span>
           <span>Items <b id="pointTotal"></b></span>
         </section>
       </section>

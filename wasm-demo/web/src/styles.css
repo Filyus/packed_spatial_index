@@ -114,6 +114,16 @@ canvas {
   will-change: transform, width, height;
 }
 
+#queryRect.is-match {
+  border-color: #20834a;
+  background: rgba(32, 131, 74, 0.12);
+}
+
+#queryRect.is-miss {
+  border-color: #b4372b;
+  background: rgba(180, 55, 43, 0.1);
+}
+
 #queryPoint {
   position: absolute;
   display: none;
@@ -146,6 +156,27 @@ canvas {
   top: 6px;
   width: 26px;
   height: 2px;
+}
+
+#firstHit {
+  position: absolute;
+  display: none;
+  left: 0;
+  top: 0;
+  z-index: 1;
+  border: 2px solid #20834a;
+  pointer-events: none;
+  will-change: transform, width, height;
+}
+
+#firstHit.is-box {
+  border-radius: 2px;
+  background: transparent;
+}
+
+#firstHit.is-point {
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .stats {

@@ -1,9 +1,17 @@
 # packed_spatial_index WASM Demo
 
-Browser demo for `SimdIndex2D` point search. The Rust wrapper builds with
-`wasm-bindgen` and `wasm-pack`; the UI is a Vite + TypeScript canvas app.
+Browser demo for `SimdIndex2D` search over 2D boxes and points. The Rust wrapper
+builds with `wasm-bindgen` and `wasm-pack`; the UI is a Vite + TypeScript +
+WebGL2 canvas app.
 
 The demo is repository-only and excluded from the published crates.io package.
+
+The wrapper exposes the core 2D API used by the demo:
+
+- range search with `search`, `any`, and `first`;
+- nearest-neighbor search with optional max distance;
+- `extent`, `len`, `node_size`, and `is_empty`;
+- binary persistence round-trip with `to_bytes` and `from_bytes`.
 
 ## Run
 

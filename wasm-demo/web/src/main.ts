@@ -2,6 +2,7 @@ import init, { WasmIndex2D } from '../pkg/packed_spatial_index_wasm_demo';
 
 type Distribution = 'uniform' | 'clustered';
 type QueryMode = 'range' | 'nearest';
+type ResultMode = 'all' | 'any' | 'first';
 type Geometry = 'boxes' | 'points';
 
 type QueryRect = {
@@ -32,6 +33,14 @@ type SearchProfile = {
   totalMs: number;
 };
 
+type IndexExtent = {
+  empty: boolean;
+  minX?: number;
+  minY?: number;
+  maxX?: number;
+  maxY?: number;
+};
+
 type WorldView = {
   width: number;
   height: number;
@@ -59,20 +68,24 @@ type WebGlRenderer = {
 const WORLD_SIZE = 10_000;
 const BACKGROUND = [247 / 255, 247 / 255, 242 / 255, 1] as const;
 const POINT_COLOR = [37 / 255, 51 / 255, 63 / 255, 0.46] as const;
-const HIT_COLOR = [216 / 255, 71 / 255, 39 / 255, 0.95] as const;
+const HIT_COLOR = [32 / 255, 131 / 255, 74 / 255, 0.95] as const;
 const BOX_COLOR = [37 / 255, 51 / 255, 63 / 255, 0.12] as const;
-const HIT_BOX_COLOR = [216 / 255, 71 / 255, 39 / 255, 0.62] as const;
+const HIT_BOX_COLOR = [32 / 255, 131 / 255, 74 / 255, 0.62] as const;
 
 const stage = mustQuery<HTMLElement>('.stage');
 const glCanvas = mustQuery<HTMLCanvasElement>('#glCanvas');
 const queryRectEl = mustQuery<HTMLDivElement>('#queryRect');
 const queryPointEl = mustQuery<HTMLDivElement>('#queryPoint');
+const firstHitEl = mustQuery<HTMLDivElement>('#firstHit');
 const pointCountInput = mustQuery<HTMLInputElement>('#pointCount');
 const geometrySelect = mustQuery<HTMLSelectElement>('#geometry');
 const nodeSizeSelect = mustQuery<HTMLSelectElement>('#nodeSize');
 const modeSelect = mustQuery<HTMLSelectElement>('#mode');
+const resultModeSelect = mustQuery<HTMLSelectElement>('#resultMode');
 const neighborCountInput = mustQuery<HTMLInputElement>('#neighborCount');
+const maxDistanceInput = mustQuery<HTMLInputElement>('#maxDistance');
 const distributionSelect = mustQuery<HTMLSelectElement>('#distribution');
+const roundtripButton = mustQuery<HTMLButtonElement>('#roundtrip');
 const regenerateButton = mustQuery<HTMLButtonElement>('#regenerate');
 const statusEl = mustQuery<HTMLSpanElement>('#status');
 const buildTimeEl = mustQuery<HTMLElement>('#buildTime');
@@ -80,6 +93,7 @@ const queryTimeEl = mustQuery<HTMLElement>('#queryTime');
 const coreTimeEl = mustQuery<HTMLElement>('#coreTime');
 const convertTimeEl = mustQuery<HTMLElement>('#convertTime');
 const copyTimeEl = mustQuery<HTMLElement>('#copyTime');
+const resultLabelEl = mustQuery<HTMLElement>('#resultLabel');
 const hitCountEl = mustQuery<HTMLElement>('#hitCount');
 const pointTotalEl = mustQuery<HTMLElement>('#pointTotal');
 
@@ -99,6 +113,8 @@ let queryMs = 0;
 let coreMs = 0;
 let convertMs = 0;
 let copyMs = 0;
+let resultSummary: string | null = null;
+let anyResult: boolean | null = null;
 let renderPending = false;
 let worldView: WorldView = { width: WORLD_SIZE, height: WORLD_SIZE };
 let hasBuiltInitialDataset = false;
@@ -118,8 +134,11 @@ modeSelect.addEventListener('change', () => {
   syncModeControls();
   search();
 });
+resultModeSelect.addEventListener('change', search);
 neighborCountInput.addEventListener('change', search);
+maxDistanceInput.addEventListener('change', search);
 distributionSelect.addEventListener('change', rebuild);
+roundtripButton.addEventListener('click', roundtripIndex);
 
 stage.addEventListener('pointerdown', (event) => {
   stage.setPointerCapture(event.pointerId);
@@ -208,25 +227,74 @@ function search(): void {
       return;
     }
     const started = performance.now();
-    hits = index.neighbors(queryPoint.x, queryPoint.y, normalizeNeighborCount(Number(neighborCountInput.value)));
+    const maxDistance = normalizeMaxDistance(Number(maxDistanceInput.value));
+    hits = Number.isFinite(maxDistance)
+      ? index.neighbors_within(
+          queryPoint.x,
+          queryPoint.y,
+          normalizeNeighborCount(Number(neighborCountInput.value)),
+          maxDistance,
+        )
+      : index.neighbors(queryPoint.x, queryPoint.y, normalizeNeighborCount(Number(neighborCountInput.value)));
     queryMs = performance.now() - started;
     coreMs = queryMs;
     convertMs = 0;
     copyMs = 0;
+    resultSummary = null;
+    anyResult = null;
   } else {
     if (!query) {
       return;
     }
-    const profile = index.search_profile(query.minX, query.minY, query.maxX, query.maxY) as SearchProfile;
-    hits = profile.hits;
-    queryMs = profile.totalMs;
-    coreMs = profile.traverseMs;
-    convertMs = profile.convertMs;
-    copyMs = profile.copyMs;
+    if (currentResultMode() === 'any') {
+      const started = performance.now();
+      const found = index.any(query.minX, query.minY, query.maxX, query.maxY);
+      queryMs = performance.now() - started;
+      coreMs = queryMs;
+      convertMs = 0;
+      copyMs = 0;
+      hits = new Uint32Array();
+      resultSummary = found ? 'true' : 'false';
+      anyResult = found;
+    } else if (currentResultMode() === 'first') {
+      const started = performance.now();
+      const first = index.first(query.minX, query.minY, query.maxX, query.maxY);
+      queryMs = performance.now() - started;
+      coreMs = queryMs;
+      convertMs = 0;
+      copyMs = 0;
+      hits = first >= 0 ? new Uint32Array([first]) : new Uint32Array();
+      resultSummary = first >= 0 ? first.toLocaleString() : 'none';
+      anyResult = null;
+    } else {
+      const profile = index.search_profile(query.minX, query.minY, query.maxX, query.maxY) as SearchProfile;
+      hits = profile.hits;
+      queryMs = profile.totalMs;
+      coreMs = profile.traverseMs;
+      convertMs = profile.convertMs;
+      copyMs = profile.copyMs;
+      resultSummary = null;
+      anyResult = null;
+    }
   }
 
   uploadHits(renderer, items, hits);
   scheduleRender();
+}
+
+function roundtripIndex(): void {
+  if (!index) {
+    return;
+  }
+
+  const serializeStarted = performance.now();
+  const bytes = index.to_bytes();
+  const serializeMs = performance.now() - serializeStarted;
+  const loadStarted = performance.now();
+  index = WasmIndex2D.from_bytes(bytes);
+  const loadMs = performance.now() - loadStarted;
+  statusEl.textContent = `Roundtrip ${bytes.byteLength.toLocaleString()} bytes, save ${formatDuration(serializeMs)}, load ${formatDuration(loadMs)}`;
+  search();
 }
 
 function scheduleRender(): void {
@@ -256,13 +324,15 @@ function render(): void {
     drawPoints(renderer, renderer.hitBuffer, hits.length, HIT_COLOR, hitSizeForCount(itemCount));
   }
   renderQueryOverlay();
+  renderFirstHitOverlay();
 
   buildTimeEl.textContent = formatDuration(buildMs);
   queryTimeEl.textContent = formatQueryDuration(queryMs);
   coreTimeEl.textContent = formatQueryDuration(coreMs);
   convertTimeEl.textContent = formatQueryDuration(convertMs);
   copyTimeEl.textContent = formatQueryDuration(copyMs);
-  hitCountEl.textContent = hits.length.toLocaleString();
+  resultLabelEl.textContent = resultLabel();
+  hitCountEl.textContent = resultSummary ?? hits.length.toLocaleString();
   pointTotalEl.textContent = itemCount.toLocaleString();
 }
 
@@ -276,6 +346,8 @@ function renderQueryOverlay(): void {
     const x1 = worldToCanvasX(query.maxX);
     const y1 = worldToCanvasY(query.maxY);
     queryRectEl.style.display = 'block';
+    queryRectEl.classList.toggle('is-match', anyResult === true);
+    queryRectEl.classList.toggle('is-miss', anyResult === false);
     queryRectEl.style.transform = `translate(${x0}px, ${y0}px)`;
     queryRectEl.style.width = `${x1 - x0}px`;
     queryRectEl.style.height = `${y1 - y0}px`;
@@ -287,6 +359,52 @@ function renderQueryOverlay(): void {
     queryPointEl.style.display = 'block';
     queryPointEl.style.transform = `translate(${worldToCanvasX(queryPoint.x)}px, ${worldToCanvasY(queryPoint.y)}px)`;
   }
+}
+
+function renderFirstHitOverlay(): void {
+  if (currentMode() !== 'range' || currentResultMode() !== 'first' || hits.length === 0) {
+    firstHitEl.style.display = 'none';
+    return;
+  }
+
+  const index = hits[0];
+  let x0: number;
+  let y0: number;
+  let x1: number;
+  let y1: number;
+  if (currentGeometry() === 'boxes') {
+    const offset = index * 4;
+    x0 = worldToCanvasX(items[offset]);
+    y0 = worldToCanvasY(items[offset + 1]);
+    x1 = worldToCanvasX(items[offset + 2]);
+    y1 = worldToCanvasY(items[offset + 3]);
+    firstHitEl.classList.remove('is-point');
+    firstHitEl.classList.add('is-box');
+  } else {
+    const offset = index * 2;
+    const x = worldToCanvasX(items[offset]);
+    const y = worldToCanvasY(items[offset + 1]);
+    const radius = 8;
+    x0 = x - radius;
+    y0 = y - radius;
+    x1 = x + radius;
+    y1 = y + radius;
+    firstHitEl.classList.remove('is-box');
+    firstHitEl.classList.add('is-point');
+  }
+
+  const centerX = (x0 + x1) * 0.5;
+  const centerY = (y0 + y1) * 0.5;
+  const minSize = currentGeometry() === 'boxes' ? 10 : 16;
+  const padding = currentGeometry() === 'boxes' ? 4 : 0;
+  const width = Math.max(minSize, Math.abs(x1 - x0) + padding * 2);
+  const height = Math.max(minSize, Math.abs(y1 - y0) + padding * 2);
+  const left = centerX - width * 0.5;
+  const top = centerY - height * 0.5;
+  firstHitEl.style.display = 'block';
+  firstHitEl.style.transform = `translate(${left}px, ${top}px)`;
+  firstHitEl.style.width = `${width}px`;
+  firstHitEl.style.height = `${height}px`;
 }
 
 function drawPoints(
@@ -586,12 +704,19 @@ function currentMode(): QueryMode {
   return modeSelect.value as QueryMode;
 }
 
+function currentResultMode(): ResultMode {
+  return resultModeSelect.value as ResultMode;
+}
+
 function currentGeometry(): Geometry {
   return geometrySelect.value as Geometry;
 }
 
 function syncModeControls(): void {
-  neighborCountInput.disabled = currentMode() !== 'nearest';
+  const nearest = currentMode() === 'nearest';
+  neighborCountInput.disabled = !nearest;
+  maxDistanceInput.disabled = !nearest;
+  resultModeSelect.disabled = nearest;
 }
 
 function normalizeNeighborCount(value: number): number {
@@ -601,6 +726,26 @@ function normalizeNeighborCount(value: number): number {
   const count = Math.max(1, Math.round(value));
   neighborCountInput.value = String(count);
   return count;
+}
+
+function normalizeMaxDistance(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return value;
+}
+
+function resultLabel(): string {
+  if (currentMode() === 'nearest') {
+    return 'Hits';
+  }
+  if (currentResultMode() === 'any') {
+    return 'Any';
+  }
+  if (currentResultMode() === 'first') {
+    return 'First';
+  }
+  return 'Hits';
 }
 
 function normalizeRect(x0: number, y0: number, x1: number, y1: number): QueryRect {
@@ -858,6 +1003,26 @@ function validateWasmWrapper(): void {
   const nearest = Array.from(sampleIndex.neighbors(5.5, 4.5, 2)).sort((a, b) => a - b);
   if (nearest.length !== 2 || nearest[0] !== 1 || nearest[1] !== 3) {
     throw new Error(`WASM neighbors validation failed: got [${nearest}], expected [1,3]`);
+  }
+  const nearestWithin = Array.from(sampleIndex.neighbors_within(5.5, 4.5, 4, 1.0)).sort((a, b) => a - b);
+  if (nearestWithin.length !== 2 || nearestWithin[0] !== 1 || nearestWithin[1] !== 3) {
+    throw new Error(`WASM neighbors_within validation failed: got [${nearestWithin}], expected [1,3]`);
+  }
+  const extent = sampleIndex.extent() as IndexExtent;
+  if (extent.empty || extent.minX !== 0 || extent.minY !== 0 || extent.maxX !== 10 || extent.maxY !== 10) {
+    throw new Error(`WASM extent validation failed: got ${JSON.stringify(extent)}`);
+  }
+  if (!sampleIndex.any(4, 4, 7, 7) || sampleIndex.any(20, 20, 30, 30)) {
+    throw new Error('WASM any validation failed');
+  }
+  const first = sampleIndex.first(4, 4, 7, 7);
+  if (first !== 1 && first !== 3) {
+    throw new Error(`WASM first validation failed: got ${first}, expected 1 or 3`);
+  }
+  const roundtrip = WasmIndex2D.from_bytes(sampleIndex.to_bytes());
+  const roundtripHits = Array.from(roundtrip.search(4, 4, 7, 7)).sort((a, b) => a - b);
+  if (roundtripHits.length !== expected.length || roundtripHits.some((value, i) => value !== expected[i])) {
+    throw new Error(`WASM persistence validation failed: got [${roundtripHits}], expected [${expected}]`);
   }
 
   let rejectedOddLength = false;

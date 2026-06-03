@@ -3,7 +3,6 @@ name = "packed_spatial_index_wasm_demo"
 version = "0.1.0"
 edition = "2024"
 description = "WASM bindings for the packed_spatial_index browser demo"
-license = "Apache-2.0"
 repository = "https://github.com/Filyus/packed_spatial_index"
 publish = false
 

@@ -4,15 +4,15 @@
 //! brute-force scan, and `from_bytes` must never panic on arbitrary or mutated
 //! byte buffers despite using `*_unchecked` accessors after header validation.
 
-use packed_spatial_index::{Box3D, Index3D, Index3DBuilder, Index3DView};
 #[cfg(feature = "simd")]
 use packed_spatial_index::SimdIndex3D;
+use packed_spatial_index::{Box3D, Index3D, Index3DBuilder, Index3DView};
 use proptest::prelude::*;
 
 /// Boxes on a small integer grid so edges collide on exact boundaries.
 fn boxes_strategy() -> impl Strategy<Value = Vec<[f64; 6]>> {
-    let single = (0i64..12, 0i64..12, 0i64..12, 0i64..5, 0i64..5, 0i64..5).prop_map(
-        |(x, y, z, w, h, d)| {
+    let single =
+        (0i64..12, 0i64..12, 0i64..12, 0i64..5, 0i64..5, 0i64..5).prop_map(|(x, y, z, w, h, d)| {
             [
                 x as f64,
                 y as f64,
@@ -21,8 +21,7 @@ fn boxes_strategy() -> impl Strategy<Value = Vec<[f64; 6]>> {
                 (y + h) as f64,
                 (z + d) as f64,
             ]
-        },
-    );
+        });
     prop::collection::vec(single, 0..64)
 }
 

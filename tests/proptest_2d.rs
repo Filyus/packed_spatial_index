@@ -6,9 +6,9 @@
 //!   * `from_bytes` never panics on arbitrary or mutated byte buffers, even
 //!     though it relies on `*_unchecked` accessors after header validation.
 
-use packed_spatial_index::{Box2D, Index2D, Index2DBuilder, Index2DView};
 #[cfg(feature = "simd")]
 use packed_spatial_index::SimdIndex2D;
+use packed_spatial_index::{Box2D, Index2D, Index2DBuilder, Index2DView};
 use proptest::prelude::*;
 
 /// Generate boxes on a small integer grid so edges collide often. Inclusive-edge

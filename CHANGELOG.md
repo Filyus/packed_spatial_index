@@ -8,10 +8,12 @@ All notable changes to this crate are documented here.
 ## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/v0.3.3...v0.4.0) - 2026-06-03
 
 ### API
-- Avoid oversized layout panics
+- Return `BuildError::TreeTooLarge` instead of panicking when a requested tree
+  layout cannot fit in memory.
 
 ### Benchmarks
-- Separate perf tools from examples
+- Move internal performance tools out of the published examples and into a
+  local benchmark tools package.
 
 
 ## [0.3.3](https://github.com/Filyus/packed_spatial_index/compare/v0.3.2...v0.3.3) - 2026-06-03

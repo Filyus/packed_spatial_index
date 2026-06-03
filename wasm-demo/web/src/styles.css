@@ -58,6 +58,11 @@ select {
   padding: 0 10px;
 }
 
+.numeric-control input {
+  width: 92px;
+  min-width: 92px;
+}
+
 input:disabled {
   opacity: 0.48;
 }

@@ -65,11 +65,14 @@ type WebGlRenderer = {
   boxProgram: WebGLProgram;
   positionLocation: number;
   colorLocation: WebGLUniformLocation;
+  useDepthColorLocation: WebGLUniformLocation;
   pointSizeLocation: WebGLUniformLocation;
   worldSizeLocation: WebGLUniformLocation;
   boxCornerLocation: number;
   boxLocation: number;
+  boxDepthLocation: number;
   boxColorLocation: WebGLUniformLocation;
+  boxUseDepthColorLocation: WebGLUniformLocation;
   boxWorldSizeLocation: WebGLUniformLocation;
   unitQuadBuffer: WebGLBuffer;
   pointBuffer: WebGLBuffer;
@@ -81,10 +84,13 @@ type WebGlRenderer = {
 const WORLD_SIZE = 10_000;
 const WORLD_Z_SIZE = 10_000;
 const BACKGROUND = [247 / 255, 247 / 255, 242 / 255, 1] as const;
+const BACKGROUND_3D = [5 / 255, 7 / 255, 10 / 255, 1] as const;
 const POINT_COLOR = [37 / 255, 51 / 255, 63 / 255, 0.46] as const;
+const HIT_COLOR_3D = [1, 1, 1, 0.98] as const;
 const HIT_COLOR = [32 / 255, 131 / 255, 74 / 255, 0.95] as const;
 const BOX_COLOR = [37 / 255, 51 / 255, 63 / 255, 0.12] as const;
 const HIT_BOX_COLOR = [32 / 255, 131 / 255, 74 / 255, 0.62] as const;
+const HIT_BOX_COLOR_3D = [1, 1, 1, 0.72] as const;
 
 const stage = mustQuery<HTMLElement>('.stage');
 const glCanvas = mustQuery<HTMLCanvasElement>('#glCanvas');
@@ -369,18 +375,33 @@ function scheduleRender(): void {
 
 function render(): void {
   resizeCanvasToDisplaySize(glCanvas);
+  stage.classList.toggle('is-3d', currentDimension() === '3d');
 
   const { gl } = renderer;
   gl.viewport(0, 0, glCanvas.width, glCanvas.height);
-  gl.clearColor(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], BACKGROUND[3]);
+  const background = currentDimension() === '3d' ? BACKGROUND_3D : BACKGROUND;
+  gl.clearColor(background[0], background[1], background[2], background[3]);
   gl.clear(gl.COLOR_BUFFER_BIT);
 
   if (currentGeometry() === 'boxes') {
-    drawBoxes(renderer, renderer.boxBuffer, itemCount, BOX_COLOR);
-    drawBoxes(renderer, renderer.hitBoxBuffer, hits.length, HIT_BOX_COLOR);
+    drawBoxes(renderer, renderer.boxBuffer, itemCount, BOX_COLOR, currentDimension() === '3d');
+    drawBoxes(
+      renderer,
+      renderer.hitBoxBuffer,
+      hits.length,
+      currentDimension() === '3d' ? HIT_BOX_COLOR_3D : HIT_BOX_COLOR,
+      false,
+    );
   } else {
-    drawPoints(renderer, renderer.pointBuffer, itemCount, POINT_COLOR, pointSizeForCount(itemCount));
-    drawPoints(renderer, renderer.hitBuffer, hits.length, HIT_COLOR, hitSizeForCount(itemCount));
+    drawPoints(renderer, renderer.pointBuffer, itemCount, POINT_COLOR, pointSizeForCount(itemCount), currentDimension() === '3d');
+    drawPoints(
+      renderer,
+      renderer.hitBuffer,
+      hits.length,
+      currentDimension() === '3d' ? HIT_COLOR_3D : HIT_COLOR,
+      hitSizeForCount(itemCount),
+      false,
+    );
   }
   renderQueryOverlay();
   renderFirstHitOverlay();
@@ -474,6 +495,7 @@ function drawPoints(
   count: number,
   color: readonly [number, number, number, number],
   pointSize: number,
+  useDepthColor: boolean,
 ): void {
   if (count === 0) {
     return;
@@ -483,8 +505,9 @@ function drawPoints(
   gl.useProgram(renderer.pointProgram);
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
   gl.enableVertexAttribArray(renderer.positionLocation);
-  gl.vertexAttribPointer(renderer.positionLocation, 2, gl.FLOAT, false, 0, 0);
+  gl.vertexAttribPointer(renderer.positionLocation, 3, gl.FLOAT, false, 0, 0);
   gl.uniform4f(renderer.colorLocation, color[0], color[1], color[2], color[3]);
+  gl.uniform1i(renderer.useDepthColorLocation, useDepthColor ? 1 : 0);
   gl.uniform1f(renderer.pointSizeLocation, pointSize * (window.devicePixelRatio || 1));
   gl.uniform2f(renderer.worldSizeLocation, worldView.width, worldView.height);
   gl.drawArrays(gl.POINTS, 0, count);
@@ -495,6 +518,7 @@ function drawBoxes(
   buffer: WebGLBuffer,
   count: number,
   color: readonly [number, number, number, number],
+  useDepthColor: boolean,
 ): void {
   if (count === 0) {
     return;
@@ -510,13 +534,18 @@ function drawBoxes(
 
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
   gl.enableVertexAttribArray(renderer.boxLocation);
-  gl.vertexAttribPointer(renderer.boxLocation, 4, gl.FLOAT, false, 0, 0);
+  gl.vertexAttribPointer(renderer.boxLocation, 4, gl.FLOAT, false, 20, 0);
   gl.vertexAttribDivisor(renderer.boxLocation, 1);
+  gl.enableVertexAttribArray(renderer.boxDepthLocation);
+  gl.vertexAttribPointer(renderer.boxDepthLocation, 1, gl.FLOAT, false, 20, 16);
+  gl.vertexAttribDivisor(renderer.boxDepthLocation, 1);
 
   gl.uniform4f(renderer.boxColorLocation, color[0], color[1], color[2], color[3]);
+  gl.uniform1i(renderer.boxUseDepthColorLocation, useDepthColor ? 1 : 0);
   gl.uniform2f(renderer.boxWorldSizeLocation, worldView.width, worldView.height);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
   gl.vertexAttribDivisor(renderer.boxLocation, 0);
+  gl.vertexAttribDivisor(renderer.boxDepthLocation, 0);
 }
 
 function uploadItems(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
@@ -549,15 +578,16 @@ function uploadHits(
     return;
   }
 
-  if (hitClipCoords.length !== hitIndices.length * 2) {
-    hitClipCoords = new Float32Array(hitIndices.length * 2);
+  if (hitClipCoords.length !== hitIndices.length * 3) {
+    hitClipCoords = new Float32Array(hitIndices.length * 3);
   }
 
   for (let i = 0; i < hitIndices.length; i++) {
     const offset = hitIndices[i] * itemStride();
-    const out = i * 2;
+    const out = i * 3;
     hitClipCoords[out] = data[offset];
     hitClipCoords[out + 1] = data[offset + 1];
+    hitClipCoords[out + 2] = zValueForPoint(data, offset);
   }
 
   const { gl } = renderer;
@@ -570,18 +600,19 @@ function uploadHitBoxes(
   data: Float64Array<ArrayBufferLike>,
   hitIndices: Uint32Array<ArrayBufferLike>,
 ): void {
-  if (hitBoxCoords.length !== hitIndices.length * 4) {
-    hitBoxCoords = new Float32Array(hitIndices.length * 4);
+  if (hitBoxCoords.length !== hitIndices.length * 5) {
+    hitBoxCoords = new Float32Array(hitIndices.length * 5);
   }
 
   for (let i = 0; i < hitIndices.length; i++) {
     const offset = hitIndices[i] * itemStride();
     const maxOffset = currentDimension() === '3d' ? offset + 3 : offset + 2;
-    const out = i * 4;
+    const out = i * 5;
     hitBoxCoords[out] = data[offset];
     hitBoxCoords[out + 1] = data[offset + 1];
     hitBoxCoords[out + 2] = data[maxOffset];
     hitBoxCoords[out + 3] = data[maxOffset + 1];
+    hitBoxCoords[out + 4] = zValueForBox(data, offset);
   }
 
   const { gl } = renderer;
@@ -591,29 +622,49 @@ function uploadHitBoxes(
 
 function toFloat32Points(data: Float64Array<ArrayBufferLike>): Float32Array {
   const stride = itemStride();
-  const out = new Float32Array(itemCount * 2);
+  const out = new Float32Array(itemCount * 3);
   for (let i = 0; i < itemCount; i++) {
     const offset = i * stride;
-    const outOffset = i * 2;
+    const outOffset = i * 3;
     out[outOffset] = data[offset];
     out[outOffset + 1] = data[offset + 1];
+    out[outOffset + 2] = zValueForPoint(data, offset);
   }
   return out;
 }
 
 function toFloat32Boxes(data: Float64Array<ArrayBufferLike>): Float32Array {
   const stride = itemStride();
-  const out = new Float32Array(itemCount * 4);
+  const out = new Float32Array(itemCount * 5);
   for (let i = 0; i < itemCount; i++) {
     const offset = i * stride;
     const maxOffset = currentDimension() === '3d' ? offset + 3 : offset + 2;
-    const outOffset = i * 4;
+    const outOffset = i * 5;
     out[outOffset] = data[offset];
     out[outOffset + 1] = data[offset + 1];
     out[outOffset + 2] = data[maxOffset];
     out[outOffset + 3] = data[maxOffset + 1];
+    out[outOffset + 4] = zValueForBox(data, offset);
   }
   return out;
+}
+
+function zValueForPoint(data: Float64Array<ArrayBufferLike>, offset: number): number {
+  if (currentDimension() !== '3d') {
+    return 0.5;
+  }
+  return normalizeDepthColor(data[offset + 2]);
+}
+
+function zValueForBox(data: Float64Array<ArrayBufferLike>, offset: number): number {
+  if (currentDimension() !== '3d') {
+    return 0.5;
+  }
+  return normalizeDepthColor((data[offset + 2] + data[offset + 5]) * 0.5);
+}
+
+function normalizeDepthColor(z: number): number {
+  return Math.min(1, Math.max(0, z / WORLD_Z_SIZE));
 }
 
 function toClipX(x: number): number {
@@ -1054,9 +1105,10 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
   const pointProgram = createProgram(
     gl,
     `#version 300 es
-    in vec2 a_position;
+    in vec3 a_position;
     uniform float u_pointSize;
     uniform vec2 u_worldSize;
+    out float v_depth;
 
     void main() {
       vec2 clip = vec2(
@@ -1065,19 +1117,32 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
       );
       gl_Position = vec4(clip, 0.0, 1.0);
       gl_PointSize = u_pointSize;
+      v_depth = a_position.z;
     }`,
     `#version 300 es
     precision highp float;
 
     uniform vec4 u_color;
+    uniform bool u_useDepthColor;
+    in float v_depth;
     out vec4 outColor;
+
+    vec3 depthColor(float t) {
+      vec3 nearColor = vec3(0.12, 0.82, 1.0);
+      vec3 midColor = vec3(0.78, 0.32, 1.0);
+      vec3 farColor = vec3(1.0, 0.72, 0.18);
+      return t < 0.5
+        ? mix(nearColor, midColor, t * 2.0)
+        : mix(midColor, farColor, (t - 0.5) * 2.0);
+    }
 
     void main() {
       vec2 delta = gl_PointCoord - vec2(0.5);
       if (dot(delta, delta) > 0.25) {
         discard;
       }
-      outColor = u_color;
+      vec4 color = u_useDepthColor ? vec4(depthColor(v_depth), 0.82) : u_color;
+      outColor = color;
     }`,
   );
 
@@ -1086,7 +1151,9 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
     `#version 300 es
     in vec2 a_corner;
     in vec4 a_box;
+    in float a_depth;
     uniform vec2 u_worldSize;
+    out float v_depth;
 
     void main() {
       vec2 world = mix(a_box.xy, a_box.zw, a_corner);
@@ -1095,15 +1162,27 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
         1.0 - (world.y / u_worldSize.y) * 2.0
       );
       gl_Position = vec4(clip, 0.0, 1.0);
+      v_depth = a_depth;
     }`,
     `#version 300 es
     precision highp float;
 
     uniform vec4 u_color;
+    uniform bool u_useDepthColor;
+    in float v_depth;
     out vec4 outColor;
 
+    vec3 depthColor(float t) {
+      vec3 nearColor = vec3(0.12, 0.82, 1.0);
+      vec3 midColor = vec3(0.78, 0.32, 1.0);
+      vec3 farColor = vec3(1.0, 0.72, 0.18);
+      return t < 0.5
+        ? mix(nearColor, midColor, t * 2.0)
+        : mix(midColor, farColor, (t - 0.5) * 2.0);
+    }
+
     void main() {
-      outColor = u_color;
+      outColor = u_useDepthColor ? vec4(depthColor(v_depth), 0.22) : u_color;
     }`,
   );
 
@@ -1120,14 +1199,16 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]), gl.STATIC_DRAW);
 
   const colorLocation = gl.getUniformLocation(pointProgram, 'u_color');
+  const useDepthColorLocation = gl.getUniformLocation(pointProgram, 'u_useDepthColor');
   const pointSizeLocation = gl.getUniformLocation(pointProgram, 'u_pointSize');
   const worldSizeLocation = gl.getUniformLocation(pointProgram, 'u_worldSize');
-  if (!colorLocation || !pointSizeLocation || !worldSizeLocation) {
+  if (!colorLocation || !useDepthColorLocation || !pointSizeLocation || !worldSizeLocation) {
     throw new Error('failed to resolve WebGL uniforms');
   }
   const boxColorLocation = gl.getUniformLocation(boxProgram, 'u_color');
+  const boxUseDepthColorLocation = gl.getUniformLocation(boxProgram, 'u_useDepthColor');
   const boxWorldSizeLocation = gl.getUniformLocation(boxProgram, 'u_worldSize');
-  if (!boxColorLocation || !boxWorldSizeLocation) {
+  if (!boxColorLocation || !boxUseDepthColorLocation || !boxWorldSizeLocation) {
     throw new Error('failed to resolve WebGL box uniforms');
   }
 
@@ -1140,11 +1221,14 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
     boxProgram,
     positionLocation: gl.getAttribLocation(pointProgram, 'a_position'),
     colorLocation,
+    useDepthColorLocation,
     pointSizeLocation,
     worldSizeLocation,
     boxCornerLocation: gl.getAttribLocation(boxProgram, 'a_corner'),
     boxLocation: gl.getAttribLocation(boxProgram, 'a_box'),
+    boxDepthLocation: gl.getAttribLocation(boxProgram, 'a_depth'),
     boxColorLocation,
+    boxUseDepthColorLocation,
     boxWorldSizeLocation,
     unitQuadBuffer,
     pointBuffer,

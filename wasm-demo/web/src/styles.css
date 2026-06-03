@@ -91,6 +91,10 @@ button:hover {
   cursor: crosshair;
 }
 
+.stage.is-3d {
+  background: #05070a;
+}
+
 canvas {
   display: block;
   width: 100%;

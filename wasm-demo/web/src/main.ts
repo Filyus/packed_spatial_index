@@ -94,6 +94,12 @@ const HIT_BOX_COLOR_3D = [1, 1, 1, 0.72] as const;
 
 const stage = mustQuery<HTMLElement>('.stage');
 const glCanvas = mustQuery<HTMLCanvasElement>('#glCanvas');
+const queryShadeEls = [
+  mustQuery<HTMLDivElement>('#queryShadeTop'),
+  mustQuery<HTMLDivElement>('#queryShadeRight'),
+  mustQuery<HTMLDivElement>('#queryShadeBottom'),
+  mustQuery<HTMLDivElement>('#queryShadeLeft'),
+] as const;
 const queryRectEl = mustQuery<HTMLDivElement>('#queryRect');
 const queryPointEl = mustQuery<HTMLDivElement>('#queryPoint');
 const firstHitEl = mustQuery<HTMLDivElement>('#firstHit');
@@ -420,17 +426,27 @@ function renderQueryOverlay(): void {
   const mode = currentMode();
   if (mode !== 'range' || !query) {
     queryRectEl.style.display = 'none';
+    hideQueryShade();
   } else {
     const x0 = worldToCanvasX(query.minX);
     const y0 = worldToCanvasY(query.minY);
     const x1 = worldToCanvasX(query.maxX);
     const y1 = worldToCanvasY(query.maxY);
+    const left = Math.min(x0, x1);
+    const top = Math.min(y0, y1);
+    const width = Math.abs(x1 - x0);
+    const height = Math.abs(y1 - y0);
     queryRectEl.style.display = 'block';
     queryRectEl.classList.toggle('is-match', anyResult === true);
     queryRectEl.classList.toggle('is-miss', anyResult === false);
-    queryRectEl.style.transform = `translate(${x0}px, ${y0}px)`;
-    queryRectEl.style.width = `${x1 - x0}px`;
-    queryRectEl.style.height = `${y1 - y0}px`;
+    queryRectEl.style.transform = `translate(${left}px, ${top}px)`;
+    queryRectEl.style.width = `${width}px`;
+    queryRectEl.style.height = `${height}px`;
+    if (currentDimension() === '3d') {
+      renderQueryShade(left, top, width, height);
+    } else {
+      hideQueryShade();
+    }
   }
 
   if (mode !== 'nearest' || !queryPoint) {
@@ -439,6 +455,32 @@ function renderQueryOverlay(): void {
     queryPointEl.style.display = 'block';
     queryPointEl.style.transform = `translate(${worldToCanvasX(queryPoint.x)}px, ${worldToCanvasY(queryPoint.y)}px)`;
   }
+}
+
+function renderQueryShade(left: number, top: number, width: number, height: number): void {
+  const stageWidth = stage.clientWidth;
+  const stageHeight = stage.clientHeight;
+  setShadeRect(queryShadeEls[0], 0, 0, stageWidth, top);
+  setShadeRect(queryShadeEls[1], left + width, top, Math.max(0, stageWidth - left - width), height);
+  setShadeRect(queryShadeEls[2], 0, top + height, stageWidth, Math.max(0, stageHeight - top - height));
+  setShadeRect(queryShadeEls[3], 0, top, left, height);
+}
+
+function hideQueryShade(): void {
+  for (const shade of queryShadeEls) {
+    shade.style.display = 'none';
+  }
+}
+
+function setShadeRect(element: HTMLDivElement, left: number, top: number, width: number, height: number): void {
+  if (width <= 0 || height <= 0) {
+    element.style.display = 'none';
+    return;
+  }
+  element.style.display = 'block';
+  element.style.transform = `translate(${left}px, ${top}px)`;
+  element.style.width = `${width}px`;
+  element.style.height = `${height}px`;
 }
 
 function renderFirstHitOverlay(): void {

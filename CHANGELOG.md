@@ -4,6 +4,19 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.3.3](https://github.com/Filyus/packed_spatial_index/compare/v0.3.2...v0.3.3) - 2026-06-03
+
+### Geometry
+- Add point box constructors
+- Share box accumulator helpers
+
+### Documentation
+- Add docs.rs feature badges and verify the docs.rs build
+- Clarify query API guidance
+
+### Lint
+- Require SAFETY comments on all unsafe blocks
+
 ## [0.3.2](https://github.com/Filyus/packed_spatial_index/compare/v0.3.1...v0.3.2) - 2026-06-02
 
 ### SIMD

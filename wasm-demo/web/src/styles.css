@@ -130,7 +130,7 @@ canvas {
   left: 0;
   top: 0;
   z-index: 1;
-  background: rgba(0, 0, 0, 0.58);
+  background: rgba(0, 0, 0, 0.36);
   pointer-events: none;
   will-change: transform, width, height;
 }

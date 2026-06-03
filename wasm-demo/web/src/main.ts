@@ -1170,12 +1170,17 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
     out vec4 outColor;
 
     vec3 depthColor(float t) {
-      vec3 nearColor = vec3(0.12, 0.82, 1.0);
-      vec3 midColor = vec3(0.78, 0.32, 1.0);
-      vec3 farColor = vec3(1.0, 0.72, 0.18);
-      return t < 0.5
-        ? mix(nearColor, midColor, t * 2.0)
-        : mix(midColor, farColor, (t - 0.5) * 2.0);
+      vec3 nearColor = vec3(0.08, 0.20, 0.37);
+      vec3 midLowColor = vec3(0.14, 0.47, 0.66);
+      vec3 midHighColor = vec3(0.34, 0.72, 0.70);
+      vec3 farColor = vec3(0.95, 0.83, 0.35);
+      if (t < 0.33) {
+        return mix(nearColor, midLowColor, t / 0.33);
+      }
+      if (t < 0.66) {
+        return mix(midLowColor, midHighColor, (t - 0.33) / 0.33);
+      }
+      return mix(midHighColor, farColor, (t - 0.66) / 0.34);
     }
 
     void main() {
@@ -1215,12 +1220,17 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
     out vec4 outColor;
 
     vec3 depthColor(float t) {
-      vec3 nearColor = vec3(0.12, 0.82, 1.0);
-      vec3 midColor = vec3(0.78, 0.32, 1.0);
-      vec3 farColor = vec3(1.0, 0.72, 0.18);
-      return t < 0.5
-        ? mix(nearColor, midColor, t * 2.0)
-        : mix(midColor, farColor, (t - 0.5) * 2.0);
+      vec3 nearColor = vec3(0.08, 0.20, 0.37);
+      vec3 midLowColor = vec3(0.14, 0.47, 0.66);
+      vec3 midHighColor = vec3(0.34, 0.72, 0.70);
+      vec3 farColor = vec3(0.95, 0.83, 0.35);
+      if (t < 0.33) {
+        return mix(nearColor, midLowColor, t / 0.33);
+      }
+      if (t < 0.66) {
+        return mix(midLowColor, midHighColor, (t - 0.33) / 0.33);
+      }
+      return mix(midHighColor, farColor, (t - 0.66) / 0.34);
     }
 
     void main() {

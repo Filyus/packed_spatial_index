@@ -285,7 +285,7 @@ canvas {
 .depth-slider::-webkit-slider-runnable-track {
   height: 9px;
   border-radius: 999px;
-  background: linear-gradient(90deg, #14325f, #2477a8, #57b7b2, #f2d35a);
+  background: linear-gradient(90deg, #2e73d1, #2ea8eb, #7aebd1, #ffe052);
 }
 
 .depth-slider::-webkit-slider-thumb {
@@ -302,7 +302,7 @@ canvas {
 .depth-slider::-moz-range-track {
   height: 9px;
   border-radius: 999px;
-  background: linear-gradient(90deg, #14325f, #2477a8, #57b7b2, #f2d35a);
+  background: linear-gradient(90deg, #2e73d1, #2ea8eb, #7aebd1, #ffe052);
 }
 
 .depth-slider::-moz-range-thumb {

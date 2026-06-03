@@ -112,7 +112,7 @@ const maxDistanceInput = mustQuery<HTMLInputElement>('#maxDistance');
 const depthInput = mustQuery<HTMLInputElement>('#depth');
 const depthValueInput = mustQuery<HTMLInputElement>('#depthValue');
 const thicknessInput = mustQuery<HTMLInputElement>('#thickness');
-const thicknessLabel = mustParentLabel(thicknessInput);
+const thicknessValueInput = mustQuery<HTMLInputElement>('#thicknessValue');
 const distributionSelect = mustQuery<HTMLSelectElement>('#distribution');
 const roundtripButton = mustQuery<HTMLButtonElement>('#roundtrip');
 const regenerateButton = mustQuery<HTMLButtonElement>('#regenerate');
@@ -179,8 +179,12 @@ depthValueInput.addEventListener('change', () => {
   syncDepthInputs('number');
   search();
 });
-thicknessInput.addEventListener('change', () => {
-  syncZInputs();
+thicknessInput.addEventListener('input', () => {
+  syncThicknessInputs('slider');
+  search();
+});
+thicknessValueInput.addEventListener('change', () => {
+  syncThicknessInputs('number');
   search();
 });
 distributionSelect.addEventListener('change', rebuild);
@@ -943,11 +947,12 @@ function syncModeControls(): void {
   maxDistanceInput.disabled = !nearest;
   resultModeSelect.disabled = nearest;
   thicknessInput.disabled = !is3d || nearest;
+  thicknessValueInput.disabled = !is3d || nearest;
 }
 
 function syncZInputs(): void {
   const center = normalizeZ(Number(depthValueInput.value), WORLD_Z_SIZE * 0.5);
-  const thickness = normalizeThickness(thicknessInput.value);
+  const thickness = normalizeThickness(thicknessValueInput.value);
   const half = thickness * 0.5;
   depthSlice = {
     min: center - half,
@@ -958,12 +963,20 @@ function syncZInputs(): void {
   const roundedCenter = String(Math.round(depthSlice.center));
   depthInput.value = String(Math.round(clampCoordinate(depthSlice.center, 0, WORLD_Z_SIZE)));
   depthValueInput.value = roundedCenter;
-  thicknessInput.value = String(Math.round(depthSlice.thickness));
+  const roundedThickness = String(Math.round(depthSlice.thickness));
+  thicknessInput.value = String(Math.round(clampCoordinate(depthSlice.thickness, 0, WORLD_Z_SIZE)));
+  thicknessValueInput.value = roundedThickness;
 }
 
 function syncDepthInputs(source: 'slider' | 'number'): void {
   const sourceValue = source === 'slider' ? depthInput.value : depthValueInput.value;
   depthValueInput.value = sourceValue;
+  syncZInputs();
+}
+
+function syncThicknessInputs(source: 'slider' | 'number'): void {
+  const sourceValue = source === 'slider' ? thicknessInput.value : thicknessValueInput.value;
+  thicknessValueInput.value = sourceValue;
   syncZInputs();
 }
 

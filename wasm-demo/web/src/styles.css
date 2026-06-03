@@ -259,15 +259,23 @@ canvas {
 
 .depth-legend span {
   grid-column: 1;
-  grid-row: 1;
   color: rgba(255, 255, 255, 0.78);
   font-size: 12px;
   font-weight: 600;
 }
 
-.depth-slider {
+.depth-legend span:nth-of-type(1) {
+  grid-row: 1;
+}
+
+.depth-legend span:nth-of-type(2) {
+  grid-row: 4;
+  margin-top: 4px;
+}
+
+.depth-slider,
+.thickness-slider {
   grid-column: 1 / 3;
-  grid-row: 2;
   width: 100%;
   min-width: 0;
   height: 18px;
@@ -279,13 +287,30 @@ canvas {
   appearance: none;
 }
 
-.depth-slider::-webkit-slider-runnable-track {
+.depth-slider {
+  grid-row: 2;
+}
+
+.thickness-slider {
+  grid-row: 5;
+}
+
+.depth-slider::-webkit-slider-runnable-track,
+.thickness-slider::-webkit-slider-runnable-track {
   height: 9px;
   border-radius: 999px;
+}
+
+.depth-slider::-webkit-slider-runnable-track {
   background: linear-gradient(90deg, #2e73d1, #2ea8eb, #7aebd1, #ffe052);
 }
 
-.depth-slider::-webkit-slider-thumb {
+.thickness-slider::-webkit-slider-runnable-track {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.84));
+}
+
+.depth-slider::-webkit-slider-thumb,
+.thickness-slider::-webkit-slider-thumb {
   width: 16px;
   height: 16px;
   margin-top: -3.5px;
@@ -296,13 +321,22 @@ canvas {
   appearance: none;
 }
 
-.depth-slider::-moz-range-track {
+.depth-slider::-moz-range-track,
+.thickness-slider::-moz-range-track {
   height: 9px;
   border-radius: 999px;
+}
+
+.depth-slider::-moz-range-track {
   background: linear-gradient(90deg, #2e73d1, #2ea8eb, #7aebd1, #ffe052);
 }
 
-.depth-slider::-moz-range-thumb {
+.thickness-slider::-moz-range-track {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.84));
+}
+
+.depth-slider::-moz-range-thumb,
+.thickness-slider::-moz-range-thumb {
   width: 13px;
   height: 13px;
   border: 2px solid rgba(255, 255, 255, 0.96);
@@ -313,7 +347,6 @@ canvas {
 
 .depth-value {
   grid-column: 2;
-  grid-row: 1;
   justify-self: end;
   width: 76px;
   min-width: 0;
@@ -325,9 +358,27 @@ canvas {
   font-size: 12px;
 }
 
+.depth-value-main {
+  grid-row: 1;
+}
+
+.thickness-value {
+  grid-row: 4;
+  align-self: end;
+}
+
 .depth-legend small {
-  grid-row: 3;
   color: rgba(255, 255, 255, 0.62);
+}
+
+.depth-legend small:nth-of-type(1),
+.depth-legend small:nth-of-type(2) {
+  grid-row: 3;
+}
+
+.depth-legend small:nth-of-type(3),
+.depth-legend small:nth-of-type(4) {
+  grid-row: 6;
 }
 
 .depth-legend small:last-child {

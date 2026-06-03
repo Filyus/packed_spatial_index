@@ -62,10 +62,6 @@
           Radius
           <input id="maxDistance" type="number" min="0" step="100" placeholder="Any" />
         </label>
-        <label class="numeric-control">
-          Thickness
-          <input id="thickness" type="number" min="0" step="100" />
-        </label>
         <label class="distribution-control">
           Distribution
           <select id="distribution">
@@ -87,10 +83,22 @@
         <div id="firstHit" aria-hidden="true"></div>
         <div id="depthLegend" class="depth-legend">
           <span>Depth</span>
-          <input id="depthValue" class="depth-value" type="number" step="100" aria-label="Depth value" />
+          <input id="depthValue" class="depth-value depth-value-main" type="number" step="100" aria-label="Depth value" />
           <input id="depth" class="depth-slider" type="range" min="0" max="10000" step="10" aria-label="Depth" />
           <small>near</small>
           <small>far</small>
+          <span>Thickness</span>
+          <input
+            id="thicknessValue"
+            class="depth-value thickness-value"
+            type="number"
+            min="0"
+            step="100"
+            aria-label="Thickness value"
+          />
+          <input id="thickness" class="thickness-slider" type="range" min="0" max="10000" step="10" aria-label="Thickness" />
+          <small>thin</small>
+          <small>wide</small>
         </div>
         <section class="stats" aria-live="polite">
           <span>Build <b id="buildTime"></b></span>

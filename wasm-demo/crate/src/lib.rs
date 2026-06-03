@@ -26,7 +26,7 @@ pub struct WasmIndex3D {
 impl WasmIndex2D {
     #[wasm_bindgen(constructor)]
     pub fn new(boxes: &Float64Array, node_size: usize) -> Result<WasmIndex2D, JsValue> {
-        build_from_boxes(&boxes.to_vec(), node_size)
+        build_from_boxes2d(&boxes.to_vec(), node_size)
     }
 
     pub fn from_points(points: &Float64Array, node_size: usize) -> Result<WasmIndex2D, JsValue> {
@@ -42,11 +42,7 @@ impl WasmIndex2D {
         for pair in coords.chunks_exact(2) {
             let x = pair[0];
             let y = pair[1];
-            if !x.is_finite() || !y.is_finite() {
-                return Err(JsValue::from_str(
-                    "point coordinates must be finite numbers",
-                ));
-            }
+            validate_point2d(x, y)?;
             builder.add(Box2D::from_point(Point2D::new(x, y)));
         }
 
@@ -54,7 +50,7 @@ impl WasmIndex2D {
             .finish_simd()
             .map_err(|err| JsValue::from_str(&err.to_string()))?;
 
-        Ok(wrap_index(index))
+        Ok(wrap_index2d(index))
     }
 
     pub fn len(&self) -> usize {
@@ -93,7 +89,7 @@ impl WasmIndex2D {
     pub fn from_bytes(bytes: &Uint8Array) -> Result<WasmIndex2D, JsValue> {
         let index = SimdIndex2D::from_bytes(&bytes.to_vec())
             .map_err(|err| JsValue::from_str(&err.to_string()))?;
-        Ok(wrap_index(index))
+        Ok(wrap_index2d(index))
     }
 
     pub fn search(
@@ -103,7 +99,7 @@ impl WasmIndex2D {
         max_x: f64,
         max_y: f64,
     ) -> Result<Uint32Array, JsValue> {
-        validate_query(min_x, min_y, max_x, max_y)?;
+        validate_query2d(min_x, min_y, max_x, max_y)?;
 
         let hits = self
             .index
@@ -118,7 +114,7 @@ impl WasmIndex2D {
         max_x: f64,
         max_y: f64,
     ) -> Result<Object, JsValue> {
-        validate_query(min_x, min_y, max_x, max_y)?;
+        validate_query2d(min_x, min_y, max_x, max_y)?;
 
         let started = now_ms();
         let hits = self
@@ -126,12 +122,7 @@ impl WasmIndex2D {
             .search_with(Box2D::new(min_x, min_y, max_x, max_y), &mut self.workspace);
         let traversed = now_ms();
 
-        let mut out = Vec::with_capacity(hits.len());
-        for &hit in hits {
-            let hit = u32::try_from(hit)
-                .map_err(|_| JsValue::from_str("hit index does not fit in Uint32Array"))?;
-            out.push(hit);
-        }
+        let out = hits_to_u32_vec(hits)?;
         let converted = now_ms();
 
         let array = Uint32Array::from(out.as_slice());
@@ -163,12 +154,12 @@ impl WasmIndex2D {
     }
 
     pub fn any(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Result<bool, JsValue> {
-        validate_query(min_x, min_y, max_x, max_y)?;
+        validate_query2d(min_x, min_y, max_x, max_y)?;
         Ok(self.index.any(Box2D::new(min_x, min_y, max_x, max_y)))
     }
 
     pub fn first(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Result<i32, JsValue> {
-        validate_query(min_x, min_y, max_x, max_y)?;
+        validate_query2d(min_x, min_y, max_x, max_y)?;
         match self.index.first(Box2D::new(min_x, min_y, max_x, max_y)) {
             Some(hit) => {
                 i32::try_from(hit).map_err(|_| JsValue::from_str("hit index does not fit in i32"))
@@ -183,11 +174,7 @@ impl WasmIndex2D {
         y: f64,
         max_results: usize,
     ) -> Result<Uint32Array, JsValue> {
-        if !x.is_finite() || !y.is_finite() {
-            return Err(JsValue::from_str(
-                "query point coordinates must be finite numbers",
-            ));
-        }
+        validate_point2d(x, y)?;
 
         let hits = self.index.neighbors_with(
             Point2D::new(x, y),
@@ -205,14 +192,8 @@ impl WasmIndex2D {
         max_results: usize,
         max_distance: f64,
     ) -> Result<Uint32Array, JsValue> {
-        if !x.is_finite() || !y.is_finite() || !max_distance.is_finite() {
-            return Err(JsValue::from_str(
-                "query point and max_distance must be finite numbers",
-            ));
-        }
-        if max_distance < 0.0 {
-            return Err(JsValue::from_str("max_distance must be non-negative"));
-        }
+        validate_point2d(x, y)?;
+        validate_max_distance(max_distance)?;
 
         let hits = self.index.neighbors_with(
             Point2D::new(x, y),
@@ -245,11 +226,7 @@ impl WasmIndex3D {
             let x = triple[0];
             let y = triple[1];
             let z = triple[2];
-            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-                return Err(JsValue::from_str(
-                    "point coordinates must be finite numbers",
-                ));
-            }
+            validate_point3d(x, y, z)?;
             builder.add(Box3D::from_point(Point3D::new(x, y, z)));
         }
 
@@ -337,12 +314,7 @@ impl WasmIndex3D {
         );
         let traversed = now_ms();
 
-        let mut out = Vec::with_capacity(hits.len());
-        for &hit in hits {
-            let hit = u32::try_from(hit)
-                .map_err(|_| JsValue::from_str("hit index does not fit in Uint32Array"))?;
-            out.push(hit);
-        }
+        let out = hits_to_u32_vec(hits)?;
         let converted = now_ms();
 
         let array = Uint32Array::from(out.as_slice());
@@ -416,11 +388,7 @@ impl WasmIndex3D {
         z: f64,
         max_results: usize,
     ) -> Result<Uint32Array, JsValue> {
-        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-            return Err(JsValue::from_str(
-                "query point coordinates must be finite numbers",
-            ));
-        }
+        validate_point3d(x, y, z)?;
 
         let hits = self.index.neighbors_with(
             Point3D::new(x, y, z),
@@ -439,14 +407,8 @@ impl WasmIndex3D {
         max_results: usize,
         max_distance: f64,
     ) -> Result<Uint32Array, JsValue> {
-        if !x.is_finite() || !y.is_finite() || !z.is_finite() || !max_distance.is_finite() {
-            return Err(JsValue::from_str(
-                "query point and max_distance must be finite numbers",
-            ));
-        }
-        if max_distance < 0.0 {
-            return Err(JsValue::from_str("max_distance must be non-negative"));
-        }
+        validate_point3d(x, y, z)?;
+        validate_max_distance(max_distance)?;
 
         let hits = self.index.neighbors_with(
             Point3D::new(x, y, z),
@@ -458,7 +420,7 @@ impl WasmIndex3D {
     }
 }
 
-fn build_from_boxes(coords: &[f64], node_size: usize) -> Result<WasmIndex2D, JsValue> {
+fn build_from_boxes2d(coords: &[f64], node_size: usize) -> Result<WasmIndex2D, JsValue> {
     if !coords.len().is_multiple_of(4) {
         return Err(JsValue::from_str(
             "boxes must be a flat [min_x, min_y, max_x, max_y, ...] array",
@@ -472,7 +434,7 @@ fn build_from_boxes(coords: &[f64], node_size: usize) -> Result<WasmIndex2D, JsV
         let min_y = quad[1];
         let max_x = quad[2];
         let max_y = quad[3];
-        validate_query(min_x, min_y, max_x, max_y)?;
+        validate_query2d(min_x, min_y, max_x, max_y)?;
         builder.add(Box2D::new(min_x, min_y, max_x, max_y));
     }
 
@@ -480,7 +442,7 @@ fn build_from_boxes(coords: &[f64], node_size: usize) -> Result<WasmIndex2D, JsV
         .finish_simd()
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
 
-    Ok(wrap_index(index))
+    Ok(wrap_index2d(index))
 }
 
 fn build_from_boxes3d(coords: &[f64], node_size: usize) -> Result<WasmIndex3D, JsValue> {
@@ -510,7 +472,7 @@ fn build_from_boxes3d(coords: &[f64], node_size: usize) -> Result<WasmIndex3D, J
     Ok(wrap_index3d(index))
 }
 
-fn wrap_index(index: SimdIndex2D) -> WasmIndex2D {
+fn wrap_index2d(index: SimdIndex2D) -> WasmIndex2D {
     let len = index.num_items();
     WasmIndex2D {
         index,
@@ -531,16 +493,21 @@ fn wrap_index3d(index: SimdIndex3D) -> WasmIndex3D {
 }
 
 fn hits_to_uint32(hits: &[usize]) -> Result<Uint32Array, JsValue> {
+    let out = hits_to_u32_vec(hits)?;
+    Ok(Uint32Array::from(out.as_slice()))
+}
+
+fn hits_to_u32_vec(hits: &[usize]) -> Result<Vec<u32>, JsValue> {
     let mut out = Vec::with_capacity(hits.len());
     for &hit in hits {
         let hit = u32::try_from(hit)
             .map_err(|_| JsValue::from_str("hit index does not fit in Uint32Array"))?;
         out.push(hit);
     }
-    Ok(Uint32Array::from(out.as_slice()))
+    Ok(out)
 }
 
-fn validate_query(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Result<(), JsValue> {
+fn validate_query2d(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Result<(), JsValue> {
     if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
         return Err(JsValue::from_str(
             "query coordinates must be finite numbers",
@@ -550,6 +517,36 @@ fn validate_query(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Result<(), 
         return Err(JsValue::from_str(
             "query bounds must satisfy min_x <= max_x and min_y <= max_y",
         ));
+    }
+    Ok(())
+}
+
+fn validate_point2d(x: f64, y: f64) -> Result<(), JsValue> {
+    if !x.is_finite() || !y.is_finite() {
+        return Err(JsValue::from_str(
+            "query point coordinates must be finite numbers",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_point3d(x: f64, y: f64, z: f64) -> Result<(), JsValue> {
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return Err(JsValue::from_str(
+            "query point coordinates must be finite numbers",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_max_distance(max_distance: f64) -> Result<(), JsValue> {
+    if !max_distance.is_finite() {
+        return Err(JsValue::from_str(
+            "query point and max_distance must be finite numbers",
+        ));
+    }
+    if max_distance < 0.0 {
+        return Err(JsValue::from_str("max_distance must be non-negative"));
     }
     Ok(())
 }

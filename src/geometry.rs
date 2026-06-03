@@ -422,6 +422,46 @@ impl Point3D {
     }
 }
 
+#[inline(always)]
+pub(crate) const fn empty_box2d() -> Box2D {
+    Box2D::new(
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    )
+}
+
+#[inline(always)]
+pub(crate) fn extend_box2d(bounds: &mut Box2D, other: Box2D) {
+    bounds.min_x = bounds.min_x.min(other.min_x);
+    bounds.min_y = bounds.min_y.min(other.min_y);
+    bounds.max_x = bounds.max_x.max(other.max_x);
+    bounds.max_y = bounds.max_y.max(other.max_y);
+}
+
+#[inline(always)]
+pub(crate) const fn empty_box3d() -> Box3D {
+    Box3D::new(
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    )
+}
+
+#[inline(always)]
+pub(crate) fn extend_box3d(bounds: &mut Box3D, other: Box3D) {
+    bounds.min_x = bounds.min_x.min(other.min_x);
+    bounds.min_y = bounds.min_y.min(other.min_y);
+    bounds.min_z = bounds.min_z.min(other.min_z);
+    bounds.max_x = bounds.max_x.max(other.max_x);
+    bounds.max_y = bounds.max_y.max(other.max_y);
+    bounds.max_z = bounds.max_z.max(other.max_z);
+}
+
 #[inline]
 fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
     if point < min {

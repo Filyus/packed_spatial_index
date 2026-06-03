@@ -3,7 +3,7 @@ use crate::config::DEFAULT_PARALLEL_MIN_ITEMS;
 use crate::{
     build::BuildError,
     config::DEFAULT_NODE_SIZE,
-    geometry::Box3D,
+    geometry::{Box3D, empty_box3d, extend_box3d},
     index3d::Index3D,
     sort3d::{
         ExperimentalSortKey3D, SortKey3D, SortKey3DContext, default_radix_bits_3d,
@@ -233,17 +233,11 @@ impl Index3DBuilder {
         for &level_end in &level_bounds[..level_bounds.len() - 1] {
             while read_pos < level_end {
                 let node_index = read_pos;
-                let mut node_bounds = empty_bounds_3d();
+                let mut node_bounds = empty_box3d();
                 let mut children = 0usize;
                 while children < node_size && read_pos < level_end {
-                    // Field-wise aggregation benchmarks faster than a helper in this build hot path.
                     let entry = entries[read_pos];
-                    node_bounds.min_x = node_bounds.min_x.min(entry.min_x);
-                    node_bounds.min_y = node_bounds.min_y.min(entry.min_y);
-                    node_bounds.min_z = node_bounds.min_z.min(entry.min_z);
-                    node_bounds.max_x = node_bounds.max_x.max(entry.max_x);
-                    node_bounds.max_y = node_bounds.max_y.max(entry.max_y);
-                    node_bounds.max_z = node_bounds.max_z.max(entry.max_z);
+                    extend_box3d(&mut node_bounds, entry);
                     read_pos += 1;
                     children += 1;
                 }
@@ -281,14 +275,9 @@ fn build_single_node_index_3d(
     level_bounds: Vec<usize>,
     mut entries: Vec<Box3D>,
 ) -> Index3D {
-    let mut root = empty_bounds_3d();
+    let mut root = empty_box3d();
     for &entry in &entries {
-        root.min_x = root.min_x.min(entry.min_x);
-        root.min_y = root.min_y.min(entry.min_y);
-        root.min_z = root.min_z.min(entry.min_z);
-        root.max_x = root.max_x.max(entry.max_x);
-        root.max_y = root.max_y.max(entry.max_y);
-        root.max_z = root.max_z.max(entry.max_z);
+        extend_box3d(&mut root, entry);
     }
     entries.push(root);
 
@@ -306,27 +295,11 @@ fn build_single_node_index_3d(
 }
 
 fn extent_3d(items: &[Box3D]) -> Box3D {
-    let mut extent = empty_bounds_3d();
+    let mut extent = empty_box3d();
     for &item in items {
-        extent.min_x = extent.min_x.min(item.min_x);
-        extent.min_y = extent.min_y.min(item.min_y);
-        extent.min_z = extent.min_z.min(item.min_z);
-        extent.max_x = extent.max_x.max(item.max_x);
-        extent.max_y = extent.max_y.max(item.max_y);
-        extent.max_z = extent.max_z.max(item.max_z);
+        extend_box3d(&mut extent, item);
     }
     extent
-}
-
-fn empty_bounds_3d() -> Box3D {
-    Box3D::new(
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    )
 }
 
 #[cfg(feature = "parallel")]

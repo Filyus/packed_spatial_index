@@ -3,7 +3,7 @@ use crate::config::DEFAULT_PARALLEL_MIN_ITEMS;
 use crate::{
     build::BuildError,
     config::DEFAULT_NODE_SIZE,
-    geometry::{Box2D, Num},
+    geometry::{Box2D, Num, empty_box2d, extend_box2d},
     index2d::Index2D,
     sort2d::{
         DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, SortKeyContext, encode_sort_by_key,
@@ -252,20 +252,12 @@ impl Index2DBuilder {
         for &level_end in &level_bounds[0..level_bounds.len() - 1] {
             while read_pos < level_end {
                 let node_index = read_pos;
-                let mut node_bounds = Box2D::new(
-                    Num::INFINITY,
-                    Num::INFINITY,
-                    Num::NEG_INFINITY,
-                    Num::NEG_INFINITY,
-                );
+                let mut node_bounds = empty_box2d();
                 let mut j = 0;
                 while j < node_size && read_pos < level_end {
                     let b = entries[read_pos];
                     read_pos += 1;
-                    node_bounds.min_x = node_bounds.min_x.min(b.min_x);
-                    node_bounds.min_y = node_bounds.min_y.min(b.min_y);
-                    node_bounds.max_x = node_bounds.max_x.max(b.max_x);
-                    node_bounds.max_y = node_bounds.max_y.max(b.max_y);
+                    extend_box2d(&mut node_bounds, b);
                     j += 1;
                 }
                 entries[write_pos] = node_bounds;
@@ -302,17 +294,9 @@ fn build_single_node_index(
     level_bounds: Vec<usize>,
     mut entries: Vec<Box2D>,
 ) -> Index2D {
-    let mut root = Box2D::new(
-        Num::INFINITY,
-        Num::INFINITY,
-        Num::NEG_INFINITY,
-        Num::NEG_INFINITY,
-    );
-    for b in &entries {
-        root.min_x = root.min_x.min(b.min_x);
-        root.min_y = root.min_y.min(b.min_y);
-        root.max_x = root.max_x.max(b.max_x);
-        root.max_y = root.max_y.max(b.max_y);
+    let mut root = empty_box2d();
+    for &b in &entries {
+        extend_box2d(&mut root, b);
     }
     entries.push(root);
 

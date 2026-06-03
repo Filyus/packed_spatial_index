@@ -44,6 +44,24 @@ jobs:
       - name: Test simd feature
         run: cargo test --all-targets --no-default-features --features simd
 
+      - name: Check wasm SIMD build
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check --target wasm32-unknown-unknown --no-default-features --features simd
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: wasm-demo/package-lock.json
+
+      - name: Build WASM demo
+        working-directory: wasm-demo
+        run: |
+          npm ci
+          npm run build
+
       - name: Lint all features
         run: cargo clippy --all-targets --all-features -- -D warnings
 

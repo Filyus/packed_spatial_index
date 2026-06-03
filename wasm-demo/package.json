@@ -1,0 +1,18 @@
+{
+  "private": true,
+  "name": "packed-spatial-index-wasm-demo",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "wasm:build": "cross-env RUSTFLAGS=-Ctarget-feature=+simd128 wasm-pack build crate --target web --out-dir ../web/pkg --release -- --no-default-features --features simd",
+    "dev": "npm run wasm:build && vite web",
+    "build": "npm run wasm:build && tsc -p web/tsconfig.json && vite build web",
+    "check": "npm run wasm:build && tsc -p web/tsconfig.json"
+  },
+  "devDependencies": {
+    "cross-env": "10.1.0",
+    "typescript": "6.0.3",
+    "vite": "8.0.16",
+    "wasm-pack": "0.15.0"
+  }
+}

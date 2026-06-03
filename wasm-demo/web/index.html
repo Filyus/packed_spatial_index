@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>packed_spatial_index WASM demo</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link
+      rel="icon"
+      href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="%230f6b78"/><path d="M7 21h18M7 11h18M11 7v18M21 7v18" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>'
+    />
+  </head>
+  <body>
+    <main id="app">
+      <section class="toolbar" aria-label="Index controls">
+        <label>
+          Items
+          <input id="pointCount" type="number" min="1000" step="1000" value="50000" />
+        </label>
+        <label>
+          Geometry
+          <select id="geometry">
+            <option value="boxes" selected>Boxes</option>
+            <option value="points">Points</option>
+          </select>
+        </label>
+        <label>
+          Node size
+          <select id="nodeSize">
+            <option value="8">8</option>
+            <option value="16" selected>16</option>
+            <option value="32">32</option>
+          </select>
+        </label>
+        <label>
+          Mode
+          <select id="mode">
+            <option value="range" selected>Range</option>
+            <option value="nearest">Nearest</option>
+          </select>
+        </label>
+        <label>
+          Neighbors
+          <input id="neighborCount" type="number" min="1" step="1" value="500" />
+        </label>
+        <label>
+          Distribution
+          <select id="distribution">
+            <option value="uniform" selected>Uniform</option>
+            <option value="clustered">Clustered</option>
+          </select>
+        </label>
+        <button id="regenerate" type="button">Regenerate</button>
+      </section>
+      <section class="stage">
+        <canvas id="glCanvas" width="1200" height="720"></canvas>
+        <div id="queryRect" aria-hidden="true"></div>
+        <div id="queryPoint" aria-hidden="true"></div>
+        <section class="stats" aria-live="polite">
+          <span>Build <b id="buildTime"></b></span>
+          <span>Search <b id="queryTime"></b></span>
+          <span>Core <b id="coreTime"></b></span>
+          <span>u32 <b id="convertTime"></b></span>
+          <span>JS copy <b id="copyTime"></b></span>
+          <span>Hits <b id="hitCount"></b></span>
+          <span>Items <b id="pointTotal"></b></span>
+        </section>
+      </section>
+      <footer class="statusbar">
+        <span id="status">Loading WASM...</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

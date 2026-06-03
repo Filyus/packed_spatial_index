@@ -468,6 +468,29 @@ cargo run --example reuse_workspace_2d
 cargo run --example reuse_workspace_3d
 ```
 
+## WASM Demo
+
+The repository includes a Vite + TypeScript demo that builds a `SimdIndex2D`
+WASM wrapper for interactive 2D box and point searches:
+
+```bash
+cd wasm-demo
+npm install
+npm run dev
+```
+
+Production build:
+
+```bash
+cd wasm-demo
+npm run build
+```
+
+The demo uses `wasm-pack` with `RUSTFLAGS=-Ctarget-feature=+simd128` and
+`packed_spatial_index` with `default-features = false, features = ["simd"]`.
+It supports range search and nearest-neighbor modes, renders with WebGL2, and
+is excluded from the published crates.io package.
+
 ## Benchmarking Layout
 
 Performance-related code lives under `benches`:

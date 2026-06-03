@@ -1,0 +1,24 @@
+[package]
+name = "packed_spatial_index_wasm_demo"
+version = "0.1.0"
+edition = "2024"
+description = "WASM bindings for the packed_spatial_index browser demo"
+license = "Apache-2.0"
+repository = "https://github.com/Filyus/packed_spatial_index"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dependencies]
+js-sys = "0.3.99"
+wasm-bindgen = "0.2.122"
+web-sys = { version = "0.3.99", features = ["Performance", "Window"] }
+packed_spatial_index = { path = "../..", default-features = false }
+
+[features]
+default = ["simd"]
+simd = ["packed_spatial_index/simd"]

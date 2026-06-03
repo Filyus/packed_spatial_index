@@ -13,25 +13,25 @@
   <body>
     <main id="app">
       <section class="toolbar" aria-label="Index controls">
-        <label>
+        <label class="items-control">
           Items
           <input id="pointCount" type="number" min="1000" step="1000" value="50000" />
         </label>
-        <label>
+        <label class="short-control">
           Dimension
           <select id="dimension">
             <option value="2d" selected>2D</option>
             <option value="3d">3D</option>
           </select>
         </label>
-        <label>
+        <label class="medium-control">
           Geometry
           <select id="geometry">
             <option value="boxes" selected>Boxes</option>
             <option value="points">Points</option>
           </select>
         </label>
-        <label>
+        <label class="short-control">
           Node size
           <select id="nodeSize">
             <option value="8">8</option>
@@ -39,14 +39,14 @@
             <option value="32">32</option>
           </select>
         </label>
-        <label>
+        <label class="medium-control">
           Mode
           <select id="mode">
             <option value="range" selected>Range</option>
             <option value="nearest">Nearest</option>
           </select>
         </label>
-        <label>
+        <label class="short-control">
           Result
           <select id="resultMode">
             <option value="all" selected>All</option>
@@ -66,7 +66,7 @@
           Thickness
           <input id="thickness" type="number" min="0" step="100" />
         </label>
-        <label>
+        <label class="distribution-control">
           Distribution
           <select id="distribution">
             <option value="uniform" selected>Uniform</option>

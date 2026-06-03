@@ -71,6 +71,26 @@ select {
   min-width: 132px;
 }
 
+.items-control input {
+  width: 116px;
+  min-width: 116px;
+}
+
+.short-control select {
+  width: 86px;
+  min-width: 86px;
+}
+
+.medium-control select {
+  width: 106px;
+  min-width: 106px;
+}
+
+.distribution-control select {
+  width: 132px;
+  min-width: 132px;
+}
+
 button {
   align-self: end;
   padding: 0 14px;

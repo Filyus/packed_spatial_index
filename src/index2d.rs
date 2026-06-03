@@ -551,7 +551,7 @@ impl Index2D {
         self.visit_with_stack_impl::<false, B, F>(query, stack, visitor)
     }
 
-    /// Experimental prefetch variant of [`visit_with_stack`](Index2D::visit_with_stack).
+    /// Hidden prefetch variant of [`visit_with_stack`](Index2D::visit_with_stack).
     #[doc(hidden)]
     pub fn visit_with_stack_prefetch<B, F>(
         &self,

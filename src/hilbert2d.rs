@@ -10,9 +10,11 @@
 //!  * [`lut`]           — a table-driven finite-state machine (4 states, 2 bits per step).
 
 /// Encoder signature: 2D coordinates (16 bits each) -> Hilbert-curve value.
+#[cfg(feature = "bench-internals")]
 pub type HilbertFn = fn(u16, u16) -> u32;
 
 /// This crate's implementations with human-readable names (for benches/tests).
+#[cfg(feature = "bench-internals")]
 pub const ENCODERS: &[(&str, HilbertFn)] = &[
     ("magic_bits", magic_bits),
     ("loop_rotation", loop_rotation),
@@ -88,6 +90,7 @@ const BITS: u32 = 16;
 
 /// Batch encoder: computes `magic_bits` for a whole slice. The algorithm is branchless, so
 /// the loop is a candidate for autovectorization (8 x u32 on AVX2). Slice lengths must match.
+#[cfg(feature = "bench-internals")]
 pub fn magic_bits_batch(xs: &[u16], ys: &[u16], out: &mut [u32]) {
     let n = out.len();
     assert!(xs.len() == n && ys.len() == n);

@@ -2,11 +2,11 @@
 //!
 //! Shows why the space-filling curve matters: measures build time,
 //! query time, and average intersection checks per query (a locality metric).
-//! Run: `cargo run --release --example sortkey_quality`
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin sortkey_quality_2d`
 
 use std::time::{Duration, Instant};
 
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -41,13 +41,10 @@ fn main() {
         .collect();
 
     let keys = [
-        (
-            "Hilbert (magic_bits)",
-            ExperimentalSortKey2D::HilbertMagicBits,
-        ),
-        ("Hilbert (lut)", ExperimentalSortKey2D::HilbertLut),
-        ("Hilbert (loop)", ExperimentalSortKey2D::HilbertLoopRotation),
-        ("Morton (Z-order)", ExperimentalSortKey2D::Morton),
+        ("Hilbert (magic_bits)", SortKey2DStrategy::HilbertMagicBits),
+        ("Hilbert (lut)", SortKey2DStrategy::HilbertLut),
+        ("Hilbert (loop)", SortKey2DStrategy::HilbertLoopRotation),
+        ("Morton (Z-order)", SortKey2DStrategy::Morton),
     ];
 
     println!(
@@ -68,7 +65,7 @@ fn main() {
             let t0 = Instant::now();
             let mut b = Index2DBuilder::new(N)
                 .node_size(NODE_SIZE)
-                .experimental_sort_key(*key);
+                .sort_key_strategy(*key);
             for r in &boxes {
                 b.add(Box2D::new(r[0], r[1], r[2], r[3]));
             }

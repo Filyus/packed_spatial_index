@@ -68,15 +68,16 @@ pub use sort2d::SortKey2D;
 pub use sort3d::SortKey3D;
 pub use traversal::SearchWorkspace;
 
-/// Experimental internals kept public for benchmarks and research notebooks.
+/// Internal helpers exposed only for crate benchmarks and local performance tools.
+#[cfg(feature = "bench-internals")]
 #[doc(hidden)]
-pub mod experimental {
+pub mod benchmark_support {
     pub use crate::hilbert2d::{
         ENCODERS, HilbertFn, loop_rotation, lut, magic_bits, magic_bits_batch, morton,
     };
-    pub use crate::sort2d::{ExperimentalSortKey2D, radix_sort_pairs};
+    pub use crate::sort2d::{SortKey2DStrategy, radix_sort_pairs};
     pub use crate::sort3d::{
-        ExperimentalSortKey3D, encode_hilbert3_nibble_lut, encode_hilbert3_pair_lut,
-        encode_morton3, radix_sort_pairs_u64,
+        SortKey3DStrategy, encode_hilbert3_nibble_lut, encode_hilbert3_pair_lut, encode_morton3,
+        radix_sort_pairs_u64,
     };
 }

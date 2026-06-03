@@ -8,7 +8,7 @@ use std::io::Cursor;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use flatgeobuf::packed_r_tree::{NodeItem, PackedRTree, calc_extent, hilbert_sort};
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2D, Index2DBuilder, Index2DView};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -82,7 +82,7 @@ fn build_index(boxes: &[[f64; 4]], parallel: bool) -> Index2D {
     let mut builder = Index2DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
         .parallel(parallel)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     for b in boxes {
         builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }
@@ -93,7 +93,7 @@ fn build_simd_index(boxes: &[[f64; 4]]) -> packed_spatial_index::SimdIndex2D {
     let mut builder = Index2DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
         .parallel(true)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     for b in boxes {
         builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
     }

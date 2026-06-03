@@ -1,10 +1,10 @@
-//! Experiment: AoS queries (current Index2D) vs SoA scalar vs SoA SIMD (f64x4).
-//! Run: `cargo run --release --example soa_experiment_2d`
+//! Local performance tool: AoS queries (Index2D) vs SoA scalar vs SoA SIMD (f64x4).
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin soa_2d`
 //! (faster with `RUSTFLAGS="-C target-cpu=native"`).
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -28,10 +28,10 @@ fn main() {
 
     let mut aos = Index2DBuilder::new(N)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     let mut soa = Index2DBuilder::new(N)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     for b in &boxes {
         aos.add(Box2D::new(b[0], b[1], b[2], b[3]));
         soa.add(Box2D::new(b[0], b[1], b[2], b[3]));

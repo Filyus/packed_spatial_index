@@ -10,7 +10,7 @@ documentation = "https://docs.rs/packed_spatial_index"
 readme = "README.md"
 keywords = ["spatial", "index", "aabb", "hilbert", "rtree"]
 categories = ["algorithms", "data-structures"]
-exclude = ["/.github/"]
+exclude = ["/.github/", "/benches/tools/"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -35,6 +35,8 @@ default = ["parallel", "simd"]
 parallel = ["dep:rayon"]
 # SoA index with SIMD queries (`SimdIndex2D`, AVX2 `wide::f64x4` + AVX-512 intrinsics).
 simd = ["dep:wide"]
+# Hidden support API for crate benchmarks and local performance tools.
+bench-internals = []
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
@@ -54,56 +56,34 @@ codegen-units = 1
 [[bench]]
 name = "hilbert2d_bench"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "index2d_bench"
 harness = false
-required-features = ["parallel", "simd"]
+required-features = ["parallel", "simd", "bench-internals"]
 
 [[bench]]
 name = "sortkey2d_bench"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "index3d_bench"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "persistence_knn2d_bench"
 harness = false
-required-features = ["simd"]
+required-features = ["simd", "bench-internals"]
 
 [[bench]]
 name = "persistence_knn3d_bench"
 harness = false
-required-features = ["simd"]
+required-features = ["simd", "bench-internals"]
 
 [[bench]]
 name = "flatgeobuf2d_bench"
 harness = false
-required-features = ["parallel", "simd"]
-
-# Examples that require specific features (skipped when the feature is disabled).
-[[example]]
-name = "parallel_experiment_2d"
-required-features = ["parallel"]
-
-[[example]]
-name = "parallel_experiment_3d"
-required-features = ["parallel"]
-
-[[example]]
-name = "soa_experiment_2d"
-required-features = ["simd"]
-
-[[example]]
-name = "soa_experiment_3d"
-required-features = ["simd"]
-
-[[example]]
-name = "nodesize_experiment_2d"
-required-features = ["simd"]
-
-[[example]]
-name = "nodesize_experiment_3d"
-required-features = ["simd"]
+required-features = ["parallel", "simd", "bench-internals"]

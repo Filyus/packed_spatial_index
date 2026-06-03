@@ -6,7 +6,7 @@ use crate::{
     geometry::{Box3D, empty_box3d, extend_box3d},
     index3d::Index3D,
     sort3d::{
-        ExperimentalSortKey3D, SortKey3D, SortKey3DContext, default_radix_bits_3d,
+        SortKey3D, SortKey3DContext, SortKey3DStrategy, default_radix_bits_3d,
         encode_sort_by_key_3d, normalize_radix_bits_3d,
     },
     tree::{TreeLayout, normalize_node_size, try_compute_tree_layout},
@@ -17,7 +17,7 @@ use crate::{
 pub(crate) struct BuildConfig3D {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
-    pub(crate) sort_key: ExperimentalSortKey3D,
+    pub(crate) sort_key: SortKey3DStrategy,
     pub(crate) radix: bool,
     pub(crate) radix_bits: u32,
     #[cfg(feature = "parallel")]
@@ -47,7 +47,7 @@ pub(crate) struct BuildConfig3D {
 pub struct Index3DBuilder {
     node_size: usize,
     num_items: usize,
-    sort_key: ExperimentalSortKey3D,
+    sort_key: SortKey3DStrategy,
     radix: bool,
     radix_bits: u32,
     #[cfg(feature = "parallel")]
@@ -86,9 +86,9 @@ impl Index3DBuilder {
         self
     }
 
-    /// Choose an experimental 3D sort-key implementation.
+    /// Choose a 3D sort-key implementation variant.
     #[doc(hidden)]
-    pub fn experimental_sort_key(mut self, key: ExperimentalSortKey3D) -> Self {
+    pub fn sort_key_strategy(mut self, key: SortKey3DStrategy) -> Self {
         self.sort_key = key;
         self
     }
@@ -100,11 +100,11 @@ impl Index3DBuilder {
         self
     }
 
-    /// Set the LSD radix-sort digit width for benchmarks and tuning.
+    /// Set the LSD radix-sort digit width for benchmarks and local performance tools.
     ///
     /// Values are clamped to `1..=16`; the default is 8.
     #[doc(hidden)]
-    pub fn experimental_radix_bits(mut self, bits: u32) -> Self {
+    pub fn radix_sort_bits(mut self, bits: u32) -> Self {
         self.radix_bits = normalize_radix_bits_3d(bits);
         self
     }

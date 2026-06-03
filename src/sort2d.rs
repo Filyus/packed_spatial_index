@@ -7,18 +7,18 @@ const MAX_RADIX_BITS: u32 = 16;
 /// Which key to use when sorting boxes before packing the tree.
 ///
 /// [`SortKey2D::Hilbert`] is the default and currently the only stable public
-/// ordering. Additional sort keys are kept in the hidden experimental API for
-/// benchmarking.
+/// ordering. Additional sort-key implementations are available only through the
+/// hidden benchmark support API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortKey2D {
     /// Hilbert curve order.
     Hilbert,
 }
 
-/// Experimental sort-key implementations used by benchmarks.
+/// Sort-key implementation variants used by benchmarks.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExperimentalSortKey2D {
+pub enum SortKey2DStrategy {
     /// Hilbert curve, "magic bits" (rawrunprotected): the reference crate algorithm.
     HilbertMagicBits,
     /// Hilbert curve, classic iterative algorithm with quadrant rotations.
@@ -29,12 +29,12 @@ pub enum ExperimentalSortKey2D {
     Morton,
 }
 
-impl From<SortKey2D> for ExperimentalSortKey2D {
+impl From<SortKey2D> for SortKey2DStrategy {
     fn from(key: SortKey2D) -> Self {
         match key {
             // Same Hilbert values as the reference-style magic-bits encoder, but faster
             // in the real build path where keys are produced as `(key, index)` pairs.
-            SortKey2D::Hilbert => ExperimentalSortKey2D::HilbertLut,
+            SortKey2D::Hilbert => SortKey2DStrategy::HilbertLut,
         }
     }
 }
@@ -75,36 +75,36 @@ where
 #[cfg(feature = "parallel")]
 pub(crate) fn encode_sort_by_key(
     items: &[Box2D],
-    sort_key: ExperimentalSortKey2D,
+    sort_key: SortKey2DStrategy,
     context: SortKeyContext,
 ) -> Vec<(u32, u32)> {
     match sort_key {
-        ExperimentalSortKey2D::HilbertMagicBits => {
+        SortKey2DStrategy::HilbertMagicBits => {
             encode_sort_with_encoder(items, hilbert::magic_bits, context)
         }
-        ExperimentalSortKey2D::HilbertLoopRotation => {
+        SortKey2DStrategy::HilbertLoopRotation => {
             encode_sort_with_encoder(items, hilbert::loop_rotation, context)
         }
-        ExperimentalSortKey2D::HilbertLut => encode_sort_with_encoder(items, hilbert::lut, context),
-        ExperimentalSortKey2D::Morton => encode_sort_with_encoder(items, hilbert::morton, context),
+        SortKey2DStrategy::HilbertLut => encode_sort_with_encoder(items, hilbert::lut, context),
+        SortKey2DStrategy::Morton => encode_sort_with_encoder(items, hilbert::morton, context),
     }
 }
 
 #[cfg(not(feature = "parallel"))]
 pub(crate) fn encode_sort_by_key(
     items: &[Box2D],
-    sort_key: ExperimentalSortKey2D,
+    sort_key: SortKey2DStrategy,
     context: SortKeyContext,
 ) -> Vec<(u32, u32)> {
     match sort_key {
-        ExperimentalSortKey2D::HilbertMagicBits => {
+        SortKey2DStrategy::HilbertMagicBits => {
             encode_sort_with_encoder(items, hilbert::magic_bits, context)
         }
-        ExperimentalSortKey2D::HilbertLoopRotation => {
+        SortKey2DStrategy::HilbertLoopRotation => {
             encode_sort_with_encoder(items, hilbert::loop_rotation, context)
         }
-        ExperimentalSortKey2D::HilbertLut => encode_sort_with_encoder(items, hilbert::lut, context),
-        ExperimentalSortKey2D::Morton => encode_sort_with_encoder(items, hilbert::morton, context),
+        SortKey2DStrategy::HilbertLut => encode_sort_with_encoder(items, hilbert::lut, context),
+        SortKey2DStrategy::Morton => encode_sort_with_encoder(items, hilbert::morton, context),
     }
 }
 

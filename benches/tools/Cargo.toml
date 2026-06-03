@@ -1,0 +1,54 @@
+[package]
+name = "packed_spatial_index_perf"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+packed_spatial_index = { path = "../..", default-features = false, features = [
+    "parallel",
+    "simd",
+    "bench-internals",
+] }
+rand = "0.10.1"
+rayon = "1"
+
+[[bin]]
+name = "encode_2d"
+path = "src/encode_2d.rs"
+
+[[bin]]
+name = "node_size_2d"
+path = "src/node_size_2d.rs"
+
+[[bin]]
+name = "node_size_3d"
+path = "src/node_size_3d.rs"
+
+[[bin]]
+name = "parallel_2d"
+path = "src/parallel_2d.rs"
+
+[[bin]]
+name = "parallel_3d"
+path = "src/parallel_3d.rs"
+
+[[bin]]
+name = "radix_2d"
+path = "src/radix_2d.rs"
+
+[[bin]]
+name = "soa_2d"
+path = "src/soa_2d.rs"
+
+[[bin]]
+name = "soa_3d"
+path = "src/soa_3d.rs"
+
+[[bin]]
+name = "sort_2d"
+path = "src/sort_2d.rs"
+
+[[bin]]
+name = "sortkey_quality_2d"
+path = "src/sortkey_quality_2d.rs"

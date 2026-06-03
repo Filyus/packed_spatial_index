@@ -1,11 +1,11 @@
-//! Experiment: effect of `node_size` on builds and queries (AoS / AVX2 / AVX-512).
+//! Local performance tool: effect of `node_size` on builds and queries (AoS / AVX2 / AVX-512).
 //! Larger node_size makes the tree shallower (less traversal), but puts more boxes per node (more
 //! checks); for SIMD, larger nodes amortize better. Search for the optimum.
-//! Run: `cargo run --release --example nodesize_experiment_2d`
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin node_size_2d`
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -50,7 +50,7 @@ fn main() {
             let t = Instant::now();
             let mut b = Index2DBuilder::new(N)
                 .node_size(ns)
-                .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+                .sort_key_strategy(SortKey2DStrategy::HilbertLut);
             for r in &boxes {
                 b.add(Box2D::new(r[0], r[1], r[2], r[3]));
             }
@@ -62,7 +62,7 @@ fn main() {
         // SoA index for queries
         let mut sb = Index2DBuilder::new(N)
             .node_size(ns)
-            .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+            .sort_key_strategy(SortKey2DStrategy::HilbertLut);
         for r in &boxes {
             sb.add(Box2D::new(r[0], r[1], r[2], r[3]));
         }

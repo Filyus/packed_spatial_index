@@ -468,19 +468,34 @@ cargo run --example reuse_workspace_2d
 cargo run --example reuse_workspace_3d
 ```
 
-Feature-gated experiment examples include `parallel_experiment_2d`,
-`parallel_experiment_3d`, `soa_experiment_2d`, `soa_experiment_3d`,
-`nodesize_experiment_2d`, and `nodesize_experiment_3d`.
+## Benchmarking Layout
+
+Performance-related code lives under `benches`:
+
+- `benches/*.rs` are Criterion benchmark suites run with `cargo bench`.
+- `benches/tools` is a local developer package for quick comparisons of encoder
+  variants, sort strategies, node sizes, parallel builds, and SoA layouts.
+
+The local tools use the hidden `bench-internals` feature and are excluded from
+the published crate.
+
+```bash
+cargo run --release --manifest-path benches/tools/Cargo.toml --bin sortkey_quality_2d
+cargo run --release --manifest-path benches/tools/Cargo.toml --bin node_size_3d
+```
 
 ## Features
 
-Both features are enabled by default:
+Runtime acceleration features are enabled by default:
 
 - `parallel`: adaptive rayon-based index builds through `Index2DBuilder::parallel`
   and `Index3DBuilder::parallel`.
 - `simd`: SoA index and SIMD search paths through `SimdIndex2D` and
   `SimdIndex3D`, plus owned and zero-copy SIMD persistence through the canonical
   byte format.
+- `bench-internals`: hidden support API for this crate's own benchmarks and
+  local performance tools. It is not enabled by default and is not part of the
+  stable user-facing API.
 
 Minimal build:
 
@@ -507,7 +522,7 @@ paths:
   byte buffers;
 - bulk byte copies for `repr(C)` boxes and index sections when serializing on
   compatible little-endian targets;
-- x86/x86_64 prefetch intrinsics used only by hidden benchmark/experimental paths;
+- x86/x86_64 prefetch intrinsics used only by hidden benchmark/performance-tool paths;
 - AVX-512 loads in the `simd` feature, guarded by runtime CPU feature detection.
 
 Loaded buffers are validated before they can be searched, so malformed input is
@@ -604,11 +619,11 @@ The short version:
 Run the focused benchmark suites with:
 
 ```bash
-cargo bench --bench index2d_bench --no-default-features --features parallel,simd
-cargo bench --bench index3d_bench --no-default-features --features parallel,simd
-cargo bench --bench persistence_knn2d_bench --no-default-features --features simd
-cargo bench --bench persistence_knn3d_bench --no-default-features --features simd
-cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd
+cargo bench --bench index2d_bench --no-default-features --features parallel,simd,bench-internals
+cargo bench --bench index3d_bench --no-default-features --features parallel,simd,bench-internals
+cargo bench --bench persistence_knn2d_bench --no-default-features --features simd,bench-internals
+cargo bench --bench persistence_knn3d_bench --no-default-features --features simd,bench-internals
+cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd,bench-internals
 ```
 
 ## Status

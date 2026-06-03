@@ -1,9 +1,10 @@
 use std::ops::ControlFlow;
 
-use packed_spatial_index::experimental::ExperimentalSortKey3D;
+#[cfg(feature = "bench-internals")]
+use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{
     BoundsError, Box3D, BuildError, DEFAULT_NODE_SIZE, Index3DBuilder, NeighborWorkspace, Point3D,
-    SearchWorkspace,
+    SearchWorkspace, SortKey3D,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -148,7 +149,7 @@ fn index3d_empty_and_small_indexes_behave() {
 #[test]
 fn index3d_search_apis_agree() {
     let boxes = random_boxes_3d(257, 0x3D);
-    let index = build_index_3d(&boxes, 16, ExperimentalSortKey3D::Hilbert);
+    let index = build_index_3d(&boxes, 16);
     let query = Box3D::new(250.0, 250.0, 250.0, 650.0, 650.0, 650.0);
 
     let mut expected = brute_force_search(&boxes, query);
@@ -191,11 +192,26 @@ fn index3d_search_matches_brute_force_on_random_boxes() {
     let queries = random_queries_3d(128, 0xACE);
 
     for node_size in [8, 16, 32] {
-        for sort_key in [
-            ExperimentalSortKey3D::Hilbert,
-            ExperimentalSortKey3D::Morton,
-        ] {
-            let index = build_index_3d(&boxes, node_size, sort_key);
+        let index = build_index_3d(&boxes, node_size);
+        for &query in &queries {
+            let mut actual = index.search(query);
+            let mut expected = brute_force_search(&boxes, query);
+            actual.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(actual, expected, "node_size={node_size}");
+        }
+    }
+}
+
+#[cfg(feature = "bench-internals")]
+#[test]
+fn index3d_sort_key_strategies_match_brute_force_on_random_boxes() {
+    let boxes = random_boxes_3d(2_000, 0xB0B);
+    let queries = random_queries_3d(128, 0xACE);
+
+    for node_size in [8, 16, 32] {
+        for sort_key in [SortKey3DStrategy::Hilbert, SortKey3DStrategy::Morton] {
+            let index = build_index_3d_impl(&boxes, node_size, sort_key);
             for &query in &queries {
                 let mut actual = index.search(query);
                 let mut expected = brute_force_search(&boxes, query);
@@ -213,7 +229,7 @@ fn index3d_search_matches_brute_force_on_random_boxes() {
 #[test]
 fn index3d_neighbors_match_brute_force() {
     let boxes = random_boxes_3d(2_000, 0x5151);
-    let index = build_index_3d(&boxes, 16, ExperimentalSortKey3D::Hilbert);
+    let index = build_index_3d(&boxes, 16);
     let points = random_points_3d(96, 0xC0FFEE);
 
     for point in points {
@@ -252,7 +268,7 @@ fn index3d_neighbor_apis_agree_and_support_early_exit() {
         Box3D::new(3.0, 3.0, 3.0, 4.0, 4.0, 4.0),
         Box3D::new(-5.0, -5.0, -5.0, -4.0, -4.0, -4.0),
     ];
-    let index = build_index_3d(&boxes, 2, ExperimentalSortKey3D::Hilbert);
+    let index = build_index_3d(&boxes, 2);
     let point = Point3D::new(3.25, 3.25, 3.25);
 
     let expected = index.neighbors_within(point, 3, f64::INFINITY);
@@ -313,14 +329,25 @@ fn index3d_parallel_build_matches_serial() {
     }
 }
 
-fn build_index_3d(
+fn build_index_3d(boxes: &[Box3D], node_size: usize) -> packed_spatial_index::Index3D {
+    let mut builder = Index3DBuilder::new(boxes.len())
+        .node_size(node_size)
+        .sort_key(SortKey3D::Hilbert);
+    for &bounds in boxes {
+        builder.add(bounds);
+    }
+    builder.finish().unwrap()
+}
+
+#[cfg(feature = "bench-internals")]
+fn build_index_3d_impl(
     boxes: &[Box3D],
     node_size: usize,
-    sort_key: ExperimentalSortKey3D,
+    sort_key: SortKey3DStrategy,
 ) -> packed_spatial_index::Index3D {
     let mut builder = Index3DBuilder::new(boxes.len())
         .node_size(node_size)
-        .experimental_sort_key(sort_key);
+        .sort_key_strategy(sort_key);
     for &bounds in boxes {
         builder.add(bounds);
     }

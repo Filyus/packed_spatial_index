@@ -1,10 +1,10 @@
-//! Experiment: scalar `Index3D` queries vs `SimdIndex3D` scalar/SIMD traversal.
-//! Run: `cargo run --release --example soa_experiment_3d`
+//! Local performance tool: scalar `Index3D` queries vs `SimdIndex3D` scalar/SIMD traversal.
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin soa_3d`
 //! (faster with `RUSTFLAGS="-C target-cpu=native"`).
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey3D;
+use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{Box3D, Index3DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -30,10 +30,10 @@ fn main() {
 
     let mut scalar = Index3DBuilder::new(N)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+        .sort_key_strategy(SortKey3DStrategy::Hilbert);
     let mut simd = Index3DBuilder::new(N)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+        .sort_key_strategy(SortKey3DStrategy::Hilbert);
     for &bounds in &boxes {
         scalar.add(bounds);
         simd.add(bounds);

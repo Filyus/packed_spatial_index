@@ -1,9 +1,9 @@
-//! Experiment: adaptive and forced parallel 3D index builds versus serial builds.
-//! Run: `cargo run --release --example parallel_experiment_3d`
+//! Local performance tool: adaptive and forced parallel 3D index builds versus serial builds.
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin parallel_3d`
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey3D;
+use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{Box3D, Index3D, Index3DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -35,7 +35,7 @@ fn gen_boxes(n: usize) -> Vec<Box3D> {
 fn build(boxes: &[Box3D], mode: BuildMode) -> Index3D {
     let mut builder = Index3DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+        .sort_key_strategy(SortKey3DStrategy::Hilbert);
     builder = match mode {
         BuildMode::Serial => builder.parallel(false),
         BuildMode::ParallelAuto => builder.parallel(true),

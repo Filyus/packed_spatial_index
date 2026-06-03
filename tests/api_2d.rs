@@ -1,7 +1,5 @@
 #[cfg(feature = "parallel")]
 use packed_spatial_index::DEFAULT_PARALLEL_MIN_ITEMS;
-#[cfg(feature = "parallel")]
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
 use packed_spatial_index::{
     BoundsError, Box2D, BuildError, DEFAULT_NODE_SIZE, Index2DBuilder, SearchWorkspace,
 };
@@ -260,12 +258,8 @@ fn parallel_build_matches_serial() {
         boxes.push([cx, cy, cx + 10.0, cy + 10.0]);
     }
 
-    let mut serial =
-        Index2DBuilder::new(n).experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
-    let mut parallel = Index2DBuilder::new(n)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut)
-        .parallel(true)
-        .parallel_min_items(0);
+    let mut serial = Index2DBuilder::new(n);
+    let mut parallel = Index2DBuilder::new(n).parallel(true).parallel_min_items(0);
     for b in &boxes {
         serial.add(Box2D::new(b[0], b[1], b[2], b[3]));
         parallel.add(Box2D::new(b[0], b[1], b[2], b[3]));

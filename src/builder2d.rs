@@ -6,7 +6,7 @@ use crate::{
     geometry::{Box2D, Num, empty_box2d, extend_box2d},
     index2d::Index2D,
     sort2d::{
-        DEFAULT_RADIX_BITS, ExperimentalSortKey2D, SortKey2D, SortKeyContext, encode_sort_by_key,
+        DEFAULT_RADIX_BITS, SortKey2D, SortKey2DStrategy, SortKeyContext, encode_sort_by_key,
         normalize_radix_bits,
     },
     tree::{TreeLayout, normalize_node_size, try_compute_tree_layout},
@@ -30,7 +30,7 @@ use crate::{
 pub struct Index2DBuilder {
     node_size: usize,
     num_items: usize,
-    sort_key: ExperimentalSortKey2D,
+    sort_key: SortKey2DStrategy,
     radix: bool,
     radix_bits: u32,
     #[cfg(feature = "parallel")]
@@ -45,7 +45,7 @@ pub struct Index2DBuilder {
 pub(crate) struct BuildConfig {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
-    pub(crate) sort_key: ExperimentalSortKey2D,
+    pub(crate) sort_key: SortKey2DStrategy,
     pub(crate) radix: bool,
     pub(crate) radix_bits: u32,
     #[cfg(feature = "parallel")]
@@ -83,9 +83,9 @@ impl Index2DBuilder {
         self
     }
 
-    /// Choose an experimental sort-key implementation.
+    /// Choose a sort-key implementation variant.
     #[doc(hidden)]
-    pub fn experimental_sort_key(mut self, key: ExperimentalSortKey2D) -> Self {
+    pub fn sort_key_strategy(mut self, key: SortKey2DStrategy) -> Self {
         self.sort_key = key;
         self
     }
@@ -97,11 +97,11 @@ impl Index2DBuilder {
         self
     }
 
-    /// Set the LSD radix-sort digit width for benchmarks and tuning.
+    /// Set the LSD radix-sort digit width for benchmarks and local performance tools.
     ///
     /// Values are clamped to `1..=16`; the default is 8.
     #[doc(hidden)]
-    pub fn experimental_radix_bits(mut self, bits: u32) -> Self {
+    pub fn radix_sort_bits(mut self, bits: u32) -> Self {
         self.radix_bits = normalize_radix_bits(bits);
         self
     }

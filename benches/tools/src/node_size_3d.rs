@@ -1,9 +1,9 @@
-//! Experiment: effect of `node_size` on 3D builds and SIMD queries.
-//! Run: `cargo run --release --example nodesize_experiment_3d`
+//! Local performance tool: effect of `node_size` on 3D builds and SIMD queries.
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin node_size_3d`
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey3D;
+use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{Box3D, Index3DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -50,7 +50,7 @@ fn main() {
             let start = Instant::now();
             let mut builder = Index3DBuilder::new(N)
                 .node_size(node_size)
-                .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+                .sort_key_strategy(SortKey3DStrategy::Hilbert);
             for &bounds in &boxes {
                 builder.add(bounds);
             }
@@ -61,7 +61,7 @@ fn main() {
 
         let mut builder = Index3DBuilder::new(N)
             .node_size(node_size)
-            .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+            .sort_key_strategy(SortKey3DStrategy::Hilbert);
         for &bounds in &boxes {
             builder.add(bounds);
         }

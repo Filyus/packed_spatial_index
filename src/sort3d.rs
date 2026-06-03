@@ -11,33 +11,34 @@ const HILBERT_BITS_PER_AXIS: u32 = 16;
 const HILBERT_KEY_BITS: u32 = HILBERT_BITS_PER_AXIS * 3;
 const HILBERT_AXIS_MAX: u32 = (1 << HILBERT_BITS_PER_AXIS) - 1;
 const HILBERT3_STEP_LUT: [u8; 192] = build_hilbert3_step_lut();
+#[cfg(feature = "bench-internals")]
 const HILBERT3_PAIR_LUT: [u16; 1536] = build_hilbert3_pair_lut();
 
 /// Which key to use when sorting 3D boxes before packing the tree.
 ///
 /// [`SortKey3D::Hilbert`] is the default and currently the only stable public
-/// ordering. Additional sort keys are kept in the hidden experimental API for
-/// benchmarking.
+/// ordering. Additional sort-key implementations are available only through the
+/// hidden benchmark support API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortKey3D {
     /// Hilbert curve order.
     Hilbert,
 }
 
-/// Experimental 3D sort-key implementations used by benchmarks.
+/// 3D sort-key implementation variants used by benchmarks.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExperimentalSortKey3D {
+pub enum SortKey3DStrategy {
     /// 3D Hilbert curve over 16 bits per axis.
     Hilbert,
     /// 3D Morton/Z-order curve over 21 bits per axis.
     Morton,
 }
 
-impl From<SortKey3D> for ExperimentalSortKey3D {
+impl From<SortKey3D> for SortKey3DStrategy {
     fn from(key: SortKey3D) -> Self {
         match key {
-            SortKey3D::Hilbert => ExperimentalSortKey3D::Hilbert,
+            SortKey3D::Hilbert => SortKey3DStrategy::Hilbert,
         }
     }
 }
@@ -71,18 +72,18 @@ impl SortKey3DContext {
 
 pub(crate) fn encode_sort_by_key_3d(
     items: &[Box3D],
-    sort_key: ExperimentalSortKey3D,
+    sort_key: SortKey3DStrategy,
     context: SortKey3DContext,
 ) -> Vec<(u64, usize)> {
     match sort_key {
-        ExperimentalSortKey3D::Hilbert => encode_sort_with_encoder_3d(
+        SortKey3DStrategy::Hilbert => encode_sort_with_encoder_3d(
             items,
             encode_hilbert3_nibble_lut,
             HILBERT_AXIS_MAX,
             HILBERT_KEY_BITS,
             context,
         ),
-        ExperimentalSortKey3D::Morton => encode_sort_with_encoder_3d(
+        SortKey3DStrategy::Morton => encode_sort_with_encoder_3d(
             items,
             encode_morton3,
             MORTON_AXIS_MAX,
@@ -188,6 +189,7 @@ pub(crate) fn normalize_radix_bits_3d(bits: u32) -> u32 {
 }
 
 #[doc(hidden)]
+#[cfg(feature = "bench-internals")]
 pub fn radix_sort_pairs_u64(a: &mut [(u64, usize)], bits: u32) {
     let max_key = a.iter().map(|&(key, _)| key).max().unwrap_or(0);
     let used_bits = 64 - max_key.leading_zeros();
@@ -276,6 +278,7 @@ pub fn encode_morton3(x: u32, y: u32, z: u32) -> u64 {
 }
 
 #[doc(hidden)]
+#[cfg(feature = "bench-internals")]
 #[inline]
 pub fn encode_hilbert3_pair_lut(x: u32, y: u32, z: u32) -> u64 {
     let mut index = 0u64;
@@ -382,6 +385,7 @@ const fn build_hilbert3_step_lut() -> [u8; 192] {
     table
 }
 
+#[cfg(feature = "bench-internals")]
 const fn build_hilbert3_pair_lut() -> [u16; 1536] {
     let mut table = [0u16; 1536];
     let mut state = 0usize;
@@ -444,8 +448,10 @@ fn split_by_3(mut value: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "bench-internals")]
     use super::*;
 
+    #[cfg(feature = "bench-internals")]
     fn encode_hilbert3_stepwise(x: u32, y: u32, z: u32) -> u64 {
         let mut index = 0u64;
         let mut state = 0usize;
@@ -461,6 +467,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bench-internals")]
     fn nibble_hilbert3_lut_matches_pair_encoder() {
         let mut seed = 0x1234_5678_9abc_def0u64;
         for _ in 0..200_000 {
@@ -479,6 +486,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bench-internals")]
     fn radix_pairs_u64_matches_stable_sort_across_widths() {
         let mut seed = 0xDEAD_BEEF_0BAD_F00Du64;
         for &width in &[0u32, 1, 6, 48, 63, 64] {
@@ -507,6 +515,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bench-internals")]
     fn paired_hilbert3_lut_matches_stepwise_encoder() {
         for x in 0..32 {
             for y in 0..32 {

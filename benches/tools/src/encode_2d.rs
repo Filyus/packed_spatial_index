@@ -1,10 +1,10 @@
-//! Experiment: batch encoding throughput comparison.
+//! Local performance tool: batch encoding throughput comparison.
 //! Run (with autovectorization for the native CPU):
-//!   RUSTFLAGS="-C target-cpu=native" cargo run --release --example encode_experiment
+//!   RUSTFLAGS="-C target-cpu=native" cargo run --release --manifest-path benches/tools/Cargo.toml --bin encode_2d
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental as hilbert;
+use packed_spatial_index::benchmark_support as hilbert;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 

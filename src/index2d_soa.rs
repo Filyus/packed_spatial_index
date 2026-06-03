@@ -649,7 +649,7 @@ impl SimdIndex2D {
         self.visit_simd_impl::<false, B, F>(query, stack, visitor)
     }
 
-    /// Experimental prefetch variant of [`visit_simd`](SimdIndex2D::visit_simd).
+    /// Hidden prefetch variant of [`visit_simd`](SimdIndex2D::visit_simd).
     #[doc(hidden)]
     pub fn visit_simd_prefetch<B, F>(
         &self,

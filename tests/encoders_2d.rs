@@ -1,7 +1,9 @@
+#![cfg(feature = "bench-internals")]
+
 mod common;
 
 use common::{bounds, random_boxes};
-use packed_spatial_index::experimental::{ENCODERS, ExperimentalSortKey2D, lut};
+use packed_spatial_index::benchmark_support::{ENCODERS, SortKey2DStrategy, lut};
 use packed_spatial_index::{Box2D, Index2DBuilder, SortKey2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -73,7 +75,7 @@ fn encoder_is_bijection_on_8bit() {
     }
 }
 
-fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey2D) {
+fn check_sort_key_strategy_matches_reference(choice: SortKey2DStrategy) {
     let mut rng = StdRng::seed_from_u64(42);
     let n = 5_000usize;
     let node_size = 16usize;
@@ -82,7 +84,7 @@ fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey2D) 
     let mut reference = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, node_size);
     let mut index = Index2DBuilder::new(n)
         .node_size(node_size)
-        .experimental_sort_key(choice);
+        .sort_key_strategy(choice);
     for b in &boxes {
         reference.add(b[0], b[1], b[2], b[3]);
         index.add(Box2D::new(b[0], b[1], b[2], b[3]));
@@ -110,22 +112,22 @@ fn check_experimental_sort_key_matches_reference(choice: ExperimentalSortKey2D) 
 
 #[test]
 fn index_search_matches_reference_magic() {
-    check_experimental_sort_key_matches_reference(ExperimentalSortKey2D::HilbertMagicBits);
+    check_sort_key_strategy_matches_reference(SortKey2DStrategy::HilbertMagicBits);
 }
 
 #[test]
 fn index_search_matches_reference_loop() {
-    check_experimental_sort_key_matches_reference(ExperimentalSortKey2D::HilbertLoopRotation);
+    check_sort_key_strategy_matches_reference(SortKey2DStrategy::HilbertLoopRotation);
 }
 
 #[test]
 fn index_search_matches_reference_lut() {
-    check_experimental_sort_key_matches_reference(ExperimentalSortKey2D::HilbertLut);
+    check_sort_key_strategy_matches_reference(SortKey2DStrategy::HilbertLut);
 }
 
 #[test]
 fn index_search_matches_reference_morton() {
-    check_experimental_sort_key_matches_reference(ExperimentalSortKey2D::Morton);
+    check_sort_key_strategy_matches_reference(SortKey2DStrategy::Morton);
 }
 
 #[test]

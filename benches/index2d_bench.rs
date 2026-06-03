@@ -10,7 +10,7 @@
 use std::{hint::black_box, ops::ControlFlow};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -50,7 +50,7 @@ fn build_reference(boxes: &[[f64; 4]]) {
 fn build_mine(boxes: &[[f64; 4]], mode: BuildMode) {
     let mut b = Index2DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     b = match mode {
         BuildMode::Serial => b.parallel(false),
         BuildMode::ParallelAuto => b.parallel(true),
@@ -113,10 +113,10 @@ fn bench_query(c: &mut Criterion) {
     let mut rb = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, NODE_SIZE);
     let mut mb = Index2DBuilder::new(n)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     let mut sb = Index2DBuilder::new(n)
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     for r in &boxes {
         rb.add(r[0], r[1], r[2], r[3]);
         mb.add(Box2D::new(r[0], r[1], r[2], r[3]));

@@ -1,15 +1,15 @@
 //! Scalar 3D index benchmarks.
 //!
 //! These benches focus on the first production 3D path: `Index3DBuilder` ->
-//! `Index3D` -> search/KNN. They intentionally keep Morton hidden as an
-//! experimental baseline for layout/build-speed decisions.
+//! `Index3D` -> search/KNN. They intentionally keep Morton hidden as a
+//! comparison baseline for layout/build-speed decisions.
 
 use std::hint::black_box;
 #[cfg(feature = "simd")]
 use std::ops::ControlFlow;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use packed_spatial_index::experimental::{self, ExperimentalSortKey2D, ExperimentalSortKey3D};
+use packed_spatial_index::benchmark_support::{self, SortKey2DStrategy, SortKey3DStrategy};
 use packed_spatial_index::{
     Box2D, Box3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
     NeighborWorkspace, Point2D, Point3D, SearchWorkspace,
@@ -45,12 +45,12 @@ impl DatasetKind {
 fn build_index(
     boxes: &[Box3D],
     node_size: usize,
-    sort_key: ExperimentalSortKey3D,
+    sort_key: SortKey3DStrategy,
     parallel: bool,
 ) -> Index3D {
     let mut builder = Index3DBuilder::new(boxes.len())
         .node_size(node_size)
-        .experimental_sort_key(sort_key);
+        .sort_key_strategy(sort_key);
     #[cfg(feature = "parallel")]
     {
         builder = builder.parallel(parallel);
@@ -66,7 +66,7 @@ fn build_index(
 fn build_index2d(boxes: &[Box2D], node_size: usize) -> Index2D {
     let mut builder = Index2DBuilder::new(boxes.len())
         .node_size(node_size)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     for &bounds in boxes {
         builder.add(bounds);
     }
@@ -232,7 +232,7 @@ fn bench_dimension_encode(c: &mut Criterion) {
         b.iter(|| {
             let mut checksum = 0u64;
             for &(x, y) in &coords2d {
-                checksum ^= u64::from(experimental::lut(black_box(x), black_box(y)));
+                checksum ^= u64::from(benchmark_support::lut(black_box(x), black_box(y)));
             }
             black_box(checksum);
         });
@@ -241,7 +241,7 @@ fn bench_dimension_encode(c: &mut Criterion) {
         b.iter(|| {
             let mut checksum = 0u64;
             for &(x, y, z) in &coords3d {
-                checksum ^= experimental::encode_hilbert3_pair_lut(
+                checksum ^= benchmark_support::encode_hilbert3_pair_lut(
                     black_box(x),
                     black_box(y),
                     black_box(z),
@@ -254,7 +254,7 @@ fn bench_dimension_encode(c: &mut Criterion) {
         b.iter(|| {
             let mut checksum = 0u64;
             for &(x, y, z) in &coords3d {
-                checksum ^= experimental::encode_hilbert3_nibble_lut(
+                checksum ^= benchmark_support::encode_hilbert3_nibble_lut(
                     black_box(x),
                     black_box(y),
                     black_box(z),
@@ -285,7 +285,7 @@ fn bench_dimension_radix(c: &mut Criterion) {
     group.bench_function("hilbert3d_radix_8bit_data_driven", |b| {
         b.iter_batched_ref(
             || pairs.clone(),
-            |a| experimental::radix_sort_pairs_u64(a, black_box(8)),
+            |a| benchmark_support::radix_sort_pairs_u64(a, black_box(8)),
             criterion::BatchSize::LargeInput,
         );
     });
@@ -380,7 +380,7 @@ fn bench_dimension_build(c: &mut Criterion) {
                             black_box(build_index(
                                 boxes,
                                 node_size,
-                                ExperimentalSortKey3D::Hilbert,
+                                SortKey3DStrategy::Hilbert,
                                 false,
                             ));
                         });
@@ -404,7 +404,7 @@ fn bench_dimension_search(c: &mut Criterion) {
         let queries2d = project_queries_2d(&queries3d);
         for &node_size in &[8usize, 16] {
             let index2d = build_index2d(&boxes2d, node_size);
-            let index3d = build_index(&boxes3d, node_size, ExperimentalSortKey3D::Hilbert, false);
+            let index3d = build_index(&boxes3d, node_size, SortKey3DStrategy::Hilbert, false);
             group.bench_function(format!("{}_2d_node{}", kind.name(), node_size), |b| {
                 let mut workspace = SearchWorkspace::new();
                 b.iter(|| {
@@ -442,7 +442,7 @@ fn bench_dimension_knn(c: &mut Criterion) {
         let points2d = project_points_2d(&points3d);
         for &node_size in &[8usize, 16] {
             let index2d = build_index2d(&boxes2d, node_size);
-            let index3d = build_index(&boxes3d, node_size, ExperimentalSortKey3D::Hilbert, false);
+            let index3d = build_index(&boxes3d, node_size, SortKey3DStrategy::Hilbert, false);
             for &(case, max_results) in &[("top_1", 1usize), ("top_10", 10usize)] {
                 group.bench_function(
                     format!("{}_2d_{}_node{}", kind.name(), case, node_size),
@@ -496,7 +496,7 @@ fn bench_dimension_persistence(c: &mut Criterion) {
     let boxes3d = gen_boxes(DatasetKind::PlanarXY, n, 0xD4B0);
     let boxes2d = project_boxes_2d(&boxes3d);
     let index2d = build_index2d(&boxes2d, 16);
-    let index3d = build_index(&boxes3d, 16, ExperimentalSortKey3D::Hilbert, false);
+    let index3d = build_index(&boxes3d, 16, SortKey3DStrategy::Hilbert, false);
     let bytes2d = index2d.to_bytes();
     let bytes3d = index3d.to_bytes();
 
@@ -543,8 +543,8 @@ fn bench_build(c: &mut Criterion) {
         group.throughput(Throughput::Elements(n as u64));
         for &node_size in &[8usize, 16, 32] {
             for &(name, sort_key) in &[
-                ("hilbert", ExperimentalSortKey3D::Hilbert),
-                ("morton", ExperimentalSortKey3D::Morton),
+                ("hilbert", SortKey3DStrategy::Hilbert),
+                ("morton", SortKey3DStrategy::Morton),
             ] {
                 group.bench_with_input(
                     BenchmarkId::new(format!("{name}_node{node_size}"), n),
@@ -566,7 +566,7 @@ fn bench_build(c: &mut Criterion) {
                         black_box(build_index(
                             boxes,
                             node_size,
-                            ExperimentalSortKey3D::Hilbert,
+                            SortKey3DStrategy::Hilbert,
                             true,
                         ));
                     });
@@ -714,8 +714,8 @@ fn bench_search(c: &mut Criterion) {
         let queries = gen_queries(kind, QUERY_COUNT, 0x3D11);
         for &node_size in &[8usize, 16, 32] {
             for &(name, sort_key) in &[
-                ("hilbert", ExperimentalSortKey3D::Hilbert),
-                ("morton", ExperimentalSortKey3D::Morton),
+                ("hilbert", SortKey3DStrategy::Hilbert),
+                ("morton", SortKey3DStrategy::Morton),
             ] {
                 let index = build_index(&boxes, node_size, sort_key, false);
                 let id = format!("{}_{}_node{}", kind.name(), name, node_size);
@@ -743,7 +743,7 @@ fn bench_persistence(c: &mut Criterion) {
         let index = build_index(
             &boxes,
             PERSISTENCE_NODE_SIZE,
-            ExperimentalSortKey3D::Hilbert,
+            SortKey3DStrategy::Hilbert,
             false,
         );
         let bytes = index.to_bytes();
@@ -751,7 +751,7 @@ fn bench_persistence(c: &mut Criterion) {
         let simd = {
             let mut builder = Index3DBuilder::new(boxes.len())
                 .node_size(PERSISTENCE_NODE_SIZE)
-                .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+                .sort_key_strategy(SortKey3DStrategy::Hilbert);
             for &bounds in &boxes {
                 builder.add(bounds);
             }
@@ -816,7 +816,7 @@ fn bench_loaded_view(c: &mut Criterion) {
     let index = build_index(
         &boxes,
         PERSISTENCE_NODE_SIZE,
-        ExperimentalSortKey3D::Hilbert,
+        SortKey3DStrategy::Hilbert,
         false,
     );
     let bytes = index.to_bytes();
@@ -893,7 +893,7 @@ fn bench_knn(c: &mut Criterion) {
         let boxes = gen_boxes(kind, n, 0x3D20);
         let points = gen_points(kind, KNN_COUNT, 0x3D21);
         for &node_size in &[8usize, 16, 32] {
-            let index = build_index(&boxes, node_size, ExperimentalSortKey3D::Hilbert, false);
+            let index = build_index(&boxes, node_size, SortKey3DStrategy::Hilbert, false);
             for &(name, max_results, max_distance) in &[
                 ("top_1", 1usize, f64::INFINITY),
                 ("top_10", 10usize, f64::INFINITY),

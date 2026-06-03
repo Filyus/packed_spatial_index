@@ -7,7 +7,7 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use packed_spatial_index::experimental::{self, ExperimentalSortKey2D, radix_sort_pairs};
+use packed_spatial_index::benchmark_support::{self, SortKey2DStrategy, radix_sort_pairs};
 use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -15,17 +15,14 @@ use rand::{RngExt, SeedableRng};
 const ENCODE_N: usize = 100_000;
 const NODE_SIZE: usize = 16;
 
-const KEYS: &[(&str, ExperimentalSortKey2D)] = &[
-    (
-        "hilbert_magic_bits",
-        ExperimentalSortKey2D::HilbertMagicBits,
-    ),
-    ("hilbert_lut", ExperimentalSortKey2D::HilbertLut),
+const KEYS: &[(&str, SortKey2DStrategy)] = &[
+    ("hilbert_magic_bits", SortKey2DStrategy::HilbertMagicBits),
+    ("hilbert_lut", SortKey2DStrategy::HilbertLut),
     (
         "hilbert_loop_rotation",
-        ExperimentalSortKey2D::HilbertLoopRotation,
+        SortKey2DStrategy::HilbertLoopRotation,
     ),
-    ("morton", ExperimentalSortKey2D::Morton),
+    ("morton", SortKey2DStrategy::Morton),
 ];
 
 fn gen_boxes(n: usize) -> Vec<Box2D> {
@@ -102,10 +99,10 @@ fn bench_encode(c: &mut Criterion) {
         };
     }
 
-    bench_encode_case!("hilbert_magic_bits", experimental::magic_bits);
-    bench_encode_case!("hilbert_lut", experimental::lut);
-    bench_encode_case!("hilbert_loop_rotation", experimental::loop_rotation);
-    bench_encode_case!("morton", experimental::morton);
+    bench_encode_case!("hilbert_magic_bits", benchmark_support::magic_bits);
+    bench_encode_case!("hilbert_lut", benchmark_support::lut);
+    bench_encode_case!("hilbert_loop_rotation", benchmark_support::loop_rotation);
+    bench_encode_case!("morton", benchmark_support::morton);
     group.finish();
 }
 
@@ -132,10 +129,10 @@ fn bench_encode_sort(c: &mut Criterion) {
         };
     }
 
-    bench_encode_sort_case!("hilbert_magic_bits", experimental::magic_bits);
-    bench_encode_sort_case!("hilbert_lut", experimental::lut);
-    bench_encode_sort_case!("hilbert_loop_rotation", experimental::loop_rotation);
-    bench_encode_sort_case!("morton", experimental::morton);
+    bench_encode_sort_case!("hilbert_magic_bits", benchmark_support::magic_bits);
+    bench_encode_sort_case!("hilbert_lut", benchmark_support::lut);
+    bench_encode_sort_case!("hilbert_loop_rotation", benchmark_support::loop_rotation);
+    bench_encode_sort_case!("morton", benchmark_support::morton);
     group.finish();
 }
 
@@ -149,7 +146,7 @@ fn bench_build(c: &mut Criterion) {
                 b.iter(|| {
                     let mut builder = Index2DBuilder::new(boxes.len())
                         .node_size(NODE_SIZE)
-                        .experimental_sort_key(key);
+                        .sort_key_strategy(key);
                     for &bounds in boxes {
                         builder.add(bounds);
                     }

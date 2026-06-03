@@ -1,12 +1,12 @@
-//! Experiment: adaptive and forced parallel index builds (rayon)
+//! Local performance tool: adaptive and forced parallel index builds (rayon)
 //! versus single-threaded radix builds.
 //! NOTE: the multi-threaded variant changes the comparison base from the single-threaded crate;
 //! this demonstrates the speedup ceiling, not a strict algorithm-to-algorithm comparison.
-//! Run: `cargo run --release --example parallel_experiment_2d`
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin parallel_2d`
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -36,7 +36,7 @@ fn gen_boxes(n: usize) -> Vec<[f64; 4]> {
 fn build(boxes: &[[f64; 4]], mode: BuildMode) -> packed_spatial_index::Index2D {
     let mut b = Index2DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
     b = match mode {
         BuildMode::Serial => b.parallel(false),
         BuildMode::ParallelAuto => b.parallel(true),

@@ -1,10 +1,10 @@
-//! Experiment: compare sorting methods during index build:
+//! Local performance tool: compare sorting methods during index build:
 //! comparison-based `sort_unstable_by_key` (pdqsort) versus LSD radix sort.
-//! Run: `cargo run --release --example sort_experiment`
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin sort_2d`
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
+use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -30,7 +30,7 @@ fn time_build(boxes: &[[f64; 4]], radix: bool, reps: usize) -> f64 {
         let t = Instant::now();
         let mut b = Index2DBuilder::new(boxes.len())
             .node_size(NODE_SIZE)
-            .experimental_sort_key(ExperimentalSortKey2D::HilbertLut)
+            .sort_key_strategy(SortKey2DStrategy::HilbertLut)
             .radix(radix);
         for r in boxes {
             b.add(Box2D::new(r[0], r[1], r[2], r[3]));

@@ -12,7 +12,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use packed_spatial_index::experimental as hilbert;
+use packed_spatial_index::benchmark_support as hilbert;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use static_aabb2d_index::hilbert_xy_to_index;

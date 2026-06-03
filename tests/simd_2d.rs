@@ -3,7 +3,6 @@
 mod common;
 
 use common::random_boxes;
-use packed_spatial_index::experimental::ExperimentalSortKey2D;
 use packed_spatial_index::{
     Box2D, BuildError, Index2DBuilder, NeighborWorkspace, Point2D, SearchWorkspace,
 };
@@ -136,9 +135,7 @@ fn simd_index_search_matches_reference() {
     let boxes = random_boxes(&mut rng, n);
 
     let mut reference = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, node_size);
-    let mut builder = Index2DBuilder::new(n)
-        .node_size(node_size)
-        .experimental_sort_key(ExperimentalSortKey2D::HilbertLut);
+    let mut builder = Index2DBuilder::new(n).node_size(node_size);
     for b in &boxes {
         reference.add(b[0], b[1], b[2], b[3]);
         builder.add(Box2D::new(b[0], b[1], b[2], b[3]));

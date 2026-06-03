@@ -7,7 +7,7 @@ use std::hint::black_box;
 use std::ops::ControlFlow;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use packed_spatial_index::experimental::ExperimentalSortKey3D;
+use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{
     Box3D, Index3D, Index3DBuilder, Index3DView, NeighborWorkspace, Point3D, SearchWorkspace,
 };
@@ -93,7 +93,7 @@ fn make_points(n: usize, seed: u64) -> Vec<Point3D> {
 fn build_index(boxes: &[Box3D]) -> Index3D {
     let mut builder = Index3DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+        .sort_key_strategy(SortKey3DStrategy::Hilbert);
     for &bounds in boxes {
         builder.add(bounds);
     }
@@ -103,7 +103,7 @@ fn build_index(boxes: &[Box3D]) -> Index3D {
 fn build_simd_index(boxes: &[Box3D]) -> packed_spatial_index::SimdIndex3D {
     let mut builder = Index3DBuilder::new(boxes.len())
         .node_size(NODE_SIZE)
-        .experimental_sort_key(ExperimentalSortKey3D::Hilbert);
+        .sort_key_strategy(SortKey3DStrategy::Hilbert);
     for &bounds in boxes {
         builder.add(bounds);
     }

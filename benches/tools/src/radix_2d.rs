@@ -1,10 +1,10 @@
-//! Experiment: radix-sort digit width (probing the memory-bound build ceiling).
+//! Local performance tool: radix-sort digit width and the memory-bound build ceiling.
 //! Sort an isolated array of random `(key_u32, index)` pairs.
-//! Run: `cargo run --release --example radix_experiment`
+//! Run: `cargo run --release --manifest-path benches/tools/Cargo.toml --bin radix_2d`
 
 use std::time::Instant;
 
-use packed_spatial_index::experimental::radix_sort_pairs;
+use packed_spatial_index::benchmark_support::radix_sort_pairs;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 

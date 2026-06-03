@@ -18,6 +18,13 @@
           <input id="pointCount" type="number" min="1000" step="1000" value="50000" />
         </label>
         <label>
+          Dimension
+          <select id="dimension">
+            <option value="2d" selected>2D</option>
+            <option value="3d">3D</option>
+          </select>
+        </label>
+        <label>
           Geometry
           <select id="geometry">
             <option value="boxes" selected>Boxes</option>
@@ -54,6 +61,18 @@
         <label>
           Radius
           <input id="maxDistance" type="number" min="0" step="100" placeholder="Any" />
+        </label>
+        <label>
+          Z min
+          <input id="zMin" type="number" min="0" step="100" />
+        </label>
+        <label>
+          Z max
+          <input id="zMax" type="number" min="0" step="100" />
+        </label>
+        <label>
+          Z point
+          <input id="zPoint" type="number" min="0" step="100" />
         </label>
         <label>
           Distribution

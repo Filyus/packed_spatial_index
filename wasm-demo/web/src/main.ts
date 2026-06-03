@@ -1,9 +1,11 @@
-import init, { WasmIndex2D } from '../pkg/packed_spatial_index_wasm_demo';
+import init, { WasmIndex2D, WasmIndex3D } from '../pkg/packed_spatial_index_wasm_demo';
 
 type Distribution = 'uniform' | 'clustered';
 type QueryMode = 'range' | 'nearest';
 type ResultMode = 'all' | 'any' | 'first';
 type Geometry = 'boxes' | 'points';
+type Dimension = '2d' | '3d';
+type WasmIndex = WasmIndex2D | WasmIndex3D;
 
 type QueryRect = {
   minX: number;
@@ -17,11 +19,19 @@ type QueryPoint = {
   y: number;
 };
 
+type QueryZ = {
+  min: number;
+  max: number;
+  point: number;
+};
+
 type Cluster = {
   x: number;
   y: number;
+  z: number;
   sigmaX: number;
   sigmaY: number;
+  sigmaZ: number;
   rotation: number;
 };
 
@@ -37,8 +47,10 @@ type IndexExtent = {
   empty: boolean;
   minX?: number;
   minY?: number;
+  minZ?: number;
   maxX?: number;
   maxY?: number;
+  maxZ?: number;
 };
 
 type WorldView = {
@@ -66,6 +78,7 @@ type WebGlRenderer = {
 };
 
 const WORLD_SIZE = 10_000;
+const WORLD_Z_SIZE = 10_000;
 const BACKGROUND = [247 / 255, 247 / 255, 242 / 255, 1] as const;
 const POINT_COLOR = [37 / 255, 51 / 255, 63 / 255, 0.46] as const;
 const HIT_COLOR = [32 / 255, 131 / 255, 74 / 255, 0.95] as const;
@@ -78,12 +91,19 @@ const queryRectEl = mustQuery<HTMLDivElement>('#queryRect');
 const queryPointEl = mustQuery<HTMLDivElement>('#queryPoint');
 const firstHitEl = mustQuery<HTMLDivElement>('#firstHit');
 const pointCountInput = mustQuery<HTMLInputElement>('#pointCount');
+const dimensionSelect = mustQuery<HTMLSelectElement>('#dimension');
 const geometrySelect = mustQuery<HTMLSelectElement>('#geometry');
 const nodeSizeSelect = mustQuery<HTMLSelectElement>('#nodeSize');
 const modeSelect = mustQuery<HTMLSelectElement>('#mode');
 const resultModeSelect = mustQuery<HTMLSelectElement>('#resultMode');
 const neighborCountInput = mustQuery<HTMLInputElement>('#neighborCount');
 const maxDistanceInput = mustQuery<HTMLInputElement>('#maxDistance');
+const zMinInput = mustQuery<HTMLInputElement>('#zMin');
+const zMaxInput = mustQuery<HTMLInputElement>('#zMax');
+const zPointInput = mustQuery<HTMLInputElement>('#zPoint');
+const zMinLabel = mustParentLabel(zMinInput);
+const zMaxLabel = mustParentLabel(zMaxInput);
+const zPointLabel = mustParentLabel(zPointInput);
 const distributionSelect = mustQuery<HTMLSelectElement>('#distribution');
 const roundtripButton = mustQuery<HTMLButtonElement>('#roundtrip');
 const regenerateButton = mustQuery<HTMLButtonElement>('#regenerate');
@@ -101,12 +121,13 @@ const renderer = createWebGlRenderer(glCanvas);
 
 let items: Float64Array<ArrayBufferLike> = new Float64Array();
 let itemCount = 0;
-let index: WasmIndex2D | null = null;
+let index: WasmIndex | null = null;
 let hits: Uint32Array<ArrayBufferLike> = new Uint32Array();
 let hitClipCoords = new Float32Array();
 let hitBoxCoords = new Float32Array();
 let query: QueryRect | null = null;
 let queryPoint: QueryPoint | null = null;
+let queryZ: QueryZ = defaultQueryZ();
 let dragStart: { x: number; y: number } | null = null;
 let buildMs = 0;
 let queryMs = 0;
@@ -128,6 +149,10 @@ rebuild();
 
 regenerateButton.addEventListener('click', rebuild);
 pointCountInput.addEventListener('change', rebuild);
+dimensionSelect.addEventListener('change', () => {
+  syncModeControls();
+  rebuild();
+});
 geometrySelect.addEventListener('change', rebuild);
 nodeSizeSelect.addEventListener('change', rebuildIndex);
 modeSelect.addEventListener('change', () => {
@@ -137,6 +162,18 @@ modeSelect.addEventListener('change', () => {
 resultModeSelect.addEventListener('change', search);
 neighborCountInput.addEventListener('change', search);
 maxDistanceInput.addEventListener('change', search);
+zMinInput.addEventListener('change', () => {
+  syncZInputs();
+  search();
+});
+zMaxInput.addEventListener('change', () => {
+  syncZInputs();
+  search();
+});
+zPointInput.addEventListener('change', () => {
+  syncZInputs();
+  search();
+});
 distributionSelect.addEventListener('change', rebuild);
 roundtripButton.addEventListener('click', roundtripIndex);
 
@@ -191,6 +228,7 @@ updateWorldView();
 function rebuild(): void {
   updateWorldView();
   rememberStageSize();
+  syncZInputs();
   const count = normalizePointCount(Number(pointCountInput.value));
   pointCountInput.value = String(count);
   const geometry = currentGeometry();
@@ -207,12 +245,9 @@ function rebuildIndex(): void {
   const nodeSize = Number(nodeSizeSelect.value);
 
   const started = performance.now();
-  index =
-    currentGeometry() === 'boxes'
-      ? new WasmIndex2D(items, nodeSize)
-      : WasmIndex2D.from_points(items, nodeSize);
+  index = buildCurrentIndex(items, nodeSize);
   buildMs = performance.now() - started;
-  statusEl.textContent = 'WASM SIMD build loaded';
+  statusEl.textContent = statusText('WASM SIMD build loaded');
   query ??= defaultQuery();
   queryPoint ??= defaultQueryPoint();
   search();
@@ -228,14 +263,11 @@ function search(): void {
     }
     const started = performance.now();
     const maxDistance = normalizeMaxDistance(Number(maxDistanceInput.value));
-    hits = Number.isFinite(maxDistance)
-      ? index.neighbors_within(
-          queryPoint.x,
-          queryPoint.y,
-          normalizeNeighborCount(Number(neighborCountInput.value)),
-          maxDistance,
-        )
-      : index.neighbors(queryPoint.x, queryPoint.y, normalizeNeighborCount(Number(neighborCountInput.value)));
+    const maxResults = normalizeNeighborCount(Number(neighborCountInput.value));
+    hits =
+      currentDimension() === '3d'
+        ? searchNearest3d(index as WasmIndex3D, queryPoint, queryZ.point, maxResults, maxDistance)
+        : searchNearest2d(index as WasmIndex2D, queryPoint, maxResults, maxDistance);
     queryMs = performance.now() - started;
     coreMs = queryMs;
     convertMs = 0;
@@ -248,7 +280,10 @@ function search(): void {
     }
     if (currentResultMode() === 'any') {
       const started = performance.now();
-      const found = index.any(query.minX, query.minY, query.maxX, query.maxY);
+      const found =
+        currentDimension() === '3d'
+          ? (index as WasmIndex3D).any(query.minX, query.minY, queryZ.min, query.maxX, query.maxY, queryZ.max)
+          : (index as WasmIndex2D).any(query.minX, query.minY, query.maxX, query.maxY);
       queryMs = performance.now() - started;
       coreMs = queryMs;
       convertMs = 0;
@@ -258,7 +293,10 @@ function search(): void {
       anyResult = found;
     } else if (currentResultMode() === 'first') {
       const started = performance.now();
-      const first = index.first(query.minX, query.minY, query.maxX, query.maxY);
+      const first =
+        currentDimension() === '3d'
+          ? (index as WasmIndex3D).first(query.minX, query.minY, queryZ.min, query.maxX, query.maxY, queryZ.max)
+          : (index as WasmIndex2D).first(query.minX, query.minY, query.maxX, query.maxY);
       queryMs = performance.now() - started;
       coreMs = queryMs;
       convertMs = 0;
@@ -267,7 +305,17 @@ function search(): void {
       resultSummary = first >= 0 ? first.toLocaleString() : 'none';
       anyResult = null;
     } else {
-      const profile = index.search_profile(query.minX, query.minY, query.maxX, query.maxY) as SearchProfile;
+      const profile =
+        currentDimension() === '3d'
+          ? ((index as WasmIndex3D).search_profile(
+              query.minX,
+              query.minY,
+              queryZ.min,
+              query.maxX,
+              query.maxY,
+              queryZ.max,
+            ) as SearchProfile)
+          : ((index as WasmIndex2D).search_profile(query.minX, query.minY, query.maxX, query.maxY) as SearchProfile);
       hits = profile.hits;
       queryMs = profile.totalMs;
       coreMs = profile.traverseMs;
@@ -291,9 +339,11 @@ function roundtripIndex(): void {
   const bytes = index.to_bytes();
   const serializeMs = performance.now() - serializeStarted;
   const loadStarted = performance.now();
-  index = WasmIndex2D.from_bytes(bytes);
+  index = currentDimension() === '3d' ? WasmIndex3D.from_bytes(bytes) : WasmIndex2D.from_bytes(bytes);
   const loadMs = performance.now() - loadStarted;
-  statusEl.textContent = `Roundtrip ${bytes.byteLength.toLocaleString()} bytes, save ${formatDuration(serializeMs)}, load ${formatDuration(loadMs)}`;
+  statusEl.textContent = statusText(
+    `Roundtrip ${bytes.byteLength.toLocaleString()} bytes, save ${formatDuration(serializeMs)}, load ${formatDuration(loadMs)}`,
+  );
   search();
 }
 
@@ -368,20 +418,22 @@ function renderFirstHitOverlay(): void {
   }
 
   const index = hits[0];
+  const stride = itemStride();
   let x0: number;
   let y0: number;
   let x1: number;
   let y1: number;
   if (currentGeometry() === 'boxes') {
-    const offset = index * 4;
+    const offset = index * stride;
     x0 = worldToCanvasX(items[offset]);
     y0 = worldToCanvasY(items[offset + 1]);
-    x1 = worldToCanvasX(items[offset + 2]);
-    y1 = worldToCanvasY(items[offset + 3]);
+    const maxOffset = currentDimension() === '3d' ? offset + 3 : offset + 2;
+    x1 = worldToCanvasX(items[maxOffset]);
+    y1 = worldToCanvasY(items[maxOffset + 1]);
     firstHitEl.classList.remove('is-point');
     firstHitEl.classList.add('is-box');
   } else {
-    const offset = index * 2;
+    const offset = index * stride;
     const x = worldToCanvasX(items[offset]);
     const y = worldToCanvasY(items[offset + 1]);
     const radius = 8;
@@ -469,13 +521,13 @@ function uploadItems(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike
 function uploadPoints(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
   const { gl } = renderer;
   gl.bindBuffer(gl.ARRAY_BUFFER, renderer.pointBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, toFloat32Coordinates(data), gl.STATIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, toFloat32Points(data), gl.STATIC_DRAW);
 }
 
 function uploadBoxes(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
   const { gl } = renderer;
   gl.bindBuffer(gl.ARRAY_BUFFER, renderer.boxBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, toFloat32Coordinates(data), gl.STATIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, toFloat32Boxes(data), gl.STATIC_DRAW);
 }
 
 function uploadHits(
@@ -493,7 +545,7 @@ function uploadHits(
   }
 
   for (let i = 0; i < hitIndices.length; i++) {
-    const offset = hitIndices[i] * 2;
+    const offset = hitIndices[i] * itemStride();
     const out = i * 2;
     hitClipCoords[out] = data[offset];
     hitClipCoords[out + 1] = data[offset + 1];
@@ -514,12 +566,13 @@ function uploadHitBoxes(
   }
 
   for (let i = 0; i < hitIndices.length; i++) {
-    const offset = hitIndices[i] * 4;
+    const offset = hitIndices[i] * itemStride();
+    const maxOffset = currentDimension() === '3d' ? offset + 3 : offset + 2;
     const out = i * 4;
     hitBoxCoords[out] = data[offset];
     hitBoxCoords[out + 1] = data[offset + 1];
-    hitBoxCoords[out + 2] = data[offset + 2];
-    hitBoxCoords[out + 3] = data[offset + 3];
+    hitBoxCoords[out + 2] = data[maxOffset];
+    hitBoxCoords[out + 3] = data[maxOffset + 1];
   }
 
   const { gl } = renderer;
@@ -527,11 +580,29 @@ function uploadHitBoxes(
   gl.bufferData(gl.ARRAY_BUFFER, hitBoxCoords, gl.DYNAMIC_DRAW);
 }
 
-function toFloat32Coordinates(data: Float64Array<ArrayBufferLike>): Float32Array {
-  const out = new Float32Array(data.length);
-  for (let i = 0; i < data.length; i += 2) {
-    out[i] = data[i];
-    out[i + 1] = data[i + 1];
+function toFloat32Points(data: Float64Array<ArrayBufferLike>): Float32Array {
+  const stride = itemStride();
+  const out = new Float32Array(itemCount * 2);
+  for (let i = 0; i < itemCount; i++) {
+    const offset = i * stride;
+    const outOffset = i * 2;
+    out[outOffset] = data[offset];
+    out[outOffset + 1] = data[offset + 1];
+  }
+  return out;
+}
+
+function toFloat32Boxes(data: Float64Array<ArrayBufferLike>): Float32Array {
+  const stride = itemStride();
+  const out = new Float32Array(itemCount * 4);
+  for (let i = 0; i < itemCount; i++) {
+    const offset = i * stride;
+    const maxOffset = currentDimension() === '3d' ? offset + 3 : offset + 2;
+    const outOffset = i * 4;
+    out[outOffset] = data[offset];
+    out[outOffset + 1] = data[offset + 1];
+    out[outOffset + 2] = data[maxOffset];
+    out[outOffset + 3] = data[maxOffset + 1];
   }
   return out;
 }
@@ -580,61 +651,82 @@ function roundToChromeTimerStep(ms: number): number {
 }
 
 function generatePoints(count: number, distribution: Distribution): Float64Array {
-  const out = new Float64Array(count * 2);
+  const stride = itemStrideFor(currentDimension(), 'points');
+  const out = new Float64Array(count * stride);
   if (distribution === 'clustered') {
-    const minWorldSide = Math.min(worldView.width, worldView.height);
-    const centerMargin = minWorldSide * 0.22;
-    const sigma = minWorldSide * 0.032;
-    const clusters: Cluster[] = Array.from({ length: 12 }, () => ({
-      x: centerMargin + Math.random() * (worldView.width - centerMargin * 2),
-      y: centerMargin + Math.random() * (worldView.height - centerMargin * 2),
-      sigmaX: sigma * (0.85 + Math.random() * 0.35),
-      sigmaY: sigma * (0.85 + Math.random() * 0.35),
-      rotation: Math.random() * Math.PI,
-    }));
+    const clusters = generateClusters();
     for (let i = 0; i < count; i++) {
       const cluster = clusters[i % clusters.length];
       const point = randomGaussianClusterPoint(cluster);
-      out[i * 2] = point.x;
-      out[i * 2 + 1] = point.y;
+      writePoint(out, i, point.x, point.y, point.z);
     }
     return out;
   }
 
   for (let i = 0; i < count; i++) {
-    out[i * 2] = Math.random() * worldView.width;
-    out[i * 2 + 1] = Math.random() * worldView.height;
+    writePoint(out, i, Math.random() * worldView.width, Math.random() * worldView.height, Math.random() * WORLD_Z_SIZE);
   }
   return out;
 }
 
 function generateBoxes(count: number, distribution: Distribution): Float64Array {
-  const out = new Float64Array(count * 4);
+  const stride = itemStrideFor(currentDimension(), 'boxes');
+  const out = new Float64Array(count * stride);
   const minWorldSide = Math.min(worldView.width, worldView.height);
   const minSize = minWorldSide * 0.003;
   const maxSize = minWorldSide * 0.014;
+  const minDepth = WORLD_Z_SIZE * 0.003;
+  const maxDepth = WORLD_Z_SIZE * 0.014;
 
   if (distribution === 'clustered') {
-    const centerMargin = minWorldSide * 0.22;
-    const sigma = minWorldSide * 0.032;
-    const clusters: Cluster[] = Array.from({ length: 12 }, () => ({
-      x: centerMargin + Math.random() * (worldView.width - centerMargin * 2),
-      y: centerMargin + Math.random() * (worldView.height - centerMargin * 2),
-      sigmaX: sigma * (0.85 + Math.random() * 0.35),
-      sigmaY: sigma * (0.85 + Math.random() * 0.35),
-      rotation: Math.random() * Math.PI,
-    }));
+    const clusters = generateClusters();
     for (let i = 0; i < count; i++) {
       const center = randomGaussianClusterPoint(clusters[i % clusters.length]);
-      writeRandomBox(out, i, center.x, center.y, minSize, maxSize);
+      writeRandomBox(out, i, center.x, center.y, center.z, minSize, maxSize, minDepth, maxDepth);
     }
     return out;
   }
 
   for (let i = 0; i < count; i++) {
-    writeRandomBox(out, i, Math.random() * worldView.width, Math.random() * worldView.height, minSize, maxSize);
+    writeRandomBox(
+      out,
+      i,
+      Math.random() * worldView.width,
+      Math.random() * worldView.height,
+      Math.random() * WORLD_Z_SIZE,
+      minSize,
+      maxSize,
+      minDepth,
+      maxDepth,
+    );
   }
   return out;
+}
+
+function generateClusters(): Cluster[] {
+  const minWorldSide = Math.min(worldView.width, worldView.height);
+  const centerMargin = minWorldSide * 0.22;
+  const zMargin = WORLD_Z_SIZE * 0.22;
+  const sigma = minWorldSide * 0.032;
+  const sigmaZ = WORLD_Z_SIZE * 0.032;
+  return Array.from({ length: 12 }, () => ({
+    x: centerMargin + Math.random() * (worldView.width - centerMargin * 2),
+    y: centerMargin + Math.random() * (worldView.height - centerMargin * 2),
+    z: zMargin + Math.random() * (WORLD_Z_SIZE - zMargin * 2),
+    sigmaX: sigma * (0.85 + Math.random() * 0.35),
+    sigmaY: sigma * (0.85 + Math.random() * 0.35),
+    sigmaZ: sigmaZ * (0.85 + Math.random() * 0.35),
+    rotation: Math.random() * Math.PI,
+  }));
+}
+
+function writePoint(out: Float64Array, index: number, x: number, y: number, z: number): void {
+  const offset = index * itemStrideFor(currentDimension(), 'points');
+  out[offset] = clampCoordinate(x, 0, worldView.width);
+  out[offset + 1] = clampCoordinate(y, 0, worldView.height);
+  if (currentDimension() === '3d') {
+    out[offset + 2] = clampCoordinate(z, 0, WORLD_Z_SIZE);
+  }
 }
 
 function writeRandomBox(
@@ -642,25 +734,39 @@ function writeRandomBox(
   index: number,
   centerX: number,
   centerY: number,
+  centerZ: number,
   minSize: number,
   maxSize: number,
+  minDepth: number,
+  maxDepth: number,
 ): void {
   const width = minSize + Math.random() * Math.random() * (maxSize - minSize);
   const height = minSize + Math.random() * Math.random() * (maxSize - minSize);
+  const depth = minDepth + Math.random() * Math.random() * (maxDepth - minDepth);
   const minX = clampCoordinate(centerX - width * 0.5, 0, worldView.width);
   const minY = clampCoordinate(centerY - height * 0.5, 0, worldView.height);
   const maxX = clampCoordinate(centerX + width * 0.5, minX, worldView.width);
   const maxY = clampCoordinate(centerY + height * 0.5, minY, worldView.height);
-  const offset = index * 4;
+  const offset = index * itemStrideFor(currentDimension(), 'boxes');
   out[offset] = minX;
   out[offset + 1] = minY;
-  out[offset + 2] = maxX;
-  out[offset + 3] = maxY;
+  if (currentDimension() === '3d') {
+    const minZ = clampCoordinate(centerZ - depth * 0.5, 0, WORLD_Z_SIZE);
+    const maxZ = clampCoordinate(centerZ + depth * 0.5, minZ, WORLD_Z_SIZE);
+    out[offset + 2] = minZ;
+    out[offset + 3] = maxX;
+    out[offset + 4] = maxY;
+    out[offset + 5] = maxZ;
+  } else {
+    out[offset + 2] = maxX;
+    out[offset + 3] = maxY;
+  }
 }
 
-function randomGaussianClusterPoint(cluster: Cluster): { x: number; y: number } {
+function randomGaussianClusterPoint(cluster: Cluster): { x: number; y: number; z: number } {
   const gx = randomNormal();
   const gy = randomNormal();
+  const gz = randomNormal();
   const localX = gx * cluster.sigmaX;
   const localY = gy * cluster.sigmaY;
   const cos = Math.cos(cluster.rotation);
@@ -668,6 +774,7 @@ function randomGaussianClusterPoint(cluster: Cluster): { x: number; y: number } 
   return {
     x: cluster.x + localX * cos - localY * sin,
     y: cluster.y + localX * sin + localY * cos,
+    z: cluster.z + gz * cluster.sigmaZ,
   };
 }
 
@@ -704,6 +811,10 @@ function currentMode(): QueryMode {
   return modeSelect.value as QueryMode;
 }
 
+function currentDimension(): Dimension {
+  return dimensionSelect.value as Dimension;
+}
+
 function currentResultMode(): ResultMode {
   return resultModeSelect.value as ResultMode;
 }
@@ -714,9 +825,25 @@ function currentGeometry(): Geometry {
 
 function syncModeControls(): void {
   const nearest = currentMode() === 'nearest';
+  const is3d = currentDimension() === '3d';
   neighborCountInput.disabled = !nearest;
   maxDistanceInput.disabled = !nearest;
   resultModeSelect.disabled = nearest;
+  zMinLabel.hidden = !is3d || nearest;
+  zMaxLabel.hidden = !is3d || nearest;
+  zPointLabel.hidden = !is3d || !nearest;
+}
+
+function syncZInputs(): void {
+  const min = normalizeZ(Number(zMinInput.value), WORLD_Z_SIZE * 0.32);
+  const max = normalizeZ(Number(zMaxInput.value), WORLD_Z_SIZE * 0.68);
+  const orderedMin = Math.min(min, max);
+  const orderedMax = Math.max(min, max);
+  const point = normalizeZ(Number(zPointInput.value), WORLD_Z_SIZE * 0.5);
+  queryZ = { min: orderedMin, max: orderedMax, point };
+  zMinInput.value = String(Math.round(queryZ.min));
+  zMaxInput.value = String(Math.round(queryZ.max));
+  zPointInput.value = String(Math.round(queryZ.point));
 }
 
 function normalizeNeighborCount(value: number): number {
@@ -735,6 +862,13 @@ function normalizeMaxDistance(value: number): number {
   return value;
 }
 
+function normalizeZ(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return clampCoordinate(value, 0, WORLD_Z_SIZE);
+}
+
 function resultLabel(): string {
   if (currentMode() === 'nearest') {
     return 'Hits';
@@ -746,6 +880,64 @@ function resultLabel(): string {
     return 'First';
   }
   return 'Hits';
+}
+
+function defaultQueryZ(): QueryZ {
+  return {
+    min: WORLD_Z_SIZE * 0.32,
+    max: WORLD_Z_SIZE * 0.68,
+    point: WORLD_Z_SIZE * 0.5,
+  };
+}
+
+function itemStride(): number {
+  return itemStrideFor(currentDimension(), currentGeometry());
+}
+
+function itemStrideFor(dimension: Dimension, geometry: Geometry): number {
+  if (geometry === 'boxes') {
+    return dimension === '3d' ? 6 : 4;
+  }
+  return dimension === '3d' ? 3 : 2;
+}
+
+function buildCurrentIndex(data: Float64Array<ArrayBufferLike>, nodeSize: number): WasmIndex {
+  if (currentDimension() === '3d') {
+    return currentGeometry() === 'boxes'
+      ? new WasmIndex3D(data, nodeSize)
+      : WasmIndex3D.from_points(data, nodeSize);
+  }
+  return currentGeometry() === 'boxes' ? new WasmIndex2D(data, nodeSize) : WasmIndex2D.from_points(data, nodeSize);
+}
+
+function searchNearest2d(
+  index: WasmIndex2D,
+  point: QueryPoint,
+  maxResults: number,
+  maxDistance: number,
+): Uint32Array<ArrayBufferLike> {
+  return Number.isFinite(maxDistance)
+    ? index.neighbors_within(point.x, point.y, maxResults, maxDistance)
+    : index.neighbors(point.x, point.y, maxResults);
+}
+
+function searchNearest3d(
+  index: WasmIndex3D,
+  point: QueryPoint,
+  z: number,
+  maxResults: number,
+  maxDistance: number,
+): Uint32Array<ArrayBufferLike> {
+  return Number.isFinite(maxDistance)
+    ? index.neighbors_within(point.x, point.y, z, maxResults, maxDistance)
+    : index.neighbors(point.x, point.y, z, maxResults);
+}
+
+function statusText(message: string): string {
+  if (currentDimension() === '3d') {
+    return `${message}; 3D shown as XY projection`;
+  }
+  return message;
 }
 
 function normalizeRect(x0: number, y0: number, x1: number, y1: number): QueryRect {
@@ -987,7 +1179,20 @@ function mustQuery<T extends Element>(selector: string): T {
   return element;
 }
 
+function mustParentLabel(element: HTMLElement): HTMLLabelElement {
+  const label = element.closest('label');
+  if (!(label instanceof HTMLLabelElement)) {
+    throw new Error(`missing parent label for #${element.id}`);
+  }
+  return label;
+}
+
 function validateWasmWrapper(): void {
+  validateWasm2DWrapper();
+  validateWasm3DWrapper();
+}
+
+function validateWasm2DWrapper(): void {
   const sample = new Float64Array([0, 0, 5, 5, 10, 10, 6, 4]);
   const sampleIndex = WasmIndex2D.from_points(sample, 16);
   const actual = Array.from(sampleIndex.search(4, 4, 7, 7)).sort((a, b) => a - b);
@@ -1048,6 +1253,75 @@ function validateWasmWrapper(): void {
   }
 }
 
+function validateWasm3DWrapper(): void {
+  const sample = new Float64Array([0, 0, 0, 5, 5, 5, 10, 10, 10, 6, 4, 5]);
+  const sampleIndex = WasmIndex3D.from_points(sample, 16);
+  const actual = Array.from(sampleIndex.search(4, 4, 4, 7, 7, 7)).sort((a, b) => a - b);
+  const expected = bruteForceSearch3d(sample, 4, 4, 4, 7, 7, 7);
+  if (actual.length !== expected.length || actual.some((value, i) => value !== expected[i])) {
+    throw new Error(`WASM 3D validation failed: got [${actual}], expected [${expected}]`);
+  }
+  const profile = sampleIndex.search_profile(4, 4, 4, 7, 7, 7) as SearchProfile;
+  const profiled = Array.from(profile.hits).sort((a, b) => a - b);
+  if (profiled.length !== expected.length || profiled.some((value, i) => value !== expected[i])) {
+    throw new Error(`WASM 3D profile validation failed: got [${profiled}], expected [${expected}]`);
+  }
+  const nearest = Array.from(sampleIndex.neighbors(5.5, 4.5, 5.0, 2)).sort((a, b) => a - b);
+  if (nearest.length !== 2 || nearest[0] !== 1 || nearest[1] !== 3) {
+    throw new Error(`WASM 3D neighbors validation failed: got [${nearest}], expected [1,3]`);
+  }
+  const nearestWithin = Array.from(sampleIndex.neighbors_within(5.5, 4.5, 5.0, 4, 1.0)).sort((a, b) => a - b);
+  if (nearestWithin.length !== 2 || nearestWithin[0] !== 1 || nearestWithin[1] !== 3) {
+    throw new Error(`WASM 3D neighbors_within validation failed: got [${nearestWithin}], expected [1,3]`);
+  }
+  const extent = sampleIndex.extent() as IndexExtent;
+  if (
+    extent.empty ||
+    extent.minX !== 0 ||
+    extent.minY !== 0 ||
+    extent.minZ !== 0 ||
+    extent.maxX !== 10 ||
+    extent.maxY !== 10 ||
+    extent.maxZ !== 10
+  ) {
+    throw new Error(`WASM 3D extent validation failed: got ${JSON.stringify(extent)}`);
+  }
+  if (!sampleIndex.any(4, 4, 4, 7, 7, 7) || sampleIndex.any(20, 20, 20, 30, 30, 30)) {
+    throw new Error('WASM 3D any validation failed');
+  }
+  const first = sampleIndex.first(4, 4, 4, 7, 7, 7);
+  if (first !== 1 && first !== 3) {
+    throw new Error(`WASM 3D first validation failed: got ${first}, expected 1 or 3`);
+  }
+  const roundtrip = WasmIndex3D.from_bytes(sampleIndex.to_bytes());
+  const roundtripHits = Array.from(roundtrip.search(4, 4, 4, 7, 7, 7)).sort((a, b) => a - b);
+  if (roundtripHits.length !== expected.length || roundtripHits.some((value, i) => value !== expected[i])) {
+    throw new Error(`WASM 3D persistence validation failed: got [${roundtripHits}], expected [${expected}]`);
+  }
+
+  let rejectedOddLength = false;
+  try {
+    WasmIndex3D.from_points(new Float64Array([1, 2, 3, 4]), 16);
+  } catch {
+    rejectedOddLength = true;
+  }
+  if (!rejectedOddLength) {
+    throw new Error('odd-length 3D input was accepted');
+  }
+
+  const boxes = new Float64Array([0, 0, 0, 2, 2, 2, 5, 5, 5, 6, 6, 6, 8, 1, 2, 9, 3, 4]);
+  const boxIndex = new WasmIndex3D(boxes, 16);
+  const boxHits = Array.from(boxIndex.search(1, 1, 1, 5.5, 5.5, 5.5)).sort((a, b) => a - b);
+  if (boxHits.length !== 2 || boxHits[0] !== 0 || boxHits[1] !== 1) {
+    throw new Error(`WASM 3D box validation failed: got [${boxHits}], expected [0,1]`);
+  }
+
+  const empty = new WasmIndex3D(new Float64Array(), 16);
+  if (empty.search(0, 0, 0, 1, 1, 1).length !== 0) {
+    throw new Error('empty 3D index returned hits');
+  }
+}
+
 function bruteForceSearch(
   data: Float64Array,
   minX: number,
@@ -1061,6 +1335,27 @@ function bruteForceSearch(
     const y = data[i + 1];
     if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
       out.push(i / 2);
+    }
+  }
+  return out;
+}
+
+function bruteForceSearch3d(
+  data: Float64Array,
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
+): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < data.length; i += 3) {
+    const x = data[i];
+    const y = data[i + 1];
+    const z = data[i + 2];
+    if (x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ) {
+      out.push(i / 3);
     }
   }
   return out;

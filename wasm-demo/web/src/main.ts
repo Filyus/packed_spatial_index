@@ -112,8 +112,8 @@ const resultModeSelect = mustQuery<HTMLSelectElement>('#resultMode');
 const neighborCountInput = mustQuery<HTMLInputElement>('#neighborCount');
 const maxDistanceInput = mustQuery<HTMLInputElement>('#maxDistance');
 const depthInput = mustQuery<HTMLInputElement>('#depth');
+const depthValueInput = mustQuery<HTMLInputElement>('#depthValue');
 const thicknessInput = mustQuery<HTMLInputElement>('#thickness');
-const depthLabel = mustParentLabel(depthInput);
 const thicknessLabel = mustParentLabel(thicknessInput);
 const distributionSelect = mustQuery<HTMLSelectElement>('#distribution');
 const roundtripButton = mustQuery<HTMLButtonElement>('#roundtrip');
@@ -173,8 +173,12 @@ modeSelect.addEventListener('change', () => {
 resultModeSelect.addEventListener('change', search);
 neighborCountInput.addEventListener('change', search);
 maxDistanceInput.addEventListener('change', search);
-depthInput.addEventListener('change', () => {
-  syncZInputs();
+depthInput.addEventListener('input', () => {
+  syncDepthInputs('slider');
+  search();
+});
+depthValueInput.addEventListener('change', () => {
+  syncDepthInputs('number');
   search();
 });
 thicknessInput.addEventListener('change', () => {
@@ -931,12 +935,11 @@ function syncModeControls(): void {
   neighborCountInput.disabled = !nearest;
   maxDistanceInput.disabled = !nearest;
   resultModeSelect.disabled = nearest;
-  depthLabel.hidden = !is3d;
   thicknessLabel.hidden = !is3d || nearest;
 }
 
 function syncZInputs(): void {
-  const center = normalizeZ(Number(depthInput.value), WORLD_Z_SIZE * 0.5);
+  const center = normalizeZ(Number(depthValueInput.value), WORLD_Z_SIZE * 0.5);
   const thickness = normalizeThickness(Number(thicknessInput.value));
   const half = thickness * 0.5;
   depthSlice = {
@@ -945,8 +948,16 @@ function syncZInputs(): void {
     center,
     thickness,
   };
-  depthInput.value = String(Math.round(depthSlice.center));
+  const roundedCenter = String(Math.round(depthSlice.center));
+  depthInput.value = String(Math.round(clampCoordinate(depthSlice.center, 0, WORLD_Z_SIZE)));
+  depthValueInput.value = roundedCenter;
   thicknessInput.value = String(Math.round(depthSlice.thickness));
+}
+
+function syncDepthInputs(source: 'slider' | 'number'): void {
+  const sourceValue = source === 'slider' ? depthInput.value : depthValueInput.value;
+  depthValueInput.value = sourceValue;
+  syncZInputs();
 }
 
 function normalizeNeighborCount(value: number): number {

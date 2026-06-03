@@ -63,10 +63,6 @@
           <input id="maxDistance" type="number" min="0" step="100" placeholder="Any" />
         </label>
         <label>
-          Depth
-          <input id="depth" type="number" step="100" />
-        </label>
-        <label>
           Thickness
           <input id="thickness" type="number" min="0" step="100" />
         </label>
@@ -89,9 +85,12 @@
         <div id="queryRect" aria-hidden="true"></div>
         <div id="queryPoint" aria-hidden="true"></div>
         <div id="firstHit" aria-hidden="true"></div>
-        <div class="depth-legend" aria-hidden="true">
-          <span>Depth</span>
-          <div></div>
+        <div class="depth-legend">
+          <label>
+            Depth
+            <input id="depth" class="depth-slider" type="range" min="0" max="10000" step="10" />
+          </label>
+          <input id="depthValue" class="depth-value" type="number" step="100" aria-label="Depth value" />
           <small>near</small>
           <small>far</small>
         </div>

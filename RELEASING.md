@@ -17,30 +17,37 @@ is configured.
 
 1. Push normal changes to `main` and wait for CI to pass.
 2. Run the `Release: prepare version` workflow from `main` with
-   `dry_run: true`.
-3. Read the workflow log. It should show the version/changelog changes it would
-   prepare as a local `git diff`, without opening a PR.
-4. If the dry run looks right, run `Release: prepare version` again with
    `dry_run: false`.
-5. Review the draft release PR:
+3. Review the draft release PR:
    - check the version bump;
    - edit `CHANGELOG.md` if the generated notes need a clearer user-facing
      summary;
    - keep the PR as the only version/changelog change for that release.
-6. Merge the release PR.
-7. Wait for CI on `main` to pass.
-8. Run the `Release: publish crate` workflow from `main`.
-9. Set `version` to the exact `Cargo.toml` package version, for example
+4. Merge the release PR.
+5. Wait for CI on `main` to pass.
+6. Run the `Release: publish crate` workflow from `main`.
+7. Set `version` to the exact `Cargo.toml` package version, for example
    `0.3.1`.
-10. For a dry run, keep `publish` as `false`; `confirm` can stay empty.
-11. For the real publish, set:
+8. Set:
     - `publish`: `true`;
     - `confirm`: `publish packed_spatial_index`.
-12. Approve the `release` environment when GitHub asks for confirmation.
+9. Approve the `release` environment after preflight succeeds.
 
 If the requested version does not match `Cargo.toml`, the publish workflow fails
 before publishing. The confirmation phrase deliberately does not include the
 version; the workflow checks the version separately.
+
+Optional previews:
+
+- To preview the generated version/changelog PR without opening it, run
+  `Release: prepare version` with `dry_run: true`.
+- To run publish preflight without entering the approval step, run
+  `Release: publish crate` with `publish: false`.
+
+The publish preflight does not repeat the full Rust test matrix. It verifies
+that `CI: Rust checks` already passed for the exact `main` commit, then checks
+the requested version, crates.io availability, release tag availability, and
+`cargo publish --dry-run`.
 
 ## First Release
 

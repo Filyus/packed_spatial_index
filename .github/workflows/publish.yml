@@ -9,7 +9,7 @@ on:
         required: true
         type: string
       publish:
-        description: Publish after preflight succeeds
+        description: Publish after preflight and release environment approval
         required: true
         default: false
         type: boolean
@@ -24,6 +24,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   preflight:
@@ -34,17 +35,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
       - name: Check release branch
         run: |
           if [ "$GITHUB_REF_NAME" != "main" ]; then
             echo "Releases must be run from main, got '$GITHUB_REF_NAME'."
             exit 1
           fi
+
+      - name: Check CI passed for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ci_url="$(gh run list \
+            --workflow ci.yml \
+            --branch main \
+            --commit "$GITHUB_SHA" \
+            --json conclusion,status,url \
+            --limit 20 \
+            --jq '.[] | select(.status == "completed" and .conclusion == "success") | .url' \
+            | head -n 1)"
+
+          if [ -z "$ci_url" ]; then
+            echo "No successful CI: Rust checks run found for $GITHUB_SHA."
+            echo "Wait for CI to pass on main, then rerun this workflow."
+            exit 1
+          fi
+
+          echo "Using successful CI run: $ci_url"
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Check requested version
         env:
@@ -55,23 +75,6 @@ jobs:
             echo "Cargo.toml version is '$actual_version', requested '$REQUESTED_VERSION'."
             exit 1
           fi
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Test all features
-        run: cargo test --all-targets --all-features
-
-      - name: Lint all features
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Check docs all features
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
-
-      - name: List packaged files
-        run: cargo package --list
 
       - name: Check version is unpublished
         env:

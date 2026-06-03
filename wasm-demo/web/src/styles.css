@@ -218,9 +218,9 @@ canvas {
   z-index: 2;
   display: none;
   grid-template-columns: 1fr auto;
-  gap: 6px 10px;
+  gap: 7px 10px;
   align-items: center;
-  min-width: 210px;
+  min-width: 236px;
   padding: 9px 10px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 6px;
@@ -235,17 +235,17 @@ canvas {
   display: grid;
 }
 
-.depth-legend label {
-  display: grid;
+.depth-legend span {
   grid-column: 1;
-  gap: 6px;
+  grid-row: 1;
   color: rgba(255, 255, 255, 0.78);
   font-size: 12px;
   font-weight: 600;
-  text-transform: none;
 }
 
 .depth-slider {
+  grid-column: 1 / 3;
+  grid-row: 2;
   width: 100%;
   min-width: 0;
   height: 18px;
@@ -292,7 +292,7 @@ canvas {
 .depth-value {
   grid-column: 2;
   grid-row: 1;
-  align-self: start;
+  justify-self: end;
   width: 76px;
   min-width: 0;
   height: 26px;
@@ -304,7 +304,7 @@ canvas {
 }
 
 .depth-legend small {
-  grid-row: 2;
+  grid-row: 3;
   color: rgba(255, 255, 255, 0.62);
 }
 

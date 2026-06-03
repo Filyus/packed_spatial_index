@@ -103,6 +103,7 @@ const queryShadeEls = [
 const queryRectEl = mustQuery<HTMLDivElement>('#queryRect');
 const queryPointEl = mustQuery<HTMLDivElement>('#queryPoint');
 const firstHitEl = mustQuery<HTMLDivElement>('#firstHit');
+const depthLegendEl = mustQuery<HTMLDivElement>('#depthLegend');
 const pointCountInput = mustQuery<HTMLInputElement>('#pointCount');
 const dimensionSelect = mustQuery<HTMLSelectElement>('#dimension');
 const geometrySelect = mustQuery<HTMLSelectElement>('#geometry');
@@ -187,6 +188,16 @@ thicknessInput.addEventListener('change', () => {
 });
 distributionSelect.addEventListener('change', rebuild);
 roundtripButton.addEventListener('click', roundtripIndex);
+
+depthLegendEl.addEventListener('pointerdown', (event) => {
+  event.stopPropagation();
+});
+depthLegendEl.addEventListener('pointermove', (event) => {
+  event.stopPropagation();
+});
+depthLegendEl.addEventListener('pointerup', (event) => {
+  event.stopPropagation();
+});
 
 stage.addEventListener('pointerdown', (event) => {
   stage.setPointerCapture(event.pointerId);

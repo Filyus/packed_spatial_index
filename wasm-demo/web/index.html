@@ -85,12 +85,10 @@
         <div id="queryRect" aria-hidden="true"></div>
         <div id="queryPoint" aria-hidden="true"></div>
         <div id="firstHit" aria-hidden="true"></div>
-        <div class="depth-legend">
-          <label>
-            Depth
-            <input id="depth" class="depth-slider" type="range" min="0" max="10000" step="10" />
-          </label>
+        <div id="depthLegend" class="depth-legend">
+          <span>Depth</span>
           <input id="depthValue" class="depth-value" type="number" step="100" aria-label="Depth value" />
+          <input id="depth" class="depth-slider" type="range" min="0" max="10000" step="10" aria-label="Depth" />
           <small>near</small>
           <small>far</small>
         </div>

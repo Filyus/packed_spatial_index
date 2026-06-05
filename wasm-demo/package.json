@@ -7,6 +7,7 @@
     "wasm:build": "cross-env RUSTFLAGS=-Ctarget-feature=+simd128 wasm-pack build crate --target web --out-dir ../web/pkg --release -- --no-default-features --features simd",
     "dev": "npm run wasm:build && vite web",
     "build": "npm run wasm:build && tsc -p web/tsconfig.json && vite build web",
+    "build:pages": "npm run wasm:build && tsc -p web/tsconfig.json && vite build web --base /packed_spatial_index/",
     "check": "npm run wasm:build && tsc -p web/tsconfig.json"
   },
   "devDependencies": {

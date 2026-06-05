@@ -4,6 +4,8 @@
 [![crates.io](https://img.shields.io/crates/v/packed_spatial_index.svg)](https://crates.io/crates/packed_spatial_index)
 [![docs.rs](https://docs.rs/packed_spatial_index/badge.svg)](https://docs.rs/packed_spatial_index)
 
+[Live WASM demo](https://filyus.github.io/packed_spatial_index/)
+
 `packed_spatial_index` is a packed static spatial index for 2D and 3D
 axis-aligned bounding boxes.
 
@@ -553,6 +555,8 @@ cargo run --example f32_exact_2d --no-default-features --features f32-storage
 ```
 
 ## WASM Demo
+
+Live demo: <https://filyus.github.io/packed_spatial_index/>
 
 The repository includes a Vite + TypeScript demo that builds a `SimdIndex2D`
 WASM wrapper for interactive 2D box and point searches:

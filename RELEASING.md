@@ -18,20 +18,41 @@ is configured.
 1. Push normal changes to `main` and wait for CI to pass.
 2. Run the `Release: prepare version` workflow from `main` with
    `dry_run: false`.
-3. Review the draft release PR:
+3. Treat the draft release PR as the maintainer-controlled release branch.
+   Check it out locally if the generated notes need cleanup:
+
+   ```powershell
+   gh pr checkout <number>
+   # edit release notes or release-facing docs
+   git commit -m "docs: clarify release notes"
+   git push
+   git switch main
+   ```
+
+4. Review the draft release PR:
    - check the version bump;
-   - edit `CHANGELOG.md` if the generated notes need a clearer user-facing
-     summary;
-   - keep the PR as the only version/changelog change for that release.
-4. Merge the release PR.
-5. Wait for CI on `main` to pass.
-6. Run the `Release: publish crate` workflow from `main`.
-7. Set `version` to the exact `Cargo.toml` package version, for example
+   - edit `CHANGELOG.md` if the generated notes need a clearer summary;
+   - update small release-facing docs if they must mention the new version;
+   - keep code and feature changes out of the release PR.
+5. Wait for CI on the release PR to pass.
+6. Mark the PR as ready, then merge it.
+   Use `Rebase and merge` in GitHub for linear history, or merge locally:
+
+   ```powershell
+   git fetch origin
+   git switch main
+   git merge --ff-only origin/<release-branch>
+   git push origin main
+   ```
+
+7. Wait for CI on `main` to pass.
+8. Run the `Release: publish crate` workflow from `main`.
+9. Set `version` to the exact `Cargo.toml` package version, for example
    `0.3.1`.
-8. Set:
+10. Set:
     - `publish`: `true`;
     - `confirm`: `publish packed_spatial_index`.
-9. Approve the `release` environment after preflight succeeds.
+11. Approve the `release` environment after preflight succeeds.
 
 If the requested version does not match `Cargo.toml`, the publish workflow fails
 before publishing. The confirmation phrase deliberately does not include the

@@ -16,6 +16,11 @@ All notable changes to this crate are documented here.
 - Document the packed spatial index binary format.
 - Add distinct f32 box layout flags for `f32-storage` indexes.
 
+### WASM
+- Add the interactive WASM demo for 2D and 3D searches.
+- Add 3D depth slicing, depth coloring, and an interactive depth legend.
+- Tighten demo controls, query overlays, status bar, and wrapper helpers.
+
 ### Benchmarks
 - Add f32-vs-f64 storage benchmarks for range queries and KNN.
 
@@ -30,32 +35,6 @@ All notable changes to this crate are documented here.
   persistence, and views.
 - Add proptest search and persistence robustness checks
 - Rustfmt proptest files
-
-### wasm
-- Add interactive web demo
-- Expose query APIs in demo
-- Add 3d bindings and demo
-- Use depth slice for 3d demo
-- Color 3d projection by depth
-- Dim outside 3d query window
-- Soften 3d query dimming
-- Clarify 3d depth coloring
-- Make 3d depth legend interactive
-- Fix interactive depth legend layout
-- Tune default 3d depth thickness
-- Fix empty thickness default
-- Compact numeric demo controls
-- Compact demo toolbar controls
-- Align 2d and 3d wrapper helpers
-- Show 3d any match in green
-- Brighten 3d depth points
-- Unify demo scene styling
-- Align query overlay styling
-- Tighten demo status bar
-- Reduce demo page vertical whitespace
-- Move thickness into depth panel
-
-
 
 ## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/v0.3.3...v0.4.0) - 2026-06-03
 

@@ -5,7 +5,7 @@ Releases are intentionally two-step:
 1. `Release: prepare version` prepares a draft release PR with the version bump
    and `CHANGELOG.md` update.
 2. `Release: publish crate` publishes the reviewed version and creates the
-   annotated `v<version>` tag.
+   annotated `v<version>` tag and GitHub Release.
 
 `release-plz` is configured in PR-only mode. It does not publish crates, push
 tags, or create GitHub Releases.
@@ -53,6 +53,8 @@ is configured.
     - `publish`: `true`;
     - `confirm`: `publish packed_spatial_index`.
 11. Approve the `release` environment after preflight succeeds.
+    After publishing, the workflow creates the `v<version>` tag and GitHub
+    Release from that version's `CHANGELOG.md` section.
 
 If the requested version does not match `Cargo.toml`, the publish workflow fails
 before publishing. The confirmation phrase deliberately does not include the
@@ -69,6 +71,10 @@ The publish preflight does not repeat the full Rust test matrix. It verifies
 that `CI: Rust checks` already passed for the exact `main` commit, then checks
 the requested version, crates.io availability, release tag availability, and
 `cargo publish --dry-run`.
+
+The separate `Release: create GitHub release` workflow is a fallback for tags
+pushed outside GitHub Actions. Tags pushed by `GITHUB_TOKEN` do not trigger
+another `push` workflow.
 
 ## First Release
 

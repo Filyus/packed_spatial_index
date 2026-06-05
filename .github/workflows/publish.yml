@@ -194,3 +194,36 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "packed_spatial_index $REQUESTED_VERSION"
           git push origin "refs/tags/$tag"
+
+      - name: Extract changelog section
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          # Print the body between this version's heading and the next `## [`
+          # heading. Match with index() rather than a regex to stay portable
+          # across awk variants and avoid bracket-escaping pitfalls.
+          awk -v head="## [$REQUESTED_VERSION]" '
+            index($0, head) == 1 { flag = 1; next }
+            flag && index($0, "## [") == 1 { exit }
+            flag { print }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "No changelog section found for $REQUESTED_VERSION in CHANGELOG.md."
+            exit 1
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          tag="v$REQUESTED_VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; nothing to do."
+            exit 0
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes-file release-notes.md \
+            --verify-tag

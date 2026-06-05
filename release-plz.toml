@@ -15,7 +15,7 @@ release_always = false
 # The first commit domain drives release notes. Keep this broad enough for
 # module/public-type domains (`index3d:`, `views:`, `hilbert:`), while skipped
 # release housekeeping domains stay out of this regex.
-release_commits = "^(api|builder|builder2d|builder3d|index|index2d|index3d|2d|3d|box|boxes|box2d|box3d|bounds|bounds2d|bounds3d|point|points|point2d|point3d|geometry|config|default|defaults|error|errors|safety|unsafe|lint|lints|simd|simd2d|simd3d|simd-view|simd-views|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse|persistence|persist|serialize|serialization|deserialize|load|loader|view|views|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy|knn|neighbor|neighbors|nearest|search|visitor|visit|traversal|workspace|perf|performance|parallel|radix|node|nodes|node-size|node_size|nodesize|prefetch|sort|sort2d|sort3d|sortkey|hilbert|hilbert2d|morton|encoder|encoders|encoding|bench|benches|benchmark|benchmarks|flatgeobuf|static-aabb|static_aabb|compare|comparison|test|tests|correctness|fuzz|fuzzing|refactor|layout|tree|internal|module|modules|docs|doc|readme|rustdoc|example|examples|build|ci|deps|dependency|dependencies|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(,|:)"
+release_commits = "^(api|builder|builder2d|builder3d|index|index2d|index3d|2d|3d|box|boxes|box2d|box3d|bounds|bounds2d|bounds3d|point|points|point2d|point3d|geometry|config|default|defaults|error|errors|safety|unsafe|lint|lints|simd|simd2d|simd3d|simd-view|simd-views|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse|wasm|wasm-demo|persistence|persist|serialize|serialization|deserialize|load|loader|view|views|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy|knn|neighbor|neighbors|nearest|search|visitor|visit|traversal|workspace|perf|performance|parallel|radix|node|nodes|node-size|node_size|nodesize|prefetch|sort|sort2d|sort3d|sortkey|hilbert|hilbert2d|morton|encoder|encoders|encoding|bench|benches|benchmark|benchmarks|flatgeobuf|static-aabb|static_aabb|compare|comparison|test|tests|correctness|fuzz|fuzzing|refactor|layout|tree|internal|module|modules|docs|doc|readme|rustdoc|example|examples|build|ci|deps|dependency|dependencies|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(,|:)"
 pr_branch_prefix = "release-plz-"
 pr_draft = true
 pr_labels = ["release"]
@@ -72,8 +72,9 @@ commit_parsers = [
   { message = "^(knn|neighbors?|nearest)(?:,|:)", group = "<!-- 07 --> Nearest Neighbors" },
   { message = "^(persistence|persist|serialize|serialization|deserialize|load|loader|views?|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy)(?:,|:)", group = "<!-- 08 --> Persistence" },
   { message = "^(simd|simd2d|simd3d|simd-views?|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse)(?:,|:)", group = "<!-- 09 --> SIMD" },
-  { message = "^(perf|performance|parallel|radix|nodes?|node-size|node_size|nodesize|prefetch)(?:,|:)", group = "<!-- 10 --> Performance" },
-  { message = "^(sort|sortkey|hilbert|morton|encoders?|encoding)(?:,|:)", group = "<!-- 11 --> Sorting and Encoding" },
+  { message = "^(wasm|wasm-demo)(?:,|:)", group = "<!-- 10 --> WASM" },
+  { message = "^(perf|performance|parallel|radix|nodes?|node-size|node_size|nodesize|prefetch)(?:,|:)", group = "<!-- 11 --> Performance" },
+  { message = "^(sort|sortkey|hilbert|morton|encoders?|encoding)(?:,|:)", group = "<!-- 12 --> Sorting and Encoding" },
   { message = "^(bench|benches|benchmarks?|flatgeobuf|static-aabb|static_aabb|compare|comparison)(?:,|:)", group = "<!-- 20 --> Benchmarks" },
   { message = "^(docs?|readme|rustdoc|examples?)(?:,|:)", group = "<!-- 90 --> Documentation" },
   { message = "^(test|tests|correctness|fuzz|fuzzing)(?:,|:)", group = "<!-- 91 --> Tests" },

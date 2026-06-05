@@ -558,8 +558,8 @@ cargo run --example f32_exact_2d --no-default-features --features f32-storage
 
 Live demo: <https://filyus.github.io/packed_spatial_index/>
 
-The repository includes a Vite + TypeScript demo that builds a `SimdIndex2D`
-WASM wrapper for interactive 2D box and point searches:
+The repository includes a Vite + TypeScript demo that builds `SimdIndex2D` and
+`SimdIndex3D` WASM wrappers for interactive 2D and 3D box and point searches:
 
 ```bash
 cd wasm-demo

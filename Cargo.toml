@@ -29,12 +29,13 @@ rayon = { version = "1", optional = true }
 wide = { version = "1.4.0", optional = true }
 
 [features]
-# Both features are enabled by default to preserve the previous behavior.
 default = ["parallel", "simd"]
 # Adaptive parallel index builds through rayon (`Index2DBuilder::parallel`).
 parallel = ["dep:rayon"]
 # SoA index with SIMD queries (`SimdIndex2D`, AVX2 `wide::f64x4` + AVX-512 intrinsics).
 simd = ["dep:wide"]
+# Compact f32-storage SIMD indexes (`SimdIndex2DF32`, `SimdIndex3DF32`).
+f32-storage = ["simd"]
 # Hidden support API for crate benchmarks and local performance tools.
 bench-internals = []
 
@@ -88,3 +89,12 @@ required-features = ["simd", "bench-internals"]
 name = "flatgeobuf2d_bench"
 harness = false
 required-features = ["parallel", "simd", "bench-internals"]
+
+[[bench]]
+name = "coord_precision"
+harness = false
+required-features = ["f32-storage"]
+
+[[example]]
+name = "f32_exact_2d"
+required-features = ["f32-storage"]

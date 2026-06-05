@@ -69,11 +69,11 @@ fn main() {
             for r in &boxes {
                 b.add(Box2D::new(r[0], r[1], r[2], r[3]));
             }
-            let candidate = b.finish().unwrap();
-            let candidate_t = t0.elapsed();
-            if candidate_t < build_t {
-                build_t = candidate_t;
-                best_index = Some(candidate);
+            let built_index = b.finish().unwrap();
+            let build_time = t0.elapsed();
+            if build_time < build_t {
+                build_t = build_time;
+                best_index = Some(built_index);
             }
         }
         let index = best_index.unwrap();

@@ -56,6 +56,10 @@ const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
 const FORMAT_VERSION: u64 = 1;
 const FORMAT_FLAGS_2D: u64 = 0;
 const FORMAT_FLAGS_3D: u64 = 1;
+#[cfg(feature = "f32-storage")]
+const FORMAT_FLAGS_2D_F32: u64 = 2;
+#[cfg(feature = "f32-storage")]
+const FORMAT_FLAGS_3D_F32: u64 = 3;
 const FORMAT_HEADER_LEN: usize = 64;
 
 pub(crate) struct ParsedIndexBytes<'a> {
@@ -69,17 +73,28 @@ pub(crate) struct ParsedIndexBytes<'a> {
 }
 
 pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
-    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D, 2)
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D, 2, 8)
 }
 
 pub(crate) fn parse_index3d_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
-    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D, 3)
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D, 3, 8)
+}
+
+#[cfg(feature = "f32-storage")]
+pub(crate) fn parse_index2d_f32_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D_F32, 2, 4)
+}
+
+#[cfg(feature = "f32-storage")]
+pub(crate) fn parse_index3d_f32_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D_F32, 3, 4)
 }
 
 fn parse_index_bytes_with_flags(
     bytes: &[u8],
     expected_flags: u64,
     dimensions: usize,
+    coord_bytes: usize,
 ) -> Result<ParsedIndexBytes<'_>, LoadError> {
     if bytes.len() < FORMAT_MAGIC.len() {
         return Err(LoadError::Truncated);
@@ -116,7 +131,8 @@ fn parse_index_bytes_with_flags(
         return Err(LoadError::InvalidTree);
     }
 
-    let expected_len = serialized_len_for_dimensions(level_count, num_nodes, dimensions)?;
+    let expected_len =
+        serialized_len_for_dimensions(level_count, num_nodes, dimensions, coord_bytes)?;
     if bytes.len() < expected_len {
         return Err(LoadError::Truncated);
     }
@@ -132,7 +148,7 @@ fn parse_index_bytes_with_flags(
         .ok_or(LoadError::IntegerOverflow)?;
     let entries_len = num_nodes
         .checked_mul(dimensions)
-        .and_then(|len| len.checked_mul(16))
+        .and_then(|len| len.checked_mul(2 * coord_bytes))
         .ok_or(LoadError::IntegerOverflow)?;
     let indices_len = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
 
@@ -239,24 +255,41 @@ fn expected_tree_shape(num_items: usize, node_size: usize) -> Result<(usize, usi
 }
 
 pub(crate) fn serialized_len(level_count: usize, num_nodes: usize) -> Result<usize, LoadError> {
-    serialized_len_for_dimensions(level_count, num_nodes, 2)
+    serialized_len_for_dimensions(level_count, num_nodes, 2, 8)
 }
 
 pub(crate) fn serialized_len_3d(level_count: usize, num_nodes: usize) -> Result<usize, LoadError> {
-    serialized_len_for_dimensions(level_count, num_nodes, 3)
+    serialized_len_for_dimensions(level_count, num_nodes, 3, 8)
+}
+
+#[cfg(feature = "f32-storage")]
+pub(crate) fn serialized_len_2d_f32(
+    level_count: usize,
+    num_nodes: usize,
+) -> Result<usize, LoadError> {
+    serialized_len_for_dimensions(level_count, num_nodes, 2, 4)
+}
+
+#[cfg(feature = "f32-storage")]
+pub(crate) fn serialized_len_3d_f32(
+    level_count: usize,
+    num_nodes: usize,
+) -> Result<usize, LoadError> {
+    serialized_len_for_dimensions(level_count, num_nodes, 3, 4)
 }
 
 fn serialized_len_for_dimensions(
     level_count: usize,
     num_nodes: usize,
     dimensions: usize,
+    coord_bytes: usize,
 ) -> Result<usize, LoadError> {
     let levels = level_count
         .checked_mul(8)
         .ok_or(LoadError::IntegerOverflow)?;
     let entries = num_nodes
         .checked_mul(dimensions)
-        .and_then(|len| len.checked_mul(16))
+        .and_then(|len| len.checked_mul(2 * coord_bytes))
         .ok_or(LoadError::IntegerOverflow)?;
     let indices = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
     FORMAT_HEADER_LEN
@@ -300,6 +333,71 @@ impl<'a> ByteWriter<'a> {
 
     pub(crate) fn write_3d_flags(&mut self) {
         self.write_u64(FORMAT_FLAGS_3D);
+    }
+
+    #[cfg(feature = "f32-storage")]
+    pub(crate) fn write_2d_f32_flags(&mut self) {
+        self.write_u64(FORMAT_FLAGS_2D_F32);
+    }
+
+    #[cfg(feature = "f32-storage")]
+    pub(crate) fn write_3d_f32_flags(&mut self) {
+        self.write_u64(FORMAT_FLAGS_3D_F32);
+    }
+
+    #[inline]
+    #[cfg(feature = "f32-storage")]
+    pub(crate) fn write_f32(&mut self, value: f32) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    /// Write 2D box records from f32 structure-of-arrays columns (one `[min_x,
+    /// min_y, max_x, max_y]` record per node).
+    #[cfg(feature = "f32-storage")]
+    pub(crate) fn write_soa_boxes_f32_2d(
+        &mut self,
+        min_xs: &[f32],
+        min_ys: &[f32],
+        max_xs: &[f32],
+        max_ys: &[f32],
+    ) {
+        debug_assert_eq!(min_xs.len(), min_ys.len());
+        debug_assert_eq!(min_xs.len(), max_xs.len());
+        debug_assert_eq!(min_xs.len(), max_ys.len());
+        for i in 0..min_xs.len() {
+            self.write_f32(min_xs[i]);
+            self.write_f32(min_ys[i]);
+            self.write_f32(max_xs[i]);
+            self.write_f32(max_ys[i]);
+        }
+    }
+
+    /// Write 3D box records from f32 structure-of-arrays columns (one `[min_x,
+    /// min_y, min_z, max_x, max_y, max_z]` record per node).
+    #[cfg(feature = "f32-storage")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_soa_boxes_f32_3d(
+        &mut self,
+        min_xs: &[f32],
+        min_ys: &[f32],
+        min_zs: &[f32],
+        max_xs: &[f32],
+        max_ys: &[f32],
+        max_zs: &[f32],
+    ) {
+        debug_assert_eq!(min_xs.len(), min_ys.len());
+        debug_assert_eq!(min_xs.len(), min_zs.len());
+        debug_assert_eq!(min_xs.len(), max_xs.len());
+        debug_assert_eq!(min_xs.len(), max_ys.len());
+        debug_assert_eq!(min_xs.len(), max_zs.len());
+        for i in 0..min_xs.len() {
+            self.write_f32(min_xs[i]);
+            self.write_f32(min_ys[i]);
+            self.write_f32(min_zs[i]);
+            self.write_f32(max_xs[i]);
+            self.write_f32(max_ys[i]);
+            self.write_f32(max_zs[i]);
+        }
     }
 
     #[inline]
@@ -493,6 +591,23 @@ pub(crate) fn read_u64_le_unchecked(bytes: &[u8], offset: usize) -> u64 {
 #[inline]
 pub(crate) fn read_f64_le_unchecked(bytes: &[u8], offset: usize) -> f64 {
     f64::from_bits(read_u64_le_unchecked(bytes, offset))
+}
+
+#[inline]
+#[cfg(feature = "f32-storage")]
+pub(crate) fn read_f32_le_unchecked(bytes: &[u8], offset: usize) -> f32 {
+    debug_assert!(offset + 4 <= bytes.len());
+    let mut value = 0u32;
+    // SAFETY: callers only use this for slices and offsets validated by
+    // the f32 byte parsers; unaligned byte buffers are copied into an aligned u32.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr().add(offset),
+            (&mut value as *mut u32).cast::<u8>(),
+            4,
+        );
+    }
+    f32::from_bits(u32::from_le(value))
 }
 
 fn usize_from_u64(value: u64) -> Result<usize, LoadError> {

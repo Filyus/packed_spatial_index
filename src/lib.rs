@@ -22,8 +22,9 @@
 //!
 //! # Cargo Features
 //! * `parallel` (enabled by default): adaptive parallel builds through rayon.
-//! * `simd` (enabled by default): `SimdIndex2D` and `SimdIndex3D` with SIMD
-//!   searches through `wide` and x86-64 AVX-512 intrinsics where available.
+//! * `simd` (enabled by default): SIMD searches through `wide` and x86-64
+//!   AVX-512 intrinsics where available.
+//! * `f32-storage`: compact f32-storage SIMD indexes.
 
 // On docs.rs (built with `--cfg docsrs` on nightly), auto-render "Available on
 // crate feature X" badges for feature-gated items from their `#[cfg]`s.
@@ -37,9 +38,13 @@ mod config;
 mod geometry;
 mod hilbert2d;
 mod index2d;
+#[cfg(feature = "f32-storage")]
+mod index2d_f32;
 #[cfg(feature = "simd")]
 mod index2d_soa;
 mod index3d;
+#[cfg(feature = "f32-storage")]
+mod index3d_f32;
 #[cfg(feature = "simd")]
 mod index3d_soa;
 mod neighbors;
@@ -57,9 +62,13 @@ pub use config::DEFAULT_NODE_SIZE;
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use geometry::{BoundsError, Box2D, Box3D, Point2D, Point3D};
 pub use index2d::{Index2D, Index2DView};
+#[cfg(feature = "f32-storage")]
+pub use index2d_f32::{SimdIndex2DF32, SimdIndex2DF32View};
 #[cfg(feature = "simd")]
 pub use index2d_soa::{SimdIndex2D, SimdIndex2DView};
 pub use index3d::{Index3D, Index3DView};
+#[cfg(feature = "f32-storage")]
+pub use index3d_f32::{SimdIndex3DF32, SimdIndex3DF32View};
 #[cfg(feature = "simd")]
 pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
 pub use neighbors::NeighborWorkspace;

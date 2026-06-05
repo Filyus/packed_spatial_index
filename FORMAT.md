@@ -1,123 +1,146 @@
-# Binary Format
+# Packed Spatial Index Binary Format
 
-`Index2D::to_bytes` and `Index3D::to_bytes` write canonical packed layouts to a
-stable little-endian byte format. `SimdIndex2D::to_bytes` and
-`SimdIndex3D::to_bytes` write byte-identical canonical layouts from their SoA
-columns, so scalar and SIMD indexes are interchangeable on disk.
+| Revision | Last revised |
+| -------- | ------------ |
+| 8        | 2026-06-05   |
 
-`Index2D::from_bytes` and `Index3D::from_bytes` load the same format into owned
-vectors, while `Index2DView::from_bytes` and `Index3DView::from_bytes` borrow
-the buffer without allocating during load. SIMD indexes load the canonical
-bytes into owned SoA columns; there is no separate persisted SoA format and no
-zero-copy SIMD view format.
+This document describes the binary format used by packed spatial indexes.
 
-## Magic And Version
+## Related Methods
 
-The current format magic is eight bytes:
+| Method | Description |
+| ------ | ----------- |
+| `fn to_bytes(&self) -> Vec<u8>` | Serialize into a new byte buffer. |
+| `fn to_bytes_into(&self, out: &mut Vec<u8>)` | Serialize into an existing byte buffer. |
+| `fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError>` | Load and validate a byte buffer. |
 
-```text
-b"PSINDEX\0"
-```
+## Byte Order
 
-It expands to:
-
-- `PS` = Packed Spatial;
-- `INDEX` = index;
-- `\0` = one trailing NUL byte to keep the signature exactly eight bytes.
-
-The binary format version is stored separately as a little-endian `u64` header
-field. The current version is `1`.
-
-`header_len` is the fixed byte length of this header. `flags` currently selects
-the coordinate dimension:
-
-- `0`: 2D boxes;
-- `1`: 3D boxes.
-
-Other flag values are reserved.
+All integer and coordinate fields are little-endian.
 
 ## Layout
 
-All integers are unsigned little-endian 64-bit values. All coordinates are
-little-endian IEEE-754 `f64` values.
+A serialized index buffer has one header and three contiguous sections:
+
+| Part           | Bytes                  |
+| -------------- | ---------------------- |
+| header         | 64                     |
+| `level_bounds` | 8 x `level_count`      |
+| `boxes`        | `record` x `num_nodes` |
+| `indices`      | 8 x `num_nodes`        |
+
+There is no padding. Each section starts on an 8-byte offset.
+`record` is selected by `flags`.
+
+## Header
 
 ```text
 offset  size  field
-0       8     magic: b"PSINDEX\0"
-8       8     format_version: u64 = 1
-16      8     header_len: u64 = 64
-24      8     flags: u64 = 0 for 2D, 1 for 3D
+0       8     magic
+8       8     format_version
+16      8     header_len
+24      8     flags
 32      8     node_size
 40      8     num_items
 48      8     num_nodes
 56      8     level_count
-64      ...   level_bounds: [u64; level_count]
-...     ...   boxes: [box; num_nodes]
-...     ...   indices: [u64; num_nodes]
 ```
 
-There is no padding between sections.
+All header fields after `magic` are `u64`.
 
-The fixed header is 64 bytes, so every section starts on an 8-byte logical
-offset.
+| Field            | Value / meaning |
+| ---------------- | --------------- |
+| `magic`          | `b"PSINDEX\0"` |
+| `format_version` | `1` |
+| `header_len`     | `64` |
+| `flags`          | Variant selector. See [Variants](#variants). |
+| `node_size`      | Maximum children per internal node. Valid range: `2..=65535`. |
+| `num_items`      | Number of leaf items. Leaf indices must be lower than this value. |
+| `num_nodes`      | Total stored nodes: leaves plus internal nodes. |
+| `level_count`    | Number of tree levels. Empty indexes use `1`. |
 
-Box records are:
+## Variants
+
+`flags` selects dimension and coordinate width:
+
+| Flag | Coordinates | Record | Owned types              |
+| ---- | ----------- | ------ | ------------------------ |
+| `0`  | 2D `f64`    | 32 B   | `Index2D`, `SimdIndex2D` |
+| `1`  | 3D `f64`    | 48 B   | `Index3D`, `SimdIndex3D` |
+| `2`  | 2D `f32`    | 16 B   | `SimdIndex2DF32`         |
+| `3`  | 3D `f32`    | 24 B   | `SimdIndex3DF32`         |
+
+- each type's `...View` reads the same flag;
+- flags `0` and `1` are shared by scalar and `f64` SIMD indexes;
+- flags `2` and `3` are used by the `f32-storage` feature;
+- `f32` boxes are rounded outward;
+- other flag values are reserved.
+
+## Box Records
+
+Each node has one box record.
 
 ```text
-2D: f64 min_x, f64 min_y, f64 max_x, f64 max_y
-3D: f64 min_x, f64 min_y, f64 min_z, f64 max_x, f64 max_y, f64 max_z
+2D: min_x, min_y, max_x, max_y
+3D: min_x, min_y, min_z, max_x, max_y, max_z
 ```
+
+Fields are `f64` for flags `0` and `1`.
+Fields are `f32` for flags `2` and `3`.
 
 ## Tree Storage
 
-Nodes are stored in packed level order:
+Nodes are stored in level order:
 
-- leaf item boxes first, in the sorted packed order;
-- then parent levels, each packed contiguously;
-- the root is the final node for non-empty indexes.
+1. leaves, in sorted packed order;
+2. parent levels;
+3. root as the final node, for non-empty trees.
 
-`level_bounds` stores cumulative end offsets for each level. For example,
-`level_bounds[0]` is the end of the leaf level, and the final bound equals
-`num_nodes`.
+`level_bounds[i]` is the exclusive end offset of level `i`.
+The first entry equals `num_items`.
+The last entry equals `num_nodes`.
 
-For an empty index:
+For a non-empty tree:
 
-- `num_items = 0`
-- `num_nodes = 0`
-- `level_count = 1`
-- `level_bounds = [0]`
+```text
+level_width[0] = num_items
+level_width[i + 1] = ceil(level_width[i] / node_size)
+```
+
+For an empty tree:
+
+```text
+num_items = 0
+num_nodes = 0
+level_count = 1
+level_bounds = [0]
+```
 
 ## Indices
 
-The `indices` section has one entry for every stored box:
+Each `indices` entry pairs with the box at the same position.
 
-- leaf entries are original insertion indices into the caller's payload array;
-- internal entries are offsets of the first child node in the previous level.
+| Node kind | Stored value |
+| --------- | ------------ |
+| leaf      | Original insertion index. |
+| internal  | Offset of the first child in the previous level. |
 
-The child range for an internal node starts at that stored offset and spans up
-to `node_size` entries, clamped to the previous level's end.
+An internal node spans up to `node_size` children.
+The span is clipped by the previous level's end offset.
 
 ## Validation
 
-Loaders reject malformed buffers before exposing safe search APIs. Validation
-checks include:
+Loaders reject:
 
-- exact magic match, supported `format_version`, supported `header_len`, and
-  supported `flags` for the requested loader;
-- complete header and sections;
-- exact byte length;
-- `node_size` in `2..=65535`;
-- tree shape matching `num_items`, `node_size`, `num_nodes`, and `level_count`;
-- monotonic level bounds with the expected cumulative values;
-- leaf item indices within `0..num_items`;
-- internal child pointers pointing to node starts in the previous level.
+- wrong magic;
+- unsupported `format_version`, `header_len`, or `flags`;
+- truncated buffers;
+- buffers with trailing bytes;
+- `node_size` outside `2..=65535`;
+- tree shape that does not match `num_items` and `node_size`;
+- invalid `level_bounds`;
+- leaf indices outside `0..num_items`;
+- internal pointers outside the previous level;
+- internal pointers not at a child-group start.
 
-`LoadError` reports the broad failure category. It does not promise a byte
-offset for malformed input.
-
-## Compatibility
-
-The byte format is intended for data produced by `packed_spatial_index`
-`Index2D::to_bytes`, `Index3D::to_bytes`, `SimdIndex2D::to_bytes`, and
-`SimdIndex3D::to_bytes`. The crate preserves the meaning of
-`format_version = 1`; incompatible changes should use a new version value.
+`LoadError` reports the failure category, not a byte offset.

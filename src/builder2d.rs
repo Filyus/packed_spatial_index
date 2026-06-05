@@ -165,6 +165,37 @@ impl Index2DBuilder {
         crate::index2d_soa::build_simd_index(self.config(), self.items)
     }
 
+    /// Pack the tree into the f32-storage SIMD index.
+    ///
+    /// Coordinates are stored as `f32` rounded outward, halving box memory.
+    /// [`search`](crate::SimdIndex2DF32::search) returns every exact hit, but
+    /// may also include extra near-boundary hits. Use `search_exact` for exact
+    /// range hits and `neighbors_exact` for exact KNN when the original f64
+    /// boxes are available. Prefer f64 indexes for exact range queries with many
+    /// hits and fastest exact KNN.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Box2D};
+    ///
+    /// let mut builder = Index2DBuilder::new(1);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    ///
+    /// let index = builder.finish_simd_f32().unwrap();
+    /// assert!(index.search(Box2D::new(0.5, 0.5, 0.5, 0.5)).contains(&0));
+    /// ```
+    #[cfg(feature = "f32-storage")]
+    pub fn finish_simd_f32(self) -> Result<crate::SimdIndex2DF32, BuildError> {
+        if self.items.len() != self.num_items {
+            return Err(BuildError::ItemCount {
+                added: self.items.len(),
+                expected: self.num_items,
+            });
+        }
+        crate::index2d_f32::build_simd_index_f32(self.config(), self.items)
+    }
+
     #[cfg(feature = "simd")]
     fn config(&self) -> BuildConfig {
         BuildConfig {

@@ -45,7 +45,7 @@ fn main() {
     }
     println!("magic_bits (scalar loop) : {:>7.0} Melem/s", melem_s(best));
 
-    // batch magic_bits (autovec candidate)
+    // batch magic_bits, written so LLVM can vectorize the loop
     best = f64::INFINITY;
     for _ in 0..REPS {
         let t = Instant::now();

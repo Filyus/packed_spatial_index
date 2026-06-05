@@ -8,7 +8,7 @@
 axis-aligned bounding boxes.
 
 It is built for read-heavy workloads where the full set of boxes is known up
-front: build once, then run many window/intersection searches. The default
+front: build once, then run many range/intersection searches. The default
 `Index2D` and `Index3D` use packed Hilbert R-tree layouts. With the `simd`
 feature, `SimdIndex2D` and `SimdIndex3D` store boxes in structure-of-arrays form
 and use SIMD intersection checks. Scalar and SIMD indexes share the same
@@ -50,34 +50,75 @@ It is not a dynamic R-tree: there are no insert/delete operations after build.
 
 ## Limitations
 
+These are the main API contracts and trade-offs to keep in mind.
+
 - The index is static: rebuild it when the dataset changes.
 - 2D and 3D axis-aligned bounding boxes are supported.
 - Search results are item indices, not stored payloads or geometries.
 - Result ordering is not a stable API guarantee.
 - Persistence uses canonical `Index2D` and `Index3D` byte layouts.
   `SimdIndex2D` and `SimdIndex3D` can save and load those same bytes, but there
-  is no separate persisted SoA byte format.
-- Nearest-neighbor search is exact over indexed boxes; approximate KNN and dynamic
-  spatial joins are out of scope for now.
+  is no separate persisted SoA byte format. With `f32-storage`, the `f32`
+  indexes use their own `f32` box layout (a distinct format flag).
+- With `f32-storage`, `SimdIndex2DF32` and `SimdIndex3DF32` store
+  outward-rounded boxes. Plain range search returns every exact hit, but can
+  also return extra near-edge hits.
+- `search_exact` and `visit_exact` use your original `f64` boxes for exact
+  range hits. They are useful with compact indexes when exact queries return
+  few hits. For exact range queries with many hits, prefer the `f64` indexes.
+- `f64` nearest-neighbor search is exact over indexed boxes. `f32` KNN can use
+  `neighbors_exact` for exact results, but fastest exact KNN is usually the
+  `f64` indexes. Dynamic spatial joins are out of scope for now.
 
 ## Main Types
 
-- `Box2D` is the public AABB type, with inclusive `overlaps`, `contains`,
-  `contains_point`, and `from_point` helpers. `Box2D::new` is unchecked; use
-  `Box2D::try_new` for untrusted coordinate bounds.
-- `Box3D` and `Point3D` are the equivalent scalar 3D geometry types.
-- `Index2DBuilder` builds either `Index2D` or, with `simd`, `SimdIndex2D`.
-- `Index3DBuilder` builds either `Index3D` or, with `simd`, `SimdIndex3D`.
-- `Index2D` is the default read-only index.
-- `Index3D` is the scalar read-only 3D index.
-- `Index2DView` and `Index3DView` are zero-copy read-only views over bytes
-  produced by scalar or SIMD `to_bytes` methods.
+### Geometry
+
+- `Box2D` and `Box3D` are public AABB types, with inclusive `overlaps`,
+  `contains`, `contains_point`, and `from_point` helpers.
+- `Point2D` and `Point3D` are public point types for KNN and point queries.
+
+### Builders
+
+- `Index2DBuilder` and `Index3DBuilder` build scalar indexes, or SIMD indexes
+  with the `simd` feature.
+
+### Indexes
+
+- `Index2D` and `Index3D` are scalar read-only indexes.
 - `SimdIndex2D` and `SimdIndex3D` are available with the `simd` feature and have
   the same search API and owned persistence API as their scalar counterparts.
+- `SimdIndex2DF32` and `SimdIndex3DF32` (with `f32-storage`, built via
+  `finish_simd_f32`) store coordinates as `f32` rounded outward, halving box
+  memory. Plain range queries may include extra near-boundary hits; exact range
+  and KNN are available through `*_exact` callbacks to your source boxes (see
+  Limitations).
+
+### Views
+
+- `Index2DView` and `Index3DView` are zero-copy read-only views over bytes
+  produced by scalar or SIMD `to_bytes` methods.
+- `SimdIndex2DView` and `SimdIndex3DView` are zero-copy SIMD views over the
+  canonical byte format.
+- `SimdIndex2DF32View` and `SimdIndex3DF32View` are zero-copy views over f32
+  index bytes.
+
+### Workspaces
+
 - `SearchWorkspace` reuses result and traversal buffers.
-- `Point2D`, `Point3D`, and `NeighborWorkspace` support nearest-neighbor searches.
-- `SortKey2D` selects the public build ordering curve. `Hilbert` is the stable default.
+- `NeighborWorkspace` reuses result and priority-queue buffers for KNN.
+
+### Sorting
+
+- `SortKey2D` selects the public build ordering curve. `Hilbert` is the stable
+  default.
 - `SortKey3D` does the same for 3D. `Hilbert` is the stable default.
+
+### Errors
+
+- `BoundsError` is returned by checked box constructors.
+- `BuildError` is returned when build inputs are invalid.
+- `LoadError` is returned when loading invalid or unsupported bytes.
 
 ## Querying
 
@@ -191,6 +232,38 @@ assert_eq!(first_even, ControlFlow::Break(0));
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
+### f32 exact search
+
+`finish_simd_f32()` stores outward-rounded `f32` boxes. Plain range search
+may include extra near-boundary hits. `search_exact` checks your original `f64`
+boxes.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+let boxes = [
+    Box2D::new(1.0 + 1e-8, 0.0, 1.0 + 1e-8, 0.0),
+    Box2D::new(1.0, 0.0, 1.0, 0.0),
+];
+
+let mut builder = Index2DBuilder::new(boxes.len());
+for &b in &boxes {
+    builder.add(b);
+}
+let index = builder.finish_simd_f32()?;
+
+let query = Box2D::new(1.0, 0.0, 1.0, 0.0);
+let mut rounded_hits = index.search(query);
+rounded_hits.sort_unstable();
+assert_eq!(rounded_hits, vec![0, 1]);
+
+let exact = index.search_exact(query, |i| boxes[i]);
+assert_eq!(exact, vec![1]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+The same pattern applies to exact KNN through `neighbors_exact`. See
+`examples/f32_exact_2d.rs`.
+
 ### `extent`
 
 `extent()` returns the total box covering every item, or `None` for an empty
@@ -211,9 +284,11 @@ assert_eq!(empty.extent(), None);
 
 ### Nearest Neighbors
 
-Nearest-neighbor queries are exact over boxes. Distance is zero when the point is
-inside a box, otherwise it is the Euclidean distance to the nearest point on the
-box.
+Nearest-neighbor queries are exact over boxes for the `f64` indexes. Distance is
+zero when the point is inside a box, otherwise it is the Euclidean distance to
+the nearest point on the box. The `f32` indexes also expose rounded-box KNN.
+For exact KNN on source `f64` boxes, use their `neighbors_exact` methods.
+For fastest exact KNN, prefer the `f64` indexes.
 
 ### `neighbors`
 
@@ -399,7 +474,12 @@ let simd_index = builder.finish_simd()?;
 ```
 
 The same `finish_simd()` method is available on `Index3DBuilder` and returns
-`SimdIndex3D`.
+`SimdIndex3D`. `finish_simd_f32()` (on both builders) returns the `f32`-storage
+`SimdIndex2DF32` / `SimdIndex3DF32`: half the box memory, with range results
+that may include extra near-boundary hits. Exact range/KNN is available when you
+pass back your source boxes.
+Prefer `f64` indexes for exact range queries with many hits and fastest exact
+KNN.
 
 3D uses the same builder/search shape:
 
@@ -451,6 +531,9 @@ scalar indexes. Loading a SIMD index is an owned load that scatters canonical
 box records into SoA columns. `SimdIndex2DView` and `SimdIndex3DView` borrow the
 same canonical bytes for zero-copy SIMD-over-AoS queries.
 
+The `f32` indexes persist to their own `f32` box layout (distinct format flags),
+with matching `from_bytes` loaders and zero-copy views.
+
 The binary layout is documented in [`FORMAT.md`](FORMAT.md).
 
 ## Examples
@@ -466,6 +549,7 @@ cargo run --example knn_2d
 cargo run --example knn_3d
 cargo run --example reuse_workspace_2d
 cargo run --example reuse_workspace_3d
+cargo run --example f32_exact_2d --no-default-features --features f32-storage
 ```
 
 ## WASM Demo
@@ -509,13 +593,15 @@ cargo run --release --manifest-path benches/tools/Cargo.toml --bin node_size_3d
 
 ## Features
 
-Runtime acceleration features are enabled by default:
+Runtime acceleration features:
 
 - `parallel`: adaptive rayon-based index builds through `Index2DBuilder::parallel`
-  and `Index3DBuilder::parallel`.
+  and `Index3DBuilder::parallel`. Enabled by default.
 - `simd`: SoA index and SIMD search paths through `SimdIndex2D` and
   `SimdIndex3D`, plus owned and zero-copy SIMD persistence through the canonical
-  byte format.
+  byte format. Enabled by default.
+- `f32-storage`: compact f32-storage SIMD indexes. It enables `simd` and is not
+  enabled by default.
 - `bench-internals`: hidden support API for this crate's own benchmarks and
   local performance tools. It is not enabled by default and is not part of the
   stable user-facing API.
@@ -526,11 +612,12 @@ Minimal build:
 cargo build --no-default-features
 ```
 
-SIMD-only or parallel-only builds:
+Feature-specific builds:
 
 ```bash
 cargo build --no-default-features --features simd
 cargo build --no-default-features --features parallel
+cargo build --no-default-features --features f32-storage
 ```
 
 ## Safety
@@ -553,10 +640,12 @@ reported as `LoadError` instead of relying on caller-side invariants.
 
 ## Performance Notes
 
-Recent local Criterion runs, lower is better. The 2D competitor workload uses
-100,000 random AABBs and 1,000 random search windows; build and search
-competitors are measured in the same benchmark suite on the same generated
-inputs. Persistence rows use the canonical byte format for 100,000 boxes.
+### 2D Competitors
+
+Lower is better. The 2D competitor workload uses 100,000 random AABBs and
+1,000 random query boxes; build and search competitors are measured in the
+same benchmark suite on the same generated inputs. Persistence rows use the
+canonical byte format for 100,000 boxes.
 
 | Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: | ---: |
@@ -568,18 +657,19 @@ inputs. Persistence rows use the canonical byte format for 100,000 boxes.
 | Load zero-copy view | - | - | 37.59 us | n/a |
 
 Scalar `Index2D` search versus `static_aabb2d_index` is dataset-sensitive.
-Two local search runs with the same item/query counts but different generated
-inputs showed opposite scalar ordering:
+Two search runs with the same item/query counts but different generated inputs
+showed opposite scalar ordering:
 
 | Search batch | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: |
 | `flatgeobuf2d_bench`, seed `0xF6B` | 341.56 us | 416.15 us | 128.64 us |
 | `index2d_bench`, seed `0xB0B` | 643.85 us | 311.72 us | 126.21 us |
 
-Recent local 2D-vs-3D Criterion run. Lower latency is better. The `3D speed`
-column is `2D latency / 3D latency`, so values above `1.00x` mean 3D is faster.
-The build workload uses 100,000 boxes with `node_size = 16`; search and KNN use
-1,000 query windows or points.
+### 2D vs 3D
+
+Lower latency is better. The `3D speed` column is `2D latency / 3D latency`, so
+values above `1.00x` mean 3D is faster. The build workload uses 100,000 boxes
+with `node_size = 16`; search and KNN use 1,000 query boxes or points.
 
 | Stage | Dataset / mode | `Index2D` | `Index3D` | 3D speed |
 | --- | --- | ---: | ---: | ---: |
@@ -609,9 +699,10 @@ The build workload uses 100,000 boxes with `node_size = 16`; search and KNN use
 | Serialize built tree (reused buffer) | 140.21 us | 240.51 us | 0.58x |
 | Load owned tree | 935.51 us | 1.3083 ms | 0.72x |
 
-Recent local 3D SIMD run. The speed column is scalar/serial latency divided by
-SIMD/parallel latency, so values above `1.00x` mean the SIMD or parallel path is
-faster.
+### 3D SIMD
+
+The speed column is scalar/serial latency divided by SIMD/parallel latency, so
+values above `1.00x` mean the SIMD or parallel path is faster.
 
 | Stage | Dataset / mode | Baseline | SIMD / parallel | Speed |
 | --- | --- | ---: | ---: | ---: |
@@ -619,7 +710,38 @@ faster.
 | Search batch | flat Z | `Index3D` 1.8443 ms | `SimdIndex3D` 1.1514 ms | 1.60x |
 | Build `finish_simd` | uniform XYZ, 200k boxes | serial 10.632 ms | parallel 6.5412 ms | 1.63x |
 
-The short version:
+### f32 Storage vs f64
+
+The `coord_precision` suite compares compact f32 storage with f64 storage.
+Lower is better. Range rows run `search(Box2D)` for 1,000 random query boxes.
+Small query boxes cover 0.1% of the coordinate extent per axis; large query
+boxes cover 5%. KNN rows use 200 query points with top-8 results.
+
+Quick selector:
+
+- `SimdIndex2D`: 32-byte f64 boxes. Use for exact range queries with many hits
+  and fastest exact KNN.
+- `SimdIndex2DF32::search`: 16-byte rounded f32 boxes. Use for compact
+  first-pass filtering, or when near-boundary false positives are OK.
+- `SimdIndex2DF32::*_exact`: 16-byte f32 index plus source f64 boxes. Use when
+  exact range queries return few hits and compact storage matters. Exact KNN is
+  available, but f64 is faster in these runs.
+
+| Range query | Items | `f64` exact | `f32` rounded | `f32` exact |
+| --- | ---: | ---: | ---: | ---: |
+| small query boxes | 10k | 84 us | 72 us | 73 us |
+| small query boxes | 100k | 115 us | 87 us | 96 us |
+| small query boxes | 1M | 156 us | 125 us | 134 us |
+| large query boxes | 10k | 149 us | 117 us | 292 us |
+| large query boxes | 100k | 1.06 ms | 704 us | 1.79 ms |
+| large query boxes | 1M | 9.61 ms | 6.09 ms | 16.59 ms |
+
+| KNN workload | `f64` exact | `f32` rounded | `f32` exact |
+| --- | ---: | ---: | ---: |
+| 10k items | 243 us | 282 us | 302 us |
+| 100k items | 357 us | 376 us | 410 us |
+
+### Summary
 
 - `Index2D` is the general-purpose path;
 - `SimdIndex2D` and `SimdIndex3D` are best for heavier query batches where SIMD
@@ -628,6 +750,8 @@ The short version:
   data and query distribution, while `Index2D` build is faster in these runs;
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
   can be faster when Z meaningfully prunes the tree;
+- f32 storage halves box memory; exact callbacks trade source-box lookup for
+  exact results;
 - SIMD persistence uses the same canonical bytes as scalar persistence; it pays
   an SoA gather/scatter cost but avoids a second file format;
 - `any` is often much faster than collecting full result sets when all you need is existence;
@@ -639,6 +763,8 @@ The short version:
 - `persistence_knn2d_bench` covers 2D scalar/SIMD persistence, loaded views, and KNN;
 - `persistence_knn3d_bench` covers 3D scalar/SIMD persistence, loaded views, and KNN.
 
+### Reproducing
+
 Run the focused benchmark suites with:
 
 ```bash
@@ -647,6 +773,7 @@ cargo bench --bench index3d_bench --no-default-features --features parallel,simd
 cargo bench --bench persistence_knn2d_bench --no-default-features --features simd,bench-internals
 cargo bench --bench persistence_knn3d_bench --no-default-features --features simd,bench-internals
 cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd,bench-internals
+cargo bench --bench coord_precision --no-default-features --features f32-storage
 ```
 
 ## Status

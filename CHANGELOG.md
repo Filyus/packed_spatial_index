@@ -5,6 +5,38 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.4.1](https://github.com/Filyus/packed_spatial_index/compare/v0.4.0...v0.4.1) - 2026-06-05
+
+### Tests
+- Add proptest search and persistence robustness checks
+- Rustfmt proptest files
+
+### wasm
+- Add interactive web demo
+- Expose query APIs in demo
+- Add 3d bindings and demo
+- Use depth slice for 3d demo
+- Color 3d projection by depth
+- Dim outside 3d query window
+- Soften 3d query dimming
+- Clarify 3d depth coloring
+- Make 3d depth legend interactive
+- Fix interactive depth legend layout
+- Tune default 3d depth thickness
+- Fix empty thickness default
+- Compact numeric demo controls
+- Compact demo toolbar controls
+- Align 2d and 3d wrapper helpers
+- Show 3d any match in green
+- Brighten 3d depth points
+- Unify demo scene styling
+- Align query overlay styling
+- Tighten demo status bar
+- Reduce demo page vertical whitespace
+- Move thickness into depth panel
+
+
+
 ## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/v0.3.3...v0.4.0) - 2026-06-03
 
 ### API

@@ -782,8 +782,13 @@ cargo bench --bench coord_precision --no-default-features --features f32-storage
 
 ## Status
 
-The core API is intentionally small and breaking API cleanup happens before a
-`1.0` release.
+Major API changes are not planned, but remain possible before a `1.0` release.
+
+## AI Usage Note
+
+AI assistance is part of my development process for this project. I guide the
+architecture, review generated output carefully and take responsibility for the
+crate as published.
 
 ## License
 

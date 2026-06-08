@@ -7,6 +7,9 @@ All notable changes to this crate are documented here.
 
 ## [0.4.2](https://github.com/Filyus/packed_spatial_index/compare/v0.4.1...v0.4.2) - 2026-06-08
 
+### SIMD
+- Update SIMD comparisons for `wide` 1.5.
+
 ### Documentation
 - Add README notes for AI usage and prior art.
 - Clarify the live WASM demo link.

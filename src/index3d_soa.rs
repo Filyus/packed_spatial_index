@@ -7,7 +7,7 @@
 
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
-use wide::{CmpGe, CmpLe, f64x4};
+use wide::f64x4;
 
 use crate::{
     build::BuildError,

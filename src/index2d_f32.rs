@@ -718,7 +718,7 @@ impl SimdIndex2DF32 {
 
     /// AVX2/SSE path through `wide::f32x8` (8 boxes per step).
     fn search_wide(&self, q: Box2DF32, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        use wide::{CmpGe, CmpLe, f32x8};
+        use wide::f32x8;
 
         out.clear();
         stack.clear();
@@ -796,7 +796,7 @@ impl SimdIndex2DF32 {
     ) where
         F: FnMut(usize) -> Box2D,
     {
-        use wide::{CmpGe, CmpLe, f32x8};
+        use wide::f32x8;
 
         out.clear();
         stack.clear();

@@ -642,6 +642,17 @@ paths:
 Loaded buffers are validated before they can be searched, so malformed input is
 reported as `LoadError` instead of relying on caller-side invariants.
 
+## Prior Art
+
+This crate builds on ideas from existing packed spatial index work.
+
+- [`flatbush`](https://github.com/mourner/flatbush) by Vladimir Agafonkin is a
+  static packed Hilbert R-tree for 2D rectangles in JavaScript.
+- [`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index) by
+  Jedidiah McCready is the Rust Flatbush port.
+- [FlatGeobuf](https://flatgeobuf.org/) by Pirmin Kalberer and Björn Harrtell
+  is a geospatial format inspired by Flatbush.
+
 ## Performance Notes
 
 ### 2D Competitors

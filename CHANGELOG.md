@@ -8,16 +8,11 @@ All notable changes to this crate are documented here.
 ## [0.4.2](https://github.com/Filyus/packed_spatial_index/compare/v0.4.1...v0.4.2) - 2026-06-08
 
 ### Documentation
-- Clarify WASM demo link
-- Add AI usage note
-- Add prior art section
+- Add README notes for AI usage and prior art.
+- Clarify the live WASM demo link.
 
-### pages
-- Deploy WASM demo
-- Enable GitHub Pages
-- Use enabled Pages site
-
-
+### WASM Demo
+- Publish the interactive demo through GitHub Pages.
 
 ## [0.4.1](https://github.com/Filyus/packed_spatial_index/compare/v0.4.0...v0.4.1) - 2026-06-05
 

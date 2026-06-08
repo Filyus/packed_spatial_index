@@ -1,6 +1,6 @@
 [package]
 name = "packed_spatial_index"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.89"
 description = "Packed static spatial index for 2D and 3D AABBs with Hilbert ordering, adaptive parallel builds, and SIMD queries."

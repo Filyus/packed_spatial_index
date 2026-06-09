@@ -132,6 +132,7 @@ impl Index2DBuilder {
 
     /// Pack the tree and return the finished index.
     pub fn finish(self) -> Result<Index2D, BuildError> {
+        check_2d_item_capacity(self.num_items)?;
         if self.items.len() != self.num_items {
             return Err(BuildError::ItemCount {
                 added: self.items.len(),
@@ -156,6 +157,7 @@ impl Index2DBuilder {
     /// ```
     #[cfg(feature = "simd")]
     pub fn finish_simd(self) -> Result<crate::SimdIndex2D, BuildError> {
+        check_2d_item_capacity(self.num_items)?;
         if self.items.len() != self.num_items {
             return Err(BuildError::ItemCount {
                 added: self.items.len(),
@@ -187,6 +189,7 @@ impl Index2DBuilder {
     /// ```
     #[cfg(feature = "f32-storage")]
     pub fn finish_simd_f32(self) -> Result<crate::SimdIndex2DF32, BuildError> {
+        check_2d_item_capacity(self.num_items)?;
         if self.items.len() != self.num_items {
             return Err(BuildError::ItemCount {
                 added: self.items.len(),
@@ -309,6 +312,16 @@ impl Index2DBuilder {
     }
 }
 
+/// The 2D sort keys are `(u32 key, u32 item index)` pairs, so an index with more
+/// than `u32::MAX` items cannot be built without silently truncating item indices.
+#[inline]
+fn check_2d_item_capacity(num_items: usize) -> Result<(), BuildError> {
+    if num_items > u32::MAX as usize {
+        return Err(BuildError::TreeTooLarge);
+    }
+    Ok(())
+}
+
 fn items_vec_with_root_capacity_2d(count: usize) -> Vec<Box2D> {
     let capacity = count.saturating_add(1);
     if capacity <= (isize::MAX as usize) / std::mem::size_of::<Box2D>() {
@@ -373,4 +386,20 @@ fn reorder_parallel(
             *slot_box = items[orig as usize];
             *slot_idx = orig as usize;
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_2d_item_capacity;
+
+    // 2D sort keys store the item index as `u32`; larger counts must be rejected
+    // instead of silently truncating indices during the build.
+    #[test]
+    fn item_capacity_is_limited_to_u32() {
+        assert!(check_2d_item_capacity(u32::MAX as usize).is_ok());
+        #[cfg(target_pointer_width = "64")]
+        assert!(check_2d_item_capacity(u32::MAX as usize + 1).is_err());
+        #[cfg(target_pointer_width = "64")]
+        assert!(check_2d_item_capacity(usize::MAX).is_err());
+    }
 }

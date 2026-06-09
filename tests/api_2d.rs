@@ -270,13 +270,7 @@ fn finish_reports_count_mismatch() {
 #[test]
 fn huge_builder_count_does_not_panic_on_construction() {
     let builder = Index2DBuilder::new(usize::MAX);
-    assert!(matches!(
-        builder.finish(),
-        Err(BuildError::ItemCount {
-            added: 0,
-            expected: usize::MAX
-        })
-    ));
+    assert!(matches!(builder.finish(), Err(BuildError::TreeTooLarge)));
 }
 
 #[test]

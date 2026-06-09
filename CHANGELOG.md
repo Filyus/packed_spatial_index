@@ -4,6 +4,20 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+
+## [0.4.3](https://github.com/Filyus/packed_spatial_index/compare/v0.4.2...v0.4.3) - 2026-06-09
+
+### Performance
+- Optimize covered-range searches
+- Optimize full-extent 2D view searches
+- Extend covered-range optimization to SIMD indexes
+- Extend covered-range fast path to SIMD views and f32 indexes
+- Optimize full-extent SIMD scalar searches
+
+### Documentation
+- Add large-window range search benchmark table
+
+
 ### Performance
 - Extend the covered-range optimization across the whole SIMD family: the owned
   indexes (`SimdIndex2D`, `SimdIndex3D`), the zero-copy views (`SimdIndex2DView`,

@@ -1188,6 +1188,14 @@ impl<'a> Index2DView<'a> {
             return;
         }
 
+        let root = self.entry_at_unchecked(self.num_nodes - 1);
+        if query.contains(root) {
+            for pos in 0..self.num_items {
+                results.push(self.index_at_unchecked(pos));
+            }
+            return;
+        }
+
         let mut node_index = self.num_nodes - 1;
         let mut level = self.level_count - 1;
         loop {

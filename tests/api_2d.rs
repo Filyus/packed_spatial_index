@@ -1,7 +1,7 @@
 #[cfg(feature = "parallel")]
 use packed_spatial_index::DEFAULT_PARALLEL_MIN_ITEMS;
 use packed_spatial_index::{
-    BoundsError, Box2D, BuildError, DEFAULT_NODE_SIZE, Index2DBuilder, SearchWorkspace,
+    BoundsError, Box2D, BuildError, DEFAULT_NODE_SIZE, Index2DBuilder, Index2DView, SearchWorkspace,
 };
 #[cfg(feature = "parallel")]
 use rand::rngs::StdRng;
@@ -234,6 +234,12 @@ fn full_extent_search_returns_all_items() {
     let mut hits = index.search(index.extent().unwrap());
     hits.sort_unstable();
     assert_eq!(hits, (0..n).collect::<Vec<_>>());
+
+    let bytes = index.to_bytes();
+    let view = Index2DView::from_bytes(&bytes).unwrap();
+    let mut view_hits = view.search(view.extent().unwrap());
+    view_hits.sort_unstable();
+    assert_eq!(view_hits, (0..n).collect::<Vec<_>>());
 }
 
 #[test]

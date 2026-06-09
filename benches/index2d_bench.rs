@@ -418,6 +418,15 @@ fn bench_query_windows(c: &mut Criterion) {
         mb.add(Box2D::new(r[0], r[1], r[2], r[3]));
     }
     let packed: Index2D = mb.finish().unwrap();
+
+    let mut sb = Index2DBuilder::new(n)
+        .node_size(NODE_SIZE)
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
+    for r in &boxes {
+        sb.add(Box2D::new(r[0], r[1], r[2], r[3]));
+    }
+    let simd = sb.finish_simd().unwrap();
+
     let small_queries = make_queries_with_size(1_000, 0x51A11, 10.0..200.0);
     let large_queries = make_queries_with_size(1_000, 0x1A96E, 2_000.0..5_000.0);
     let sliver_queries = make_queries_with_ranges(1_000, 0x5111E, 3_000.0..7_000.0, 10.0..40.0);
@@ -448,6 +457,28 @@ fn bench_query_windows(c: &mut Criterion) {
                 let mut total = 0usize;
                 for q in queries {
                     packed.search_into_stack_prefetch(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_avx512_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in queries {
+                    simd.search_avx512(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_simd_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in queries {
+                    simd.search_simd(to_bounds(q), &mut buf, &mut stack);
                     total += buf.len();
                 }
                 black_box(total)

@@ -132,6 +132,50 @@ fn assert_search_paths_match_aos(boxes: &[Box3D], node_size: usize) {
 }
 
 #[test]
+fn simd3d_large_window_search_matches_scalar() {
+    // `search_scalar` does not use the covered-range fast path, so it is an
+    // independent oracle for the SIMD paths over large windows that fully contain
+    // whole subtrees.
+    let boxes = random_boxes_3d(8_000, 0xC0FFEE);
+    let simd = {
+        let mut builder = Index3DBuilder::new(boxes.len()).node_size(16);
+        for &b in &boxes {
+            builder.add(b);
+        }
+        builder.finish_simd().unwrap()
+    };
+    let extent = simd.extent().unwrap();
+
+    let mut rng = StdRng::seed_from_u64(0xBEEF);
+    let (mut scalar, mut wide, mut avx) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut s1, mut s2, mut s3) = (Vec::new(), Vec::new(), Vec::new());
+
+    for size in [50.0, 250.0, 1_000.0, 5_000.0, 100_000.0] {
+        for _ in 0..30 {
+            let x: f64 = rng.random_range(0.0..1_000.0);
+            let y: f64 = rng.random_range(0.0..1_000.0);
+            let z: f64 = rng.random_range(0.0..1_000.0);
+            let query = Box3D::new(x, y, z, x + size, y + size, z + size);
+
+            simd.search_scalar(query, &mut scalar, &mut s1);
+            simd.search_simd(query, &mut wide, &mut s2);
+            simd.search_avx512(query, &mut avx, &mut s3);
+            scalar.sort_unstable();
+            wide.sort_unstable();
+            avx.sort_unstable();
+            assert_eq!(scalar, wide, "SoA-wide large window != scalar");
+            assert_eq!(scalar, avx, "SoA-AVX512 large window != scalar");
+        }
+    }
+
+    let full = extent;
+    simd.search_simd(full, &mut wide, &mut s2);
+    simd.search_avx512(full, &mut avx, &mut s3);
+    assert_eq!(wide.len(), boxes.len(), "full-extent SIMD must return all");
+    assert_eq!(avx.len(), boxes.len(), "full-extent AVX512 must return all");
+}
+
+#[test]
 fn simd3d_empty_and_small_indexes_behave_like_aos() {
     let empty = Index3DBuilder::new(0).finish_simd().unwrap();
     assert_eq!(empty.num_items(), 0);

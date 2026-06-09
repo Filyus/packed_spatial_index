@@ -128,6 +128,56 @@ fn simd_neighbors_match_aos() {
 }
 
 #[test]
+fn simd_large_window_search_matches_reference() {
+    // Large windows that fully contain whole subtrees exercise the covered-range
+    // fast path (skip overlap tests, copy contiguous leaf-index ranges). Cover a
+    // sweep of window sizes up to the full extent.
+    let mut rng = StdRng::seed_from_u64(0xC0FFEE);
+    let n = 8_000usize;
+    let node_size = 16usize;
+    let boxes = random_boxes(&mut rng, n);
+
+    let mut reference = StaticAABB2DIndexBuilder::<f64>::new_with_node_size(n, node_size);
+    let mut builder = Index2DBuilder::new(n).node_size(node_size);
+    for b in &boxes {
+        reference.add(b[0], b[1], b[2], b[3]);
+        builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
+    }
+    let reference = reference.build().unwrap();
+    let simd = builder.finish_simd().unwrap();
+
+    let extent = simd.extent().unwrap();
+    let (mut wide_out, mut avx_out) = (Vec::new(), Vec::new());
+    let (mut st_wide, mut st_avx) = (Vec::new(), Vec::new());
+
+    // Window sizes from a few percent of the extent up to the entire extent.
+    for size in [200.0, 1_000.0, 4_000.0, 9_000.0, 100_000.0] {
+        for _ in 0..50 {
+            let qx: f64 = rng.random_range(0.0..1000.0);
+            let qy: f64 = rng.random_range(0.0..1000.0);
+            let query = Box2D::new(qx, qy, qx + size, qy + size);
+
+            let mut expected = reference.query(query.min_x, query.min_y, query.max_x, query.max_y);
+            simd.search_simd(query, &mut wide_out, &mut st_wide);
+            simd.search_avx512(query, &mut avx_out, &mut st_avx);
+
+            expected.sort_unstable();
+            wide_out.sort_unstable();
+            avx_out.sort_unstable();
+            assert_eq!(expected, wide_out, "SoA-SIMD large window != reference");
+            assert_eq!(expected, avx_out, "SoA-AVX512 large window != reference");
+        }
+    }
+
+    // Exact full-extent query must return every item via the contains shortcut.
+    let full = Box2D::new(extent.min_x, extent.min_y, extent.max_x, extent.max_y);
+    simd.search_simd(full, &mut wide_out, &mut st_wide);
+    simd.search_avx512(full, &mut avx_out, &mut st_avx);
+    assert_eq!(wide_out.len(), n, "full-extent SIMD must return all items");
+    assert_eq!(avx_out.len(), n, "full-extent AVX512 must return all items");
+}
+
+#[test]
 fn simd_index_search_matches_reference() {
     let mut rng = StdRng::seed_from_u64(99);
     let n = 5_000usize;

@@ -4,6 +4,14 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Performance
+- Extend the covered-range optimization to the SIMD indexes (`SimdIndex2D`,
+  `SimdIndex3D`): when a query fully contains a node, its whole subtree is
+  collected by copying the contiguous leaf-index range instead of running
+  per-item overlap tests. Large-window searches are ~2.4x faster and full-extent
+  searches up to ~12x faster, so the SIMD paths now match or beat the AoS index
+  across every window size instead of regressing on large windows.
+
 
 ## [0.4.2](https://github.com/Filyus/packed_spatial_index/compare/v0.4.1...v0.4.2) - 2026-06-08
 

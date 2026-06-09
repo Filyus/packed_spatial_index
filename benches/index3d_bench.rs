@@ -63,6 +63,21 @@ fn build_index(
     builder.finish().unwrap()
 }
 
+#[cfg(feature = "simd")]
+fn build_simd_index(
+    boxes: &[Box3D],
+    node_size: usize,
+    sort_key: SortKey3DStrategy,
+) -> packed_spatial_index::SimdIndex3D {
+    let mut builder = Index3DBuilder::new(boxes.len())
+        .node_size(node_size)
+        .sort_key_strategy(sort_key);
+    for &bounds in boxes {
+        builder.add(bounds);
+    }
+    builder.finish_simd().unwrap()
+}
+
 fn build_index2d(boxes: &[Box2D], node_size: usize) -> Index2D {
     let mut builder = Index2DBuilder::new(boxes.len())
         .node_size(node_size)
@@ -783,6 +798,9 @@ fn bench_query_windows(c: &mut Criterion) {
     let extent = index.extent().unwrap();
     let full_extent_queries = vec![extent; QUERY_COUNT];
 
+    #[cfg(feature = "simd")]
+    let simd = build_simd_index(&boxes, 16, SortKey3DStrategy::Hilbert);
+
     let mut group = c.benchmark_group("index3d_query_windows");
     for (name, queries) in [
         ("small", &small_queries),
@@ -796,6 +814,18 @@ fn bench_query_windows(c: &mut Criterion) {
                 let mut total = 0usize;
                 for &query in queries {
                     total += index.search_with(query, &mut workspace).len();
+                }
+                black_box(total);
+            });
+        });
+        #[cfg(feature = "simd")]
+        group.bench_function(format!("simd_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for &query in queries {
+                    simd.search_avx512(query, &mut buf, &mut stack);
+                    total += buf.len();
                 }
                 black_box(total);
             });

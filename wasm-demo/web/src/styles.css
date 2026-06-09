@@ -123,7 +123,8 @@ canvas {
   height: 100%;
 }
 
-#glCanvas {
+#glCanvas,
+#gpuCanvas {
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -231,6 +232,57 @@ canvas {
 #firstHit.is-point {
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.28);
+}
+
+.error-overlay {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 5;
+  display: none;
+  flex-direction: column;
+  width: min(760px, calc(100% - 48px));
+  max-height: min(420px, calc(100% - 48px));
+  transform: translate(-50%, -50%);
+  overflow: hidden;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(16, 18, 22, 0.94);
+  color: #f5f7f9;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+  pointer-events: auto;
+  cursor: default;
+}
+
+.error-overlay.is-visible {
+  display: flex;
+}
+
+.error-overlay strong {
+  flex: 0 0 auto;
+  display: block;
+  margin-bottom: 10px;
+  color: #ffb4a9;
+  font-size: 14px;
+}
+
+.error-message-scroll {
+  min-height: 0;
+  overflow: auto;
+}
+
+.error-overlay pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.error-overlay button {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 14px;
 }
 
 .depth-legend {

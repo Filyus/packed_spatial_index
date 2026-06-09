@@ -1,10 +1,18 @@
 import init, { WasmIndex2D, WasmIndex3D } from '../pkg/packed_spatial_index_wasm_demo';
+import type { Dimension, Geometry, WorldView } from './render-types';
+import {
+  createWebGpuRenderer,
+  renderGpuScene,
+  uploadGpuHits,
+  uploadGpuItems,
+  type GpuRenderer,
+  type GpuScene,
+} from './webgpu-renderer';
 
 type Distribution = 'uniform' | 'clustered';
 type QueryMode = 'range' | 'nearest';
 type ResultMode = 'all' | 'any' | 'first';
-type Geometry = 'boxes' | 'points';
-type Dimension = '2d' | '3d';
+type RendererMode = 'webgl' | 'webgpu';
 type WasmIndex = WasmIndex2D | WasmIndex3D;
 
 type QueryRect = {
@@ -54,15 +62,12 @@ type IndexExtent = {
   maxZ?: number;
 };
 
-type WorldView = {
-  width: number;
-  height: number;
-};
-
 type WebGlRenderer = {
   gl: WebGL2RenderingContext;
   pointProgram: WebGLProgram;
   boxProgram: WebGLProgram;
+  indexedBoxProgram: WebGLProgram;
+  indexedPointProgram: WebGLProgram;
   positionLocation: number;
   colorLocation: WebGLUniformLocation;
   useDepthColorLocation: WebGLUniformLocation;
@@ -74,11 +79,28 @@ type WebGlRenderer = {
   boxColorLocation: WebGLUniformLocation;
   boxUseDepthColorLocation: WebGLUniformLocation;
   boxWorldSizeLocation: WebGLUniformLocation;
+  indexedBoxCornerLocation: number;
+  indexedBoxColorLocation: WebGLUniformLocation;
+  indexedBoxWorldSizeLocation: WebGLUniformLocation;
+  indexedBoxTextureLocation: WebGLUniformLocation;
+  indexedBoxHitTextureLocation: WebGLUniformLocation;
+  indexedBoxTextureWidthLocation: WebGLUniformLocation;
+  indexedBoxHitTextureWidthLocation: WebGLUniformLocation;
+  indexedPointColorLocation: WebGLUniformLocation;
+  indexedPointWorldSizeLocation: WebGLUniformLocation;
+  indexedPointSizeLocation: WebGLUniformLocation;
+  indexedPointTextureLocation: WebGLUniformLocation;
+  indexedPointHitTextureLocation: WebGLUniformLocation;
+  indexedPointTextureWidthLocation: WebGLUniformLocation;
+  indexedPointHitTextureWidthLocation: WebGLUniformLocation;
   unitQuadBuffer: WebGLBuffer;
   pointBuffer: WebGLBuffer;
-  hitBuffer: WebGLBuffer;
   boxBuffer: WebGLBuffer;
-  hitBoxBuffer: WebGLBuffer;
+  itemTexture: WebGLTexture;
+  hitIndexTexture: WebGLTexture;
+  itemTextureWidth: number;
+  hitTextureWidth: number;
+  maxTextureSize: number;
 };
 
 const WORLD_SIZE = 10_000;
@@ -91,6 +113,7 @@ const HIT_BOX_COLOR = [1, 1, 1, 0.72] as const;
 
 const stage = mustQuery<HTMLElement>('.stage');
 const glCanvas = mustQuery<HTMLCanvasElement>('#glCanvas');
+const gpuCanvas = mustQuery<HTMLCanvasElement>('#gpuCanvas');
 const queryShadeEls = [
   mustQuery<HTMLDivElement>('#queryShadeTop'),
   mustQuery<HTMLDivElement>('#queryShadeRight'),
@@ -100,10 +123,14 @@ const queryShadeEls = [
 const queryRectEl = mustQuery<HTMLDivElement>('#queryRect');
 const queryPointEl = mustQuery<HTMLDivElement>('#queryPoint');
 const firstHitEl = mustQuery<HTMLDivElement>('#firstHit');
+const errorOverlayEl = mustQuery<HTMLElement>('#errorOverlay');
+const errorMessageEl = mustQuery<HTMLPreElement>('#errorMessage');
+const reloadDemoButton = mustQuery<HTMLButtonElement>('#reloadDemo');
 const depthLegendEl = mustQuery<HTMLDivElement>('#depthLegend');
 const pointCountInput = mustQuery<HTMLInputElement>('#pointCount');
 const dimensionSelect = mustQuery<HTMLSelectElement>('#dimension');
 const geometrySelect = mustQuery<HTMLSelectElement>('#geometry');
+const rendererSelect = mustQuery<HTMLSelectElement>('#renderer');
 const nodeSizeSelect = mustQuery<HTMLSelectElement>('#nodeSize');
 const modeSelect = mustQuery<HTMLSelectElement>('#mode');
 const resultModeSelect = mustQuery<HTMLSelectElement>('#resultMode');
@@ -127,13 +154,12 @@ const hitCountEl = mustQuery<HTMLElement>('#hitCount');
 const pointTotalEl = mustQuery<HTMLElement>('#pointTotal');
 
 const renderer = createWebGlRenderer(glCanvas);
+let gpuRenderer: GpuRenderer | null = null;
 
 let items: Float64Array<ArrayBufferLike> = new Float64Array();
 let itemCount = 0;
 let index: WasmIndex | null = null;
 let hits: Uint32Array<ArrayBufferLike> = new Uint32Array();
-let hitClipCoords = new Float32Array();
-let hitBoxCoords = new Float32Array();
 let query: QueryRect | null = null;
 let queryPoint: QueryPoint | null = null;
 let depthSlice: DepthSlice = defaultDepthSlice();
@@ -150,10 +176,30 @@ let worldView: WorldView = { width: WORLD_SIZE, height: WORLD_SIZE };
 let hasBuiltInitialDataset = false;
 let observedStageWidth = 0;
 let observedStageHeight = 0;
+let errorVisible = false;
+
+window.addEventListener('error', (event) => {
+  showBuildError(event.error ?? event.message);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  showBuildError(event.reason);
+});
 
 await init();
 validateWasmWrapper();
-statusEl.textContent = 'WASM SIMD build loaded';
+setStatus('WASM SIMD build loaded');
+gpuRenderer = await createWebGpuRenderer(gpuCanvas);
+if (!gpuRenderer) {
+  disableRendererOption('webgpu');
+} else {
+  gpuRenderer.device.addEventListener('uncapturederror', (event) => {
+    showBuildError(event.error);
+  });
+  gpuRenderer.device.lost.then((info) => {
+    showBuildError(new Error(`WebGPU device lost: ${info.reason} ${info.message}`.trim()));
+  });
+}
 rebuild();
 
 regenerateButton.addEventListener('click', rebuild);
@@ -163,6 +209,19 @@ dimensionSelect.addEventListener('change', () => {
   rebuild();
 });
 geometrySelect.addEventListener('change', rebuild);
+rendererSelect.addEventListener('change', () => {
+  try {
+    if (!index) {
+      showBuildError(new Error('No index is available; the previous build failed or has not completed'));
+      scheduleRender();
+      return;
+    }
+    uploadItems(renderer, items);
+    search();
+  } catch (error) {
+    showBuildError(error);
+  }
+});
 nodeSizeSelect.addEventListener('change', rebuildIndex);
 modeSelect.addEventListener('change', () => {
   syncModeControls();
@@ -189,6 +248,14 @@ thicknessValueInput.addEventListener('change', () => {
 });
 distributionSelect.addEventListener('change', rebuild);
 roundtripButton.addEventListener('click', roundtripIndex);
+reloadDemoButton.addEventListener('click', () => {
+  window.location.reload();
+});
+for (const eventName of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'click']) {
+  errorOverlayEl.addEventListener(eventName, (event) => {
+    event.stopPropagation();
+  });
+}
 
 depthLegendEl.addEventListener('pointerdown', (event) => {
   event.stopPropagation();
@@ -242,38 +309,173 @@ new ResizeObserver(() => {
   updateWorldView();
   if (hasBuiltInitialDataset && resized) {
     scheduleRender();
-    statusEl.textContent = 'Resized; regenerate to refill view';
+    if (!errorVisible) {
+      setStatus('View resized; data unchanged');
+    }
   }
 }).observe(stage);
 syncModeControls();
 updateWorldView();
 
 function rebuild(): void {
-  updateWorldView();
-  rememberStageSize();
-  syncZInputs();
-  const count = normalizePointCount(Number(pointCountInput.value));
-  pointCountInput.value = String(count);
-  const geometry = currentGeometry();
-  const distribution = distributionSelect.value as Distribution;
+  const previous = snapshotScene();
+  try {
+    updateWorldView();
+    rememberStageSize();
+    syncZInputs();
+    const count = normalizePointCount(Number(pointCountInput.value));
+    pointCountInput.value = String(count);
+    const geometry = currentGeometry();
+    const distribution = distributionSelect.value as Distribution;
 
-  items = geometry === 'boxes' ? generateBoxes(count, distribution) : generatePoints(count, distribution);
-  itemCount = count;
-  uploadItems(renderer, items);
-  hasBuiltInitialDataset = true;
-  rebuildIndex();
+    const nextItems = geometry === 'boxes' ? generateBoxes(count, distribution) : generatePoints(count, distribution);
+    const nodeSize = Number(nodeSizeSelect.value);
+    const started = performance.now();
+    const nextIndex = buildCurrentIndex(nextItems, nodeSize);
+    const nextBuildMs = performance.now() - started;
+
+    items = nextItems;
+    itemCount = count;
+    index = nextIndex;
+    buildMs = nextBuildMs;
+    query ??= defaultQuery();
+    queryPoint ??= defaultQueryPoint();
+    uploadItems(renderer, items);
+    hasBuiltInitialDataset = true;
+    setStatus('WASM SIMD build loaded');
+    search();
+  } catch (error) {
+    restoreScene(previous);
+    restoreRenderedScene(previous);
+    showBuildError(error);
+  }
 }
 
 function rebuildIndex(): void {
-  const nodeSize = Number(nodeSizeSelect.value);
+  try {
+    const nodeSize = Number(nodeSizeSelect.value);
 
-  const started = performance.now();
-  index = buildCurrentIndex(items, nodeSize);
-  buildMs = performance.now() - started;
-  statusEl.textContent = statusText('WASM SIMD build loaded');
-  query ??= defaultQuery();
-  queryPoint ??= defaultQueryPoint();
-  search();
+    const started = performance.now();
+    const nextIndex = buildCurrentIndex(items, nodeSize);
+    buildMs = performance.now() - started;
+    index = nextIndex;
+    setStatus('WASM SIMD build loaded');
+    query ??= defaultQuery();
+    queryPoint ??= defaultQueryPoint();
+    search();
+  } catch (error) {
+    showBuildError(error);
+  }
+}
+
+type SceneSnapshot = {
+  items: Float64Array<ArrayBufferLike>;
+  itemCount: number;
+  index: WasmIndex | null;
+  hits: Uint32Array<ArrayBufferLike>;
+  buildMs: number;
+  queryMs: number;
+  coreMs: number;
+  convertMs: number;
+  copyMs: number;
+  resultSummary: string | null;
+  anyResult: boolean | null;
+  hasBuiltInitialDataset: boolean;
+};
+
+function snapshotScene(): SceneSnapshot {
+  return {
+    items,
+    itemCount,
+    index,
+    hits,
+    buildMs,
+    queryMs,
+    coreMs,
+    convertMs,
+    copyMs,
+    resultSummary,
+    anyResult,
+    hasBuiltInitialDataset,
+  };
+}
+
+function restoreScene(snapshot: SceneSnapshot): void {
+  items = snapshot.items;
+  itemCount = snapshot.itemCount;
+  index = snapshot.index;
+  hits = snapshot.hits;
+  buildMs = snapshot.buildMs;
+  queryMs = snapshot.queryMs;
+  coreMs = snapshot.coreMs;
+  convertMs = snapshot.convertMs;
+  copyMs = snapshot.copyMs;
+  resultSummary = snapshot.resultSummary;
+  anyResult = snapshot.anyResult;
+  hasBuiltInitialDataset = snapshot.hasBuiltInitialDataset;
+}
+
+function restoreRenderedScene(snapshot: SceneSnapshot): void {
+  if (!snapshot.hasBuiltInitialDataset) {
+    return;
+  }
+  try {
+    uploadItems(renderer, items);
+    uploadHits(renderer, items, hits);
+  } catch (error) {
+    console.warn('failed to restore previous rendered scene', error);
+  }
+}
+
+function clearEmptyScene(): void {
+  items = new Float64Array();
+  itemCount = 0;
+  index = null;
+  hits = new Uint32Array();
+  buildMs = 0;
+  queryMs = 0;
+  coreMs = 0;
+  convertMs = 0;
+  copyMs = 0;
+  resultSummary = null;
+  anyResult = null;
+  hasBuiltInitialDataset = false;
+}
+
+function showBuildError(error: unknown): void {
+  if (!hasBuiltInitialDataset) {
+    clearEmptyScene();
+  }
+  setError(errorMessage(error));
+  scheduleRender();
+}
+
+function setStatus(message: string): void {
+  errorVisible = false;
+  errorOverlayEl.classList.remove('is-visible');
+  errorMessageEl.textContent = '';
+  statusEl.textContent = statusText(message);
+}
+
+function setError(message: string): void {
+  errorVisible = true;
+  errorMessageEl.textContent = formatErrorForOverlay(message);
+  errorOverlayEl.classList.add('is-visible');
+  statusEl.textContent = statusText(`Build failed: ${message.split('\n')[0] ?? message}`);
+}
+
+function formatErrorForOverlay(message: string): string {
+  if (message.includes('rust_oom') || message.includes('RuntimeError: unreachable')) {
+    return `WASM ran out of memory while building the index. Reload the demo to reset the WASM instance.\n\n${message}`;
+  }
+  return message;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack ?? error.message;
+  }
+  return String(error);
 }
 
 function search(): void {
@@ -378,7 +580,7 @@ function roundtripIndex(): void {
   const loadStarted = performance.now();
   index = currentDimension() === '3d' ? WasmIndex3D.from_bytes(bytes) : WasmIndex2D.from_bytes(bytes);
   const loadMs = performance.now() - loadStarted;
-  statusEl.textContent = statusText(
+  setStatus(
     `Roundtrip ${bytes.byteLength.toLocaleString()} bytes, save ${formatDuration(serializeMs)}, load ${formatDuration(loadMs)}`,
   );
   search();
@@ -396,20 +598,15 @@ function scheduleRender(): void {
 }
 
 function render(): void {
-  resizeCanvasToDisplaySize(glCanvas);
   stage.classList.toggle('is-3d', currentDimension() === '3d');
 
-  const { gl } = renderer;
-  gl.viewport(0, 0, glCanvas.width, glCanvas.height);
-  gl.clearColor(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], BACKGROUND[3]);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-
-  if (currentGeometry() === 'boxes') {
-    drawBoxes(renderer, renderer.boxBuffer, itemCount, BOX_COLOR, currentDimension() === '3d');
-    drawBoxes(renderer, renderer.hitBoxBuffer, hits.length, HIT_BOX_COLOR, false);
+  const gpu = usingGpu();
+  glCanvas.style.display = gpu ? 'none' : 'block';
+  gpuCanvas.style.display = gpu ? 'block' : 'none';
+  if (gpu) {
+    renderGpuScene(gpuRenderer as GpuRenderer, gpuScene());
   } else {
-    drawPoints(renderer, renderer.pointBuffer, itemCount, POINT_COLOR, pointSizeForCount(itemCount), currentDimension() === '3d');
-    drawPoints(renderer, renderer.hitBuffer, hits.length, HIT_COLOR, hitSizeForCount(itemCount), false);
+    renderWebGlScene();
   }
   renderQueryOverlay();
   renderFirstHitOverlay();
@@ -422,6 +619,23 @@ function render(): void {
   resultLabelEl.textContent = resultLabel();
   hitCountEl.textContent = resultSummary ?? hits.length.toLocaleString();
   pointTotalEl.textContent = itemCount.toLocaleString();
+}
+
+function renderWebGlScene(): void {
+  resizeCanvasToDisplaySize(glCanvas);
+
+  const { gl } = renderer;
+  gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+  gl.clearColor(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], BACKGROUND[3]);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (currentGeometry() === 'boxes') {
+    drawBoxes(renderer, renderer.boxBuffer, itemCount, BOX_COLOR, currentDimension() === '3d');
+    drawIndexedBoxes(renderer, hits.length, HIT_BOX_COLOR);
+  } else {
+    drawPoints(renderer, renderer.pointBuffer, itemCount, POINT_COLOR, pointSizeForCount(itemCount), currentDimension() === '3d');
+    drawIndexedPoints(renderer, hits.length, HIT_COLOR, hitSizeForCount(itemCount));
+  }
 }
 
 function renderQueryOverlay(): void {
@@ -592,12 +806,76 @@ function drawBoxes(
   gl.vertexAttribDivisor(renderer.boxDepthLocation, 0);
 }
 
+function drawIndexedBoxes(
+  renderer: WebGlRenderer,
+  count: number,
+  color: readonly [number, number, number, number],
+): void {
+  if (count === 0) {
+    return;
+  }
+
+  const { gl } = renderer;
+  gl.useProgram(renderer.indexedBoxProgram);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, renderer.unitQuadBuffer);
+  gl.enableVertexAttribArray(renderer.indexedBoxCornerLocation);
+  gl.vertexAttribPointer(renderer.indexedBoxCornerLocation, 2, gl.FLOAT, false, 0, 0);
+  gl.vertexAttribDivisor(renderer.indexedBoxCornerLocation, 0);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, renderer.itemTexture);
+  gl.uniform1i(renderer.indexedBoxTextureLocation, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, renderer.hitIndexTexture);
+  gl.uniform1i(renderer.indexedBoxHitTextureLocation, 1);
+
+  gl.uniform1i(renderer.indexedBoxTextureWidthLocation, renderer.itemTextureWidth);
+  gl.uniform1i(renderer.indexedBoxHitTextureWidthLocation, renderer.hitTextureWidth);
+  gl.uniform4f(renderer.indexedBoxColorLocation, color[0], color[1], color[2], color[3]);
+  gl.uniform2f(renderer.indexedBoxWorldSizeLocation, worldView.width, worldView.height);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
+}
+
+function drawIndexedPoints(
+  renderer: WebGlRenderer,
+  count: number,
+  color: readonly [number, number, number, number],
+  pointSize: number,
+): void {
+  if (count === 0) {
+    return;
+  }
+
+  const { gl } = renderer;
+  gl.useProgram(renderer.indexedPointProgram);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, renderer.itemTexture);
+  gl.uniform1i(renderer.indexedPointTextureLocation, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, renderer.hitIndexTexture);
+  gl.uniform1i(renderer.indexedPointHitTextureLocation, 1);
+
+  gl.uniform1i(renderer.indexedPointTextureWidthLocation, renderer.itemTextureWidth);
+  gl.uniform1i(renderer.indexedPointHitTextureWidthLocation, renderer.hitTextureWidth);
+  gl.uniform4f(renderer.indexedPointColorLocation, color[0], color[1], color[2], color[3]);
+  gl.uniform2f(renderer.indexedPointWorldSizeLocation, worldView.width, worldView.height);
+  gl.uniform1f(renderer.indexedPointSizeLocation, pointSize * (window.devicePixelRatio || 1));
+  gl.drawArrays(gl.POINTS, 0, count);
+}
+
 function uploadItems(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
+  if (usingGpu()) {
+    uploadGpuItems(gpuRenderer as GpuRenderer, data, gpuScene());
+    return;
+  }
   if (currentGeometry() === 'boxes') {
     uploadBoxes(renderer, data);
   } else {
     uploadPoints(renderer, data);
   }
+  uploadItemTexture(renderer, data);
 }
 
 function uploadPoints(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
@@ -612,58 +890,77 @@ function uploadBoxes(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike
   gl.bufferData(gl.ARRAY_BUFFER, toFloat32Boxes(data), gl.STATIC_DRAW);
 }
 
+function uploadItemTexture(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
+  const { width, height } = textureSizeForCount(renderer, itemCount);
+  const texels = new Float32Array(width * height * 4);
+  const stride = itemStride();
+  if (currentGeometry() === 'boxes') {
+    const maxXOffset = currentDimension() === '3d' ? 3 : 2;
+    const maxYOffset = currentDimension() === '3d' ? 4 : 3;
+    for (let i = 0; i < itemCount; i++) {
+      const src = i * stride;
+      const dst = i * 4;
+      texels[dst] = data[src];
+      texels[dst + 1] = data[src + 1];
+      texels[dst + 2] = data[src + maxXOffset];
+      texels[dst + 3] = data[src + maxYOffset];
+    }
+  } else {
+    for (let i = 0; i < itemCount; i++) {
+      const src = i * stride;
+      const dst = i * 4;
+      texels[dst] = data[src];
+      texels[dst + 1] = data[src + 1];
+    }
+  }
+
+  const { gl } = renderer;
+  renderer.itemTextureWidth = width;
+  gl.bindTexture(gl.TEXTURE_2D, renderer.itemTexture);
+  setDataTextureParameters(gl);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, texels);
+}
+
 function uploadHits(
   renderer: WebGlRenderer,
   data: Float64Array<ArrayBufferLike>,
   hitIndices: Uint32Array<ArrayBufferLike>,
 ): void {
-  if (currentGeometry() === 'boxes') {
-    uploadHitBoxes(renderer, data, hitIndices);
+  if (usingGpu()) {
+    uploadGpuHits(gpuRenderer as GpuRenderer, hitIndices);
     return;
   }
-
-  const required = hitIndices.length * 3;
-  if (hitClipCoords.length < required) {
-    hitClipCoords = new Float32Array(required);
-  }
-
-  for (let i = 0; i < hitIndices.length; i++) {
-    const offset = hitIndices[i] * itemStride();
-    const out = i * 3;
-    hitClipCoords[out] = data[offset];
-    hitClipCoords[out + 1] = data[offset + 1];
-    hitClipCoords[out + 2] = zValueForPoint(data, offset);
-  }
-
-  const { gl } = renderer;
-  gl.bindBuffer(gl.ARRAY_BUFFER, renderer.hitBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, hitClipCoords.subarray(0, required), gl.DYNAMIC_DRAW);
+  uploadHitIndexTexture(renderer, hitIndices);
 }
 
-function uploadHitBoxes(
+function uploadHitIndexTexture(
   renderer: WebGlRenderer,
-  data: Float64Array<ArrayBufferLike>,
   hitIndices: Uint32Array<ArrayBufferLike>,
 ): void {
-  const required = hitIndices.length * 5;
-  if (hitBoxCoords.length < required) {
-    hitBoxCoords = new Float32Array(required);
-  }
-
-  for (let i = 0; i < hitIndices.length; i++) {
-    const offset = hitIndices[i] * itemStride();
-    const maxOffset = currentDimension() === '3d' ? offset + 3 : offset + 2;
-    const out = i * 5;
-    hitBoxCoords[out] = data[offset];
-    hitBoxCoords[out + 1] = data[offset + 1];
-    hitBoxCoords[out + 2] = data[maxOffset];
-    hitBoxCoords[out + 3] = data[maxOffset + 1];
-    hitBoxCoords[out + 4] = zValueForBox(data, offset);
-  }
+  const { width, height } = textureSizeForCount(renderer, hitIndices.length);
+  const texels = new Uint32Array(width * height);
+  texels.set(hitIndices);
 
   const { gl } = renderer;
-  gl.bindBuffer(gl.ARRAY_BUFFER, renderer.hitBoxBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, hitBoxCoords.subarray(0, required), gl.DYNAMIC_DRAW);
+  renderer.hitTextureWidth = width;
+  gl.bindTexture(gl.TEXTURE_2D, renderer.hitIndexTexture);
+  setDataTextureParameters(gl);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32UI, width, height, 0, gl.RED_INTEGER, gl.UNSIGNED_INT, texels);
+}
+
+function textureSizeForCount(renderer: WebGlRenderer, count: number): { width: number; height: number } {
+  const width = Math.max(1, Math.min(renderer.maxTextureSize, Math.ceil(Math.sqrt(Math.max(1, count)))));
+  return {
+    width,
+    height: Math.max(1, Math.ceil(count / width)),
+  };
+}
+
+function setDataTextureParameters(gl: WebGL2RenderingContext): void {
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
 
 function toFloat32Points(data: Float64Array<ArrayBufferLike>): Float32Array {
@@ -927,6 +1224,46 @@ function currentResultMode(): ResultMode {
 
 function currentGeometry(): Geometry {
   return geometrySelect.value as Geometry;
+}
+
+function currentRendererMode(): RendererMode {
+  return rendererSelect.value as RendererMode;
+}
+
+function usingGpu(): boolean {
+  return currentRendererMode() === 'webgpu' && gpuRenderer !== null;
+}
+
+function gpuScene(): GpuScene {
+  return {
+    geometry: currentGeometry(),
+    dimension: currentDimension(),
+    itemCount,
+    itemStride: itemStride(),
+    worldView,
+    pointSize: pointSizeForCount(itemCount),
+    hitSize: hitSizeForCount(itemCount),
+    colors: {
+      background: BACKGROUND,
+      point: POINT_COLOR,
+      hit: HIT_COLOR,
+      box: BOX_COLOR,
+      hitBox: HIT_BOX_COLOR,
+    },
+    zValueForPoint,
+    zValueForBox,
+  };
+}
+
+function disableRendererOption(value: RendererMode): void {
+  const option = rendererSelect.querySelector<HTMLOptionElement>(`option[value="${value}"]`);
+  if (option) {
+    option.disabled = true;
+    option.textContent = `${option.textContent} (unavailable)`;
+  }
+  if (rendererSelect.value === value) {
+    rendererSelect.value = 'webgl';
+  }
 }
 
 function syncModeControls(): void {
@@ -1259,12 +1596,100 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
     }`,
   );
 
+  const indexedBoxProgram = createProgram(
+    gl,
+    `#version 300 es
+    precision highp float;
+    precision highp usampler2D;
+
+    in vec2 a_corner;
+    uniform sampler2D u_boxTexture;
+    uniform usampler2D u_hitTexture;
+    uniform int u_boxTextureWidth;
+    uniform int u_hitTextureWidth;
+    uniform vec2 u_worldSize;
+
+    vec4 fetchBox(uint index) {
+      int i = int(index);
+      return texelFetch(u_boxTexture, ivec2(i % u_boxTextureWidth, i / u_boxTextureWidth), 0);
+    }
+
+    uint fetchHit(int instanceIndex) {
+      return texelFetch(u_hitTexture, ivec2(instanceIndex % u_hitTextureWidth, instanceIndex / u_hitTextureWidth), 0).r;
+    }
+
+    void main() {
+      vec4 box = fetchBox(fetchHit(gl_InstanceID));
+      vec2 world = mix(box.xy, box.zw, a_corner);
+      vec2 clip = vec2(
+        (world.x / u_worldSize.x) * 2.0 - 1.0,
+        1.0 - (world.y / u_worldSize.y) * 2.0
+      );
+      gl_Position = vec4(clip, 0.0, 1.0);
+    }`,
+    `#version 300 es
+    precision highp float;
+
+    uniform vec4 u_color;
+    out vec4 outColor;
+
+    void main() {
+      outColor = u_color;
+    }`,
+  );
+
+  const indexedPointProgram = createProgram(
+    gl,
+    `#version 300 es
+    precision highp float;
+    precision highp usampler2D;
+
+    uniform sampler2D u_itemTexture;
+    uniform usampler2D u_hitTexture;
+    uniform int u_itemTextureWidth;
+    uniform int u_hitTextureWidth;
+    uniform vec2 u_worldSize;
+    uniform float u_pointSize;
+
+    vec2 fetchPoint(uint index) {
+      int i = int(index);
+      return texelFetch(u_itemTexture, ivec2(i % u_itemTextureWidth, i / u_itemTextureWidth), 0).xy;
+    }
+
+    uint fetchHit(int instanceIndex) {
+      return texelFetch(u_hitTexture, ivec2(instanceIndex % u_hitTextureWidth, instanceIndex / u_hitTextureWidth), 0).r;
+    }
+
+    void main() {
+      vec2 world = fetchPoint(fetchHit(gl_VertexID));
+      vec2 clip = vec2(
+        (world.x / u_worldSize.x) * 2.0 - 1.0,
+        1.0 - (world.y / u_worldSize.y) * 2.0
+      );
+      gl_Position = vec4(clip, 0.0, 1.0);
+      gl_PointSize = u_pointSize;
+    }`,
+    `#version 300 es
+    precision highp float;
+
+    uniform vec4 u_color;
+    out vec4 outColor;
+
+    void main() {
+      vec2 delta = gl_PointCoord - vec2(0.5);
+      if (dot(delta, delta) > 0.25) {
+        discard;
+      }
+      outColor = u_color;
+    }`,
+  );
+
   const unitQuadBuffer = gl.createBuffer();
   const pointBuffer = gl.createBuffer();
-  const hitBuffer = gl.createBuffer();
   const boxBuffer = gl.createBuffer();
-  const hitBoxBuffer = gl.createBuffer();
-  if (!unitQuadBuffer || !pointBuffer || !hitBuffer || !boxBuffer || !hitBoxBuffer) {
+  const itemTexture = gl.createTexture();
+  const hitIndexTexture = gl.createTexture();
+  if (!unitQuadBuffer || !pointBuffer || !boxBuffer || !itemTexture || !hitIndexTexture) {
     throw new Error('failed to create WebGL buffers');
   }
 
@@ -1284,6 +1709,40 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
   if (!boxColorLocation || !boxUseDepthColorLocation || !boxWorldSizeLocation) {
     throw new Error('failed to resolve WebGL box uniforms');
   }
+  const indexedBoxColorLocation = gl.getUniformLocation(indexedBoxProgram, 'u_color');
+  const indexedBoxWorldSizeLocation = gl.getUniformLocation(indexedBoxProgram, 'u_worldSize');
+  const indexedBoxTextureLocation = gl.getUniformLocation(indexedBoxProgram, 'u_boxTexture');
+  const indexedBoxHitTextureLocation = gl.getUniformLocation(indexedBoxProgram, 'u_hitTexture');
+  const indexedBoxTextureWidthLocation = gl.getUniformLocation(indexedBoxProgram, 'u_boxTextureWidth');
+  const indexedBoxHitTextureWidthLocation = gl.getUniformLocation(indexedBoxProgram, 'u_hitTextureWidth');
+  if (
+    !indexedBoxColorLocation ||
+    !indexedBoxWorldSizeLocation ||
+    !indexedBoxTextureLocation ||
+    !indexedBoxHitTextureLocation ||
+    !indexedBoxTextureWidthLocation ||
+    !indexedBoxHitTextureWidthLocation
+  ) {
+    throw new Error('failed to resolve WebGL indexed box uniforms');
+  }
+  const indexedPointColorLocation = gl.getUniformLocation(indexedPointProgram, 'u_color');
+  const indexedPointWorldSizeLocation = gl.getUniformLocation(indexedPointProgram, 'u_worldSize');
+  const indexedPointSizeLocation = gl.getUniformLocation(indexedPointProgram, 'u_pointSize');
+  const indexedPointTextureLocation = gl.getUniformLocation(indexedPointProgram, 'u_itemTexture');
+  const indexedPointHitTextureLocation = gl.getUniformLocation(indexedPointProgram, 'u_hitTexture');
+  const indexedPointTextureWidthLocation = gl.getUniformLocation(indexedPointProgram, 'u_itemTextureWidth');
+  const indexedPointHitTextureWidthLocation = gl.getUniformLocation(indexedPointProgram, 'u_hitTextureWidth');
+  if (
+    !indexedPointColorLocation ||
+    !indexedPointWorldSizeLocation ||
+    !indexedPointSizeLocation ||
+    !indexedPointTextureLocation ||
+    !indexedPointHitTextureLocation ||
+    !indexedPointTextureWidthLocation ||
+    !indexedPointHitTextureWidthLocation
+  ) {
+    throw new Error('failed to resolve WebGL indexed point uniforms');
+  }
 
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -1292,6 +1751,8 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
     gl,
     pointProgram,
     boxProgram,
+    indexedBoxProgram,
+    indexedPointProgram,
     positionLocation: gl.getAttribLocation(pointProgram, 'a_position'),
     colorLocation,
     useDepthColorLocation,
@@ -1303,11 +1764,28 @@ function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
     boxColorLocation,
     boxUseDepthColorLocation,
     boxWorldSizeLocation,
+    indexedBoxCornerLocation: gl.getAttribLocation(indexedBoxProgram, 'a_corner'),
+    indexedBoxColorLocation,
+    indexedBoxWorldSizeLocation,
+    indexedBoxTextureLocation,
+    indexedBoxHitTextureLocation,
+    indexedBoxTextureWidthLocation,
+    indexedBoxHitTextureWidthLocation,
+    indexedPointColorLocation,
+    indexedPointWorldSizeLocation,
+    indexedPointSizeLocation,
+    indexedPointTextureLocation,
+    indexedPointHitTextureLocation,
+    indexedPointTextureWidthLocation,
+    indexedPointHitTextureWidthLocation,
     unitQuadBuffer,
     pointBuffer,
-    hitBuffer,
     boxBuffer,
-    hitBoxBuffer,
+    itemTexture,
+    hitIndexTexture,
+    itemTextureWidth: 1,
+    hitTextureWidth: 1,
+    maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
   };
 }
 

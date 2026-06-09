@@ -31,6 +31,13 @@
             <option value="points">Points</option>
           </select>
         </label>
+        <label class="medium-control">
+          Renderer
+          <select id="renderer">
+            <option value="webgl" selected>WebGL</option>
+            <option value="webgpu">WebGPU</option>
+          </select>
+        </label>
         <label class="short-control">
           Node size
           <select id="nodeSize">
@@ -74,6 +81,7 @@
       </section>
       <section class="stage">
         <canvas id="glCanvas" width="1200" height="720"></canvas>
+        <canvas id="gpuCanvas" width="1200" height="720" style="display: none"></canvas>
         <div id="queryShadeTop" class="query-shade" aria-hidden="true"></div>
         <div id="queryShadeRight" class="query-shade" aria-hidden="true"></div>
         <div id="queryShadeBottom" class="query-shade" aria-hidden="true"></div>
@@ -81,6 +89,13 @@
         <div id="queryRect" aria-hidden="true"></div>
         <div id="queryPoint" aria-hidden="true"></div>
         <div id="firstHit" aria-hidden="true"></div>
+        <section id="errorOverlay" class="error-overlay" role="alert" aria-live="assertive">
+          <strong>Build failed</strong>
+          <div class="error-message-scroll">
+            <pre id="errorMessage"></pre>
+          </div>
+          <button id="reloadDemo" type="button">Reload demo</button>
+        </section>
         <div id="depthLegend" class="depth-legend">
           <span>Depth</span>
           <input id="depthValue" class="depth-value depth-value-main" type="number" step="100" aria-label="Depth value" />

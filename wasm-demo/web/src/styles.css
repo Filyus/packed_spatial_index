@@ -414,6 +414,10 @@ canvas {
   white-space: nowrap;
 }
 
+.stats span[hidden] {
+  display: none;
+}
+
 .stats b {
   font-weight: 600;
   text-align: right;

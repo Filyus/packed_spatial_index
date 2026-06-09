@@ -120,6 +120,7 @@ const statusEl = mustQuery<HTMLSpanElement>('#status');
 const buildTimeEl = mustQuery<HTMLElement>('#buildTime');
 const queryTimeEl = mustQuery<HTMLElement>('#queryTime');
 const coreTimeEl = mustQuery<HTMLElement>('#coreTime');
+const convertRowEl = mustQuery<HTMLElement>('#convertRow');
 const convertTimeEl = mustQuery<HTMLElement>('#convertTime');
 const copyTimeEl = mustQuery<HTMLElement>('#copyTime');
 const resultLabelEl = mustQuery<HTMLElement>('#resultLabel');
@@ -430,6 +431,7 @@ function render(): void {
   buildTimeEl.textContent = formatDuration(buildMs);
   queryTimeEl.textContent = formatQueryDuration(queryMs);
   coreTimeEl.textContent = formatQueryDuration(coreMs);
+  convertRowEl.hidden = convertMs < 0.05;
   convertTimeEl.textContent = formatQueryDuration(convertMs);
   copyTimeEl.textContent = formatQueryDuration(copyMs);
   resultLabelEl.textContent = resultLabel();

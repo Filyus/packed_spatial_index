@@ -1,7 +1,9 @@
+use std::ops::ControlFlow;
+
 use js_sys::{Float64Array, Object, Reflect, Uint8Array, Uint32Array};
 use packed_spatial_index::{
     Box2D, Box3D, Index2DBuilder, Index3DBuilder, NeighborWorkspace, Point2D, Point3D,
-    SearchWorkspace, SimdIndex2D, SimdIndex3D,
+    SimdIndex2D, SimdIndex3D,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -9,16 +11,18 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub struct WasmIndex2D {
     index: SimdIndex2D,
-    workspace: SearchWorkspace,
     neighbor_workspace: NeighborWorkspace,
+    search_stack: Vec<usize>,
+    hit_indices: Vec<u32>,
     len: usize,
 }
 
 #[wasm_bindgen]
 pub struct WasmIndex3D {
     index: SimdIndex3D,
-    workspace: SearchWorkspace,
     neighbor_workspace: NeighborWorkspace,
+    search_stack: Vec<usize>,
+    hit_indices: Vec<u32>,
     len: usize,
 }
 
@@ -101,10 +105,8 @@ impl WasmIndex2D {
     ) -> Result<Uint32Array, JsValue> {
         validate_query2d(min_x, min_y, max_x, max_y)?;
 
-        let hits = self
-            .index
-            .search_with(Box2D::new(min_x, min_y, max_x, max_y), &mut self.workspace);
-        hits_to_uint32(hits)
+        self.search_u32(Box2D::new(min_x, min_y, max_x, max_y))?;
+        Ok(Uint32Array::from(self.hit_indices.as_slice()))
     }
 
     pub fn search_profile(
@@ -117,15 +119,10 @@ impl WasmIndex2D {
         validate_query2d(min_x, min_y, max_x, max_y)?;
 
         let started = now_ms();
-        let hits = self
-            .index
-            .search_with(Box2D::new(min_x, min_y, max_x, max_y), &mut self.workspace);
+        self.search_u32(Box2D::new(min_x, min_y, max_x, max_y))?;
         let traversed = now_ms();
 
-        let out = hits_to_u32_vec(hits)?;
-        let converted = now_ms();
-
-        let array = Uint32Array::from(out.as_slice());
+        let array = Uint32Array::from(self.hit_indices.as_slice());
         let copied = now_ms();
 
         let result = Object::new();
@@ -138,12 +135,12 @@ impl WasmIndex2D {
         Reflect::set(
             &result,
             &"convertMs".into(),
-            &JsValue::from_f64(converted - traversed),
+            &JsValue::from_f64(0.0),
         )?;
         Reflect::set(
             &result,
             &"copyMs".into(),
-            &JsValue::from_f64(copied - converted),
+            &JsValue::from_f64(copied - traversed),
         )?;
         Reflect::set(
             &result,
@@ -165,6 +162,33 @@ impl WasmIndex2D {
                 i32::try_from(hit).map_err(|_| JsValue::from_str("hit index does not fit in i32"))
             }
             None => Ok(-1),
+        }
+    }
+
+    fn search_u32(&mut self, query: Box2D) -> Result<(), JsValue> {
+        self.hit_indices.clear();
+        if self
+            .index
+            .extent()
+            .is_some_and(|extent| query.contains(extent))
+        {
+            fill_all_indices_u32(self.len, &mut self.hit_indices)?;
+            return Ok(());
+        }
+
+        let hits = &mut self.hit_indices;
+        let flow = self
+            .index
+            .visit_avx512(query, &mut self.search_stack, |hit| {
+                let Ok(hit) = u32::try_from(hit) else {
+                    return ControlFlow::Break(JsValue::from_str("hit index does not fit in u32"));
+                };
+                hits.push(hit);
+                ControlFlow::Continue(())
+            });
+        match flow {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(err) => Err(err),
         }
     }
 
@@ -289,11 +313,8 @@ impl WasmIndex3D {
     ) -> Result<Uint32Array, JsValue> {
         validate_query3d(min_x, min_y, min_z, max_x, max_y, max_z)?;
 
-        let hits = self.index.search_with(
-            Box3D::new(min_x, min_y, min_z, max_x, max_y, max_z),
-            &mut self.workspace,
-        );
-        hits_to_uint32(hits)
+        self.search_u32(Box3D::new(min_x, min_y, min_z, max_x, max_y, max_z))?;
+        Ok(Uint32Array::from(self.hit_indices.as_slice()))
     }
 
     pub fn search_profile(
@@ -308,16 +329,10 @@ impl WasmIndex3D {
         validate_query3d(min_x, min_y, min_z, max_x, max_y, max_z)?;
 
         let started = now_ms();
-        let hits = self.index.search_with(
-            Box3D::new(min_x, min_y, min_z, max_x, max_y, max_z),
-            &mut self.workspace,
-        );
+        self.search_u32(Box3D::new(min_x, min_y, min_z, max_x, max_y, max_z))?;
         let traversed = now_ms();
 
-        let out = hits_to_u32_vec(hits)?;
-        let converted = now_ms();
-
-        let array = Uint32Array::from(out.as_slice());
+        let array = Uint32Array::from(self.hit_indices.as_slice());
         let copied = now_ms();
 
         let result = Object::new();
@@ -330,12 +345,12 @@ impl WasmIndex3D {
         Reflect::set(
             &result,
             &"convertMs".into(),
-            &JsValue::from_f64(converted - traversed),
+            &JsValue::from_f64(0.0),
         )?;
         Reflect::set(
             &result,
             &"copyMs".into(),
-            &JsValue::from_f64(copied - converted),
+            &JsValue::from_f64(copied - traversed),
         )?;
         Reflect::set(
             &result,
@@ -378,6 +393,33 @@ impl WasmIndex3D {
                 i32::try_from(hit).map_err(|_| JsValue::from_str("hit index does not fit in i32"))
             }
             None => Ok(-1),
+        }
+    }
+
+    fn search_u32(&mut self, query: Box3D) -> Result<(), JsValue> {
+        self.hit_indices.clear();
+        if self
+            .index
+            .extent()
+            .is_some_and(|extent| query.contains(extent))
+        {
+            fill_all_indices_u32(self.len, &mut self.hit_indices)?;
+            return Ok(());
+        }
+
+        let hits = &mut self.hit_indices;
+        let flow = self
+            .index
+            .visit_avx512(query, &mut self.search_stack, |hit| {
+                let Ok(hit) = u32::try_from(hit) else {
+                    return ControlFlow::Break(JsValue::from_str("hit index does not fit in u32"));
+                };
+                hits.push(hit);
+                ControlFlow::Continue(())
+            });
+        match flow {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(err) => Err(err),
         }
     }
 
@@ -476,8 +518,9 @@ fn wrap_index2d(index: SimdIndex2D) -> WasmIndex2D {
     let len = index.num_items();
     WasmIndex2D {
         index,
-        workspace: SearchWorkspace::new(),
         neighbor_workspace: NeighborWorkspace::new(),
+        search_stack: Vec::new(),
+        hit_indices: Vec::new(),
         len,
     }
 }
@@ -486,10 +529,18 @@ fn wrap_index3d(index: SimdIndex3D) -> WasmIndex3D {
     let len = index.num_items();
     WasmIndex3D {
         index,
-        workspace: SearchWorkspace::new(),
         neighbor_workspace: NeighborWorkspace::new(),
+        search_stack: Vec::new(),
+        hit_indices: Vec::new(),
         len,
     }
+}
+
+fn fill_all_indices_u32(len: usize, out: &mut Vec<u32>) -> Result<(), JsValue> {
+    let len =
+        u32::try_from(len).map_err(|_| JsValue::from_str("hit index does not fit in u32"))?;
+    out.extend(0..len);
+    Ok(())
 }
 
 fn hits_to_uint32(hits: &[usize]) -> Result<Uint32Array, JsValue> {

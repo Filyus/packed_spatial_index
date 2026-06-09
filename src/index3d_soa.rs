@@ -900,6 +900,12 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
+        if query.contains(self.root_box()) {
+            for &index in &self.indices[..self.num_items] {
+                visitor(index)?;
+            }
+            return ControlFlow::Continue(());
+        }
         let qmxx_v = f64x4::splat(query.max_x);
         let qmnx_v = f64x4::splat(query.min_x);
         let qmxy_v = f64x4::splat(query.max_y);
@@ -909,50 +915,75 @@ impl SimdIndex3D {
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
 
-            let mut pos = node_index;
-            while pos + 4 <= end {
-                let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
-                    & load4(&self.max_xs, pos).simd_ge(qmnx_v)
-                    & load4(&self.min_ys, pos).simd_le(qmxy_v)
-                    & load4(&self.max_ys, pos).simd_ge(qmny_v)
-                    & load4(&self.min_zs, pos).simd_le(qmxz_v)
-                    & load4(&self.max_zs, pos).simd_ge(qmnz_v);
-                let bits = mask.to_bitmask();
-                if bits != 0 {
-                    for k in 0..4 {
-                        if bits & (1 << k) != 0 {
-                            let index = self.indices[pos + k];
-                            if is_leaf {
-                                visitor(index)?;
-                            } else {
-                                stack.push(index);
-                                stack.push(level - 1);
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                for &index in &self.indices[start..end] {
+                    visitor(index)?;
+                }
+            } else {
+                // Guarded against underflow for a single leaf-level node (`level == 0`);
+                // `child_level` is only read on the internal-node push paths.
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                let mut pos = node_index;
+                while pos + 4 <= end {
+                    let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
+                        & load4(&self.max_xs, pos).simd_ge(qmnx_v)
+                        & load4(&self.min_ys, pos).simd_le(qmxy_v)
+                        & load4(&self.max_ys, pos).simd_ge(qmny_v)
+                        & load4(&self.min_zs, pos).simd_le(qmxz_v)
+                        & load4(&self.max_zs, pos).simd_ge(qmnz_v);
+                    let bits = mask.to_bitmask();
+                    if bits != 0 {
+                        for k in 0..4 {
+                            if bits & (1 << k) != 0 {
+                                let p = pos + k;
+                                let index = self.indices[p];
+                                if is_leaf {
+                                    visitor(index)?;
+                                } else {
+                                    stack.push(index);
+                                    stack.push(encode_level(
+                                        child_level,
+                                        self.query_contains_node(query, p),
+                                    ));
+                                }
                             }
                         }
                     }
+                    pos += 4;
                 }
-                pos += 4;
-            }
 
-            while pos < end {
-                if self.hit_scalar(pos, query) {
-                    let index = self.indices[pos];
-                    if is_leaf {
-                        visitor(index)?;
-                    } else {
-                        stack.push(index);
-                        stack.push(level - 1);
+                while pos < end {
+                    if self.hit_scalar(pos, query) {
+                        let index = self.indices[pos];
+                        if is_leaf {
+                            visitor(index)?;
+                        } else {
+                            stack.push(index);
+                            stack.push(encode_level(
+                                child_level,
+                                self.query_contains_node(query, pos),
+                            ));
+                        }
                     }
+                    pos += 1;
                 }
-                pos += 1;
             }
 
             if stack.len() > 1 {
-                level = stack.pop().unwrap();
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
                 node_index = stack.pop().unwrap();
             } else {
                 return ControlFlow::Continue(());
@@ -977,6 +1008,12 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
+        if query.contains(self.root_box()) {
+            for &index in &self.indices[..self.num_items] {
+                visitor(index)?;
+            }
+            return ControlFlow::Continue(());
+        }
         let qmxx_v = _mm512_set1_pd(query.max_x);
         let qmnx_v = _mm512_set1_pd(query.min_x);
         let qmxy_v = _mm512_set1_pd(query.max_y);
@@ -986,59 +1023,91 @@ impl SimdIndex3D {
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
 
-            let mut pos = node_index;
-            while pos + 8 <= end {
-                // SAFETY: `pos + 8 <= end`, and `end` is bounded by the array length.
-                let (mnx, mxx, mny, mxy, mnz, mxz) = unsafe {
-                    (
-                        _mm512_loadu_pd(self.min_xs.as_ptr().add(pos)),
-                        _mm512_loadu_pd(self.max_xs.as_ptr().add(pos)),
-                        _mm512_loadu_pd(self.min_ys.as_ptr().add(pos)),
-                        _mm512_loadu_pd(self.max_ys.as_ptr().add(pos)),
-                        _mm512_loadu_pd(self.min_zs.as_ptr().add(pos)),
-                        _mm512_loadu_pd(self.max_zs.as_ptr().add(pos)),
-                    )
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
                 };
-                let m1 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mnx, qmxx_v);
-                let m2 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxx, qmnx_v);
-                let m3 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mny, qmxy_v);
-                let m4 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxy, qmny_v);
-                let m5 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mnz, qmxz_v);
-                let m6 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxz, qmnz_v);
-                let mut bits: u8 = m1 & m2 & m3 & m4 & m5 & m6;
-                while bits != 0 {
-                    let k = bits.trailing_zeros() as usize;
-                    let index = self.indices[pos + k];
-                    if is_leaf {
-                        visitor(index)?;
-                    } else {
-                        stack.push(index);
-                        stack.push(level - 1);
-                    }
-                    bits &= bits - 1;
+                for &index in &self.indices[start..end] {
+                    visitor(index)?;
                 }
-                pos += 8;
-            }
+            } else {
+                // Guarded against underflow for a single leaf-level node (`level == 0`);
+                // `child_level` is only read on the internal-node push paths.
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                let mut pos = node_index;
+                while pos + 8 <= end {
+                    // SAFETY: `pos + 8 <= end`, and `end` is bounded by the array length.
+                    let (mnx, mxx, mny, mxy, mnz, mxz) = unsafe {
+                        (
+                            _mm512_loadu_pd(self.min_xs.as_ptr().add(pos)),
+                            _mm512_loadu_pd(self.max_xs.as_ptr().add(pos)),
+                            _mm512_loadu_pd(self.min_ys.as_ptr().add(pos)),
+                            _mm512_loadu_pd(self.max_ys.as_ptr().add(pos)),
+                            _mm512_loadu_pd(self.min_zs.as_ptr().add(pos)),
+                            _mm512_loadu_pd(self.max_zs.as_ptr().add(pos)),
+                        )
+                    };
+                    let m1 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mnx, qmxx_v);
+                    let m2 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxx, qmnx_v);
+                    let m3 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mny, qmxy_v);
+                    let m4 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxy, qmny_v);
+                    let m5 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mnz, qmxz_v);
+                    let m6 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxz, qmnz_v);
+                    let mut bits: u8 = m1 & m2 & m3 & m4 & m5 & m6;
+                    if is_leaf {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            visitor(self.indices[pos + k])?;
+                            bits &= bits - 1;
+                        }
+                    } else {
+                        // query contains child: qmin <= cmin && cmax <= qmax on all axes.
+                        let c1 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mnx, qmnx_v);
+                        let c2 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mxx, qmxx_v);
+                        let c3 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mny, qmny_v);
+                        let c4 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mxy, qmxy_v);
+                        let c5 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mnz, qmnz_v);
+                        let c6 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(mxz, qmxz_v);
+                        let cbits: u8 = c1 & c2 & c3 & c4 & c5 & c6;
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            stack.push(self.indices[pos + k]);
+                            stack.push(encode_level(child_level, cbits & (1 << k) != 0));
+                            bits &= bits - 1;
+                        }
+                    }
+                    pos += 8;
+                }
 
-            while pos < end {
-                if self.hit_scalar(pos, query) {
-                    let index = self.indices[pos];
-                    if is_leaf {
-                        visitor(index)?;
-                    } else {
-                        stack.push(index);
-                        stack.push(level - 1);
+                while pos < end {
+                    if self.hit_scalar(pos, query) {
+                        let index = self.indices[pos];
+                        if is_leaf {
+                            visitor(index)?;
+                        } else {
+                            stack.push(index);
+                            stack.push(encode_level(
+                                child_level,
+                                self.query_contains_node(query, pos),
+                            ));
+                        }
                     }
+                    pos += 1;
                 }
-                pos += 1;
             }
 
             if stack.len() > 1 {
-                level = stack.pop().unwrap();
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
                 node_index = stack.pop().unwrap();
             } else {
                 return ControlFlow::Continue(());

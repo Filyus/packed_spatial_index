@@ -44,6 +44,20 @@ fn round_up(x: f64) -> f32 {
     if (r as f64) < x { r.next_up() } else { r }
 }
 
+/// High bit of the stacked level word, set when the query fully contains a node so
+/// its whole subtree can be collected without further overlap tests.
+const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+const LEVEL_MASK: usize = !CONTAINED_FLAG;
+
+#[inline]
+fn encode_level(level: usize, contained: bool) -> usize {
+    if contained {
+        level | CONTAINED_FLAG
+    } else {
+        level
+    }
+}
+
 /// 2D box stored as four `f32` (`min_x, min_y, max_x, max_y`).
 #[derive(Clone, Copy)]
 struct Box2DF32 {
@@ -71,6 +85,17 @@ impl Box2DF32 {
             && self.max_x >= other.min_x
             && self.min_y <= other.max_y
             && self.max_y >= other.min_y
+    }
+
+    /// True when `self` fully contains `other` (both already rounded). Used only on
+    /// the conservative (non-refined) path, where the leaf MBR property guarantees a
+    /// contained node's whole subtree overlaps the rounded query.
+    #[inline]
+    fn contains(self, other: Self) -> bool {
+        self.min_x <= other.min_x
+            && other.max_x <= self.max_x
+            && self.min_y <= other.min_y
+            && other.max_y <= self.max_y
     }
 
     #[inline]
@@ -725,6 +750,10 @@ impl SimdIndex2DF32 {
         if self.num_items == 0 {
             return;
         }
+        if q.contains(self.box_f32_at(self.min_xs.len() - 1)) {
+            out.extend_from_slice(&self.indices[..self.num_items]);
+            return;
+        }
         let qmxx_v = f32x8::splat(q.max_x);
         let qmnx_v = f32x8::splat(q.min_x);
         let qmxy_v = f32x8::splat(q.max_y);
@@ -745,40 +774,68 @@ impl SimdIndex2DF32 {
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
 
-            let mut pos = node_index;
-            while pos + 8 <= end {
-                let mnx = load8(&self.min_xs, pos);
-                let mxx = load8(&self.max_xs, pos);
-                let mny = load8(&self.min_ys, pos);
-                let mxy = load8(&self.max_ys, pos);
-                let mask = mnx.simd_le(qmxx_v)
-                    & mxx.simd_ge(qmnx_v)
-                    & mny.simd_le(qmxy_v)
-                    & mxy.simd_ge(qmny_v);
-                let bits = mask.to_bitmask();
-                if bits != 0 {
-                    for k in 0..8 {
-                        if bits & (1 << k) != 0 {
-                            self.emit(pos + k, level, is_leaf, out, stack);
+            if contained {
+                self.extend_contained_leaf_indices(node_index, end, level, out);
+            } else {
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                let mut pos = node_index;
+                while pos + 8 <= end {
+                    let mnx = load8(&self.min_xs, pos);
+                    let mxx = load8(&self.max_xs, pos);
+                    let mny = load8(&self.min_ys, pos);
+                    let mxy = load8(&self.max_ys, pos);
+                    let mask = mnx.simd_le(qmxx_v)
+                        & mxx.simd_ge(qmnx_v)
+                        & mny.simd_le(qmxy_v)
+                        & mxy.simd_ge(qmny_v);
+                    let bits = mask.to_bitmask();
+                    if bits != 0 {
+                        let cbits = if is_leaf {
+                            0
+                        } else {
+                            (mnx.simd_ge(qmnx_v)
+                                & mxx.simd_le(qmxx_v)
+                                & mny.simd_ge(qmny_v)
+                                & mxy.simd_le(qmxy_v))
+                            .to_bitmask()
+                        };
+                        for k in 0..8 {
+                            if bits & (1 << k) != 0 {
+                                let p = pos + k;
+                                if is_leaf {
+                                    out.push(self.indices[p]);
+                                } else {
+                                    stack.push(self.indices[p]);
+                                    stack.push(encode_level(child_level, cbits & (1 << k) != 0));
+                                }
+                            }
                         }
                     }
+                    pos += 8;
                 }
-                pos += 8;
-            }
 
-            while pos < end {
-                if self.scalar_hit(pos, q) {
-                    self.emit(pos, level, is_leaf, out, stack);
+                while pos < end {
+                    if self.scalar_hit(pos, q) {
+                        if is_leaf {
+                            out.push(self.indices[pos]);
+                        } else {
+                            stack.push(self.indices[pos]);
+                            stack.push(encode_level(child_level, self.q_contains_node(q, pos)));
+                        }
+                    }
+                    pos += 1;
                 }
-                pos += 1;
             }
 
             if stack.len() > 1 {
-                level = stack.pop().unwrap();
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
                 node_index = stack.pop().unwrap();
             } else {
                 return;
@@ -875,6 +932,10 @@ impl SimdIndex2DF32 {
         if self.num_items == 0 {
             return;
         }
+        if q.contains(self.box_f32_at(self.min_xs.len() - 1)) {
+            out.extend_from_slice(&self.indices[..self.num_items]);
+            return;
+        }
         let qmxx_v = _mm512_set1_ps(q.max_x);
         let qmnx_v = _mm512_set1_ps(q.min_x);
         let qmxy_v = _mm512_set1_ps(q.max_y);
@@ -882,43 +943,71 @@ impl SimdIndex2DF32 {
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
 
-            let mut pos = node_index;
-            while pos + 16 <= end {
-                // SAFETY: `pos + 16 <= end`, and `end` is bounded by the array length.
-                let (mnx, mxx, mny, mxy) = unsafe {
-                    (
-                        _mm512_loadu_ps(self.min_xs.as_ptr().add(pos)),
-                        _mm512_loadu_ps(self.max_xs.as_ptr().add(pos)),
-                        _mm512_loadu_ps(self.min_ys.as_ptr().add(pos)),
-                        _mm512_loadu_ps(self.max_ys.as_ptr().add(pos)),
-                    )
-                };
-                let m1 = _mm512_cmp_ps_mask::<_CMP_LE_OQ>(mnx, qmxx_v);
-                let m2 = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(mxx, qmnx_v);
-                let m3 = _mm512_cmp_ps_mask::<_CMP_LE_OQ>(mny, qmxy_v);
-                let m4 = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(mxy, qmny_v);
-                let mut bits: u16 = m1 & m2 & m3 & m4;
-                while bits != 0 {
-                    let k = bits.trailing_zeros() as usize;
-                    self.emit(pos + k, level, is_leaf, out, stack);
-                    bits &= bits - 1;
+            if contained {
+                self.extend_contained_leaf_indices(node_index, end, level, out);
+            } else {
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                let mut pos = node_index;
+                while pos + 16 <= end {
+                    // SAFETY: `pos + 16 <= end`, and `end` is bounded by the array length.
+                    let (mnx, mxx, mny, mxy) = unsafe {
+                        (
+                            _mm512_loadu_ps(self.min_xs.as_ptr().add(pos)),
+                            _mm512_loadu_ps(self.max_xs.as_ptr().add(pos)),
+                            _mm512_loadu_ps(self.min_ys.as_ptr().add(pos)),
+                            _mm512_loadu_ps(self.max_ys.as_ptr().add(pos)),
+                        )
+                    };
+                    let m1 = _mm512_cmp_ps_mask::<_CMP_LE_OQ>(mnx, qmxx_v);
+                    let m2 = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(mxx, qmnx_v);
+                    let m3 = _mm512_cmp_ps_mask::<_CMP_LE_OQ>(mny, qmxy_v);
+                    let m4 = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(mxy, qmny_v);
+                    let mut bits: u16 = m1 & m2 & m3 & m4;
+                    if is_leaf {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            out.push(self.indices[pos + k]);
+                            bits &= bits - 1;
+                        }
+                    } else {
+                        // query contains child: qmin <= cmin && cmax <= qmax on both axes.
+                        let c1 = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(mnx, qmnx_v);
+                        let c2 = _mm512_cmp_ps_mask::<_CMP_LE_OQ>(mxx, qmxx_v);
+                        let c3 = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(mny, qmny_v);
+                        let c4 = _mm512_cmp_ps_mask::<_CMP_LE_OQ>(mxy, qmxy_v);
+                        let cbits: u16 = c1 & c2 & c3 & c4;
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            stack.push(self.indices[pos + k]);
+                            stack.push(encode_level(child_level, cbits & (1 << k) != 0));
+                            bits &= bits - 1;
+                        }
+                    }
+                    pos += 16;
                 }
-                pos += 16;
-            }
 
-            while pos < end {
-                if self.scalar_hit(pos, q) {
-                    self.emit(pos, level, is_leaf, out, stack);
+                while pos < end {
+                    if self.scalar_hit(pos, q) {
+                        if is_leaf {
+                            out.push(self.indices[pos]);
+                        } else {
+                            stack.push(self.indices[pos]);
+                            stack.push(encode_level(child_level, self.q_contains_node(q, pos)));
+                        }
+                    }
+                    pos += 1;
                 }
-                pos += 1;
             }
 
             if stack.len() > 1 {
-                level = stack.pop().unwrap();
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
                 node_index = stack.pop().unwrap();
             } else {
                 return;
@@ -1006,21 +1095,49 @@ impl SimdIndex2DF32 {
     }
 
     #[inline]
-    fn emit(
-        &self,
-        pos: usize,
-        level: usize,
-        is_leaf: bool,
-        out: &mut Vec<usize>,
-        stack: &mut Vec<usize>,
-    ) {
-        let index = self.indices[pos];
-        if is_leaf {
-            out.push(index);
-        } else {
-            stack.push(index);
-            stack.push(level - 1);
+    fn box_f32_at(&self, pos: usize) -> Box2DF32 {
+        Box2DF32 {
+            min_x: self.min_xs[pos],
+            min_y: self.min_ys[pos],
+            max_x: self.max_xs[pos],
+            max_y: self.max_ys[pos],
         }
+    }
+
+    /// True when the rounded query `q` fully contains the stored box at `pos`.
+    #[inline]
+    fn q_contains_node(&self, q: Box2DF32, pos: usize) -> bool {
+        q.contains(self.box_f32_at(pos))
+    }
+
+    /// Append every leaf index under the entry at `node_index` (a node at `level`)
+    /// without per-item overlap tests, used on the conservative path when the query
+    /// fully contains the node.
+    #[inline]
+    fn extend_contained_leaf_indices(
+        &self,
+        node_index: usize,
+        end: usize,
+        level: usize,
+        out: &mut Vec<usize>,
+    ) {
+        let start = self.leaf_start_for_entry(node_index, level);
+        let end = if end < self.level_bounds[level] {
+            self.leaf_start_for_entry(end, level)
+        } else {
+            self.num_items
+        };
+        out.extend_from_slice(&self.indices[start..end]);
+    }
+
+    /// Walk a node entry down to the leaf-array position where its subtree begins.
+    #[inline]
+    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
+        while level > 0 {
+            index = self.indices[index];
+            level -= 1;
+        }
+        index
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1505,6 +1622,29 @@ impl<'a> SimdIndex2DF32View<'a> {
         lo
     }
 
+    /// Walk a node entry down to the leaf-array position where its subtree begins.
+    #[inline]
+    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
+        while level > 0 {
+            index = self.index_at(index);
+            level -= 1;
+        }
+        index
+    }
+
+    /// Leaf-array `[start, end)` range covered by the entry at `node_index`
+    /// (a node at `level`), used when the rounded query fully contains that node.
+    #[inline]
+    fn contained_leaf_range(&self, node_index: usize, end: usize, level: usize) -> (usize, usize) {
+        let start = self.leaf_start_for_entry(node_index, level);
+        let end = if end < self.level_bound_unchecked(level) {
+            self.leaf_start_for_entry(end, level)
+        } else {
+            self.num_items
+        };
+        (start, end)
+    }
+
     /// Candidate item indices whose stored box intersects `query`.
     pub fn search(&self, query: Box2D) -> Vec<usize> {
         let mut out = Vec::new();
@@ -1644,26 +1784,44 @@ impl<'a> SimdIndex2DF32View<'a> {
             return ControlFlow::Continue(());
         }
         let query = Box2DF32::from_box2d_outward(query);
+        if query.contains(self.box_f32_at(self.num_nodes - 1)) {
+            for pos in 0..self.num_items {
+                visitor(self.index_at(pos))?;
+            }
+            return ControlFlow::Continue(());
+        }
         let mut node_index = self.num_nodes - 1;
         let mut level = self.level_count - 1;
+        let mut contained = false;
         loop {
             let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
             let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                if !self.box_f32_at(pos).overlaps(query) {
-                    continue;
+            if contained {
+                let (start, end) = self.contained_leaf_range(node_index, end, level);
+                for pos in start..end {
+                    visitor(self.index_at(pos))?;
                 }
-                let index = self.index_at(pos);
-                if is_leaf {
-                    visitor(index)?;
-                } else {
-                    stack.push(index);
-                    stack.push(level - 1);
+            } else {
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                for pos in node_index..end {
+                    let stored = self.box_f32_at(pos);
+                    if !stored.overlaps(query) {
+                        continue;
+                    }
+                    let index = self.index_at(pos);
+                    if is_leaf {
+                        visitor(index)?;
+                    } else {
+                        stack.push(index);
+                        stack.push(encode_level(child_level, query.contains(stored)));
+                    }
                 }
             }
 
             if stack.len() > 1 {
-                level = stack.pop().unwrap();
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
                 node_index = stack.pop().unwrap();
             } else {
                 return ControlFlow::Continue(());
@@ -2155,6 +2313,57 @@ mod tests {
             truth.sort_unstable();
             assert_eq!(exact, truth);
         }
+    }
+
+    #[test]
+    fn large_window_search_keeps_exact_hits() {
+        // Large windows that fully contain whole subtrees exercise the conservative
+        // covered-range fast path on the owned index and the view.
+        let boxes: Vec<Box2D> = (0..400)
+            .map(|i| {
+                let x = (i as f64 * 7.0) % 1000.0;
+                let y = (i as f64 * 13.0) % 1000.0;
+                Box2D::new(x, y, x + 3.0, y + 3.0)
+            })
+            .collect();
+
+        let f32_index = build(&boxes);
+        let bytes = f32_index.to_bytes();
+        let view = SimdIndex2DF32View::from_bytes(&bytes).unwrap();
+        let mut f64_builder = Index2DBuilder::new(boxes.len()).node_size(4);
+        for &x in &boxes {
+            f64_builder.add(x);
+        }
+        let f64_index = f64_builder.finish_simd().unwrap();
+
+        for size in [40.0, 200.0, 600.0, 2_000.0] {
+            for qi in 0..30 {
+                let qx = (qi as f64 * 19.0) % 1000.0;
+                let qy = (qi as f64 * 23.0) % 1000.0;
+                let query = Box2D::new(qx, qy, qx + size, qy + size);
+
+                let mut truth = f64_index.search(query);
+                truth.sort_unstable();
+
+                // Conservative paths must never drop a true overlap.
+                let rounded = f32_index.search(query);
+                let view_rounded = view.search(query);
+                for hit in &truth {
+                    assert!(rounded.contains(hit), "owned dropped {hit}");
+                    assert!(view_rounded.contains(hit), "view dropped {hit}");
+                }
+
+                // Exact refinement must reproduce the f64 truth exactly.
+                let mut exact = f32_index.search_exact(query, |i| boxes[i]);
+                exact.sort_unstable();
+                assert_eq!(exact, truth);
+            }
+        }
+
+        // Full-extent query returns every item through the contains shortcut.
+        let extent = f32_index.extent().unwrap();
+        assert_eq!(f32_index.search(extent).len(), boxes.len());
+        assert_eq!(view.search(extent).len(), boxes.len());
     }
 
     #[test]

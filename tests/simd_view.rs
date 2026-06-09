@@ -76,7 +76,9 @@ fn simd2d_view_matches_aos_over_both_byte_sources() {
         for _ in 0..200 {
             let x: f64 = rng.random_range(0.0..1_000.0);
             let y: f64 = rng.random_range(0.0..1_000.0);
-            let w: f64 = rng.random_range(1.0..100.0);
+            // Windows up to ~1.5x the extent exercise the covered-range fast path,
+            // where the query fully contains whole subtrees.
+            let w: f64 = rng.random_range(1.0..1_500.0);
             let q = Box2D::new(x, y, x + w, y + w);
 
             let mut expected = aos.search(q);
@@ -146,6 +148,10 @@ fn simd2d_view_matches_aos_over_both_byte_sources() {
                 "view.visit_neighbors"
             );
         }
+
+        // Exact full-extent query must return every item via the contains shortcut.
+        let full = view.extent().unwrap();
+        assert_eq!(view.search(full).len(), boxes.len(), "view full-extent 2D");
     }
 }
 
@@ -177,7 +183,9 @@ fn simd3d_view_matches_aos_over_both_byte_sources() {
             let x: f64 = rng.random_range(0.0..1_000.0);
             let y: f64 = rng.random_range(0.0..1_000.0);
             let z: f64 = rng.random_range(0.0..1_000.0);
-            let w: f64 = rng.random_range(1.0..120.0);
+            // Windows up to ~1.5x the extent exercise the covered-range fast path,
+            // where the query fully contains whole subtrees.
+            let w: f64 = rng.random_range(1.0..1_500.0);
             let q = Box3D::new(x, y, z, x + w, y + w, z + w);
 
             let mut expected = aos.search(q);
@@ -244,6 +252,10 @@ fn simd3d_view_matches_aos_over_both_byte_sources() {
                 "view.visit_neighbors"
             );
         }
+
+        // Exact full-extent query must return every item via the contains shortcut.
+        let full = view.extent().unwrap();
+        assert_eq!(view.search(full).len(), boxes.len(), "view full-extent 3D");
     }
 }
 

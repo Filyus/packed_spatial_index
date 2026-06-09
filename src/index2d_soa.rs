@@ -1355,6 +1355,29 @@ impl<'a> SimdIndex2DView<'a> {
         lo
     }
 
+    /// Walk a node entry down to the leaf-array position where its subtree begins.
+    #[inline]
+    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
+        while level > 0 {
+            index = self.index_at(index);
+            level -= 1;
+        }
+        index
+    }
+
+    /// Leaf-array `[start, end)` range covered by the entry at `node_index`
+    /// (a node at `level`), used when the query fully contains that node.
+    #[inline]
+    fn contained_leaf_range(&self, node_index: usize, end: usize, level: usize) -> (usize, usize) {
+        let start = self.leaf_start_for_entry(node_index, level);
+        let end = if end < self.level_bound_unchecked(level) {
+            self.leaf_start_for_entry(end, level)
+        } else {
+            self.num_items
+        };
+        (start, end)
+    }
+
     /// Return the indices of all items whose boxes intersect `query`.
     pub fn search(&self, query: Box2D) -> Vec<usize> {
         let mut out = Vec::new();
@@ -1418,6 +1441,12 @@ impl<'a> SimdIndex2DView<'a> {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
+        if query.contains(self.box_at(self.num_nodes - 1)) {
+            for pos in 0..self.num_items {
+                visitor(self.index_at(pos))?;
+            }
+            return ControlFlow::Continue(());
+        }
         let qmxx = f64x4::splat(query.max_x);
         let qmnx = f64x4::splat(query.min_x);
         let qmxy = f64x4::splat(query.max_y);
@@ -1425,50 +1454,72 @@ impl<'a> SimdIndex2DView<'a> {
 
         let mut node_index = self.num_nodes - 1;
         let mut level = self.level_count - 1;
+        let mut contained = false;
         loop {
             let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
             let is_leaf = node_index < self.num_items;
 
-            let mut pos = node_index;
-            while pos + 4 <= end {
-                let base = pos * RECORD_2D;
-                let mask = lane4_2d(self.entries, base, 0).simd_le(qmxx)
-                    & lane4_2d(self.entries, base, 16).simd_ge(qmnx)
-                    & lane4_2d(self.entries, base, 8).simd_le(qmxy)
-                    & lane4_2d(self.entries, base, 24).simd_ge(qmny);
-                let bits = mask.to_bitmask();
-                if bits != 0 {
-                    for k in 0..4 {
-                        if bits & (1 << k) != 0 {
-                            let p = pos + k;
-                            let index = self.index_at(p);
-                            if is_leaf {
-                                visitor(index)?;
-                            } else {
-                                stack.push(index);
-                                stack.push(level - 1);
+            if contained {
+                let (start, end) = self.contained_leaf_range(node_index, end, level);
+                for pos in start..end {
+                    visitor(self.index_at(pos))?;
+                }
+            } else {
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                let mut pos = node_index;
+                while pos + 4 <= end {
+                    let base = pos * RECORD_2D;
+                    let mnx = lane4_2d(self.entries, base, 0);
+                    let mxx = lane4_2d(self.entries, base, 16);
+                    let mny = lane4_2d(self.entries, base, 8);
+                    let mxy = lane4_2d(self.entries, base, 24);
+                    let mask = mnx.simd_le(qmxx)
+                        & mxx.simd_ge(qmnx)
+                        & mny.simd_le(qmxy)
+                        & mxy.simd_ge(qmny);
+                    let bits = mask.to_bitmask();
+                    if bits != 0 {
+                        // query contains child: qmin <= cmin && cmax <= qmax on both axes.
+                        let cmask = mnx.simd_ge(qmnx)
+                            & mxx.simd_le(qmxx)
+                            & mny.simd_ge(qmny)
+                            & mxy.simd_le(qmxy);
+                        let cbits = cmask.to_bitmask();
+                        for k in 0..4 {
+                            if bits & (1 << k) != 0 {
+                                let p = pos + k;
+                                let index = self.index_at(p);
+                                if is_leaf {
+                                    visitor(index)?;
+                                } else {
+                                    stack.push(index);
+                                    stack.push(encode_level(child_level, cbits & (1 << k) != 0));
+                                }
                             }
                         }
                     }
+                    pos += 4;
                 }
-                pos += 4;
-            }
 
-            while pos < end {
-                if self.box_at(pos).overlaps(query) {
-                    let index = self.index_at(pos);
-                    if is_leaf {
-                        visitor(index)?;
-                    } else {
-                        stack.push(index);
-                        stack.push(level - 1);
+                while pos < end {
+                    let b = self.box_at(pos);
+                    if b.overlaps(query) {
+                        let index = self.index_at(pos);
+                        if is_leaf {
+                            visitor(index)?;
+                        } else {
+                            stack.push(index);
+                            stack.push(encode_level(child_level, query.contains(b)));
+                        }
                     }
+                    pos += 1;
                 }
-                pos += 1;
             }
 
             if stack.len() > 1 {
-                level = stack.pop().unwrap();
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
                 node_index = stack.pop().unwrap();
             } else {
                 return ControlFlow::Continue(());

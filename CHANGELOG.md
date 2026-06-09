@@ -5,12 +5,17 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 ### Performance
-- Extend the covered-range optimization to the SIMD indexes (`SimdIndex2D`,
-  `SimdIndex3D`): when a query fully contains a node, its whole subtree is
-  collected by copying the contiguous leaf-index range instead of running
-  per-item overlap tests. Large-window searches are ~2.4x faster and full-extent
-  searches up to ~12x faster, so the SIMD paths now match or beat the AoS index
-  across every window size instead of regressing on large windows.
+- Extend the covered-range optimization across the whole SIMD family: the owned
+  indexes (`SimdIndex2D`, `SimdIndex3D`), the zero-copy views (`SimdIndex2DView`,
+  `SimdIndex3DView`), and the `f32-storage` variants and their views. When a query
+  fully contains a node, its whole subtree is collected by copying the contiguous
+  leaf-index range (or visiting it directly) instead of running per-item overlap
+  tests. Large-window searches are ~2.4x faster and full-extent searches up to
+  ~12x faster, so the SIMD paths now match or beat the AoS index across every
+  window size instead of regressing on large windows. On the conservative
+  (non-refined) `f32` path the shortcut uses the rounded query and the stored
+  rounded boxes, so it returns exactly the same set as the per-item traversal; the
+  exact (`search_exact`) path is unchanged and still re-checks each candidate.
 
 
 ## [0.4.2](https://github.com/Filyus/packed_spatial_index/compare/v0.4.1...v0.4.2) - 2026-06-08

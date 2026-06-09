@@ -8,28 +8,16 @@ All notable changes to this crate are documented here.
 ## [0.4.3](https://github.com/Filyus/packed_spatial_index/compare/v0.4.2...v0.4.3) - 2026-06-09
 
 ### Performance
-- Optimize covered-range searches
-- Optimize full-extent 2D view searches
-- Extend covered-range optimization to SIMD indexes
-- Extend covered-range fast path to SIMD views and f32 indexes
-- Optimize full-extent SIMD scalar searches
+- Speed up covered range queries by collecting fully contained subtrees directly
+  instead of testing every item.
+- Apply the covered-range fast path across scalar indexes, SIMD indexes,
+  zero-copy SIMD views, and `f32-storage` variants.
+- Add full-extent shortcuts for 2D views and SIMD scalar search paths.
+- Keep conservative `f32-storage` searches semantically unchanged; exact f32
+  searches still re-check candidates.
 
 ### Documentation
-- Add large-window range search benchmark table
-
-
-### Performance
-- Extend the covered-range optimization across the whole SIMD family: the owned
-  indexes (`SimdIndex2D`, `SimdIndex3D`), the zero-copy views (`SimdIndex2DView`,
-  `SimdIndex3DView`), and the `f32-storage` variants and their views. When a query
-  fully contains a node, its whole subtree is collected by copying the contiguous
-  leaf-index range (or visiting it directly) instead of running per-item overlap
-  tests. Large-window searches are ~2.4x faster and full-extent searches up to
-  ~12x faster, so the SIMD paths now match or beat the AoS index across every
-  window size instead of regressing on large windows. On the conservative
-  (non-refined) `f32` path the shortcut uses the rounded query and the stored
-  rounded boxes, so it returns exactly the same set as the per-item traversal; the
-  exact (`search_exact`) path is unchanged and still re-checks each candidate.
+- Add large-window range search benchmark results to the README.
 
 
 ## [0.4.2](https://github.com/Filyus/packed_spatial_index/compare/v0.4.1...v0.4.2) - 2026-06-08

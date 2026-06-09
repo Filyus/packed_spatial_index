@@ -743,6 +743,10 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return;
         }
+        if query.contains(self.root_box()) {
+            out.extend_from_slice(&self.indices[..self.num_items]);
+            return;
+        }
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
         loop {

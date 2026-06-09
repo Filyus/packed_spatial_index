@@ -301,6 +301,36 @@ fn simd3d_search_apis_agree_with_aos() {
         visited.sort_unstable();
         assert_eq!(expected, visited, "SoA-visit != AoS");
     }
+
+    let full = simd.extent().unwrap();
+    let mut expected = (0..boxes.len()).collect::<Vec<_>>();
+    scalar.clear();
+    wide.clear();
+    avx.clear();
+    simd.search_scalar(full, &mut scalar, &mut s1);
+    simd.search_simd(full, &mut wide, &mut s2);
+    simd.search_avx512(full, &mut avx, &mut s3);
+    visit_wide.clear();
+    visit_avx.clear();
+    let _: ControlFlow<()> = simd.visit_simd(full, &mut s4, |idx| {
+        visit_wide.push(idx);
+        ControlFlow::Continue(())
+    });
+    let _: ControlFlow<()> = simd.visit_avx512(full, &mut s5, |idx| {
+        visit_avx.push(idx);
+        ControlFlow::Continue(())
+    });
+    scalar.sort_unstable();
+    wide.sort_unstable();
+    avx.sort_unstable();
+    visit_wide.sort_unstable();
+    visit_avx.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(expected, scalar, "SoA-scalar full extent");
+    assert_eq!(expected, wide, "SoA-wide full extent");
+    assert_eq!(expected, avx, "SoA-AVX512 full extent");
+    assert_eq!(expected, visit_wide, "SoA-visit-wide full extent");
+    assert_eq!(expected, visit_avx, "SoA-visit-AVX512 full extent");
 }
 
 #[test]

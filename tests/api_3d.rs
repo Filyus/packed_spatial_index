@@ -201,6 +201,17 @@ fn index3d_full_extent_search_returns_all_items() {
     let mut hits = index.search(index.extent().unwrap());
     hits.sort_unstable();
     assert_eq!(hits, (0..n).collect::<Vec<_>>());
+    assert!(index.any(index.extent().unwrap()));
+    assert!(index.first(index.extent().unwrap()).is_some());
+
+    let mut visited = Vec::new();
+    let flow: ControlFlow<()> = index.visit(index.extent().unwrap(), |item| {
+        visited.push(item);
+        ControlFlow::Continue(())
+    });
+    assert!(flow.is_continue());
+    visited.sort_unstable();
+    assert_eq!(visited, (0..n).collect::<Vec<_>>());
 
     let bytes = index.to_bytes();
     let view = Index3DView::from_bytes(&bytes).unwrap();

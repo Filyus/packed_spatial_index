@@ -251,4 +251,38 @@ fn simd_index_search_matches_reference() {
         assert_eq!(expected, visit_wide, "SoA-visit-wide != reference");
         assert_eq!(expected, visit_avx, "SoA-visit-AVX512 != reference");
     }
+
+    let full = simd.extent().unwrap();
+    let mut expected = (0..n).collect::<Vec<_>>();
+    scalar.clear();
+    simd_out.clear();
+    simd_prefetch.clear();
+    avx.clear();
+    simd.search_scalar(full, &mut scalar, &mut st1);
+    simd.search_simd(full, &mut simd_out, &mut st2);
+    simd.search_simd_prefetch(full, &mut simd_prefetch, &mut st3);
+    simd.search_avx512(full, &mut avx, &mut st4);
+    visit_wide.clear();
+    visit_avx.clear();
+    let _: ControlFlow<()> = simd.visit_simd(full, &mut st5, |idx| {
+        visit_wide.push(idx);
+        ControlFlow::Continue(())
+    });
+    let _: ControlFlow<()> = simd.visit_avx512(full, &mut st6, |idx| {
+        visit_avx.push(idx);
+        ControlFlow::Continue(())
+    });
+    scalar.sort_unstable();
+    simd_out.sort_unstable();
+    simd_prefetch.sort_unstable();
+    avx.sort_unstable();
+    visit_wide.sort_unstable();
+    visit_avx.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(expected, scalar, "SoA-scalar full extent");
+    assert_eq!(expected, simd_out, "SoA-SIMD full extent");
+    assert_eq!(expected, simd_prefetch, "SoA-SIMD-prefetch full extent");
+    assert_eq!(expected, avx, "SoA-AVX512 full extent");
+    assert_eq!(expected, visit_wide, "SoA-visit-wide full extent");
+    assert_eq!(expected, visit_avx, "SoA-visit-AVX512 full extent");
 }

@@ -1,22 +1,14 @@
 name: "Release: publish crate"
-run-name: "release: publish crate ${{ inputs.version }}"
+run-name: "release: publish crate"
 
 on:
+  workflow_run:
+    workflows: ["CI: Rust checks"]
+    branches:
+      - main
+    types:
+      - completed
   workflow_dispatch:
-    inputs:
-      version:
-        description: Cargo.toml version to publish
-        required: true
-        type: string
-      publish:
-        description: Publish after preflight and release environment approval
-        required: true
-        default: false
-        type: boolean
-      confirm:
-        description: Type 'publish packed_spatial_index' to publish
-        required: false
-        type: string
 
 concurrency:
   group: crates-io-publish
@@ -26,63 +18,143 @@ permissions:
   contents: read
   actions: read
 
+env:
+  CRATE_NAME: packed_spatial_index
+
 jobs:
   preflight:
     name: preflight
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
+    outputs:
+      should_publish: ${{ steps.release.outputs.should_publish }}
+      version: ${{ steps.release.outputs.version }}
+      release_sha: ${{ steps.resolve.outputs.release_sha }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Check release branch
+      - name: Resolve release SHA
+        id: resolve
+        env:
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ "$GITHUB_REF_NAME" != "main" ]; then
-            echo "Releases must be run from main, got '$GITHUB_REF_NAME'."
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "Manual release reruns must be started from main, got '$GITHUB_REF_NAME'."
             exit 1
           fi
 
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            release_sha="$WORKFLOW_RUN_SHA"
+          else
+            release_sha="$GITHUB_SHA"
+          fi
+
+          if [ -z "$release_sha" ]; then
+            echo "Unable to resolve the release SHA."
+            exit 1
+          fi
+
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "Release SHA: $release_sha"
+
+      - name: Checkout release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.resolve.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Ignore non-release commits
+        id: release
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          subject="$(git log -1 --pretty=%s)"
+          expected="release: prepare $CRATE_NAME v$version"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Commit subject: $subject"
+          echo "Expected release subject: $expected"
+
+          if [ "$subject" != "$expected" ]; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Not a release commit; nothing to publish."
+            exit 0
+          fi
+
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
+
       - name: Check CI passed for this commit
+        if: ${{ steps.release.outputs.should_publish == 'true' && github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.resolve.outputs.release_sha }}
         run: |
           ci_url="$(gh run list \
             --workflow ci.yml \
             --branch main \
-            --commit "$GITHUB_SHA" \
+            --commit "$RELEASE_SHA" \
             --json conclusion,status,url \
             --limit 20 \
             --jq '.[] | select(.status == "completed" and .conclusion == "success") | .url' \
             | head -n 1)"
 
           if [ -z "$ci_url" ]; then
-            echo "No successful CI: Rust checks run found for $GITHUB_SHA."
+            echo "No successful CI: Rust checks run found for $RELEASE_SHA."
             echo "Wait for CI to pass on main, then rerun this workflow."
             exit 1
           fi
 
           echo "Using successful CI run: $ci_url"
 
+      - name: Confirm workflow-run CI success
+        if: ${{ steps.release.outputs.should_publish == 'true' && github.event_name == 'workflow_run' }}
+        env:
+          CI_URL: ${{ github.event.workflow_run.html_url }}
+          RELEASE_SHA: ${{ steps.resolve.outputs.release_sha }}
+        run: |
+          echo "Using successful CI run: $CI_URL"
+          echo "CI head SHA: $RELEASE_SHA"
+
       - name: Install stable Rust
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Check requested version
+      - name: Install cargo-semver-checks
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
+      - name: Check changelog section exists
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          actual_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          if [ "$actual_version" != "$REQUESTED_VERSION" ]; then
-            echo "Cargo.toml version is '$actual_version', requested '$REQUESTED_VERSION'."
+          if ! grep -Fq "## [$VERSION]" CHANGELOG.md; then
+            echo "No changelog section found for $VERSION in CHANGELOG.md."
             exit 1
           fi
 
-      - name: Check version is unpublished
+      - name: Check semver compatibility
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        run: cargo semver-checks
+
+      - name: Install nightly Rust for docs.rs check
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Verify docs.rs build
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: cargo +nightly doc --no-deps --all-features
+
+      - name: Check version is unpublished
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          status="$(curl --user-agent "packed_spatial_index-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/packed_spatial_index/$REQUESTED_VERSION")"
+          status="$(curl --user-agent "$CRATE_NAME-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CRATE_NAME/$VERSION")"
           if [ "$status" = "200" ]; then
-            echo "packed_spatial_index $REQUESTED_VERSION is already published."
+            echo "$CRATE_NAME $VERSION is already published."
             exit 1
           fi
           if [ "$status" != "404" ]; then
@@ -91,10 +163,11 @@ jobs:
           fi
 
       - name: Check release tag is absent
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          tag="v$REQUESTED_VERSION"
+          tag="v$VERSION"
           tag_status=0
           git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
           if [ "$tag_status" = "0" ]; then
@@ -107,52 +180,56 @@ jobs:
           fi
 
       - name: Publish dry run
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
         run: cargo publish --dry-run
 
   publish:
     name: publish
     runs-on: ubuntu-latest
     needs: preflight
-    if: ${{ inputs.publish }}
+    if: ${{ needs.preflight.outputs.should_publish == 'true' }}
     environment: release
     permissions:
       contents: write
       id-token: write
 
     steps:
-      - name: Checkout
+      - name: Checkout release commit
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          fetch-depth: 0
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Check requested version
+      - name: Check release commit still matches Cargo.toml
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          actual_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          if [ "$actual_version" != "$REQUESTED_VERSION" ]; then
-            echo "Cargo.toml version is '$actual_version', requested '$REQUESTED_VERSION'."
+          actual_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          subject="$(git log -1 --pretty=%s)"
+          expected="release: prepare $CRATE_NAME v$actual_version"
+
+          if [ "$actual_version" != "$VERSION" ]; then
+            echo "Cargo.toml version is '$actual_version', preflight version was '$VERSION'."
             exit 1
           fi
 
-      - name: Check publish confirmation
-        env:
-          CONFIRM: ${{ inputs.confirm }}
-        run: |
-          expected="publish packed_spatial_index"
-          if [ "$CONFIRM" != "$expected" ]; then
-            echo "To publish, set confirm to: $expected"
+          if [ "$subject" != "$expected" ]; then
+            echo "Release commit subject changed or is invalid."
+            echo "Expected: $expected"
+            echo "Actual:   $subject"
             exit 1
           fi
 
       - name: Check version is unpublished
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          status="$(curl --user-agent "packed_spatial_index-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/packed_spatial_index/$REQUESTED_VERSION")"
+          status="$(curl --user-agent "$CRATE_NAME-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CRATE_NAME/$VERSION")"
           if [ "$status" = "200" ]; then
-            echo "packed_spatial_index $REQUESTED_VERSION is already published."
+            echo "$CRATE_NAME $VERSION is already published."
             exit 1
           fi
           if [ "$status" != "404" ]; then
@@ -162,9 +239,9 @@ jobs:
 
       - name: Check release tag is absent
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          tag="v$REQUESTED_VERSION"
+          tag="v$VERSION"
           tag_status=0
           git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
           if [ "$tag_status" = "0" ]; then
@@ -187,38 +264,38 @@ jobs:
 
       - name: Create release tag
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          tag="v$REQUESTED_VERSION"
+          tag="v$VERSION"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "packed_spatial_index $REQUESTED_VERSION"
+          git tag -a "$tag" -m "$CRATE_NAME $VERSION"
           git push origin "refs/tags/$tag"
 
       - name: Extract changelog section
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           # Print the body between this version's heading and the next `## [`
           # heading. Match with index() rather than a regex to stay portable
           # across awk variants and avoid bracket-escaping pitfalls.
-          awk -v head="## [$REQUESTED_VERSION]" '
+          awk -v head="## [$VERSION]" '
             index($0, head) == 1 { flag = 1; next }
             flag && index($0, "## [") == 1 { exit }
             flag { print }
           ' CHANGELOG.md > release-notes.md
 
           if [ ! -s release-notes.md ]; then
-            echo "No changelog section found for $REQUESTED_VERSION in CHANGELOG.md."
+            echo "No changelog section found for $VERSION in CHANGELOG.md."
             exit 1
           fi
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          tag="v$REQUESTED_VERSION"
+          tag="v$VERSION"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists; nothing to do."
             exit 0

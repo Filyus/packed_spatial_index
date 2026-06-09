@@ -1,8 +1,9 @@
-# release-plz is configured in a safe PR-only mode for now.
+# release-plz is configured as a local release-preparation helper.
 #
-# The workflow runs manually and calls only `release-pr`, never `release`.
-# Publishing, tag creation, and GitHub Releases are disabled here as an extra
-# guardrail while we evaluate the workflow.
+# Normal releases use `release-plz update` to prepare `Cargo.toml` and
+# `CHANGELOG.md`. Publishing, tag creation, and GitHub Releases stay disabled
+# here because `.github/workflows/publish.yml` owns the final publish path after
+# CI and release-environment approval.
 
 [workspace]
 allow_dirty = false
@@ -16,10 +17,6 @@ release_always = false
 # module/public-type domains (`index3d:`, `views:`, `hilbert:`), while skipped
 # release housekeeping domains stay out of this regex.
 release_commits = "^(api|builder|builder2d|builder3d|index|index2d|index3d|2d|3d|box|boxes|box2d|box3d|bounds|bounds2d|bounds3d|point|points|point2d|point3d|geometry|config|default|defaults|error|errors|safety|unsafe|lint|lints|simd|simd2d|simd3d|simd-view|simd-views|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse|wasm|wasm-demo|persistence|persist|serialize|serialization|deserialize|load|loader|view|views|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy|knn|neighbor|neighbors|nearest|search|visitor|visit|traversal|workspace|perf|performance|parallel|radix|node|nodes|node-size|node_size|nodesize|prefetch|sort|sort2d|sort3d|sortkey|hilbert|hilbert2d|morton|encoder|encoders|encoding|bench|benches|benchmark|benchmarks|flatgeobuf|static-aabb|static_aabb|compare|comparison|test|tests|correctness|fuzz|fuzzing|refactor|layout|tree|internal|module|modules|docs|doc|readme|rustdoc|example|examples|build|ci|deps|dependency|dependencies|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(,|:)"
-pr_branch_prefix = "release-plz-"
-pr_draft = true
-pr_labels = ["release"]
-pr_name = "release: prepare packed_spatial_index v{{ version }}"
 repo_url = "https://github.com/Filyus/packed_spatial_index"
 semver_check = true
 

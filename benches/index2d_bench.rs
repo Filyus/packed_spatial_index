@@ -90,13 +90,26 @@ fn bench_build(c: &mut Criterion) {
 }
 
 fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
+    make_queries_with_size(n, seed, 10.0..200.0)
+}
+
+fn make_queries_with_size(n: usize, seed: u64, size_range: std::ops::Range<f64>) -> Vec<[f64; 4]> {
+    make_queries_with_ranges(n, seed, size_range.clone(), size_range)
+}
+
+fn make_queries_with_ranges(
+    n: usize,
+    seed: u64,
+    width_range: std::ops::Range<f64>,
+    height_range: std::ops::Range<f64>,
+) -> Vec<[f64; 4]> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
         .map(|_| {
             let qx: f64 = rng.random_range(0.0..10_000.0);
             let qy: f64 = rng.random_range(0.0..10_000.0);
-            let qw: f64 = rng.random_range(10.0..200.0);
-            let qh: f64 = rng.random_range(10.0..200.0);
+            let qw: f64 = rng.random_range(width_range.clone());
+            let qh: f64 = rng.random_range(height_range.clone());
             [qx, qy, qx + qw, qy + qh]
         })
         .collect()
@@ -394,5 +407,55 @@ fn bench_query(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_build, bench_query);
+fn bench_query_windows(c: &mut Criterion) {
+    let n = 100_000usize;
+    let boxes = gen_boxes(n, 0xB0B);
+
+    let mut mb = Index2DBuilder::new(n)
+        .node_size(NODE_SIZE)
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
+    for r in &boxes {
+        mb.add(Box2D::new(r[0], r[1], r[2], r[3]));
+    }
+    let packed: Index2D = mb.finish().unwrap();
+    let small_queries = make_queries_with_size(1_000, 0x51A11, 10.0..200.0);
+    let large_queries = make_queries_with_size(1_000, 0x1A96E, 2_000.0..5_000.0);
+    let sliver_queries = make_queries_with_ranges(1_000, 0x5111E, 3_000.0..7_000.0, 10.0..40.0);
+    let extent = packed.extent().unwrap();
+    let full_extent_queries = vec![[extent.min_x, extent.min_y, extent.max_x, extent.max_y]; 1_000];
+
+    let mut group = c.benchmark_group("query_windows");
+    for (name, queries) in [
+        ("small", &small_queries),
+        ("large", &large_queries),
+        ("wide_sliver", &sliver_queries),
+        ("full_extent", &full_extent_queries),
+    ] {
+        group.bench_function(format!("index_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in queries {
+                    packed.search_into_stack(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_prefetch_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in queries {
+                    packed.search_into_stack_prefetch(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_build, bench_query, bench_query_windows);
 criterion_main!(benches);

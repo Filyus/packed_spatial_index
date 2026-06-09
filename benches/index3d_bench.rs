@@ -153,6 +153,31 @@ fn gen_queries(kind: DatasetKind, n: usize, seed: u64) -> Vec<Box3D> {
         .collect()
 }
 
+fn gen_uniform_queries_with_size(
+    n: usize,
+    seed: u64,
+    x_size: std::ops::Range<f64>,
+    y_size: std::ops::Range<f64>,
+    z_size: std::ops::Range<f64>,
+) -> Vec<Box3D> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..n)
+        .map(|_| {
+            let x = rng.random_range(0.0..10_000.0);
+            let y = rng.random_range(0.0..10_000.0);
+            let z = rng.random_range(0.0..10_000.0);
+            Box3D::new(
+                x,
+                y,
+                z,
+                x + rng.random_range(x_size.clone()),
+                y + rng.random_range(y_size.clone()),
+                z + rng.random_range(z_size.clone()),
+            )
+        })
+        .collect()
+}
+
 fn gen_points(kind: DatasetKind, n: usize, seed: u64) -> Vec<Point3D> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
@@ -735,6 +760,50 @@ fn bench_search(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_query_windows(c: &mut Criterion) {
+    let n = 100_000usize;
+    let boxes = gen_boxes(DatasetKind::Uniform, n, 0x3D70);
+    let index = build_index(&boxes, 16, SortKey3DStrategy::Hilbert, false);
+    let small_queries =
+        gen_uniform_queries_with_size(QUERY_COUNT, 0x5A11, 50.0..300.0, 50.0..300.0, 50.0..300.0);
+    let large_queries = gen_uniform_queries_with_size(
+        QUERY_COUNT,
+        0x1A96E,
+        2_000.0..5_000.0,
+        2_000.0..5_000.0,
+        2_000.0..5_000.0,
+    );
+    let thin_slab_queries = gen_uniform_queries_with_size(
+        QUERY_COUNT,
+        0x51AB,
+        2_000.0..5_000.0,
+        2_000.0..5_000.0,
+        10.0..40.0,
+    );
+    let extent = index.extent().unwrap();
+    let full_extent_queries = vec![extent; QUERY_COUNT];
+
+    let mut group = c.benchmark_group("index3d_query_windows");
+    for (name, queries) in [
+        ("small", &small_queries),
+        ("large", &large_queries),
+        ("thin_slab", &thin_slab_queries),
+        ("full_extent", &full_extent_queries),
+    ] {
+        group.bench_function(format!("index_serial_{name}"), |b| {
+            let mut workspace = SearchWorkspace::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for &query in queries {
+                    total += index.search_with(query, &mut workspace).len();
+                }
+                black_box(total);
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_persistence(c: &mut Criterion) {
     let mut group = c.benchmark_group("index3d_persistence");
 
@@ -928,6 +997,7 @@ criterion_group!(
     bench_dimension_persistence,
     bench_build,
     bench_search,
+    bench_query_windows,
     bench_simd_search,
     bench_simd_build,
     bench_persistence,

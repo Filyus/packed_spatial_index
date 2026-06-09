@@ -541,10 +541,63 @@ impl Index3D {
         stack: &mut Vec<usize>,
     ) {
         results.clear();
-        let _: ControlFlow<()> = self.visit_with_stack(query, stack, |index| {
-            results.push(index);
-            ControlFlow::Continue(())
-        });
+        if self.num_items == 0 {
+            stack.clear();
+            return;
+        }
+
+        let root = self.entries[self.entries.len() - 1];
+        if query.contains(root) {
+            stack.clear();
+            results.extend_from_slice(&self.indices[..self.num_items]);
+            return;
+        }
+
+        self.search_into_stack_impl(query, results, stack);
+    }
+
+    fn search_into_stack_impl(
+        &self,
+        query: Box3D,
+        results: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        stack.clear();
+
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let node_entries = &self.entries[node_index..end];
+            let node_indices = &self.indices[node_index..end];
+
+            if is_leaf {
+                for (b, &index) in node_entries.iter().zip(node_indices) {
+                    if !b.overlaps(query) {
+                        continue;
+                    }
+                    results.push(index);
+                }
+            } else {
+                let child_level = level - 1;
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !b.overlaps(query) {
+                        continue;
+                    }
+                    stack.push(index);
+                    stack.push(child_level);
+                }
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return;
+            }
+        }
     }
 
     /// Diagnostics: returns `(result_count, intersection_check_count)`.
@@ -929,6 +982,14 @@ impl<'a> Index3DView<'a> {
         results.clear();
         stack.clear();
         if self.num_items == 0 {
+            return;
+        }
+
+        let root = self.entry_at_unchecked(self.num_nodes - 1);
+        if query.contains(root) {
+            for pos in 0..self.num_items {
+                results.push(self.index_at_unchecked(pos));
+            }
             return;
         }
 

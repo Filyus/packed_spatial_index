@@ -221,6 +221,22 @@ fn hidden_stack_paths_reuse_and_clear_buffers() {
 }
 
 #[test]
+fn full_extent_search_returns_all_items() {
+    let n = 128usize;
+    let mut builder = Index2DBuilder::new(n);
+    for i in 0..n {
+        let x = (i % 16) as f64;
+        let y = (i / 16) as f64;
+        builder.add(Box2D::new(x, y, x + 0.25, y + 0.25));
+    }
+    let index = builder.finish().unwrap();
+
+    let mut hits = index.search(index.extent().unwrap());
+    hits.sort_unstable();
+    assert_eq!(hits, (0..n).collect::<Vec<_>>());
+}
+
+#[test]
 fn finish_reports_count_mismatch() {
     let mut builder = Index2DBuilder::new(2);
     builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));

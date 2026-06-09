@@ -3,8 +3,8 @@ use std::ops::ControlFlow;
 #[cfg(feature = "bench-internals")]
 use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{
-    BoundsError, Box3D, BuildError, DEFAULT_NODE_SIZE, Index3DBuilder, NeighborWorkspace, Point3D,
-    SearchWorkspace, SortKey3D,
+    BoundsError, Box3D, BuildError, DEFAULT_NODE_SIZE, Index3DBuilder, Index3DView,
+    NeighborWorkspace, Point3D, SearchWorkspace, SortKey3D,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -184,6 +184,29 @@ fn index3d_search_apis_agree() {
 
     let found = index.visit(query, ControlFlow::Break);
     assert_eq!(found.is_break(), !expected.is_empty());
+}
+
+#[test]
+fn index3d_full_extent_search_returns_all_items() {
+    let n = 128usize;
+    let mut builder = Index3DBuilder::new(n);
+    for i in 0..n {
+        let x = (i % 8) as f64;
+        let y = ((i / 8) % 8) as f64;
+        let z = (i / 64) as f64;
+        builder.add(Box3D::new(x, y, z, x + 0.25, y + 0.25, z + 0.25));
+    }
+    let index = builder.finish().unwrap();
+
+    let mut hits = index.search(index.extent().unwrap());
+    hits.sort_unstable();
+    assert_eq!(hits, (0..n).collect::<Vec<_>>());
+
+    let bytes = index.to_bytes();
+    let view = Index3DView::from_bytes(&bytes).unwrap();
+    let mut view_hits = view.search(view.extent().unwrap());
+    view_hits.sort_unstable();
+    assert_eq!(view_hits, (0..n).collect::<Vec<_>>());
 }
 
 #[test]

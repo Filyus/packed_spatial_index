@@ -573,7 +573,7 @@ impl Index2D {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        self.search_into_stack_impl::<false>(query, results, stack);
+        self.search_into_stack_contained_impl(query, results, stack);
     }
 
     /// Traversal variant that prefetches the next node from the stack.
@@ -584,10 +584,23 @@ impl Index2D {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        self.search_into_stack_impl::<true>(query, results, stack);
+        results.clear();
+        if self.num_items == 0 {
+            stack.clear();
+            return;
+        }
+
+        let root = self.entries[self.entries.len() - 1];
+        if query.contains(root) {
+            stack.clear();
+            results.extend_from_slice(&self.indices[..self.num_items]);
+            return;
+        }
+
+        self.search_into_stack_overlaps_impl::<true>(query, results, stack);
     }
 
-    fn search_into_stack_impl<const PREFETCH: bool>(
+    fn search_into_stack_overlaps_impl<const PREFETCH: bool>(
         &self,
         query: Box2D,
         results: &mut Vec<usize>,
@@ -641,6 +654,93 @@ impl Index2D {
                 return;
             }
         }
+    }
+
+    fn search_into_stack_contained_impl(
+        &self,
+        query: Box2D,
+        results: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        results.clear();
+        stack.clear();
+        if self.num_items == 0 {
+            return;
+        }
+
+        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+        const LEVEL_MASK: usize = !CONTAINED_FLAG;
+
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let node_entries = &self.entries[node_index..end];
+            let node_indices = &self.indices[node_index..end];
+
+            if contained {
+                self.extend_contained_leaf_indices(node_index, end, level, results);
+            } else if is_leaf {
+                for (b, &index) in node_entries.iter().zip(node_indices) {
+                    if !b.overlaps(query) {
+                        continue;
+                    }
+                    results.push(index);
+                }
+            } else {
+                let child_level = level - 1;
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !b.overlaps(query) {
+                        continue;
+                    }
+                    stack.push(index);
+                    let encoded_level = if query.contains(*b) {
+                        child_level | CONTAINED_FLAG
+                    } else {
+                        child_level
+                    };
+                    stack.push(encoded_level);
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded_level = stack.pop().unwrap();
+                level = encoded_level & LEVEL_MASK;
+                contained = (encoded_level & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return;
+            }
+        }
+    }
+
+    #[inline]
+    fn extend_contained_leaf_indices(
+        &self,
+        node_index: usize,
+        end: usize,
+        level: usize,
+        results: &mut Vec<usize>,
+    ) {
+        let start = self.leaf_start_for_entry(node_index, level);
+        let end = if end < self.level_bounds[level] {
+            self.leaf_start_for_entry(end, level)
+        } else {
+            self.num_items
+        };
+        results.extend_from_slice(&self.indices[start..end]);
+    }
+
+    #[inline]
+    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
+        while level > 0 {
+            index = self.indices[index];
+            level -= 1;
+        }
+        index
     }
 
     fn visit_with_stack_impl<const PREFETCH: bool, B, F>(

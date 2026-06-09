@@ -725,6 +725,31 @@ values above `1.00x` mean the SIMD or parallel path is faster.
 | Search batch | flat Z | `Index3D` 1.8443 ms | `SimdIndex3D` 1.1514 ms | 1.60x |
 | Build `finish_simd` | uniform XYZ, 200k boxes | serial 10.632 ms | parallel 6.5412 ms | 1.63x |
 
+### Large-Window Range Search
+
+When a query fully contains a tree node, the covered-range fast path collects the
+whole subtree by copying its contiguous leaf-index range instead of running
+per-item overlap tests. This keeps the SIMD indexes from regressing against the
+scalar indexes as the window grows: without it, full-extent SIMD searches were
+several times slower than `Index2D`/`Index3D`; with it they reach parity on
+full-extent windows and stay ahead on everything smaller. Workload: 100,000
+boxes over a 10,000-wide space, 1,000 query boxes per window class. Lower is
+better.
+
+| Window (2D) | `Index2D` | `SimdIndex2D` |
+| --- | ---: | ---: |
+| small (10–200) | 337.61 us | 144.21 us |
+| large (2,000–5,000) | 5.94 ms | 5.69 ms |
+| wide sliver | 2.33 ms | 1.58 ms |
+| full extent | 10.46 ms | 10.86 ms |
+
+| Window (3D) | `Index3D` | `SimdIndex3D` |
+| --- | ---: | ---: |
+| small (50–300) | 382.86 us | 146.43 us |
+| large (2,000–5,000) | 9.49 ms | 7.29 ms |
+| thin slab | 3.33 ms | 1.67 ms |
+| full extent | 10.54 ms | 10.91 ms |
+
 ### f32 Storage vs f64
 
 The `coord_precision` suite compares compact f32 storage with f64 storage.

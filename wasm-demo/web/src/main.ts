@@ -120,7 +120,6 @@ const statusEl = mustQuery<HTMLSpanElement>('#status');
 const buildTimeEl = mustQuery<HTMLElement>('#buildTime');
 const queryTimeEl = mustQuery<HTMLElement>('#queryTime');
 const coreTimeEl = mustQuery<HTMLElement>('#coreTime');
-const convertRowEl = mustQuery<HTMLElement>('#convertRow');
 const convertTimeEl = mustQuery<HTMLElement>('#convertTime');
 const copyTimeEl = mustQuery<HTMLElement>('#copyTime');
 const resultLabelEl = mustQuery<HTMLElement>('#resultLabel');
@@ -407,23 +406,10 @@ function render(): void {
 
   if (currentGeometry() === 'boxes') {
     drawBoxes(renderer, renderer.boxBuffer, itemCount, BOX_COLOR, currentDimension() === '3d');
-    drawBoxes(
-      renderer,
-      renderer.hitBoxBuffer,
-      hits.length,
-      HIT_BOX_COLOR,
-      false,
-    );
+    drawBoxes(renderer, renderer.hitBoxBuffer, hits.length, HIT_BOX_COLOR, false);
   } else {
     drawPoints(renderer, renderer.pointBuffer, itemCount, POINT_COLOR, pointSizeForCount(itemCount), currentDimension() === '3d');
-    drawPoints(
-      renderer,
-      renderer.hitBuffer,
-      hits.length,
-      HIT_COLOR,
-      hitSizeForCount(itemCount),
-      false,
-    );
+    drawPoints(renderer, renderer.hitBuffer, hits.length, HIT_COLOR, hitSizeForCount(itemCount), false);
   }
   renderQueryOverlay();
   renderFirstHitOverlay();
@@ -431,7 +417,6 @@ function render(): void {
   buildTimeEl.textContent = formatDuration(buildMs);
   queryTimeEl.textContent = formatQueryDuration(queryMs);
   coreTimeEl.textContent = formatQueryDuration(coreMs);
-  convertRowEl.hidden = convertMs < 0.05;
   convertTimeEl.textContent = formatQueryDuration(convertMs);
   copyTimeEl.textContent = formatQueryDuration(copyMs);
   resultLabelEl.textContent = resultLabel();
@@ -637,8 +622,9 @@ function uploadHits(
     return;
   }
 
-  if (hitClipCoords.length !== hitIndices.length * 3) {
-    hitClipCoords = new Float32Array(hitIndices.length * 3);
+  const required = hitIndices.length * 3;
+  if (hitClipCoords.length < required) {
+    hitClipCoords = new Float32Array(required);
   }
 
   for (let i = 0; i < hitIndices.length; i++) {
@@ -651,7 +637,7 @@ function uploadHits(
 
   const { gl } = renderer;
   gl.bindBuffer(gl.ARRAY_BUFFER, renderer.hitBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, hitClipCoords, gl.DYNAMIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, hitClipCoords.subarray(0, required), gl.DYNAMIC_DRAW);
 }
 
 function uploadHitBoxes(
@@ -659,8 +645,9 @@ function uploadHitBoxes(
   data: Float64Array<ArrayBufferLike>,
   hitIndices: Uint32Array<ArrayBufferLike>,
 ): void {
-  if (hitBoxCoords.length !== hitIndices.length * 5) {
-    hitBoxCoords = new Float32Array(hitIndices.length * 5);
+  const required = hitIndices.length * 5;
+  if (hitBoxCoords.length < required) {
+    hitBoxCoords = new Float32Array(required);
   }
 
   for (let i = 0; i < hitIndices.length; i++) {
@@ -676,7 +663,7 @@ function uploadHitBoxes(
 
   const { gl } = renderer;
   gl.bindBuffer(gl.ARRAY_BUFFER, renderer.hitBoxBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, hitBoxCoords, gl.DYNAMIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, hitBoxCoords.subarray(0, required), gl.DYNAMIC_DRAW);
 }
 
 function toFloat32Points(data: Float64Array<ArrayBufferLike>): Float32Array {

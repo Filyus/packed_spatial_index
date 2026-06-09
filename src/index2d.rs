@@ -23,6 +23,7 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
 use crate::geometry::{Box2D, Point2D};
+use crate::join::{JoinTree, join_core, self_join_core};
 use crate::neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared};
 use crate::persistence::{
     ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -372,6 +373,98 @@ impl Index2D {
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.visit_with_stack(query, &mut stack, visitor)
+    }
+
+    /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
+    /// of `other`.
+    ///
+    /// A single synchronized descent over both trees replaces one full search
+    /// per item, so large joins run far faster than a search loop. Pair order
+    /// is traversal order and is not part of the API.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Box2D};
+    ///
+    /// let mut a = Index2DBuilder::new(2);
+    /// a.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// a.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// let a = a.finish().unwrap();
+    ///
+    /// let mut b = Index2DBuilder::new(1);
+    /// b.add(Box2D::new(0.5, 0.5, 5.5, 5.5));
+    /// let b = b.finish().unwrap();
+    ///
+    /// let mut pairs = a.join(&b);
+    /// pairs.sort_unstable();
+    /// assert_eq!(pairs, vec![(0, 0), (1, 0)]);
+    /// ```
+    pub fn join(&self, other: &Index2D) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every intersecting pair between `self` and `other` without
+    /// collecting a result `Vec`.
+    ///
+    /// The visitor receives `(item_in_self, item_in_other)` positions in the
+    /// original insertion order of each index. Return [`ControlFlow::Break`]
+    /// for early exit.
+    pub fn join_with<B, F>(&self, other: &Index2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        join_core(self, other, visitor)
+    }
+
+    /// Return every unordered pair of distinct intersecting items within this
+    /// index, each pair exactly once.
+    ///
+    /// This is the broad-phase primitive: pairs of items whose boxes overlap.
+    /// The order of ids within a pair and the pair order are traversal order
+    /// and are not part of the API.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Box2D};
+    ///
+    /// let mut builder = Index2DBuilder::new(3);
+    /// builder.add(Box2D::new(0.0, 0.0, 2.0, 2.0));
+    /// builder.add(Box2D::new(1.0, 1.0, 3.0, 3.0));
+    /// builder.add(Box2D::new(9.0, 9.0, 10.0, 10.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let pairs: Vec<_> = index
+    ///     .self_join()
+    ///     .into_iter()
+    ///     .map(|(i, j)| (i.min(j), i.max(j)))
+    ///     .collect();
+    /// assert_eq!(pairs, vec![(0, 1)]);
+    /// ```
+    pub fn self_join(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every unordered pair of distinct intersecting items within this
+    /// index without collecting a result `Vec`.
+    ///
+    /// Return [`ControlFlow::Break`] for early exit.
+    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        self_join_core(self, visitor)
     }
 
     fn collect_neighbors_with_queues(
@@ -1057,6 +1150,46 @@ impl<'a> Index2DView<'a> {
         self.visit_with_stack(query, &mut stack, visitor)
     }
 
+    /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
+    /// of `other`. See [`Index2D::join`].
+    pub fn join(&self, other: &Index2DView<'_>) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every intersecting pair between `self` and `other`. See
+    /// [`Index2D::join_with`].
+    pub fn join_with<B, F>(&self, other: &Index2DView<'_>, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        join_core(self, other, visitor)
+    }
+
+    /// Return every unordered pair of distinct intersecting items within this
+    /// view, each pair exactly once. See [`Index2D::self_join`].
+    pub fn self_join(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every unordered pair of distinct intersecting items within this
+    /// view. See [`Index2D::self_join_with`].
+    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        self_join_core(self, visitor)
+    }
+
     fn collect_neighbors_with_queues(
         &self,
         point: Point2D,
@@ -1377,5 +1510,87 @@ impl<'a> Index2DView<'a> {
     #[inline]
     fn index_at_unchecked(&self, index: usize) -> usize {
         read_u64_le_unchecked(self.indices, index * 8) as usize
+    }
+}
+
+impl JoinTree for Index2D {
+    type Bounds = Box2D;
+
+    #[inline]
+    fn join_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn join_num_nodes(&self) -> usize {
+        self.entries.len()
+    }
+    #[inline]
+    fn join_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn join_level_count(&self) -> usize {
+        self.level_bounds.len()
+    }
+    #[inline]
+    fn join_level_bound(&self, level: usize) -> usize {
+        self.level_bounds[level]
+    }
+    #[inline]
+    fn join_bounds(&self, pos: usize) -> Box2D {
+        self.entries[pos]
+    }
+    #[inline]
+    fn join_index(&self, pos: usize) -> usize {
+        self.indices[pos]
+    }
+    #[inline]
+    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
+        outer.contains(inner)
+    }
+}
+
+impl JoinTree for Index2DView<'_> {
+    type Bounds = Box2D;
+
+    #[inline]
+    fn join_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn join_num_nodes(&self) -> usize {
+        self.num_nodes
+    }
+    #[inline]
+    fn join_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn join_level_count(&self) -> usize {
+        self.level_count
+    }
+    #[inline]
+    fn join_level_bound(&self, level: usize) -> usize {
+        self.level_bound_unchecked(level)
+    }
+    #[inline]
+    fn join_bounds(&self, pos: usize) -> Box2D {
+        self.entry_at_unchecked(pos)
+    }
+    #[inline]
+    fn join_index(&self, pos: usize) -> usize {
+        self.index_at_unchecked(pos)
+    }
+    #[inline]
+    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
+        outer.contains(inner)
     }
 }

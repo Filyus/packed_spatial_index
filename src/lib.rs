@@ -47,6 +47,7 @@ mod index3d;
 mod index3d_f32;
 #[cfg(feature = "simd")]
 mod index3d_soa;
+mod join;
 mod neighbors;
 mod persistence;
 mod sort2d;

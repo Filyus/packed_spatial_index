@@ -385,6 +385,57 @@ assert_eq!(close, ControlFlow::Break(1));
 Results are returned in nondecreasing distance order. Ties between equal-distance
 items are not stable across index layouts.
 
+### `join` / `join_with`
+
+Reports every intersecting pair of items between two indexes through one
+synchronized descent over both trees, instead of one full search per item.
+On 1M x 1M random boxes this runs about 7x faster than a search loop.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+# let buildings = builder.finish()?;
+# let mut builder = Index2DBuilder::new(1);
+# builder.add(Box2D::new(0.5, 0.5, 5.5, 5.5));
+# let parcels = builder.finish()?;
+let mut pairs = buildings.join(&parcels);
+pairs.sort_unstable();
+assert_eq!(pairs, vec![(0, 0), (1, 0)]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+`join_with` is the visitor form with `ControlFlow` early exit. Pair order is
+traversal order and is not part of the API.
+
+### `self_join` / `self_join_with`
+
+Reports every unordered pair of distinct intersecting items within one index,
+each pair exactly once — the broad-phase primitive for collision detection and
+overlap deduplication. On 1M random boxes this runs about 19x faster than
+searching the index with each of its own items.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut builder = Index2DBuilder::new(3);
+# builder.add(Box2D::new(0.0, 0.0, 2.0, 2.0));
+# builder.add(Box2D::new(1.0, 1.0, 3.0, 3.0));
+# builder.add(Box2D::new(9.0, 9.0, 10.0, 10.0));
+# let index = builder.finish()?;
+let pairs: Vec<_> = index
+    .self_join()
+    .into_iter()
+    .map(|(i, j)| (i.min(j), i.max(j)))
+    .collect();
+assert_eq!(pairs, vec![(0, 1)]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+Joins are available on `Index2D`, `Index3D`, their SIMD counterparts, and all
+zero-copy views. The scalar AoS indexes are currently the fastest join hosts:
+the join inner loop reads whole boxes, which favors the AoS layout over SoA.
+
 ## Common Tasks
 
 ### Find boxes that contain a point

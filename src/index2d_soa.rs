@@ -13,6 +13,7 @@ use crate::{
     builder2d::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box2D, Point2D},
+    join::{JoinTree, join_core, self_join_core},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     persistence::{
         ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -477,6 +478,47 @@ impl SimdIndex2D {
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.visit_avx512(query, &mut stack, visitor)
+    }
+
+    /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
+    /// of `other`. See [`Index2D::join`](crate::Index2D::join).
+    pub fn join(&self, other: &SimdIndex2D) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every intersecting pair between `self` and `other`. See
+    /// [`Index2D::join_with`](crate::Index2D::join_with).
+    pub fn join_with<B, F>(&self, other: &SimdIndex2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        join_core(self, other, visitor)
+    }
+
+    /// Return every unordered pair of distinct intersecting items within this
+    /// index, each pair exactly once. See
+    /// [`Index2D::self_join`](crate::Index2D::self_join).
+    pub fn self_join(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every unordered pair of distinct intersecting items within this
+    /// index. See [`Index2D::self_join_with`](crate::Index2D::self_join_with).
+    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        self_join_core(self, visitor)
     }
 
     fn collect_neighbors_with_queue(
@@ -1693,6 +1735,47 @@ impl<'a> SimdIndex2DView<'a> {
         self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
     }
 
+    /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
+    /// of `other`. See [`Index2D::join`](crate::Index2D::join).
+    pub fn join(&self, other: &SimdIndex2DView<'_>) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every intersecting pair between `self` and `other`. See
+    /// [`Index2D::join_with`](crate::Index2D::join_with).
+    pub fn join_with<B, F>(&self, other: &SimdIndex2DView<'_>, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        join_core(self, other, visitor)
+    }
+
+    /// Return every unordered pair of distinct intersecting items within this
+    /// view, each pair exactly once. See
+    /// [`Index2D::self_join`](crate::Index2D::self_join).
+    pub fn self_join(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every unordered pair of distinct intersecting items within this
+    /// view. See [`Index2D::self_join_with`](crate::Index2D::self_join_with).
+    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        self_join_core(self, visitor)
+    }
+
     fn collect_neighbors_with_queue(
         &self,
         point: Point2D,
@@ -1834,5 +1917,92 @@ impl<'a> SimdIndex2DView<'a> {
                 _ => return best_index,
             }
         }
+    }
+}
+
+impl JoinTree for SimdIndex2D {
+    type Bounds = Box2D;
+
+    #[inline]
+    fn join_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn join_num_nodes(&self) -> usize {
+        self.min_xs.len()
+    }
+    #[inline]
+    fn join_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn join_level_count(&self) -> usize {
+        self.level_bounds.len()
+    }
+    #[inline]
+    fn join_level_bound(&self, level: usize) -> usize {
+        self.level_bounds[level]
+    }
+    #[inline]
+    fn join_bounds(&self, pos: usize) -> Box2D {
+        Box2D::new(
+            self.min_xs[pos],
+            self.min_ys[pos],
+            self.max_xs[pos],
+            self.max_ys[pos],
+        )
+    }
+    #[inline]
+    fn join_index(&self, pos: usize) -> usize {
+        self.indices[pos]
+    }
+    #[inline]
+    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
+        outer.contains(inner)
+    }
+}
+
+impl JoinTree for SimdIndex2DView<'_> {
+    type Bounds = Box2D;
+
+    #[inline]
+    fn join_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn join_num_nodes(&self) -> usize {
+        self.num_nodes
+    }
+    #[inline]
+    fn join_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn join_level_count(&self) -> usize {
+        self.level_count
+    }
+    #[inline]
+    fn join_level_bound(&self, level: usize) -> usize {
+        self.level_bound_unchecked(level)
+    }
+    #[inline]
+    fn join_bounds(&self, pos: usize) -> Box2D {
+        self.box_at(pos)
+    }
+    #[inline]
+    fn join_index(&self, pos: usize) -> usize {
+        self.index_at(pos)
+    }
+    #[inline]
+    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
+        outer.contains(inner)
     }
 }

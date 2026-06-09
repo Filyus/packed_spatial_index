@@ -9,6 +9,7 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box3D, Point3D},
+    join::{JoinTree, join_core, self_join_core},
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
     persistence::{
         ByteWriter, LoadError, parse_index3d_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -320,6 +321,66 @@ impl Index3D {
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.visit_with_stack(query, &mut stack, visitor)
+    }
+
+    /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
+    /// of `other`. See [`Index2D::join`](crate::Index2D::join).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box3D, Index3DBuilder};
+    ///
+    /// let mut a = Index3DBuilder::new(2);
+    /// a.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// a.add(Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+    /// let a = a.finish().unwrap();
+    ///
+    /// let mut b = Index3DBuilder::new(1);
+    /// b.add(Box3D::new(0.5, 0.5, 0.5, 5.5, 5.5, 5.5));
+    /// let b = b.finish().unwrap();
+    ///
+    /// let mut pairs = a.join(&b);
+    /// pairs.sort_unstable();
+    /// assert_eq!(pairs, vec![(0, 0), (1, 0)]);
+    /// ```
+    pub fn join(&self, other: &Index3D) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every intersecting pair between `self` and `other`. See
+    /// [`Index2D::join_with`](crate::Index2D::join_with).
+    pub fn join_with<B, F>(&self, other: &Index3D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        join_core(self, other, visitor)
+    }
+
+    /// Return every unordered pair of distinct intersecting items within this
+    /// index, each pair exactly once. See
+    /// [`Index2D::self_join`](crate::Index2D::self_join).
+    pub fn self_join(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every unordered pair of distinct intersecting items within this
+    /// index. See [`Index2D::self_join_with`](crate::Index2D::self_join_with).
+    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        self_join_core(self, visitor)
     }
 
     fn collect_neighbors_with_queues(
@@ -854,6 +915,47 @@ impl<'a> Index3DView<'a> {
         self.visit_with_stack(query, &mut stack, visitor)
     }
 
+    /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
+    /// of `other`. See [`Index2D::join`](crate::Index2D::join).
+    pub fn join(&self, other: &Index3DView<'_>) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every intersecting pair between `self` and `other`. See
+    /// [`Index2D::join_with`](crate::Index2D::join_with).
+    pub fn join_with<B, F>(&self, other: &Index3DView<'_>, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        join_core(self, other, visitor)
+    }
+
+    /// Return every unordered pair of distinct intersecting items within this
+    /// view, each pair exactly once. See
+    /// [`Index2D::self_join`](crate::Index2D::self_join).
+    pub fn self_join(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every unordered pair of distinct intersecting items within this
+    /// view. See [`Index2D::self_join_with`](crate::Index2D::self_join_with).
+    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        self_join_core(self, visitor)
+    }
+
     fn collect_neighbors_with_queues(
         &self,
         point: Point3D,
@@ -1172,5 +1274,87 @@ impl<'a> Index3DView<'a> {
     #[inline]
     fn index_at_unchecked(&self, index: usize) -> usize {
         read_u64_le_unchecked(self.indices, index * 8) as usize
+    }
+}
+
+impl JoinTree for Index3D {
+    type Bounds = Box3D;
+
+    #[inline]
+    fn join_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn join_num_nodes(&self) -> usize {
+        self.entries.len()
+    }
+    #[inline]
+    fn join_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn join_level_count(&self) -> usize {
+        self.level_bounds.len()
+    }
+    #[inline]
+    fn join_level_bound(&self, level: usize) -> usize {
+        self.level_bounds[level]
+    }
+    #[inline]
+    fn join_bounds(&self, pos: usize) -> Box3D {
+        self.entries[pos]
+    }
+    #[inline]
+    fn join_index(&self, pos: usize) -> usize {
+        self.indices[pos]
+    }
+    #[inline]
+    fn bounds_overlap(a: Box3D, b: Box3D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box3D, inner: Box3D) -> bool {
+        outer.contains(inner)
+    }
+}
+
+impl JoinTree for Index3DView<'_> {
+    type Bounds = Box3D;
+
+    #[inline]
+    fn join_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn join_num_nodes(&self) -> usize {
+        self.num_nodes
+    }
+    #[inline]
+    fn join_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn join_level_count(&self) -> usize {
+        self.level_count
+    }
+    #[inline]
+    fn join_level_bound(&self, level: usize) -> usize {
+        self.level_bound_unchecked(level)
+    }
+    #[inline]
+    fn join_bounds(&self, pos: usize) -> Box3D {
+        self.entry_at_unchecked(pos)
+    }
+    #[inline]
+    fn join_index(&self, pos: usize) -> usize {
+        self.index_at_unchecked(pos)
+    }
+    #[inline]
+    fn bounds_overlap(a: Box3D, b: Box3D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box3D, inner: Box3D) -> bool {
+        outer.contains(inner)
     }
 }

@@ -76,7 +76,9 @@
             <option value="clustered">Clustered</option>
           </select>
         </label>
-        <button id="roundtrip" type="button">Roundtrip</button>
+        <button id="saveIndex" type="button">Save</button>
+        <button id="loadIndex" type="button">Load</button>
+        <input id="loadIndexFile" type="file" accept=".psi" style="display:none" aria-hidden="true" />
         <button id="regenerate" type="button">Regenerate</button>
       </section>
       <section class="stage">
@@ -89,6 +91,10 @@
         <div id="queryRect" aria-hidden="true"></div>
         <div id="queryPoint" aria-hidden="true"></div>
         <div id="firstHit" aria-hidden="true"></div>
+        <div id="loaderOverlay" class="loader-overlay" role="status" aria-live="polite" aria-hidden="true">
+          <span class="loader-spinner" aria-hidden="true"></span>
+          <span class="loader-label">Generating…</span>
+        </div>
         <section id="errorOverlay" class="error-overlay" role="alert" aria-live="assertive">
           <strong>Build failed</strong>
           <div class="error-message-scroll">
@@ -116,7 +122,7 @@
           <small>wide</small>
         </div>
         <section class="stats" aria-live="polite">
-          <span>Build <b id="buildTime"></b></span>
+          <span><span id="buildLabel">Build</span> <b id="buildTime"></b></span>
           <span>Search <b id="queryTime"></b></span>
           <span>Core <b id="coreTime"></b></span>
           <span>u32 <b id="convertTime"></b></span>

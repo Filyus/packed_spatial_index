@@ -1,47 +1,35 @@
 import init, { WasmIndex2D, WasmIndex3D } from '../pkg/packed_spatial_index_wasm_demo';
-import type { Dimension, Geometry, WorldView } from './render-types';
 import {
-  createWebGpuRenderer,
-  renderGpuScene,
-  uploadGpuHits,
-  uploadGpuItems,
-  type GpuRenderer,
-  type GpuScene,
-} from './webgpu-renderer';
+  SCENE_COLORS,
+  hitSizeForCount,
+  itemStrideFor,
+  pointSizeForCount,
+  zValueForBox,
+  zValueForPoint,
+  type Dimension,
+  type Geometry,
+  type Renderer,
+  type Scene,
+  type WorldView,
+} from './rendering';
+import { clampCoordinate, generateDataset, type Distribution } from './dataset';
+import { mustQuery } from './dom';
+import { createOverlays, type QueryPoint, type QueryRect } from './overlays';
+import { parsePsiHeader, reconstructItems } from './psi-format';
+import { validateWasmWrapper } from './wasm-validate';
+import { createWebGlRenderer } from './webgl-renderer';
+import { createWebGpuRenderer } from './webgpu-renderer';
 
-type Distribution = 'uniform' | 'clustered';
 type QueryMode = 'range' | 'nearest';
 type ResultMode = 'all' | 'any' | 'first';
 type RendererMode = 'webgl' | 'webgpu';
 type WasmIndex = WasmIndex2D | WasmIndex3D;
-
-type QueryRect = {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-};
-
-type QueryPoint = {
-  x: number;
-  y: number;
-};
 
 type DepthSlice = {
   min: number;
   max: number;
   center: number;
   thickness: number;
-};
-
-type Cluster = {
-  x: number;
-  y: number;
-  z: number;
-  sigmaX: number;
-  sigmaY: number;
-  sigmaZ: number;
-  rotation: number;
 };
 
 type SearchProfile = {
@@ -52,78 +40,14 @@ type SearchProfile = {
   totalMs: number;
 };
 
-type IndexExtent = {
-  empty: boolean;
-  minX?: number;
-  minY?: number;
-  minZ?: number;
-  maxX?: number;
-  maxY?: number;
-  maxZ?: number;
-};
-
-type WebGlRenderer = {
-  gl: WebGL2RenderingContext;
-  pointProgram: WebGLProgram;
-  boxProgram: WebGLProgram;
-  indexedBoxProgram: WebGLProgram;
-  indexedPointProgram: WebGLProgram;
-  positionLocation: number;
-  colorLocation: WebGLUniformLocation;
-  useDepthColorLocation: WebGLUniformLocation;
-  pointSizeLocation: WebGLUniformLocation;
-  worldSizeLocation: WebGLUniformLocation;
-  boxCornerLocation: number;
-  boxLocation: number;
-  boxDepthLocation: number;
-  boxColorLocation: WebGLUniformLocation;
-  boxUseDepthColorLocation: WebGLUniformLocation;
-  boxWorldSizeLocation: WebGLUniformLocation;
-  indexedBoxCornerLocation: number;
-  indexedBoxColorLocation: WebGLUniformLocation;
-  indexedBoxWorldSizeLocation: WebGLUniformLocation;
-  indexedBoxTextureLocation: WebGLUniformLocation;
-  indexedBoxHitTextureLocation: WebGLUniformLocation;
-  indexedBoxTextureWidthLocation: WebGLUniformLocation;
-  indexedBoxHitTextureWidthLocation: WebGLUniformLocation;
-  indexedPointColorLocation: WebGLUniformLocation;
-  indexedPointWorldSizeLocation: WebGLUniformLocation;
-  indexedPointSizeLocation: WebGLUniformLocation;
-  indexedPointTextureLocation: WebGLUniformLocation;
-  indexedPointHitTextureLocation: WebGLUniformLocation;
-  indexedPointTextureWidthLocation: WebGLUniformLocation;
-  indexedPointHitTextureWidthLocation: WebGLUniformLocation;
-  unitQuadBuffer: WebGLBuffer;
-  pointBuffer: WebGLBuffer;
-  boxBuffer: WebGLBuffer;
-  itemTexture: WebGLTexture;
-  hitIndexTexture: WebGLTexture;
-  itemTextureWidth: number;
-  hitTextureWidth: number;
-  maxTextureSize: number;
-};
-
 const WORLD_SIZE = 10_000;
 const WORLD_Z_SIZE = 10_000;
-const BACKGROUND = [5 / 255, 7 / 255, 10 / 255, 1] as const;
-const POINT_COLOR = [68 / 255, 174 / 255, 210 / 255, 0.74] as const;
-const HIT_COLOR = [1, 1, 1, 0.98] as const;
-const BOX_COLOR = [68 / 255, 174 / 255, 210 / 255, 0.24] as const;
-const HIT_BOX_COLOR = [1, 1, 1, 0.72] as const;
 
 const stage = mustQuery<HTMLElement>('.stage');
 const glCanvas = mustQuery<HTMLCanvasElement>('#glCanvas');
 const gpuCanvas = mustQuery<HTMLCanvasElement>('#gpuCanvas');
-const queryShadeEls = [
-  mustQuery<HTMLDivElement>('#queryShadeTop'),
-  mustQuery<HTMLDivElement>('#queryShadeRight'),
-  mustQuery<HTMLDivElement>('#queryShadeBottom'),
-  mustQuery<HTMLDivElement>('#queryShadeLeft'),
-] as const;
-const queryRectEl = mustQuery<HTMLDivElement>('#queryRect');
-const queryPointEl = mustQuery<HTMLDivElement>('#queryPoint');
-const firstHitEl = mustQuery<HTMLDivElement>('#firstHit');
 const errorOverlayEl = mustQuery<HTMLElement>('#errorOverlay');
+const loaderOverlayEl = mustQuery<HTMLElement>('#loaderOverlay');
 const errorMessageEl = mustQuery<HTMLPreElement>('#errorMessage');
 const reloadDemoButton = mustQuery<HTMLButtonElement>('#reloadDemo');
 const depthLegendEl = mustQuery<HTMLDivElement>('#depthLegend');
@@ -141,9 +65,12 @@ const depthValueInput = mustQuery<HTMLInputElement>('#depthValue');
 const thicknessInput = mustQuery<HTMLInputElement>('#thickness');
 const thicknessValueInput = mustQuery<HTMLInputElement>('#thicknessValue');
 const distributionSelect = mustQuery<HTMLSelectElement>('#distribution');
-const roundtripButton = mustQuery<HTMLButtonElement>('#roundtrip');
+const saveIndexButton = mustQuery<HTMLButtonElement>('#saveIndex');
+const loadIndexButton = mustQuery<HTMLButtonElement>('#loadIndex');
+const loadIndexFileInput = mustQuery<HTMLInputElement>('#loadIndexFile');
 const regenerateButton = mustQuery<HTMLButtonElement>('#regenerate');
 const statusEl = mustQuery<HTMLSpanElement>('#status');
+const buildLabelEl = mustQuery<HTMLElement>('#buildLabel');
 const buildTimeEl = mustQuery<HTMLElement>('#buildTime');
 const queryTimeEl = mustQuery<HTMLElement>('#queryTime');
 const coreTimeEl = mustQuery<HTMLElement>('#coreTime');
@@ -153,8 +80,9 @@ const resultLabelEl = mustQuery<HTMLElement>('#resultLabel');
 const hitCountEl = mustQuery<HTMLElement>('#hitCount');
 const pointTotalEl = mustQuery<HTMLElement>('#pointTotal');
 
-const renderer = createWebGlRenderer(glCanvas);
-let gpuRenderer: GpuRenderer | null = null;
+const webglRenderer: Renderer = createWebGlRenderer(glCanvas);
+let webgpuRenderer: Renderer | null = null;
+const overlays = createOverlays(stage);
 
 let items: Float64Array<ArrayBufferLike> = new Float64Array();
 let itemCount = 0;
@@ -165,6 +93,7 @@ let queryPoint: QueryPoint | null = null;
 let depthSlice: DepthSlice = defaultDepthSlice();
 let dragStart: { x: number; y: number } | null = null;
 let buildMs = 0;
+let buildLabel: 'Build' | 'Load' = 'Build';
 let queryMs = 0;
 let coreMs = 0;
 let convertMs = 0;
@@ -188,17 +117,10 @@ window.addEventListener('unhandledrejection', (event) => {
 
 await init();
 validateWasmWrapper();
-setStatus('WASM SIMD build loaded');
-gpuRenderer = await createWebGpuRenderer(gpuCanvas);
-if (!gpuRenderer) {
+setStatus('WASM module loaded');
+webgpuRenderer = await createWebGpuRenderer(gpuCanvas, showBuildError);
+if (!webgpuRenderer) {
   disableRendererOption('webgpu');
-} else {
-  gpuRenderer.device.addEventListener('uncapturederror', (event) => {
-    showBuildError(event.error);
-  });
-  gpuRenderer.device.lost.then((info) => {
-    showBuildError(new Error(`WebGPU device lost: ${info.reason} ${info.message}`.trim()));
-  });
 }
 rebuild();
 
@@ -216,7 +138,7 @@ rendererSelect.addEventListener('change', () => {
       scheduleRender();
       return;
     }
-    uploadItems(renderer, items);
+    activeRenderer().uploadItems(items, scene());
     search();
   } catch (error) {
     showBuildError(error);
@@ -247,7 +169,15 @@ thicknessValueInput.addEventListener('change', () => {
   search();
 });
 distributionSelect.addEventListener('change', rebuild);
-roundtripButton.addEventListener('click', roundtripIndex);
+saveIndexButton.addEventListener('click', saveIndex);
+loadIndexButton.addEventListener('click', () => loadIndexFileInput.click());
+loadIndexFileInput.addEventListener('change', () => {
+  const file = loadIndexFileInput.files?.[0];
+  if (file) {
+    loadIndex(file);
+  }
+  loadIndexFileInput.value = '';
+});
 reloadDemoButton.addEventListener('click', () => {
   window.location.reload();
 });
@@ -317,18 +247,29 @@ new ResizeObserver(() => {
 syncModeControls();
 updateWorldView();
 
-function rebuild(): void {
+async function rebuild(): Promise<void> {
   const previous = snapshotScene();
+  showLoader();
+  setStatus('Generating…');
   try {
+    // Yield a frame so the loader and status paint before the synchronous
+    // generate+build blocks the main thread.
+    await nextPaint();
     updateWorldView();
     rememberStageSize();
     syncZInputs();
     const count = normalizePointCount(Number(pointCountInput.value));
     pointCountInput.value = String(count);
-    const geometry = currentGeometry();
     const distribution = distributionSelect.value as Distribution;
 
-    const nextItems = geometry === 'boxes' ? generateBoxes(count, distribution) : generatePoints(count, distribution);
+    const nextItems = generateDataset({
+      count,
+      geometry: currentGeometry(),
+      distribution,
+      dimension: currentDimension(),
+      worldView,
+      worldZSize: WORLD_Z_SIZE,
+    });
     const nodeSize = Number(nodeSizeSelect.value);
     const started = performance.now();
     const nextIndex = buildCurrentIndex(nextItems, nodeSize);
@@ -338,17 +279,36 @@ function rebuild(): void {
     itemCount = count;
     index = nextIndex;
     buildMs = nextBuildMs;
+    buildLabel = 'Build';
     query ??= defaultQuery();
     queryPoint ??= defaultQueryPoint();
-    uploadItems(renderer, items);
+    activeRenderer().uploadItems(items, scene());
     hasBuiltInitialDataset = true;
-    setStatus('WASM SIMD build loaded');
+    setStatus('Dataset generated');
     search();
   } catch (error) {
     restoreScene(previous);
     restoreRenderedScene(previous);
     showBuildError(error);
+  } finally {
+    hideLoader();
   }
+}
+
+function showLoader(): void {
+  loaderOverlayEl.classList.add('is-visible');
+  loaderOverlayEl.setAttribute('aria-hidden', 'false');
+}
+
+function hideLoader(): void {
+  loaderOverlayEl.classList.remove('is-visible');
+  loaderOverlayEl.setAttribute('aria-hidden', 'true');
+}
+
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
 }
 
 function rebuildIndex(): void {
@@ -358,8 +318,9 @@ function rebuildIndex(): void {
     const started = performance.now();
     const nextIndex = buildCurrentIndex(items, nodeSize);
     buildMs = performance.now() - started;
+    buildLabel = 'Build';
     index = nextIndex;
-    setStatus('WASM SIMD build loaded');
+    setStatus('Index rebuilt');
     query ??= defaultQuery();
     queryPoint ??= defaultQueryPoint();
     search();
@@ -374,6 +335,7 @@ type SceneSnapshot = {
   index: WasmIndex | null;
   hits: Uint32Array<ArrayBufferLike>;
   buildMs: number;
+  buildLabel: 'Build' | 'Load';
   queryMs: number;
   coreMs: number;
   convertMs: number;
@@ -390,6 +352,7 @@ function snapshotScene(): SceneSnapshot {
     index,
     hits,
     buildMs,
+    buildLabel,
     queryMs,
     coreMs,
     convertMs,
@@ -406,6 +369,7 @@ function restoreScene(snapshot: SceneSnapshot): void {
   index = snapshot.index;
   hits = snapshot.hits;
   buildMs = snapshot.buildMs;
+  buildLabel = snapshot.buildLabel;
   queryMs = snapshot.queryMs;
   coreMs = snapshot.coreMs;
   convertMs = snapshot.convertMs;
@@ -420,8 +384,9 @@ function restoreRenderedScene(snapshot: SceneSnapshot): void {
     return;
   }
   try {
-    uploadItems(renderer, items);
-    uploadHits(renderer, items, hits);
+    const current = scene();
+    activeRenderer().uploadItems(items, current);
+    activeRenderer().uploadHits(hits);
   } catch (error) {
     console.warn('failed to restore previous rendered scene', error);
   }
@@ -565,25 +530,70 @@ function search(): void {
     }
   }
 
-  uploadHits(renderer, items, hits);
+  activeRenderer().uploadHits(hits);
   scheduleRender();
 }
 
-function roundtripIndex(): void {
+function saveIndex(): void {
   if (!index) {
     return;
   }
-
-  const serializeStarted = performance.now();
   const bytes = index.to_bytes();
-  const serializeMs = performance.now() - serializeStarted;
-  const loadStarted = performance.now();
-  index = currentDimension() === '3d' ? WasmIndex3D.from_bytes(bytes) : WasmIndex2D.from_bytes(bytes);
-  const loadMs = performance.now() - loadStarted;
-  setStatus(
-    `Roundtrip ${bytes.byteLength.toLocaleString()} bytes, save ${formatDuration(serializeMs)}, load ${formatDuration(loadMs)}`,
-  );
-  search();
+  const copy = new Uint8Array(bytes);
+  const blob = new Blob([copy], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const distributionPrefix = distributionSelect.value === 'uniform' ? '' : `${distributionSelect.value}-`;
+  a.download = `${distributionPrefix}${currentGeometry()}-${itemCount}-${currentDimension()}.psi`;
+  a.click();
+  URL.revokeObjectURL(url);
+  setStatus('Index saved');
+}
+
+function loadIndex(file: File): void {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const buffer = reader.result as ArrayBuffer;
+      const header = parsePsiHeader(new DataView(buffer));
+      if (header.isF32) {
+        throw new Error('This demo builds f64 indexes; f32 .psi files are not supported here');
+      }
+
+      const dimension: Dimension = header.is3d ? '3d' : '2d';
+      const bytes = new Uint8Array(buffer);
+      const started = performance.now();
+      const nextIndex = header.is3d ? WasmIndex3D.from_bytes(bytes) : WasmIndex2D.from_bytes(bytes);
+      const elapsed = performance.now() - started;
+      const { items: nextItems, geometry } = reconstructItems(buffer, header);
+
+      // Sync the UI to the loaded index so rendering and stats match it.
+      dimensionSelect.value = dimension;
+      geometrySelect.value = geometry;
+      if (Array.from(nodeSizeSelect.options).some((option) => Number(option.value) === header.nodeSize)) {
+        nodeSizeSelect.value = String(header.nodeSize);
+      }
+      pointCountInput.value = String(header.numItems);
+
+      items = nextItems;
+      itemCount = header.numItems;
+      index = nextIndex;
+      buildMs = elapsed;
+      buildLabel = 'Load';
+      hasBuiltInitialDataset = true;
+      query ??= defaultQuery();
+      queryPoint ??= defaultQueryPoint();
+      syncModeControls();
+      updateWorldView();
+      activeRenderer().uploadItems(items, scene());
+      setStatus('Index loaded');
+      search();
+    } catch (error) {
+      showBuildError(error);
+    }
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 function scheduleRender(): void {
@@ -603,14 +613,21 @@ function render(): void {
   const gpu = usingGpu();
   glCanvas.style.display = gpu ? 'none' : 'block';
   gpuCanvas.style.display = gpu ? 'block' : 'none';
-  if (gpu) {
-    renderGpuScene(gpuRenderer as GpuRenderer, gpuScene());
-  } else {
-    renderWebGlScene();
-  }
-  renderQueryOverlay();
-  renderFirstHitOverlay();
+  activeRenderer().render(scene());
+  overlays.render({
+    mode: currentMode(),
+    resultMode: currentResultMode(),
+    dimension: currentDimension(),
+    geometry: currentGeometry(),
+    query,
+    queryPoint,
+    anyResult,
+    hits,
+    items,
+    worldView,
+  });
 
+  buildLabelEl.textContent = buildLabel;
   buildTimeEl.textContent = formatDuration(buildMs);
   queryTimeEl.textContent = formatQueryDuration(queryMs);
   coreTimeEl.textContent = formatQueryDuration(coreMs);
@@ -619,426 +636,6 @@ function render(): void {
   resultLabelEl.textContent = resultLabel();
   hitCountEl.textContent = resultSummary ?? hits.length.toLocaleString();
   pointTotalEl.textContent = itemCount.toLocaleString();
-}
-
-function renderWebGlScene(): void {
-  resizeCanvasToDisplaySize(glCanvas);
-
-  const { gl } = renderer;
-  gl.viewport(0, 0, glCanvas.width, glCanvas.height);
-  gl.clearColor(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], BACKGROUND[3]);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-
-  if (currentGeometry() === 'boxes') {
-    drawBoxes(renderer, renderer.boxBuffer, itemCount, BOX_COLOR, currentDimension() === '3d');
-    drawIndexedBoxes(renderer, hits.length, HIT_BOX_COLOR);
-  } else {
-    drawPoints(renderer, renderer.pointBuffer, itemCount, POINT_COLOR, pointSizeForCount(itemCount), currentDimension() === '3d');
-    drawIndexedPoints(renderer, hits.length, HIT_COLOR, hitSizeForCount(itemCount));
-  }
-}
-
-function renderQueryOverlay(): void {
-  const mode = currentMode();
-  if (mode !== 'range' || !query) {
-    queryRectEl.style.display = 'none';
-    hideQueryShade();
-  } else {
-    const x0 = worldToCanvasX(query.minX);
-    const y0 = worldToCanvasY(query.minY);
-    const x1 = worldToCanvasX(query.maxX);
-    const y1 = worldToCanvasY(query.maxY);
-    const left = Math.min(x0, x1);
-    const top = Math.min(y0, y1);
-    const width = Math.abs(x1 - x0);
-    const height = Math.abs(y1 - y0);
-    queryRectEl.style.display = 'block';
-    queryRectEl.classList.toggle('is-match', anyResult === true);
-    queryRectEl.classList.toggle('is-miss', anyResult === false);
-    queryRectEl.style.transform = `translate(${left}px, ${top}px)`;
-    queryRectEl.style.width = `${width}px`;
-    queryRectEl.style.height = `${height}px`;
-    if (currentDimension() === '3d') {
-      renderQueryShade(left, top, width, height);
-    } else {
-      hideQueryShade();
-    }
-  }
-
-  if (mode !== 'nearest' || !queryPoint) {
-    queryPointEl.style.display = 'none';
-  } else {
-    queryPointEl.style.display = 'block';
-    queryPointEl.style.transform = `translate(${worldToCanvasX(queryPoint.x)}px, ${worldToCanvasY(queryPoint.y)}px)`;
-  }
-}
-
-function renderQueryShade(left: number, top: number, width: number, height: number): void {
-  const stageWidth = stage.clientWidth;
-  const stageHeight = stage.clientHeight;
-  setShadeRect(queryShadeEls[0], 0, 0, stageWidth, top);
-  setShadeRect(queryShadeEls[1], left + width, top, Math.max(0, stageWidth - left - width), height);
-  setShadeRect(queryShadeEls[2], 0, top + height, stageWidth, Math.max(0, stageHeight - top - height));
-  setShadeRect(queryShadeEls[3], 0, top, left, height);
-}
-
-function hideQueryShade(): void {
-  for (const shade of queryShadeEls) {
-    shade.style.display = 'none';
-  }
-}
-
-function setShadeRect(element: HTMLDivElement, left: number, top: number, width: number, height: number): void {
-  if (width <= 0 || height <= 0) {
-    element.style.display = 'none';
-    return;
-  }
-  element.style.display = 'block';
-  element.style.transform = `translate(${left}px, ${top}px)`;
-  element.style.width = `${width}px`;
-  element.style.height = `${height}px`;
-}
-
-function renderFirstHitOverlay(): void {
-  if (currentMode() !== 'range' || currentResultMode() !== 'first' || hits.length === 0) {
-    firstHitEl.style.display = 'none';
-    return;
-  }
-
-  const index = hits[0];
-  const stride = itemStride();
-  let x0: number;
-  let y0: number;
-  let x1: number;
-  let y1: number;
-  if (currentGeometry() === 'boxes') {
-    const offset = index * stride;
-    x0 = worldToCanvasX(items[offset]);
-    y0 = worldToCanvasY(items[offset + 1]);
-    const maxOffset = currentDimension() === '3d' ? offset + 3 : offset + 2;
-    x1 = worldToCanvasX(items[maxOffset]);
-    y1 = worldToCanvasY(items[maxOffset + 1]);
-    firstHitEl.classList.remove('is-point');
-    firstHitEl.classList.add('is-box');
-  } else {
-    const offset = index * stride;
-    const x = worldToCanvasX(items[offset]);
-    const y = worldToCanvasY(items[offset + 1]);
-    const radius = 8;
-    x0 = x - radius;
-    y0 = y - radius;
-    x1 = x + radius;
-    y1 = y + radius;
-    firstHitEl.classList.remove('is-box');
-    firstHitEl.classList.add('is-point');
-  }
-
-  const centerX = (x0 + x1) * 0.5;
-  const centerY = (y0 + y1) * 0.5;
-  const minSize = currentGeometry() === 'boxes' ? 10 : 16;
-  const padding = currentGeometry() === 'boxes' ? 4 : 0;
-  const width = Math.max(minSize, Math.abs(x1 - x0) + padding * 2);
-  const height = Math.max(minSize, Math.abs(y1 - y0) + padding * 2);
-  const left = centerX - width * 0.5;
-  const top = centerY - height * 0.5;
-  firstHitEl.style.display = 'block';
-  firstHitEl.style.transform = `translate(${left}px, ${top}px)`;
-  firstHitEl.style.width = `${width}px`;
-  firstHitEl.style.height = `${height}px`;
-}
-
-function drawPoints(
-  renderer: WebGlRenderer,
-  buffer: WebGLBuffer,
-  count: number,
-  color: readonly [number, number, number, number],
-  pointSize: number,
-  useDepthColor: boolean,
-): void {
-  if (count === 0) {
-    return;
-  }
-
-  const { gl } = renderer;
-  gl.useProgram(renderer.pointProgram);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.enableVertexAttribArray(renderer.positionLocation);
-  gl.vertexAttribPointer(renderer.positionLocation, 3, gl.FLOAT, false, 0, 0);
-  gl.uniform4f(renderer.colorLocation, color[0], color[1], color[2], color[3]);
-  gl.uniform1i(renderer.useDepthColorLocation, useDepthColor ? 1 : 0);
-  gl.uniform1f(renderer.pointSizeLocation, pointSize * (window.devicePixelRatio || 1));
-  gl.uniform2f(renderer.worldSizeLocation, worldView.width, worldView.height);
-  gl.drawArrays(gl.POINTS, 0, count);
-}
-
-function drawBoxes(
-  renderer: WebGlRenderer,
-  buffer: WebGLBuffer,
-  count: number,
-  color: readonly [number, number, number, number],
-  useDepthColor: boolean,
-): void {
-  if (count === 0) {
-    return;
-  }
-
-  const { gl } = renderer;
-  gl.useProgram(renderer.boxProgram);
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, renderer.unitQuadBuffer);
-  gl.enableVertexAttribArray(renderer.boxCornerLocation);
-  gl.vertexAttribPointer(renderer.boxCornerLocation, 2, gl.FLOAT, false, 0, 0);
-  gl.vertexAttribDivisor(renderer.boxCornerLocation, 0);
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.enableVertexAttribArray(renderer.boxLocation);
-  gl.vertexAttribPointer(renderer.boxLocation, 4, gl.FLOAT, false, 20, 0);
-  gl.vertexAttribDivisor(renderer.boxLocation, 1);
-  gl.enableVertexAttribArray(renderer.boxDepthLocation);
-  gl.vertexAttribPointer(renderer.boxDepthLocation, 1, gl.FLOAT, false, 20, 16);
-  gl.vertexAttribDivisor(renderer.boxDepthLocation, 1);
-
-  gl.uniform4f(renderer.boxColorLocation, color[0], color[1], color[2], color[3]);
-  gl.uniform1i(renderer.boxUseDepthColorLocation, useDepthColor ? 1 : 0);
-  gl.uniform2f(renderer.boxWorldSizeLocation, worldView.width, worldView.height);
-  gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
-  gl.vertexAttribDivisor(renderer.boxLocation, 0);
-  gl.vertexAttribDivisor(renderer.boxDepthLocation, 0);
-}
-
-function drawIndexedBoxes(
-  renderer: WebGlRenderer,
-  count: number,
-  color: readonly [number, number, number, number],
-): void {
-  if (count === 0) {
-    return;
-  }
-
-  const { gl } = renderer;
-  gl.useProgram(renderer.indexedBoxProgram);
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, renderer.unitQuadBuffer);
-  gl.enableVertexAttribArray(renderer.indexedBoxCornerLocation);
-  gl.vertexAttribPointer(renderer.indexedBoxCornerLocation, 2, gl.FLOAT, false, 0, 0);
-  gl.vertexAttribDivisor(renderer.indexedBoxCornerLocation, 0);
-
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, renderer.itemTexture);
-  gl.uniform1i(renderer.indexedBoxTextureLocation, 0);
-  gl.activeTexture(gl.TEXTURE1);
-  gl.bindTexture(gl.TEXTURE_2D, renderer.hitIndexTexture);
-  gl.uniform1i(renderer.indexedBoxHitTextureLocation, 1);
-
-  gl.uniform1i(renderer.indexedBoxTextureWidthLocation, renderer.itemTextureWidth);
-  gl.uniform1i(renderer.indexedBoxHitTextureWidthLocation, renderer.hitTextureWidth);
-  gl.uniform4f(renderer.indexedBoxColorLocation, color[0], color[1], color[2], color[3]);
-  gl.uniform2f(renderer.indexedBoxWorldSizeLocation, worldView.width, worldView.height);
-  gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
-}
-
-function drawIndexedPoints(
-  renderer: WebGlRenderer,
-  count: number,
-  color: readonly [number, number, number, number],
-  pointSize: number,
-): void {
-  if (count === 0) {
-    return;
-  }
-
-  const { gl } = renderer;
-  gl.useProgram(renderer.indexedPointProgram);
-
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, renderer.itemTexture);
-  gl.uniform1i(renderer.indexedPointTextureLocation, 0);
-  gl.activeTexture(gl.TEXTURE1);
-  gl.bindTexture(gl.TEXTURE_2D, renderer.hitIndexTexture);
-  gl.uniform1i(renderer.indexedPointHitTextureLocation, 1);
-
-  gl.uniform1i(renderer.indexedPointTextureWidthLocation, renderer.itemTextureWidth);
-  gl.uniform1i(renderer.indexedPointHitTextureWidthLocation, renderer.hitTextureWidth);
-  gl.uniform4f(renderer.indexedPointColorLocation, color[0], color[1], color[2], color[3]);
-  gl.uniform2f(renderer.indexedPointWorldSizeLocation, worldView.width, worldView.height);
-  gl.uniform1f(renderer.indexedPointSizeLocation, pointSize * (window.devicePixelRatio || 1));
-  gl.drawArrays(gl.POINTS, 0, count);
-}
-
-function uploadItems(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
-  if (usingGpu()) {
-    uploadGpuItems(gpuRenderer as GpuRenderer, data, gpuScene());
-    return;
-  }
-  if (currentGeometry() === 'boxes') {
-    uploadBoxes(renderer, data);
-  } else {
-    uploadPoints(renderer, data);
-  }
-  uploadItemTexture(renderer, data);
-}
-
-function uploadPoints(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
-  const { gl } = renderer;
-  gl.bindBuffer(gl.ARRAY_BUFFER, renderer.pointBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, toFloat32Points(data), gl.STATIC_DRAW);
-}
-
-function uploadBoxes(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
-  const { gl } = renderer;
-  gl.bindBuffer(gl.ARRAY_BUFFER, renderer.boxBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, toFloat32Boxes(data), gl.STATIC_DRAW);
-}
-
-function uploadItemTexture(renderer: WebGlRenderer, data: Float64Array<ArrayBufferLike>): void {
-  const { width, height } = textureSizeForCount(renderer, itemCount);
-  const texels = new Float32Array(width * height * 4);
-  const stride = itemStride();
-  if (currentGeometry() === 'boxes') {
-    const maxXOffset = currentDimension() === '3d' ? 3 : 2;
-    const maxYOffset = currentDimension() === '3d' ? 4 : 3;
-    for (let i = 0; i < itemCount; i++) {
-      const src = i * stride;
-      const dst = i * 4;
-      texels[dst] = data[src];
-      texels[dst + 1] = data[src + 1];
-      texels[dst + 2] = data[src + maxXOffset];
-      texels[dst + 3] = data[src + maxYOffset];
-    }
-  } else {
-    for (let i = 0; i < itemCount; i++) {
-      const src = i * stride;
-      const dst = i * 4;
-      texels[dst] = data[src];
-      texels[dst + 1] = data[src + 1];
-    }
-  }
-
-  const { gl } = renderer;
-  renderer.itemTextureWidth = width;
-  gl.bindTexture(gl.TEXTURE_2D, renderer.itemTexture);
-  setDataTextureParameters(gl);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, texels);
-}
-
-function uploadHits(
-  renderer: WebGlRenderer,
-  data: Float64Array<ArrayBufferLike>,
-  hitIndices: Uint32Array<ArrayBufferLike>,
-): void {
-  if (usingGpu()) {
-    uploadGpuHits(gpuRenderer as GpuRenderer, hitIndices);
-    return;
-  }
-  uploadHitIndexTexture(renderer, hitIndices);
-}
-
-function uploadHitIndexTexture(
-  renderer: WebGlRenderer,
-  hitIndices: Uint32Array<ArrayBufferLike>,
-): void {
-  const { width, height } = textureSizeForCount(renderer, hitIndices.length);
-  const texels = new Uint32Array(width * height);
-  texels.set(hitIndices);
-
-  const { gl } = renderer;
-  renderer.hitTextureWidth = width;
-  gl.bindTexture(gl.TEXTURE_2D, renderer.hitIndexTexture);
-  setDataTextureParameters(gl);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32UI, width, height, 0, gl.RED_INTEGER, gl.UNSIGNED_INT, texels);
-}
-
-function textureSizeForCount(renderer: WebGlRenderer, count: number): { width: number; height: number } {
-  const width = Math.max(1, Math.min(renderer.maxTextureSize, Math.ceil(Math.sqrt(Math.max(1, count)))));
-  return {
-    width,
-    height: Math.max(1, Math.ceil(count / width)),
-  };
-}
-
-function setDataTextureParameters(gl: WebGL2RenderingContext): void {
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-}
-
-function toFloat32Points(data: Float64Array<ArrayBufferLike>): Float32Array {
-  const stride = itemStride();
-  const out = new Float32Array(itemCount * 3);
-  for (let i = 0; i < itemCount; i++) {
-    const offset = i * stride;
-    const outOffset = i * 3;
-    out[outOffset] = data[offset];
-    out[outOffset + 1] = data[offset + 1];
-    out[outOffset + 2] = zValueForPoint(data, offset);
-  }
-  return out;
-}
-
-function toFloat32Boxes(data: Float64Array<ArrayBufferLike>): Float32Array {
-  const stride = itemStride();
-  const out = new Float32Array(itemCount * 5);
-  for (let i = 0; i < itemCount; i++) {
-    const offset = i * stride;
-    const maxOffset = currentDimension() === '3d' ? offset + 3 : offset + 2;
-    const outOffset = i * 5;
-    out[outOffset] = data[offset];
-    out[outOffset + 1] = data[offset + 1];
-    out[outOffset + 2] = data[maxOffset];
-    out[outOffset + 3] = data[maxOffset + 1];
-    out[outOffset + 4] = zValueForBox(data, offset);
-  }
-  return out;
-}
-
-function zValueForPoint(data: Float64Array<ArrayBufferLike>, offset: number): number {
-  if (currentDimension() !== '3d') {
-    return 0.5;
-  }
-  return normalizeDepthColor(data[offset + 2]);
-}
-
-function zValueForBox(data: Float64Array<ArrayBufferLike>, offset: number): number {
-  if (currentDimension() !== '3d') {
-    return 0.5;
-  }
-  return normalizeDepthColor((data[offset + 2] + data[offset + 5]) * 0.5);
-}
-
-function normalizeDepthColor(z: number): number {
-  return Math.min(1, Math.max(0, z / WORLD_Z_SIZE));
-}
-
-function toClipX(x: number): number {
-  return (x / worldView.width) * 2 - 1;
-}
-
-function toClipY(y: number): number {
-  return 1 - (y / worldView.height) * 2;
-}
-
-function pointSizeForCount(count: number): number {
-  if (count <= 5_000) {
-    return 2.1;
-  }
-  if (count <= 50_000) {
-    return 1.55;
-  }
-  return 1.0;
-}
-
-function hitSizeForCount(count: number): number {
-  if (count <= 5_000) {
-    return 3.0;
-  }
-  if (count <= 50_000) {
-    return 2.35;
-  }
-  if (count <= 300_000) {
-    return 1.8;
-  }
-  return 1.45;
 }
 
 function formatDuration(ms: number): string {
@@ -1051,147 +648,6 @@ function formatQueryDuration(ms: number): string {
 
 function roundToChromeTimerStep(ms: number): number {
   return Math.round(ms * 10) / 10;
-}
-
-function generatePoints(count: number, distribution: Distribution): Float64Array {
-  const stride = itemStrideFor(currentDimension(), 'points');
-  const out = new Float64Array(count * stride);
-  if (distribution === 'clustered') {
-    const clusters = generateClusters();
-    for (let i = 0; i < count; i++) {
-      const cluster = clusters[i % clusters.length];
-      const point = randomGaussianClusterPoint(cluster);
-      writePoint(out, i, point.x, point.y, point.z);
-    }
-    return out;
-  }
-
-  for (let i = 0; i < count; i++) {
-    writePoint(out, i, Math.random() * worldView.width, Math.random() * worldView.height, Math.random() * WORLD_Z_SIZE);
-  }
-  return out;
-}
-
-function generateBoxes(count: number, distribution: Distribution): Float64Array {
-  const stride = itemStrideFor(currentDimension(), 'boxes');
-  const out = new Float64Array(count * stride);
-  const minWorldSide = Math.min(worldView.width, worldView.height);
-  const minSize = minWorldSide * 0.003;
-  const maxSize = minWorldSide * 0.014;
-  const minDepth = WORLD_Z_SIZE * 0.003;
-  const maxDepth = WORLD_Z_SIZE * 0.014;
-
-  if (distribution === 'clustered') {
-    const clusters = generateClusters();
-    for (let i = 0; i < count; i++) {
-      const center = randomGaussianClusterPoint(clusters[i % clusters.length]);
-      writeRandomBox(out, i, center.x, center.y, center.z, minSize, maxSize, minDepth, maxDepth);
-    }
-    return out;
-  }
-
-  for (let i = 0; i < count; i++) {
-    writeRandomBox(
-      out,
-      i,
-      Math.random() * worldView.width,
-      Math.random() * worldView.height,
-      Math.random() * WORLD_Z_SIZE,
-      minSize,
-      maxSize,
-      minDepth,
-      maxDepth,
-    );
-  }
-  return out;
-}
-
-function generateClusters(): Cluster[] {
-  const minWorldSide = Math.min(worldView.width, worldView.height);
-  const centerMargin = minWorldSide * 0.22;
-  const zMargin = WORLD_Z_SIZE * 0.22;
-  const sigma = minWorldSide * 0.032;
-  const sigmaZ = WORLD_Z_SIZE * 0.032;
-  return Array.from({ length: 12 }, () => ({
-    x: centerMargin + Math.random() * (worldView.width - centerMargin * 2),
-    y: centerMargin + Math.random() * (worldView.height - centerMargin * 2),
-    z: zMargin + Math.random() * (WORLD_Z_SIZE - zMargin * 2),
-    sigmaX: sigma * (0.85 + Math.random() * 0.35),
-    sigmaY: sigma * (0.85 + Math.random() * 0.35),
-    sigmaZ: sigmaZ * (0.85 + Math.random() * 0.35),
-    rotation: Math.random() * Math.PI,
-  }));
-}
-
-function writePoint(out: Float64Array, index: number, x: number, y: number, z: number): void {
-  const offset = index * itemStrideFor(currentDimension(), 'points');
-  out[offset] = clampCoordinate(x, 0, worldView.width);
-  out[offset + 1] = clampCoordinate(y, 0, worldView.height);
-  if (currentDimension() === '3d') {
-    out[offset + 2] = clampCoordinate(z, 0, WORLD_Z_SIZE);
-  }
-}
-
-function writeRandomBox(
-  out: Float64Array,
-  index: number,
-  centerX: number,
-  centerY: number,
-  centerZ: number,
-  minSize: number,
-  maxSize: number,
-  minDepth: number,
-  maxDepth: number,
-): void {
-  const width = minSize + Math.random() * Math.random() * (maxSize - minSize);
-  const height = minSize + Math.random() * Math.random() * (maxSize - minSize);
-  const depth = minDepth + Math.random() * Math.random() * (maxDepth - minDepth);
-  const minX = clampCoordinate(centerX - width * 0.5, 0, worldView.width);
-  const minY = clampCoordinate(centerY - height * 0.5, 0, worldView.height);
-  const maxX = clampCoordinate(centerX + width * 0.5, minX, worldView.width);
-  const maxY = clampCoordinate(centerY + height * 0.5, minY, worldView.height);
-  const offset = index * itemStrideFor(currentDimension(), 'boxes');
-  out[offset] = minX;
-  out[offset + 1] = minY;
-  if (currentDimension() === '3d') {
-    const minZ = clampCoordinate(centerZ - depth * 0.5, 0, WORLD_Z_SIZE);
-    const maxZ = clampCoordinate(centerZ + depth * 0.5, minZ, WORLD_Z_SIZE);
-    out[offset + 2] = minZ;
-    out[offset + 3] = maxX;
-    out[offset + 4] = maxY;
-    out[offset + 5] = maxZ;
-  } else {
-    out[offset + 2] = maxX;
-    out[offset + 3] = maxY;
-  }
-}
-
-function randomGaussianClusterPoint(cluster: Cluster): { x: number; y: number; z: number } {
-  const gx = randomNormal();
-  const gy = randomNormal();
-  const gz = randomNormal();
-  const localX = gx * cluster.sigmaX;
-  const localY = gy * cluster.sigmaY;
-  const cos = Math.cos(cluster.rotation);
-  const sin = Math.sin(cluster.rotation);
-  return {
-    x: cluster.x + localX * cos - localY * sin,
-    y: cluster.y + localX * sin + localY * cos,
-    z: cluster.z + gz * cluster.sigmaZ,
-  };
-}
-
-function randomNormal(): number {
-  const u = Math.max(Math.random(), Number.EPSILON);
-  const v = Math.random();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
-
-function clampCoordinate(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) {
-    return min;
-  }
-  return Math.min(max, Math.max(min, value));
 }
 
 function defaultQuery(): QueryRect {
@@ -1231,27 +687,26 @@ function currentRendererMode(): RendererMode {
 }
 
 function usingGpu(): boolean {
-  return currentRendererMode() === 'webgpu' && gpuRenderer !== null;
+  return currentRendererMode() === 'webgpu' && webgpuRenderer !== null;
 }
 
-function gpuScene(): GpuScene {
+function activeRenderer(): Renderer {
+  return usingGpu() ? (webgpuRenderer as Renderer) : webglRenderer;
+}
+
+function scene(): Scene {
+  const dimension = currentDimension();
   return {
     geometry: currentGeometry(),
-    dimension: currentDimension(),
+    dimension,
     itemCount,
     itemStride: itemStride(),
     worldView,
     pointSize: pointSizeForCount(itemCount),
     hitSize: hitSizeForCount(itemCount),
-    colors: {
-      background: BACKGROUND,
-      point: POINT_COLOR,
-      hit: HIT_COLOR,
-      box: BOX_COLOR,
-      hitBox: HIT_BOX_COLOR,
-    },
-    zValueForPoint,
-    zValueForBox,
+    colors: SCENE_COLORS,
+    zValueForPoint: (data, offset) => zValueForPoint(data, offset, dimension, WORLD_Z_SIZE),
+    zValueForBox: (data, offset) => zValueForBox(data, offset, dimension, WORLD_Z_SIZE),
   };
 }
 
@@ -1365,13 +820,6 @@ function itemStride(): number {
   return itemStrideFor(currentDimension(), currentGeometry());
 }
 
-function itemStrideFor(dimension: Dimension, geometry: Geometry): number {
-  if (geometry === 'boxes') {
-    return dimension === '3d' ? 6 : 4;
-  }
-  return dimension === '3d' ? 3 : 2;
-}
-
 function buildCurrentIndex(data: Float64Array<ArrayBufferLike>, nodeSize: number): WasmIndex {
   if (currentDimension() === '3d') {
     return currentGeometry() === 'boxes'
@@ -1432,14 +880,6 @@ function canvasToWorld(event: PointerEvent): { x: number; y: number } {
   };
 }
 
-function worldToCanvasX(x: number): number {
-  return (x / worldView.width) * stage.clientWidth;
-}
-
-function worldToCanvasY(y: number): number {
-  return (y / worldView.height) * stage.clientHeight;
-}
-
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) {
     return min;
@@ -1452,17 +892,6 @@ function normalizePointCount(value: number): number {
     return 50_000;
   }
   return Math.max(1_000, Math.round(value));
-}
-
-function resizeCanvasToDisplaySize(canvas: HTMLCanvasElement): void {
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(1, Math.round(rect.width * dpr));
-  const height = Math.max(1, Math.round(rect.height * dpr));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
 }
 
 function updateWorldView(): void {
@@ -1490,530 +919,3 @@ function rememberStageSize(): boolean {
   return changed;
 }
 
-function createWebGlRenderer(canvas: HTMLCanvasElement): WebGlRenderer {
-  const gl = canvas.getContext('webgl2', {
-    alpha: false,
-    antialias: false,
-    depth: false,
-    stencil: false,
-    powerPreference: 'high-performance',
-  });
-  if (!gl) {
-    throw new Error('WebGL2 is not available');
-  }
-
-  const pointProgram = createProgram(
-    gl,
-    `#version 300 es
-    in vec3 a_position;
-    uniform float u_pointSize;
-    uniform vec2 u_worldSize;
-    out float v_depth;
-
-    void main() {
-      vec2 clip = vec2(
-        (a_position.x / u_worldSize.x) * 2.0 - 1.0,
-        1.0 - (a_position.y / u_worldSize.y) * 2.0
-      );
-      gl_Position = vec4(clip, 0.0, 1.0);
-      gl_PointSize = u_pointSize;
-      v_depth = a_position.z;
-    }`,
-    `#version 300 es
-    precision highp float;
-
-    uniform vec4 u_color;
-    uniform bool u_useDepthColor;
-    in float v_depth;
-    out vec4 outColor;
-
-    vec3 depthColor(float t) {
-      vec3 nearColor = vec3(0.18, 0.45, 0.82);
-      vec3 midLowColor = vec3(0.18, 0.66, 0.92);
-      vec3 midHighColor = vec3(0.48, 0.92, 0.82);
-      vec3 farColor = vec3(1.0, 0.88, 0.32);
-      if (t < 0.33) {
-        return mix(nearColor, midLowColor, t / 0.33);
-      }
-      if (t < 0.66) {
-        return mix(midLowColor, midHighColor, (t - 0.33) / 0.33);
-      }
-      return mix(midHighColor, farColor, (t - 0.66) / 0.34);
-    }
-
-    void main() {
-      vec2 delta = gl_PointCoord - vec2(0.5);
-      if (dot(delta, delta) > 0.25) {
-        discard;
-      }
-      vec4 color = u_useDepthColor ? vec4(depthColor(v_depth), 0.94) : u_color;
-      outColor = color;
-    }`,
-  );
-
-  const boxProgram = createProgram(
-    gl,
-    `#version 300 es
-    in vec2 a_corner;
-    in vec4 a_box;
-    in float a_depth;
-    uniform vec2 u_worldSize;
-    out float v_depth;
-
-    void main() {
-      vec2 world = mix(a_box.xy, a_box.zw, a_corner);
-      vec2 clip = vec2(
-        (world.x / u_worldSize.x) * 2.0 - 1.0,
-        1.0 - (world.y / u_worldSize.y) * 2.0
-      );
-      gl_Position = vec4(clip, 0.0, 1.0);
-      v_depth = a_depth;
-    }`,
-    `#version 300 es
-    precision highp float;
-
-    uniform vec4 u_color;
-    uniform bool u_useDepthColor;
-    in float v_depth;
-    out vec4 outColor;
-
-    vec3 depthColor(float t) {
-      vec3 nearColor = vec3(0.18, 0.45, 0.82);
-      vec3 midLowColor = vec3(0.18, 0.66, 0.92);
-      vec3 midHighColor = vec3(0.48, 0.92, 0.82);
-      vec3 farColor = vec3(1.0, 0.88, 0.32);
-      if (t < 0.33) {
-        return mix(nearColor, midLowColor, t / 0.33);
-      }
-      if (t < 0.66) {
-        return mix(midLowColor, midHighColor, (t - 0.33) / 0.33);
-      }
-      return mix(midHighColor, farColor, (t - 0.66) / 0.34);
-    }
-
-    void main() {
-      outColor = u_useDepthColor ? vec4(depthColor(v_depth), 0.38) : u_color;
-    }`,
-  );
-
-  const indexedBoxProgram = createProgram(
-    gl,
-    `#version 300 es
-    precision highp float;
-    precision highp usampler2D;
-
-    in vec2 a_corner;
-    uniform sampler2D u_boxTexture;
-    uniform usampler2D u_hitTexture;
-    uniform int u_boxTextureWidth;
-    uniform int u_hitTextureWidth;
-    uniform vec2 u_worldSize;
-
-    vec4 fetchBox(uint index) {
-      int i = int(index);
-      return texelFetch(u_boxTexture, ivec2(i % u_boxTextureWidth, i / u_boxTextureWidth), 0);
-    }
-
-    uint fetchHit(int instanceIndex) {
-      return texelFetch(u_hitTexture, ivec2(instanceIndex % u_hitTextureWidth, instanceIndex / u_hitTextureWidth), 0).r;
-    }
-
-    void main() {
-      vec4 box = fetchBox(fetchHit(gl_InstanceID));
-      vec2 world = mix(box.xy, box.zw, a_corner);
-      vec2 clip = vec2(
-        (world.x / u_worldSize.x) * 2.0 - 1.0,
-        1.0 - (world.y / u_worldSize.y) * 2.0
-      );
-      gl_Position = vec4(clip, 0.0, 1.0);
-    }`,
-    `#version 300 es
-    precision highp float;
-
-    uniform vec4 u_color;
-    out vec4 outColor;
-
-    void main() {
-      outColor = u_color;
-    }`,
-  );
-
-  const indexedPointProgram = createProgram(
-    gl,
-    `#version 300 es
-    precision highp float;
-    precision highp usampler2D;
-
-    uniform sampler2D u_itemTexture;
-    uniform usampler2D u_hitTexture;
-    uniform int u_itemTextureWidth;
-    uniform int u_hitTextureWidth;
-    uniform vec2 u_worldSize;
-    uniform float u_pointSize;
-
-    vec2 fetchPoint(uint index) {
-      int i = int(index);
-      return texelFetch(u_itemTexture, ivec2(i % u_itemTextureWidth, i / u_itemTextureWidth), 0).xy;
-    }
-
-    uint fetchHit(int instanceIndex) {
-      return texelFetch(u_hitTexture, ivec2(instanceIndex % u_hitTextureWidth, instanceIndex / u_hitTextureWidth), 0).r;
-    }
-
-    void main() {
-      vec2 world = fetchPoint(fetchHit(gl_VertexID));
-      vec2 clip = vec2(
-        (world.x / u_worldSize.x) * 2.0 - 1.0,
-        1.0 - (world.y / u_worldSize.y) * 2.0
-      );
-      gl_Position = vec4(clip, 0.0, 1.0);
-      gl_PointSize = u_pointSize;
-    }`,
-    `#version 300 es
-    precision highp float;
-
-    uniform vec4 u_color;
-    out vec4 outColor;
-
-    void main() {
-      vec2 delta = gl_PointCoord - vec2(0.5);
-      if (dot(delta, delta) > 0.25) {
-        discard;
-      }
-      outColor = u_color;
-    }`,
-  );
-
-  const unitQuadBuffer = gl.createBuffer();
-  const pointBuffer = gl.createBuffer();
-  const boxBuffer = gl.createBuffer();
-  const itemTexture = gl.createTexture();
-  const hitIndexTexture = gl.createTexture();
-  if (!unitQuadBuffer || !pointBuffer || !boxBuffer || !itemTexture || !hitIndexTexture) {
-    throw new Error('failed to create WebGL buffers');
-  }
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, unitQuadBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]), gl.STATIC_DRAW);
-
-  const colorLocation = gl.getUniformLocation(pointProgram, 'u_color');
-  const useDepthColorLocation = gl.getUniformLocation(pointProgram, 'u_useDepthColor');
-  const pointSizeLocation = gl.getUniformLocation(pointProgram, 'u_pointSize');
-  const worldSizeLocation = gl.getUniformLocation(pointProgram, 'u_worldSize');
-  if (!colorLocation || !useDepthColorLocation || !pointSizeLocation || !worldSizeLocation) {
-    throw new Error('failed to resolve WebGL uniforms');
-  }
-  const boxColorLocation = gl.getUniformLocation(boxProgram, 'u_color');
-  const boxUseDepthColorLocation = gl.getUniformLocation(boxProgram, 'u_useDepthColor');
-  const boxWorldSizeLocation = gl.getUniformLocation(boxProgram, 'u_worldSize');
-  if (!boxColorLocation || !boxUseDepthColorLocation || !boxWorldSizeLocation) {
-    throw new Error('failed to resolve WebGL box uniforms');
-  }
-  const indexedBoxColorLocation = gl.getUniformLocation(indexedBoxProgram, 'u_color');
-  const indexedBoxWorldSizeLocation = gl.getUniformLocation(indexedBoxProgram, 'u_worldSize');
-  const indexedBoxTextureLocation = gl.getUniformLocation(indexedBoxProgram, 'u_boxTexture');
-  const indexedBoxHitTextureLocation = gl.getUniformLocation(indexedBoxProgram, 'u_hitTexture');
-  const indexedBoxTextureWidthLocation = gl.getUniformLocation(indexedBoxProgram, 'u_boxTextureWidth');
-  const indexedBoxHitTextureWidthLocation = gl.getUniformLocation(indexedBoxProgram, 'u_hitTextureWidth');
-  if (
-    !indexedBoxColorLocation ||
-    !indexedBoxWorldSizeLocation ||
-    !indexedBoxTextureLocation ||
-    !indexedBoxHitTextureLocation ||
-    !indexedBoxTextureWidthLocation ||
-    !indexedBoxHitTextureWidthLocation
-  ) {
-    throw new Error('failed to resolve WebGL indexed box uniforms');
-  }
-  const indexedPointColorLocation = gl.getUniformLocation(indexedPointProgram, 'u_color');
-  const indexedPointWorldSizeLocation = gl.getUniformLocation(indexedPointProgram, 'u_worldSize');
-  const indexedPointSizeLocation = gl.getUniformLocation(indexedPointProgram, 'u_pointSize');
-  const indexedPointTextureLocation = gl.getUniformLocation(indexedPointProgram, 'u_itemTexture');
-  const indexedPointHitTextureLocation = gl.getUniformLocation(indexedPointProgram, 'u_hitTexture');
-  const indexedPointTextureWidthLocation = gl.getUniformLocation(indexedPointProgram, 'u_itemTextureWidth');
-  const indexedPointHitTextureWidthLocation = gl.getUniformLocation(indexedPointProgram, 'u_hitTextureWidth');
-  if (
-    !indexedPointColorLocation ||
-    !indexedPointWorldSizeLocation ||
-    !indexedPointSizeLocation ||
-    !indexedPointTextureLocation ||
-    !indexedPointHitTextureLocation ||
-    !indexedPointTextureWidthLocation ||
-    !indexedPointHitTextureWidthLocation
-  ) {
-    throw new Error('failed to resolve WebGL indexed point uniforms');
-  }
-
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-  return {
-    gl,
-    pointProgram,
-    boxProgram,
-    indexedBoxProgram,
-    indexedPointProgram,
-    positionLocation: gl.getAttribLocation(pointProgram, 'a_position'),
-    colorLocation,
-    useDepthColorLocation,
-    pointSizeLocation,
-    worldSizeLocation,
-    boxCornerLocation: gl.getAttribLocation(boxProgram, 'a_corner'),
-    boxLocation: gl.getAttribLocation(boxProgram, 'a_box'),
-    boxDepthLocation: gl.getAttribLocation(boxProgram, 'a_depth'),
-    boxColorLocation,
-    boxUseDepthColorLocation,
-    boxWorldSizeLocation,
-    indexedBoxCornerLocation: gl.getAttribLocation(indexedBoxProgram, 'a_corner'),
-    indexedBoxColorLocation,
-    indexedBoxWorldSizeLocation,
-    indexedBoxTextureLocation,
-    indexedBoxHitTextureLocation,
-    indexedBoxTextureWidthLocation,
-    indexedBoxHitTextureWidthLocation,
-    indexedPointColorLocation,
-    indexedPointWorldSizeLocation,
-    indexedPointSizeLocation,
-    indexedPointTextureLocation,
-    indexedPointHitTextureLocation,
-    indexedPointTextureWidthLocation,
-    indexedPointHitTextureWidthLocation,
-    unitQuadBuffer,
-    pointBuffer,
-    boxBuffer,
-    itemTexture,
-    hitIndexTexture,
-    itemTextureWidth: 1,
-    hitTextureWidth: 1,
-    maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
-  };
-}
-
-function createProgram(gl: WebGL2RenderingContext, vertexSource: string, fragmentSource: string): WebGLProgram {
-  const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexSource);
-  const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-  const program = gl.createProgram();
-  if (!program) {
-    throw new Error('failed to create WebGL program');
-  }
-
-  gl.attachShader(program, vertexShader);
-  gl.attachShader(program, fragmentShader);
-  gl.linkProgram(program);
-
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    const log = gl.getProgramInfoLog(program) ?? 'unknown WebGL program error';
-    gl.deleteProgram(program);
-    throw new Error(log);
-  }
-
-  return program;
-}
-
-function createShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
-  const shader = gl.createShader(type);
-  if (!shader) {
-    throw new Error('failed to create WebGL shader');
-  }
-
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    const log = gl.getShaderInfoLog(shader) ?? 'unknown WebGL shader error';
-    gl.deleteShader(shader);
-    throw new Error(log);
-  }
-
-  return shader;
-}
-
-function mustQuery<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) {
-    throw new Error(`missing element: ${selector}`);
-  }
-  return element;
-}
-
-function mustParentLabel(element: HTMLElement): HTMLLabelElement {
-  const label = element.closest('label');
-  if (!(label instanceof HTMLLabelElement)) {
-    throw new Error(`missing parent label for #${element.id}`);
-  }
-  return label;
-}
-
-function validateWasmWrapper(): void {
-  validateWasm2DWrapper();
-  validateWasm3DWrapper();
-}
-
-function validateWasm2DWrapper(): void {
-  const sample = new Float64Array([0, 0, 5, 5, 10, 10, 6, 4]);
-  const sampleIndex = WasmIndex2D.from_points(sample, 16);
-  const actual = Array.from(sampleIndex.search(4, 4, 7, 7)).sort((a, b) => a - b);
-  const expected = bruteForceSearch(sample, 4, 4, 7, 7);
-  if (actual.length !== expected.length || actual.some((value, i) => value !== expected[i])) {
-    throw new Error(`WASM validation failed: got [${actual}], expected [${expected}]`);
-  }
-  const profile = sampleIndex.search_profile(4, 4, 7, 7) as SearchProfile;
-  const profiled = Array.from(profile.hits).sort((a, b) => a - b);
-  if (profiled.length !== expected.length || profiled.some((value, i) => value !== expected[i])) {
-    throw new Error(`WASM profile validation failed: got [${profiled}], expected [${expected}]`);
-  }
-  const nearest = Array.from(sampleIndex.neighbors(5.5, 4.5, 2)).sort((a, b) => a - b);
-  if (nearest.length !== 2 || nearest[0] !== 1 || nearest[1] !== 3) {
-    throw new Error(`WASM neighbors validation failed: got [${nearest}], expected [1,3]`);
-  }
-  const nearestWithin = Array.from(sampleIndex.neighbors_within(5.5, 4.5, 4, 1.0)).sort((a, b) => a - b);
-  if (nearestWithin.length !== 2 || nearestWithin[0] !== 1 || nearestWithin[1] !== 3) {
-    throw new Error(`WASM neighbors_within validation failed: got [${nearestWithin}], expected [1,3]`);
-  }
-  const extent = sampleIndex.extent() as IndexExtent;
-  if (extent.empty || extent.minX !== 0 || extent.minY !== 0 || extent.maxX !== 10 || extent.maxY !== 10) {
-    throw new Error(`WASM extent validation failed: got ${JSON.stringify(extent)}`);
-  }
-  if (!sampleIndex.any(4, 4, 7, 7) || sampleIndex.any(20, 20, 30, 30)) {
-    throw new Error('WASM any validation failed');
-  }
-  const first = sampleIndex.first(4, 4, 7, 7);
-  if (first !== 1 && first !== 3) {
-    throw new Error(`WASM first validation failed: got ${first}, expected 1 or 3`);
-  }
-  const roundtrip = WasmIndex2D.from_bytes(sampleIndex.to_bytes());
-  const roundtripHits = Array.from(roundtrip.search(4, 4, 7, 7)).sort((a, b) => a - b);
-  if (roundtripHits.length !== expected.length || roundtripHits.some((value, i) => value !== expected[i])) {
-    throw new Error(`WASM persistence validation failed: got [${roundtripHits}], expected [${expected}]`);
-  }
-
-  let rejectedOddLength = false;
-  try {
-    WasmIndex2D.from_points(new Float64Array([1, 2, 3]), 16);
-  } catch {
-    rejectedOddLength = true;
-  }
-  if (!rejectedOddLength) {
-    throw new Error('odd-length input was accepted');
-  }
-
-  const boxes = new Float64Array([0, 0, 2, 2, 5, 5, 6, 6, 8, 1, 9, 3]);
-  const boxIndex = new WasmIndex2D(boxes, 16);
-  const boxHits = Array.from(boxIndex.search(1, 1, 5.5, 5.5)).sort((a, b) => a - b);
-  if (boxHits.length !== 2 || boxHits[0] !== 0 || boxHits[1] !== 1) {
-    throw new Error(`WASM box validation failed: got [${boxHits}], expected [0,1]`);
-  }
-
-  const empty = new WasmIndex2D(new Float64Array(), 16);
-  if (empty.search(0, 0, 1, 1).length !== 0) {
-    throw new Error('empty index returned hits');
-  }
-}
-
-function validateWasm3DWrapper(): void {
-  const sample = new Float64Array([0, 0, 0, 5, 5, 5, 10, 10, 10, 6, 4, 5]);
-  const sampleIndex = WasmIndex3D.from_points(sample, 16);
-  const actual = Array.from(sampleIndex.search(4, 4, 4, 7, 7, 7)).sort((a, b) => a - b);
-  const expected = bruteForceSearch3d(sample, 4, 4, 4, 7, 7, 7);
-  if (actual.length !== expected.length || actual.some((value, i) => value !== expected[i])) {
-    throw new Error(`WASM 3D validation failed: got [${actual}], expected [${expected}]`);
-  }
-  const profile = sampleIndex.search_profile(4, 4, 4, 7, 7, 7) as SearchProfile;
-  const profiled = Array.from(profile.hits).sort((a, b) => a - b);
-  if (profiled.length !== expected.length || profiled.some((value, i) => value !== expected[i])) {
-    throw new Error(`WASM 3D profile validation failed: got [${profiled}], expected [${expected}]`);
-  }
-  const nearest = Array.from(sampleIndex.neighbors(5.5, 4.5, 5.0, 2)).sort((a, b) => a - b);
-  if (nearest.length !== 2 || nearest[0] !== 1 || nearest[1] !== 3) {
-    throw new Error(`WASM 3D neighbors validation failed: got [${nearest}], expected [1,3]`);
-  }
-  const nearestWithin = Array.from(sampleIndex.neighbors_within(5.5, 4.5, 5.0, 4, 1.0)).sort((a, b) => a - b);
-  if (nearestWithin.length !== 2 || nearestWithin[0] !== 1 || nearestWithin[1] !== 3) {
-    throw new Error(`WASM 3D neighbors_within validation failed: got [${nearestWithin}], expected [1,3]`);
-  }
-  const extent = sampleIndex.extent() as IndexExtent;
-  if (
-    extent.empty ||
-    extent.minX !== 0 ||
-    extent.minY !== 0 ||
-    extent.minZ !== 0 ||
-    extent.maxX !== 10 ||
-    extent.maxY !== 10 ||
-    extent.maxZ !== 10
-  ) {
-    throw new Error(`WASM 3D extent validation failed: got ${JSON.stringify(extent)}`);
-  }
-  if (!sampleIndex.any(4, 4, 4, 7, 7, 7) || sampleIndex.any(20, 20, 20, 30, 30, 30)) {
-    throw new Error('WASM 3D any validation failed');
-  }
-  const first = sampleIndex.first(4, 4, 4, 7, 7, 7);
-  if (first !== 1 && first !== 3) {
-    throw new Error(`WASM 3D first validation failed: got ${first}, expected 1 or 3`);
-  }
-  const roundtrip = WasmIndex3D.from_bytes(sampleIndex.to_bytes());
-  const roundtripHits = Array.from(roundtrip.search(4, 4, 4, 7, 7, 7)).sort((a, b) => a - b);
-  if (roundtripHits.length !== expected.length || roundtripHits.some((value, i) => value !== expected[i])) {
-    throw new Error(`WASM 3D persistence validation failed: got [${roundtripHits}], expected [${expected}]`);
-  }
-
-  let rejectedOddLength = false;
-  try {
-    WasmIndex3D.from_points(new Float64Array([1, 2, 3, 4]), 16);
-  } catch {
-    rejectedOddLength = true;
-  }
-  if (!rejectedOddLength) {
-    throw new Error('odd-length 3D input was accepted');
-  }
-
-  const boxes = new Float64Array([0, 0, 0, 2, 2, 2, 5, 5, 5, 6, 6, 6, 8, 1, 2, 9, 3, 4]);
-  const boxIndex = new WasmIndex3D(boxes, 16);
-  const boxHits = Array.from(boxIndex.search(1, 1, 1, 5.5, 5.5, 5.5)).sort((a, b) => a - b);
-  if (boxHits.length !== 2 || boxHits[0] !== 0 || boxHits[1] !== 1) {
-    throw new Error(`WASM 3D box validation failed: got [${boxHits}], expected [0,1]`);
-  }
-
-  const empty = new WasmIndex3D(new Float64Array(), 16);
-  if (empty.search(0, 0, 0, 1, 1, 1).length !== 0) {
-    throw new Error('empty 3D index returned hits');
-  }
-}
-
-function bruteForceSearch(
-  data: Float64Array,
-  minX: number,
-  minY: number,
-  maxX: number,
-  maxY: number,
-): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < data.length; i += 2) {
-    const x = data[i];
-    const y = data[i + 1];
-    if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
-      out.push(i / 2);
-    }
-  }
-  return out;
-}
-
-function bruteForceSearch3d(
-  data: Float64Array,
-  minX: number,
-  minY: number,
-  minZ: number,
-  maxX: number,
-  maxY: number,
-  maxZ: number,
-): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < data.length; i += 3) {
-    const x = data[i];
-    const y = data[i + 1];
-    const z = data[i + 2];
-    if (x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ) {
-      out.push(i / 3);
-    }
-  }
-  return out;
-}

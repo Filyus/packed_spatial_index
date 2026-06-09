@@ -1,25 +1,6 @@
-import type { Dimension, Geometry, WorldView } from './render-types';
+import type { Renderer, Rgba, Scene } from './rendering';
 
-export type GpuScene = {
-  geometry: Geometry;
-  dimension: Dimension;
-  itemCount: number;
-  itemStride: number;
-  worldView: WorldView;
-  pointSize: number;
-  hitSize: number;
-  colors: {
-    background: readonly [number, number, number, number];
-    point: readonly [number, number, number, number];
-    hit: readonly [number, number, number, number];
-    box: readonly [number, number, number, number];
-    hitBox: readonly [number, number, number, number];
-  };
-  zValueForPoint(data: Float64Array<ArrayBufferLike>, offset: number): number;
-  zValueForBox(data: Float64Array<ArrayBufferLike>, offset: number): number;
-};
-
-export type GpuRenderer = {
+type GpuState = {
   device: GPUDevice;
   context: GPUCanvasContext;
   canvas: HTMLCanvasElement;
@@ -51,7 +32,10 @@ const DEFAULT_MAX_BUFFER_SIZE = 256 * 1024 * 1024;
 const DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE = 128 * 1024 * 1024;
 const GPU_UPLOAD_CHUNK_ITEMS = 1_000_000;
 
-export async function createWebGpuRenderer(canvas: HTMLCanvasElement): Promise<GpuRenderer | null> {
+export async function createWebGpuRenderer(
+  canvas: HTMLCanvasElement,
+  onError?: (error: unknown) => void,
+): Promise<Renderer | null> {
   if (!navigator.gpu) {
     return null;
   }
@@ -115,7 +99,7 @@ export async function createWebGpuRenderer(canvas: HTMLCanvasElement): Promise<G
 
   const uniformUsage = GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST;
   const storageUsage = GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST;
-  const renderer: GpuRenderer = {
+  const state: GpuState = {
     device,
     context,
     canvas,
@@ -137,15 +121,26 @@ export async function createWebGpuRenderer(canvas: HTMLCanvasElement): Promise<G
     itemCount: 0,
     hitCount: 0,
   };
-  rebuildBindGroups(renderer);
-  return renderer;
+  rebuildBindGroups(state);
+
+  if (onError) {
+    device.addEventListener('uncapturederror', (event) => {
+      onError((event as GPUUncapturedErrorEvent).error);
+    });
+    device.lost.then((info) => {
+      onError(new Error(`WebGPU device lost: ${info.reason} ${info.message}`.trim()));
+    });
+  }
+
+  return {
+    canvas,
+    uploadItems: (data, scene) => uploadGpuItems(state, data, scene),
+    uploadHits: (hitIndices) => uploadGpuHits(state, hitIndices),
+    render: (scene) => renderGpuScene(state, scene),
+  };
 }
 
-export function uploadGpuItems(
-  renderer: GpuRenderer,
-  data: Float64Array<ArrayBufferLike>,
-  scene: GpuScene,
-): void {
+function uploadGpuItems(renderer: GpuState, data: Float64Array<ArrayBufferLike>, scene: Scene): void {
   const count = scene.itemCount;
   const slots = Math.max(1, count);
 
@@ -162,7 +157,7 @@ export function uploadGpuItems(
   writeItems(renderer, data, scene);
 }
 
-export function uploadGpuHits(renderer: GpuRenderer, hitIndices: Uint32Array<ArrayBufferLike>): void {
+function uploadGpuHits(renderer: GpuState, hitIndices: Uint32Array<ArrayBufferLike>): void {
   const count = hitIndices.length;
   const grown = growBuffer(renderer, renderer.hitBuffer, renderer.hitCapacity, Math.max(1, count), 4, 'hit index');
   if (grown.changed) {
@@ -176,7 +171,7 @@ export function uploadGpuHits(renderer: GpuRenderer, hitIndices: Uint32Array<Arr
   }
 }
 
-export function renderGpuScene(renderer: GpuRenderer, scene: GpuScene): void {
+function renderGpuScene(renderer: GpuState, scene: Scene): void {
   resizeCanvasToDisplaySize(renderer.canvas);
 
   const view = renderer.context.getCurrentTexture().createView();
@@ -231,7 +226,7 @@ export function renderGpuScene(renderer: GpuRenderer, scene: GpuScene): void {
   renderer.device.queue.submit([encoder.finish()]);
 }
 
-function rebuildBindGroups(renderer: GpuRenderer): void {
+function rebuildBindGroups(renderer: GpuState): void {
   const geomBindingSize = storageBindingSize(renderer.itemCount, 16, renderer.maxStorageBufferBindingSize, 'geometry');
   const depthBindingSize = storageBindingSize(renderer.itemCount, 4, renderer.maxStorageBufferBindingSize, 'depth');
   const hitBindingSize = storageBindingSize(renderer.hitCount, 4, renderer.maxStorageBufferBindingSize, 'hit index');
@@ -264,7 +259,7 @@ function storageBindingSize(
 }
 
 function growBuffer(
-  renderer: GpuRenderer,
+  renderer: GpuState,
   current: GPUBuffer,
   capacity: number,
   needed: number,
@@ -287,7 +282,7 @@ function growBuffer(
   return { buffer, capacity: nextCapacity, changed: true };
 }
 
-function writeItems(renderer: GpuRenderer, data: Float64Array<ArrayBufferLike>, scene: GpuScene): void {
+function writeItems(renderer: GpuState, data: Float64Array<ArrayBufferLike>, scene: Scene): void {
   const maxXOffset = scene.dimension === '3d' ? 3 : 2;
   const maxYOffset = scene.dimension === '3d' ? 4 : 3;
   for (let start = 0; start < scene.itemCount; start += GPU_UPLOAD_CHUNK_ITEMS) {
@@ -319,10 +314,10 @@ function writeItems(renderer: GpuRenderer, data: Float64Array<ArrayBufferLike>, 
 }
 
 function writeUniform(
-  renderer: GpuRenderer,
+  renderer: GpuState,
   buffer: GPUBuffer,
-  scene: GpuScene,
-  color: readonly [number, number, number, number],
+  scene: Scene,
+  color: Rgba,
   pointSize: number,
   useDepthColor: boolean,
   useIndices: boolean,

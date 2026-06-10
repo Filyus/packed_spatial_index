@@ -205,6 +205,13 @@ impl Box2D {
         let dy = axis_distance(point.y, self.min_y, self.max_y);
         dx * dx + dy * dy
     }
+
+    #[inline]
+    pub(crate) fn distance_squared_to_box(&self, other: Box2D) -> f64 {
+        let dx = axis_gap(self.min_x, self.max_x, other.min_x, other.max_x);
+        let dy = axis_gap(self.min_y, self.max_y, other.min_y, other.max_y);
+        dx * dx + dy * dy
+    }
 }
 
 /// Axis-aligned 3D box stored as `(min_x, min_y, min_z, max_x, max_y, max_z)`.
@@ -365,6 +372,14 @@ impl Box3D {
         let dz = axis_distance(point.z, self.min_z, self.max_z);
         dx * dx + dy * dy + dz * dz
     }
+
+    #[inline]
+    pub(crate) fn distance_squared_to_box(&self, other: Box3D) -> f64 {
+        let dx = axis_gap(self.min_x, self.max_x, other.min_x, other.max_x);
+        let dy = axis_gap(self.min_y, self.max_y, other.min_y, other.max_y);
+        let dz = axis_gap(self.min_z, self.max_z, other.min_z, other.max_z);
+        dx * dx + dy * dy + dz * dz
+    }
 }
 
 /// 2D point used by nearest-neighbor searches.
@@ -468,6 +483,19 @@ fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
         min - point
     } else if point > max {
         point - max
+    } else {
+        0.0
+    }
+}
+
+/// Separation between the intervals `[a_min, a_max]` and `[b_min, b_max]`
+/// along one axis; `0.0` when they overlap or touch.
+#[inline]
+fn axis_gap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
+    if a_max < b_min {
+        b_min - a_max
+    } else if b_max < a_min {
+        a_min - b_max
     } else {
         0.0
     }

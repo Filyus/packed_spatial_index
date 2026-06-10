@@ -1,5 +1,42 @@
 use std::collections::BinaryHeap;
 
+use crate::geometry::{Box2D, Box3D, Point2D, Point3D};
+
+/// What a 2D nearest-neighbor traversal measures distance from: a point or a
+/// query box (box queries use box-to-box gap distance, `0.0` on overlap).
+#[derive(Clone, Copy)]
+pub(crate) enum NeighborQuery2D {
+    Point(Point2D),
+    Box(Box2D),
+}
+
+impl NeighborQuery2D {
+    #[inline]
+    pub(crate) fn distance_squared_to(self, bounds: Box2D) -> f64 {
+        match self {
+            NeighborQuery2D::Point(point) => bounds.distance_squared_to(point),
+            NeighborQuery2D::Box(query) => bounds.distance_squared_to_box(query),
+        }
+    }
+}
+
+/// 3D counterpart of [`NeighborQuery2D`].
+#[derive(Clone, Copy)]
+pub(crate) enum NeighborQuery3D {
+    Point(Point3D),
+    Box(Box3D),
+}
+
+impl NeighborQuery3D {
+    #[inline]
+    pub(crate) fn distance_squared_to(self, bounds: Box3D) -> f64 {
+        match self {
+            NeighborQuery3D::Point(point) => bounds.distance_squared_to(point),
+            NeighborQuery3D::Box(query) => bounds.distance_squared_to_box(query),
+        }
+    }
+}
+
 /// Reusable buffers for allocation-free repeated nearest-neighbor searches.
 ///
 /// # Example

@@ -385,6 +385,27 @@ assert_eq!(close, ControlFlow::Break(1));
 Results are returned in nondecreasing distance order. Ties between equal-distance
 items are not stable across index layouts.
 
+### `neighbors_of_box`
+
+Nearest-neighbor search measured from a query box instead of a point, using the
+box-to-box gap distance. Items overlapping or touching the query box have
+distance `0.0` and come first. `neighbors_of_box_within`,
+`neighbors_of_box_into`, `neighbors_of_box_with`, and `visit_neighbors_of_box`
+mirror the point-query variants.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut builder = Index2DBuilder::new(2);
+# builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# builder.add(Box2D::new(10.0, 0.0, 11.0, 1.0));
+# let index = builder.finish()?;
+// The query box's nearest edge is closer to item 1 than to item 0,
+// even though item 0 is closer to the query box's center.
+let query = Box2D::new(7.0, 0.0, 8.0, 1.0);
+assert_eq!(index.neighbors_of_box(query, 1), vec![1]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
 ### `join` / `join_with`
 
 Reports every intersecting pair of items between two indexes through one

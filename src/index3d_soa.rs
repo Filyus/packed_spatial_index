@@ -15,7 +15,9 @@ use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box3D, Point3D},
     join::{JoinTree, join_core, self_join_core},
-    neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared},
+    neighbors::{
+        NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
+    },
     persistence::{
         ByteWriter, LoadError, parse_index3d_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
         serialized_len_3d,
@@ -438,14 +440,22 @@ impl SimdIndex3D {
         }
         if max_results == 1 {
             let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-            if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
+            if let Some(index) =
+                self.nearest_one_with_queue(NeighborQuery3D::Point(point), max_distance, &mut queue)
+            {
                 results.push(index);
             }
             return;
         }
 
         let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
+        self.collect_neighbors_with_queue(
+            NeighborQuery3D::Point(point),
+            max_results,
+            max_distance,
+            results,
+            &mut queue,
+        );
     }
 
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
@@ -464,9 +474,11 @@ impl SimdIndex3D {
         }
         if max_results == 1 {
             workspace.queue.clear();
-            if let Some(index) =
-                self.nearest_one_with_queue(point, max_distance, &mut workspace.node_queue)
-            {
+            if let Some(index) = self.nearest_one_with_queue(
+                NeighborQuery3D::Point(point),
+                max_distance,
+                &mut workspace.node_queue,
+            ) {
                 workspace.results.push(index);
             }
             return &workspace.results;
@@ -474,7 +486,7 @@ impl SimdIndex3D {
 
         workspace.node_queue.clear();
         self.collect_neighbors_with_queue(
-            point,
+            NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             &mut workspace.results,
@@ -494,7 +506,121 @@ impl SimdIndex3D {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
+        self.visit_neighbors_with_queue(
+            NeighborQuery3D::Point(point),
+            max_distance,
+            &mut queue,
+            &mut visitor,
+        )
+    }
+
+    /// Return up to `max_results` item indices nearest to the box `query`.
+    /// See [`Index2D::neighbors_of_box`](crate::Index2D::neighbors_of_box).
+    pub fn neighbors_of_box(&self, query: Box3D, max_results: usize) -> Vec<usize> {
+        self.neighbors_of_box_within(query, max_results, f64::INFINITY)
+    }
+
+    /// Return up to `max_results` item indices within `max_distance` of the
+    /// box `query`. See [`Index2D::neighbors_of_box`](crate::Index2D::neighbors_of_box).
+    pub fn neighbors_of_box_within(
+        &self,
+        query: Box3D,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_of_box_into(query, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// Box-query nearest-neighbor search with a reusable result buffer.
+    pub fn neighbors_of_box_into(
+        &self,
+        query: Box3D,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        results.clear();
+        if max_results == 0 {
+            return;
+        }
+        if max_results == 1 {
+            let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+            if let Some(index) =
+                self.nearest_one_with_queue(NeighborQuery3D::Box(query), max_distance, &mut queue)
+            {
+                results.push(index);
+            }
+            return;
+        }
+
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queue(
+            NeighborQuery3D::Box(query),
+            max_results,
+            max_distance,
+            results,
+            &mut queue,
+        );
+    }
+
+    /// Box-query nearest-neighbor search with reusable result and
+    /// priority-queue buffers.
+    pub fn neighbors_of_box_with<'na>(
+        &self,
+        query: Box3D,
+        max_results: usize,
+        max_distance: f64,
+        workspace: &'na mut NeighborWorkspace,
+    ) -> &'na [usize] {
+        workspace.results.clear();
+        if max_results == 0 {
+            workspace.queue.clear();
+            workspace.node_queue.clear();
+            return &workspace.results;
+        }
+        if max_results == 1 {
+            workspace.queue.clear();
+            if let Some(index) = self.nearest_one_with_queue(
+                NeighborQuery3D::Box(query),
+                max_distance,
+                &mut workspace.node_queue,
+            ) {
+                workspace.results.push(index);
+            }
+            return &workspace.results;
+        }
+
+        workspace.node_queue.clear();
+        self.collect_neighbors_with_queue(
+            NeighborQuery3D::Box(query),
+            max_results,
+            max_distance,
+            &mut workspace.results,
+            &mut workspace.queue,
+        );
+        &workspace.results
+    }
+
+    /// Visit items in nondecreasing box-to-box distance order from `query`.
+    /// See [`Index2D::visit_neighbors_of_box`](crate::Index2D::visit_neighbors_of_box).
+    pub fn visit_neighbors_of_box<B, F>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.visit_neighbors_with_queue(
+            NeighborQuery3D::Box(query),
+            max_distance,
+            &mut queue,
+            &mut visitor,
+        )
     }
 
     /// Visit intersecting items without collecting a result `Vec`.
@@ -549,7 +675,7 @@ impl SimdIndex3D {
 
     fn collect_neighbors_with_queue(
         &self,
-        point: Point3D,
+        query: NeighborQuery3D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
@@ -570,7 +696,7 @@ impl SimdIndex3D {
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
+                let dist = self.distance_squared_at(pos, query);
                 if dist > max_dist_sq {
                     continue;
                 }
@@ -603,7 +729,7 @@ impl SimdIndex3D {
 
     fn nearest_one_with_queue(
         &self,
-        point: Point3D,
+        query: NeighborQuery3D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
@@ -621,7 +747,7 @@ impl SimdIndex3D {
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
+                let dist = self.distance_squared_at(pos, query);
                 if dist > best_dist {
                     continue;
                 }
@@ -645,7 +771,7 @@ impl SimdIndex3D {
 
     fn visit_neighbors_with_queue<B, F>(
         &self,
-        point: Point3D,
+        query: NeighborQuery3D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborState>,
         visitor: &mut F,
@@ -668,7 +794,7 @@ impl SimdIndex3D {
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
+                let dist = self.distance_squared_at(pos, query);
                 if dist > max_dist_sq {
                     continue;
                 }
@@ -697,11 +823,15 @@ impl SimdIndex3D {
     }
 
     #[inline]
-    fn distance_squared_to(&self, pos: usize, point: Point3D) -> f64 {
-        let dx = axis_distance(point.x, self.min_xs[pos], self.max_xs[pos]);
-        let dy = axis_distance(point.y, self.min_ys[pos], self.max_ys[pos]);
-        let dz = axis_distance(point.z, self.min_zs[pos], self.max_zs[pos]);
-        dx * dx + dy * dy + dz * dz
+    fn distance_squared_at(&self, pos: usize, query: NeighborQuery3D) -> f64 {
+        query.distance_squared_to(Box3D::new(
+            self.min_xs[pos],
+            self.min_ys[pos],
+            self.min_zs[pos],
+            self.max_xs[pos],
+            self.max_ys[pos],
+            self.max_zs[pos],
+        ))
     }
 
     /// Same as [`visit`](SimdIndex3D::visit), but the traversal stack is reused by the caller.
@@ -1283,17 +1413,6 @@ impl SimdIndex3D {
 }
 
 #[inline]
-fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
-    if point < min {
-        min - point
-    } else if point > max {
-        point - max
-    } else {
-        0.0
-    }
-}
-
-#[inline]
 fn load4(a: &[f64], p: usize) -> f64x4 {
     f64x4::from([a[p], a[p + 1], a[p + 2], a[p + 3]])
 }
@@ -1697,12 +1816,8 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     #[inline]
-    fn distance_squared_to(&self, pos: usize, point: Point3D) -> f64 {
-        let b = self.box_at(pos);
-        let dx = axis_distance(point.x, b.min_x, b.max_x);
-        let dy = axis_distance(point.y, b.min_y, b.max_y);
-        let dz = axis_distance(point.z, b.min_z, b.max_z);
-        dx * dx + dy * dy + dz * dz
+    fn distance_squared_at(&self, pos: usize, query: NeighborQuery3D) -> f64 {
+        query.distance_squared_to(self.box_at(pos))
     }
 
     /// Return up to `max_results` item indices nearest to `point`.
@@ -1736,13 +1851,21 @@ impl<'a> SimdIndex3DView<'a> {
         }
         if max_results == 1 {
             let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-            if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
+            if let Some(index) =
+                self.nearest_one_with_queue(NeighborQuery3D::Point(point), max_distance, &mut queue)
+            {
                 results.push(index);
             }
             return;
         }
         let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
+        self.collect_neighbors_with_queue(
+            NeighborQuery3D::Point(point),
+            max_results,
+            max_distance,
+            results,
+            &mut queue,
+        );
     }
 
     /// Nearest-neighbor search with reusable result and priority-queue buffers.
@@ -1761,16 +1884,18 @@ impl<'a> SimdIndex3DView<'a> {
         }
         if max_results == 1 {
             workspace.queue.clear();
-            if let Some(index) =
-                self.nearest_one_with_queue(point, max_distance, &mut workspace.node_queue)
-            {
+            if let Some(index) = self.nearest_one_with_queue(
+                NeighborQuery3D::Point(point),
+                max_distance,
+                &mut workspace.node_queue,
+            ) {
                 workspace.results.push(index);
             }
             return &workspace.results;
         }
         workspace.node_queue.clear();
         self.collect_neighbors_with_queue(
-            point,
+            NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             &mut workspace.results,
@@ -1790,12 +1915,126 @@ impl<'a> SimdIndex3DView<'a> {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
+        self.visit_neighbors_with_queue(
+            NeighborQuery3D::Point(point),
+            max_distance,
+            &mut queue,
+            &mut visitor,
+        )
+    }
+
+    /// Return up to `max_results` item indices nearest to the box `query`.
+    /// See [`Index2D::neighbors_of_box`](crate::Index2D::neighbors_of_box).
+    pub fn neighbors_of_box(&self, query: Box3D, max_results: usize) -> Vec<usize> {
+        self.neighbors_of_box_within(query, max_results, f64::INFINITY)
+    }
+
+    /// Return up to `max_results` item indices within `max_distance` of the
+    /// box `query`. See [`Index2D::neighbors_of_box`](crate::Index2D::neighbors_of_box).
+    pub fn neighbors_of_box_within(
+        &self,
+        query: Box3D,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_of_box_into(query, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// Box-query nearest-neighbor search with a reusable result buffer.
+    pub fn neighbors_of_box_into(
+        &self,
+        query: Box3D,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        results.clear();
+        if max_results == 0 {
+            return;
+        }
+        if max_results == 1 {
+            let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+            if let Some(index) =
+                self.nearest_one_with_queue(NeighborQuery3D::Box(query), max_distance, &mut queue)
+            {
+                results.push(index);
+            }
+            return;
+        }
+
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queue(
+            NeighborQuery3D::Box(query),
+            max_results,
+            max_distance,
+            results,
+            &mut queue,
+        );
+    }
+
+    /// Box-query nearest-neighbor search with reusable result and
+    /// priority-queue buffers.
+    pub fn neighbors_of_box_with<'na>(
+        &self,
+        query: Box3D,
+        max_results: usize,
+        max_distance: f64,
+        workspace: &'na mut NeighborWorkspace,
+    ) -> &'na [usize] {
+        workspace.results.clear();
+        if max_results == 0 {
+            workspace.queue.clear();
+            workspace.node_queue.clear();
+            return &workspace.results;
+        }
+        if max_results == 1 {
+            workspace.queue.clear();
+            if let Some(index) = self.nearest_one_with_queue(
+                NeighborQuery3D::Box(query),
+                max_distance,
+                &mut workspace.node_queue,
+            ) {
+                workspace.results.push(index);
+            }
+            return &workspace.results;
+        }
+
+        workspace.node_queue.clear();
+        self.collect_neighbors_with_queue(
+            NeighborQuery3D::Box(query),
+            max_results,
+            max_distance,
+            &mut workspace.results,
+            &mut workspace.queue,
+        );
+        &workspace.results
+    }
+
+    /// Visit items in nondecreasing box-to-box distance order from `query`.
+    /// See [`Index2D::visit_neighbors_of_box`](crate::Index2D::visit_neighbors_of_box).
+    pub fn visit_neighbors_of_box<B, F>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.visit_neighbors_with_queue(
+            NeighborQuery3D::Box(query),
+            max_distance,
+            &mut queue,
+            &mut visitor,
+        )
     }
 
     fn collect_neighbors_with_queue(
         &self,
-        point: Point3D,
+        query: NeighborQuery3D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
@@ -1815,7 +2054,7 @@ impl<'a> SimdIndex3DView<'a> {
             let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
+                let dist = self.distance_squared_at(pos, query);
                 if dist > max_dist_sq {
                     continue;
                 }
@@ -1847,7 +2086,7 @@ impl<'a> SimdIndex3DView<'a> {
 
     fn visit_neighbors_with_queue<B, F>(
         &self,
-        point: Point3D,
+        query: NeighborQuery3D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborState>,
         visitor: &mut F,
@@ -1870,7 +2109,7 @@ impl<'a> SimdIndex3DView<'a> {
             let is_leaf = node_index < self.num_items;
 
             for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
+                let dist = self.distance_squared_at(pos, query);
                 if dist > max_dist_sq {
                     continue;
                 }
@@ -1899,7 +2138,7 @@ impl<'a> SimdIndex3DView<'a> {
 
     fn nearest_one_with_queue(
         &self,
-        point: Point3D,
+        query: NeighborQuery3D,
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
@@ -1915,7 +2154,7 @@ impl<'a> SimdIndex3DView<'a> {
             let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
+                let dist = self.distance_squared_at(pos, query);
                 if dist > best_dist {
                     continue;
                 }

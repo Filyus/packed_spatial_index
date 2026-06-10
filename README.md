@@ -406,6 +406,36 @@ assert_eq!(index.neighbors_of_box(query, 1), vec![1]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
+### `raycast` / `raycast_closest`
+
+Ray-segment queries over the same packed tree. `raycast` returns every item
+whose box the segment touches; `raycast_closest` returns the nearest box the
+segment enters as `(item index, entry t)`, visiting nodes front-to-back and
+pruning once a closer hit is known. `raycast_with` / `raycast_closest_with`
+reuse workspaces; `SimdIndex2D`/`SimdIndex3D` evaluate the slab test 4 or 8
+children at a time (AVX-512 when available), with a masked path that keeps
+axis-parallel rays exact even when a ray lies on a box face.
+
+```rust
+# use packed_spatial_index::{Box3D, Index3DBuilder, Point3D, Ray3D};
+# let mut builder = Index3DBuilder::new(2);
+# builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+# builder.add(Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+# let index = builder.finish()?;
+let ray = Ray3D::new(Point3D::new(-1.0, 0.5, 0.5), 1.0, 0.0, 0.0, 10.0);
+assert_eq!(index.raycast(ray), vec![0]);
+assert_eq!(index.raycast_closest(ray), Some((0, 1.0)));
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+Positioning: this is a convenience for indexes you already hold for range/kNN
+queries — picking, line-of-sight, occasional rays — not a replacement for a
+dedicated ray-tracing BVH. The packed Hilbert tree builds much faster than a
+SAH BVH and the SIMD closest-hit is competitive on uniform scenes, but a good
+SAH BVH builds a structurally better tree for heavily clustered scenes. If rays
+are your dominant workload, use a BVH; if you already have this index, raycast
+it for free.
+
 ### `join` / `join_with`
 
 Reports every intersecting pair of items between two indexes through one

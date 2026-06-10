@@ -31,6 +31,7 @@ use crate::persistence::{
     ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
     serialized_len,
 };
+use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 
 #[inline]
@@ -1870,5 +1871,141 @@ impl JoinTree for Index2DView<'_> {
     #[inline]
     fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
         outer.contains(inner)
+    }
+}
+
+impl Index2D {
+    /// Return the indices of all items whose boxes the ray segment touches.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder, Point2D, Ray2D};
+    ///
+    /// let mut builder = Index2DBuilder::new(2);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let ray = Ray2D::new(Point2D::new(-1.0, 0.5), 1.0, 0.0, 10.0);
+    /// assert_eq!(index.raycast(ray), vec![0]);
+    /// assert_eq!(index.raycast_closest(ray), Some((0, 1.0)));
+    /// ```
+    pub fn raycast(&self, ray: Ray2D) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.raycast_into(ray, &mut results);
+        results
+    }
+
+    /// Raycast with a reusable result buffer.
+    pub fn raycast_into(&self, ray: Ray2D, results: &mut Vec<usize>) {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.raycast_into_stack(ray, results, &mut stack);
+    }
+
+    /// Raycast with reusable result and traversal buffers.
+    pub fn raycast_with<'a>(&self, ray: Ray2D, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
+        self.raycast_into_stack(ray, &mut workspace.results, &mut workspace.stack);
+        &workspace.results
+    }
+
+    /// Buffer-explicit raycast (mirrors `search_into_stack`).
+    #[doc(hidden)]
+    pub fn raycast_into_stack(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        results.clear();
+        stack.clear();
+        if self.num_items == 0 {
+            return;
+        }
+
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let node_entries = &self.entries[node_index..end];
+            let node_indices = &self.indices[node_index..end];
+
+            if is_leaf {
+                for (&bounds, &index) in node_entries.iter().zip(node_indices) {
+                    if ray.intersects_box(bounds) {
+                        results.push(index);
+                    }
+                }
+            } else {
+                let child_level = level - 1;
+                for (&bounds, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if ray.intersects_box(bounds) {
+                        stack.push(index);
+                        stack.push(child_level);
+                    }
+                }
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return;
+            }
+        }
+    }
+
+    /// Return the nearest item whose box the ray segment enters, as
+    /// `(item index, entry t)`, or `None` when the segment hits nothing.
+    ///
+    /// Nodes are visited front-to-back by entry distance and pruned once a
+    /// closer hit is known, so the cost is roughly independent of
+    /// `max_distance` after the first hit. `t` is `0.0` when the ray origin
+    /// starts inside the item's box.
+    pub fn raycast_closest(&self, ray: Ray2D) -> Option<(usize, f64)> {
+        let mut workspace = NeighborWorkspace::new();
+        self.raycast_closest_with(ray, &mut workspace)
+    }
+
+    /// Closest-hit raycast with a reusable priority-queue workspace.
+    pub fn raycast_closest_with(
+        &self,
+        ray: Ray2D,
+        workspace: &mut NeighborWorkspace,
+    ) -> Option<(usize, f64)> {
+        let queue = &mut workspace.node_queue;
+        queue.clear();
+        if self.num_items == 0 {
+            return None;
+        }
+        let root = self.entries.len() - 1;
+        let root_t = ray.enter_t(self.entries[root])?;
+        let mut best_t = ray.max_distance;
+        let mut best_index = None;
+        queue.push(NeighborNodeState::new(root, root_t));
+
+        while let Some(node) = queue.pop() {
+            // The heap yields nodes by ascending entry t, and a node's entry t is a
+            // lower bound on every descendant's, so once it reaches the best hit we stop.
+            if node.dist >= best_t {
+                break;
+            }
+            let upper = upper_bound_level(&self.level_bounds, node.index);
+            let end = (node.index + self.node_size).min(self.level_bounds[upper]);
+            let is_leaf = node.index < self.num_items;
+            for pos in node.index..end {
+                let Some(t) = ray.enter_t(self.entries[pos]) else {
+                    continue;
+                };
+                if t >= best_t {
+                    continue;
+                }
+                if is_leaf {
+                    best_t = t;
+                    best_index = Some(self.indices[pos]);
+                } else {
+                    queue.push(NeighborNodeState::new(self.indices[pos], t));
+                }
+            }
+        }
+
+        best_index.map(|index| (index, best_t))
     }
 }

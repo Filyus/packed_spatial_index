@@ -166,7 +166,16 @@ where
 
     let mut stack: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(64);
     loop {
-        expand_pair(a, b, a_pos, a_level, b_pos, b_level, &mut stack, &mut visitor)?;
+        expand_pair(
+            a,
+            b,
+            a_pos,
+            a_level,
+            b_pos,
+            b_level,
+            &mut stack,
+            &mut visitor,
+        )?;
         match stack.pop() {
             Some((ap, al, bp, bl)) => {
                 a_pos = ap;

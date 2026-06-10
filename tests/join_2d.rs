@@ -86,7 +86,10 @@ fn self_join_matches_naive_pairs() {
 #[test]
 fn join_handles_touching_edges_inclusively() {
     let a = build(&[Box2D::new(0.0, 0.0, 1.0, 1.0)]);
-    let b = build(&[Box2D::new(1.0, 1.0, 2.0, 2.0), Box2D::new(1.5, 0.0, 2.0, 0.5)]);
+    let b = build(&[
+        Box2D::new(1.0, 1.0, 2.0, 2.0),
+        Box2D::new(1.5, 0.0, 2.0, 0.5),
+    ]);
     assert_eq!(a.join(&b), vec![(0, 0)]);
 }
 

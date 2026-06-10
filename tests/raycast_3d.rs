@@ -194,3 +194,151 @@ mod simd {
         assert!((hit.unwrap().1 - 5.0).abs() <= EPS, "entry t should be 5.0");
     }
 }
+
+mod ordered_and_views {
+    use super::*;
+    use packed_spatial_index::Index3DView;
+    use std::ops::ControlFlow;
+
+    /// Brute-force `(t, id)` list sorted by entry t.
+    fn brute_ordered(boxes: &[Box3D], ray: Ray3D) -> Vec<(f64, usize)> {
+        let mut out: Vec<(f64, usize)> = (0..boxes.len())
+            .filter_map(|i| ray.enter_t(boxes[i]).map(|t| (t, i)))
+            .collect();
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out
+    }
+
+    #[test]
+    fn visit_raycast_3d_is_ordered_and_complete() {
+        let boxes = boxes_3d(1_500, 0x5A01);
+        let mut builder = Index3DBuilder::new(boxes.len());
+        boxes.iter().for_each(|&b| builder.add(b));
+        let index = builder.finish().unwrap();
+
+        let mut rng = StdRng::seed_from_u64(0x5A02);
+        for i in 0..500 {
+            let ray = random_ray(&mut rng, i);
+            let expected = brute_ordered(&boxes, ray);
+
+            let mut visited: Vec<(f64, usize)> = Vec::new();
+            let flow: ControlFlow<()> = index.visit_raycast(ray, |id, t| {
+                visited.push((t, id));
+                ControlFlow::Continue(())
+            });
+            assert_eq!(flow, ControlFlow::Continue(()));
+
+            // Same t sequence in nondecreasing order; ids may swap within equal t.
+            let visited_ts: Vec<f64> = visited.iter().map(|&(t, _)| t).collect();
+            let expected_ts: Vec<f64> = expected.iter().map(|&(t, _)| t).collect();
+            assert_eq!(visited_ts, expected_ts);
+            let mut visited_ids: Vec<usize> = visited.iter().map(|&(_, id)| id).collect();
+            let mut expected_ids: Vec<usize> = expected.iter().map(|&(_, id)| id).collect();
+            visited_ids.sort_unstable();
+            expected_ids.sort_unstable();
+            assert_eq!(visited_ids, expected_ids);
+        }
+    }
+
+    #[test]
+    fn visit_raycast_3d_breaks_early() {
+        let boxes = boxes_3d(1_500, 0x5A03);
+        let mut builder = Index3DBuilder::new(boxes.len());
+        boxes.iter().for_each(|&b| builder.add(b));
+        let index = builder.finish().unwrap();
+
+        // Pick a random ray that is guaranteed to cross several boxes.
+        let mut rng = StdRng::seed_from_u64(0x5A08);
+        let ray = (0..)
+            .map(|i| random_ray(&mut rng, i))
+            .find(|&ray| index.raycast(ray).len() >= 3)
+            .unwrap();
+
+        let mut seen = 0usize;
+        let flow = index.visit_raycast(ray, |_, _| {
+            seen += 1;
+            if seen == 2 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        assert_eq!(flow, ControlFlow::Break(()));
+        assert_eq!(seen, 2);
+    }
+
+    #[test]
+    fn view_raycast_3d_matches_owned() {
+        let boxes = boxes_3d(1_200, 0x5A04);
+        let mut builder = Index3DBuilder::new(boxes.len());
+        boxes.iter().for_each(|&b| builder.add(b));
+        let index = builder.finish().unwrap();
+        let bytes = index.to_bytes();
+        let view = Index3DView::from_bytes(&bytes).unwrap();
+
+        let mut rng = StdRng::seed_from_u64(0x5A05);
+        for i in 0..400 {
+            let ray = random_ray(&mut rng, i);
+
+            let mut owned_hits = index.raycast(ray);
+            let mut view_hits = view.raycast(ray);
+            owned_hits.sort_unstable();
+            view_hits.sort_unstable();
+            assert_eq!(owned_hits, view_hits);
+
+            assert_eq!(index.raycast_closest(ray), view.raycast_closest(ray));
+
+            let mut owned_ts = Vec::new();
+            let _: ControlFlow<()> = index.visit_raycast(ray, |_, t| {
+                owned_ts.push(t);
+                ControlFlow::Continue(())
+            });
+            let mut view_ts = Vec::new();
+            let _: ControlFlow<()> = view.visit_raycast(ray, |_, t| {
+                view_ts.push(t);
+                ControlFlow::Continue(())
+            });
+            assert_eq!(owned_ts, view_ts);
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn simd_view_raycast_3d_matches_owned() {
+        use packed_spatial_index::SimdIndex3DView;
+
+        let boxes = boxes_3d(1_200, 0x5A06);
+        let mut builder = Index3DBuilder::new(boxes.len());
+        boxes.iter().for_each(|&b| builder.add(b));
+        let simd = builder.finish_simd().unwrap();
+        let bytes = simd.to_bytes();
+        let view = SimdIndex3DView::from_bytes(&bytes).unwrap();
+
+        let mut rng = StdRng::seed_from_u64(0x5A07);
+        for i in 0..400 {
+            let ray = random_ray(&mut rng, i);
+
+            let mut owned_hits = simd.raycast(ray);
+            let mut view_hits = view.raycast(ray);
+            owned_hits.sort_unstable();
+            view_hits.sort_unstable();
+            assert_eq!(owned_hits, view_hits);
+
+            let owned_closest = simd.raycast_closest(ray).map(|(_, t)| t);
+            let view_closest = view.raycast_closest(ray).map(|(_, t)| t);
+            assert!(close(owned_closest, view_closest));
+
+            let mut simd_ts = Vec::new();
+            let _: ControlFlow<()> = simd.visit_raycast(ray, |_, t| {
+                simd_ts.push(t);
+                ControlFlow::Continue(())
+            });
+            let mut view_ts = Vec::new();
+            let _: ControlFlow<()> = view.visit_raycast(ray, |_, t| {
+                view_ts.push(t);
+                ControlFlow::Continue(())
+            });
+            assert_eq!(simd_ts, view_ts);
+        }
+    }
+}

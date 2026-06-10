@@ -412,9 +412,12 @@ Ray-segment queries over the same packed tree. `raycast` returns every item
 whose box the segment touches; `raycast_closest` returns the nearest box the
 segment enters as `(item index, entry t)`, visiting nodes front-to-back and
 pruning once a closer hit is known. `raycast_with` / `raycast_closest_with`
-reuse workspaces; `SimdIndex2D`/`SimdIndex3D` evaluate the slab test 4 or 8
-children at a time (AVX-512 when available), with a masked path that keeps
-axis-parallel rays exact even when a ray lies on a box face.
+reuse workspaces, and `visit_raycast` visits items in nondecreasing entry-`t`
+order with `ControlFlow` early exit (for example, the first N occluders).
+`SimdIndex2D`/`SimdIndex3D` evaluate the slab test 4 or 8 children at a time
+(AVX-512 when available), with a masked path that keeps axis-parallel rays
+exact even when a ray lies on a box face. The whole family is also available
+on all zero-copy views.
 
 ```rust
 # use packed_spatial_index::{Box3D, Index3DBuilder, Point3D, Ray3D};

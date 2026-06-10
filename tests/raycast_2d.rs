@@ -142,3 +142,100 @@ mod simd {
         }
     }
 }
+
+mod ordered_and_views {
+    use super::*;
+    use packed_spatial_index::Index2DView;
+    use std::ops::ControlFlow;
+
+    #[test]
+    fn visit_raycast_2d_is_ordered_and_complete() {
+        let boxes = boxes_2d(1_500, 0x5B01);
+        let mut builder = Index2DBuilder::new(boxes.len());
+        boxes.iter().for_each(|&b| builder.add(b));
+        let index = builder.finish().unwrap();
+
+        let mut rng = StdRng::seed_from_u64(0x5B02);
+        for i in 0..500 {
+            let ray = random_ray(&mut rng, i);
+            let mut expected: Vec<(f64, usize)> = (0..boxes.len())
+                .filter_map(|j| ray.enter_t(boxes[j]).map(|t| (t, j)))
+                .collect();
+            expected.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+            let mut visited: Vec<(f64, usize)> = Vec::new();
+            let flow: ControlFlow<()> = index.visit_raycast(ray, |id, t| {
+                visited.push((t, id));
+                ControlFlow::Continue(())
+            });
+            assert_eq!(flow, ControlFlow::Continue(()));
+
+            let visited_ts: Vec<f64> = visited.iter().map(|&(t, _)| t).collect();
+            let expected_ts: Vec<f64> = expected.iter().map(|&(t, _)| t).collect();
+            assert_eq!(visited_ts, expected_ts);
+        }
+    }
+
+    #[test]
+    fn view_raycast_2d_matches_owned() {
+        let boxes = boxes_2d(1_200, 0x5B03);
+        let mut builder = Index2DBuilder::new(boxes.len());
+        boxes.iter().for_each(|&b| builder.add(b));
+        let index = builder.finish().unwrap();
+        let bytes = index.to_bytes();
+        let view = Index2DView::from_bytes(&bytes).unwrap();
+
+        let mut rng = StdRng::seed_from_u64(0x5B04);
+        for i in 0..400 {
+            let ray = random_ray(&mut rng, i);
+
+            let mut owned_hits = index.raycast(ray);
+            let mut view_hits = view.raycast(ray);
+            owned_hits.sort_unstable();
+            view_hits.sort_unstable();
+            assert_eq!(owned_hits, view_hits);
+
+            assert_eq!(index.raycast_closest(ray), view.raycast_closest(ray));
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn simd_view_raycast_2d_matches_owned() {
+        use packed_spatial_index::SimdIndex2DView;
+
+        let boxes = boxes_2d(1_200, 0x5B05);
+        let mut builder = Index2DBuilder::new(boxes.len());
+        boxes.iter().for_each(|&b| builder.add(b));
+        let simd = builder.finish_simd().unwrap();
+        let bytes = simd.to_bytes();
+        let view = SimdIndex2DView::from_bytes(&bytes).unwrap();
+
+        let mut rng = StdRng::seed_from_u64(0x5B06);
+        for i in 0..400 {
+            let ray = random_ray(&mut rng, i);
+
+            let mut owned_hits = simd.raycast(ray);
+            let mut view_hits = view.raycast(ray);
+            owned_hits.sort_unstable();
+            view_hits.sort_unstable();
+            assert_eq!(owned_hits, view_hits);
+
+            let owned_closest = simd.raycast_closest(ray).map(|(_, t)| t);
+            let view_closest = view.raycast_closest(ray).map(|(_, t)| t);
+            assert!(close(owned_closest, view_closest));
+
+            let mut simd_ts = Vec::new();
+            let _: ControlFlow<()> = simd.visit_raycast(ray, |_, t| {
+                simd_ts.push(t);
+                ControlFlow::Continue(())
+            });
+            let mut view_ts = Vec::new();
+            let _: ControlFlow<()> = view.visit_raycast(ray, |_, t| {
+                view_ts.push(t);
+                ControlFlow::Continue(())
+            });
+            assert_eq!(simd_ts, view_ts);
+        }
+    }
+}

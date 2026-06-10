@@ -16,7 +16,7 @@ release_always = false
 # The first commit domain drives release notes. Keep this broad enough for
 # module/public-type domains (`index3d:`, `views:`, `hilbert:`), while skipped
 # release housekeeping domains stay out of this regex.
-release_commits = "^(api|builder|builder2d|builder3d|index|index2d|index3d|2d|3d|box|boxes|box2d|box3d|bounds|bounds2d|bounds3d|point|points|point2d|point3d|geometry|config|default|defaults|error|errors|safety|unsafe|lint|lints|simd|simd2d|simd3d|simd-view|simd-views|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse|wasm|wasm-demo|persistence|persist|serialize|serialization|deserialize|load|loader|view|views|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy|knn|neighbor|neighbors|nearest|search|visitor|visit|traversal|workspace|perf|performance|parallel|radix|node|nodes|node-size|node_size|nodesize|prefetch|sort|sort2d|sort3d|sortkey|hilbert|hilbert2d|morton|encoder|encoders|encoding|bench|benches|benchmark|benchmarks|flatgeobuf|static-aabb|static_aabb|compare|comparison|test|tests|correctness|fuzz|fuzzing|refactor|layout|tree|internal|module|modules|docs|doc|readme|rustdoc|example|examples|build|ci|deps|dependency|dependencies|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(,|:)"
+release_commits = "^(api|builder|builder2d|builder3d|index|index2d|index3d|2d|3d|box|boxes|box2d|box3d|bounds|bounds2d|bounds3d|point|points|point2d|point3d|geometry|config|default|defaults|error|errors|safety|unsafe|lint|lints|simd|simd2d|simd3d|simd-view|simd-views|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse|wasm|wasm-demo|persistence|persist|serialize|serialization|deserialize|load|loader|view|views|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy|knn|neighbor|neighbors|nearest|search|visitor|visit|traversal|workspace|raycast|ray|perf|performance|parallel|radix|node|nodes|node-size|node_size|nodesize|prefetch|sort|sort2d|sort3d|sortkey|hilbert|hilbert2d|morton|encoder|encoders|encoding|bench|benches|benchmark|benchmarks|flatgeobuf|static-aabb|static_aabb|compare|comparison|test|tests|correctness|fuzz|fuzzing|refactor|layout|tree|internal|module|modules|docs|doc|readme|rustdoc|example|examples|build|ci|deps|dependency|dependencies|edition|meta|package|packaging|workflow|github|publish|tag|trusted-publishing|release-plz|msrv|rust-version|license|badges)(,|:)"
 repo_url = "https://github.com/Filyus/packed_spatial_index"
 semver_check = true
 
@@ -65,7 +65,7 @@ commit_parsers = [
   { message = "^(3d|index3d|builder3d|sort3d|box3d|bounds3d|point3d)(?:,|:)", group = "<!-- 03 --> 3D" },
   { message = "^(geometry|boxes?|bounds|points?)(?:,|:)", group = "<!-- 04 --> Geometry" },
   { message = "^(index)(?:,|:)", group = "<!-- 05 --> Indexes" },
-  { message = "^(search|visitor|visit|traversal|workspace)(?:,|:)", group = "<!-- 06 --> Search" },
+  { message = "^(search|visitor|visit|traversal|workspace|raycast|rays?)(?:,|:)", group = "<!-- 06 --> Search" },
   { message = "^(knn|neighbors?|nearest)(?:,|:)", group = "<!-- 07 --> Nearest Neighbors" },
   { message = "^(persistence|persist|serialize|serialization|deserialize|load|loader|views?|view2d|view3d|format|file-format|magic|bytes|buffer|zerocopy|zero-copy)(?:,|:)", group = "<!-- 08 --> Persistence" },
   { message = "^(simd|simd2d|simd3d|simd-views?|soa|index2d_soa|index3d_soa|avx|avx2|avx512|avx-512|sse)(?:,|:)", group = "<!-- 09 --> SIMD" },

@@ -2682,9 +2682,23 @@ impl SimdIndex3D {
     }
 
     /// Buffer-explicit raycast (mirrors `search_into_stack`). The per-node slab
-    /// test runs four children at a time through `wide::f64x4`.
+    /// test is vectorized: AVX-512 (eight children at a time) for non-degenerate
+    /// rays where available, otherwise `wide::f64x4`. Axis-parallel rays always
+    /// take the `wide` path, whose `blend` kernel is NaN-safe at box faces.
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray3D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if !ray.has_zero_direction() && std::is_x86_feature_detected!("avx512f") {
+                // SAFETY: reached only after confirming avx512f is available.
+                unsafe { self.raycast_collect_avx512(ray, results, stack) };
+                return;
+            }
+        }
+        self.raycast_collect_wide(ray, results, stack);
+    }
+
+    fn raycast_collect_wide(&self, ray: Ray3D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
         results.clear();
         stack.clear();
         if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
@@ -2765,6 +2779,110 @@ impl SimdIndex3D {
                     }
                 }
                 pos += 4;
+            }
+            while pos < end {
+                if ray.intersects_box(self.box_at_soa(pos)) {
+                    let index = self.indices[pos];
+                    if is_leaf {
+                        results.push(index);
+                    } else {
+                        stack.push(index);
+                        stack.push(child_level);
+                    }
+                }
+                pos += 1;
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return;
+            }
+        }
+    }
+
+    /// AVX-512 all-hits slab test, eight children at a time. Only called for
+    /// non-degenerate rays (no zero direction component), so the multiply-only
+    /// slab is NaN-safe.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f")]
+    unsafe fn raycast_collect_avx512(
+        &self,
+        ray: Ray3D,
+        results: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        use std::arch::x86_64::*;
+
+        results.clear();
+        stack.clear();
+        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
+            return;
+        }
+
+        let ox = _mm512_set1_pd(ray.origin.x);
+        let oy = _mm512_set1_pd(ray.origin.y);
+        let oz = _mm512_set1_pd(ray.origin.z);
+        let ix = _mm512_set1_pd(ray.inv_dir_x);
+        let iy = _mm512_set1_pd(ray.inv_dir_y);
+        let iz = _mm512_set1_pd(ray.inv_dir_z);
+        let zero = _mm512_setzero_pd();
+        let maxd = _mm512_set1_pd(ray.max_distance);
+
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let child_level = level.wrapping_sub(1);
+
+            let mut pos = node_index;
+            while pos + 8 <= end {
+                // SAFETY: `pos + 8 <= end <= len`, so all eight lanes are in bounds.
+                let (mnx, mxx, mny, mxy, mnz, mxz) = unsafe {
+                    (
+                        _mm512_loadu_pd(self.min_xs.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.max_xs.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.min_ys.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.max_ys.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.min_zs.as_ptr().add(pos)),
+                        _mm512_loadu_pd(self.max_zs.as_ptr().add(pos)),
+                    )
+                };
+                let t1x = _mm512_mul_pd(_mm512_sub_pd(mnx, ox), ix);
+                let t2x = _mm512_mul_pd(_mm512_sub_pd(mxx, ox), ix);
+                let t1y = _mm512_mul_pd(_mm512_sub_pd(mny, oy), iy);
+                let t2y = _mm512_mul_pd(_mm512_sub_pd(mxy, oy), iy);
+                let t1z = _mm512_mul_pd(_mm512_sub_pd(mnz, oz), iz);
+                let t2z = _mm512_mul_pd(_mm512_sub_pd(mxz, oz), iz);
+                let near = _mm512_max_pd(
+                    _mm512_max_pd(
+                        _mm512_max_pd(_mm512_min_pd(t1x, t2x), _mm512_min_pd(t1y, t2y)),
+                        _mm512_min_pd(t1z, t2z),
+                    ),
+                    zero,
+                );
+                let far = _mm512_min_pd(
+                    _mm512_min_pd(
+                        _mm512_min_pd(_mm512_max_pd(t1x, t2x), _mm512_max_pd(t1y, t2y)),
+                        _mm512_max_pd(t1z, t2z),
+                    ),
+                    maxd,
+                );
+                let mut bits: u8 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(near, far);
+                while bits != 0 {
+                    let k = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let index = self.indices[pos + k];
+                    if is_leaf {
+                        results.push(index);
+                    } else {
+                        stack.push(index);
+                        stack.push(child_level);
+                    }
+                }
+                pos += 8;
             }
             while pos < end {
                 if ray.intersects_box(self.box_at_soa(pos)) {

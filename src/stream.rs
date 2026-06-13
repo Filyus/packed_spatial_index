@@ -19,7 +19,8 @@ use std::io;
 use crate::geometry::Box2D;
 use crate::persistence::{
     FORMAT_FLAGS_2D, FORMAT_HEADER_LEN, LoadError, parse_and_validate_header,
-    read_f64_le_unchecked, read_u64_at, section_layout, validate_level_bounds,
+    read_f64_le_unchecked, read_u64_at, read_u64_le_unchecked, section_layout,
+    validate_level_bounds,
 };
 
 /// Upper bound on how many nodes the open-time "directory" prefetch caches.
@@ -31,6 +32,11 @@ use crate::persistence::{
 /// few hundred KiB of boxes — small to hold, yet enough to cover every level
 /// above the leaves for indexes into the millions of items.
 const DIRECTORY_NODE_BUDGET: usize = 8192;
+
+/// When streaming a level, node records whose byte gap is no larger than this
+/// are fetched in a single read. Coalescing trades a little re-read for far
+/// fewer round trips, which dominates on high-latency (e.g. HTTP) sources.
+const COALESCE_GAP_BYTES: u64 = 4096;
 
 /// A source of bytes addressable by absolute offset.
 ///
@@ -202,35 +208,24 @@ impl From<LoadError> for StreamError {
 /// Both the 2D and (future) 3D streaming indexes wrap one of these; only box
 /// parsing and query traversal differ between dimensions.
 pub(crate) struct StreamCore<R> {
-    // These five describe how to navigate and fetch nodes during a streamed
-    // traversal. They are populated and validated at open time; the query
-    // traversal that reads them lands in the next layer, so they are
-    // `allow(dead_code)` until then.
-    #[allow(dead_code)]
     reader: R,
-    #[allow(dead_code)]
-    level_count: usize,
-    /// Exclusive end offset of each level, in node positions (`level_bounds[i]`).
-    #[allow(dead_code)]
-    level_bounds: Vec<usize>,
-    /// Byte offset of the box section.
-    #[allow(dead_code)]
-    box0: u64,
-    /// Byte offset of the index section.
-    #[allow(dead_code)]
-    idx0: u64,
     node_size: usize,
     num_items: usize,
     num_nodes: usize,
+    level_count: usize,
+    /// Exclusive end offset of each level, in node positions (`level_bounds[i]`).
+    level_bounds: Vec<usize>,
     /// Box record size in bytes.
     record: usize,
+    /// Byte offset of the box section.
+    box0: u64,
+    /// Byte offset of the index section.
+    idx0: u64,
     /// First node position covered by the cached directory.
     dir_node_start: usize,
     /// Cached box bytes for node positions `[dir_node_start, num_nodes)`.
     dir_boxes: Vec<u8>,
-    /// Cached index bytes for the same node positions, fetched together with the
-    /// boxes; read by the traversal layer (next step).
-    #[allow(dead_code)]
+    /// Cached index bytes for the same node positions.
     dir_indices: Vec<u8>,
 }
 
@@ -325,6 +320,158 @@ impl<R: RangeReader> StreamCore<R> {
         let start = (position - self.dir_node_start) * self.record;
         self.dir_boxes.get(start..start + self.record)
     }
+
+    /// Gather `stride`-byte records for `positions` (sorted, ascending) from the
+    /// section beginning at `section0`, into `out` (cleared, then filled so that
+    /// record `i` lands at `out[i*stride..]`). Records covered by the directory
+    /// `cache` are copied; the rest are streamed with adjacent ranges coalesced.
+    /// `cache` holds records for node positions `[dir_node_start, num_nodes)`.
+    fn gather(
+        &self,
+        positions: &[usize],
+        section0: u64,
+        stride: usize,
+        cache: &[u8],
+        out: &mut Vec<u8>,
+        scratch: &mut Vec<u8>,
+    ) -> Result<(), StreamError> {
+        out.clear();
+        out.resize(positions.len() * stride, 0);
+
+        // Copy cached records; collect the streamed ones as (out index, position).
+        let mut streamed: Vec<(usize, usize)> = Vec::new();
+        for (i, &pos) in positions.iter().enumerate() {
+            if pos >= self.dir_node_start {
+                let src = (pos - self.dir_node_start) * stride;
+                out[i * stride..i * stride + stride].copy_from_slice(&cache[src..src + stride]);
+            } else {
+                streamed.push((i, pos));
+            }
+        }
+
+        // Stream the rest, coalescing runs whose byte gap is within the budget.
+        let mut j = 0;
+        while j < streamed.len() {
+            let lo = section0 + (streamed[j].1 * stride) as u64;
+            let mut k = j;
+            // One past the last position bundled into this read, in node units.
+            let mut end_pos = streamed[j].1 + 1;
+            while k + 1 < streamed.len() {
+                let next_pos = streamed[k + 1].1;
+                let gap = (next_pos - end_pos) as u64 * stride as u64;
+                if gap > COALESCE_GAP_BYTES {
+                    break;
+                }
+                k += 1;
+                end_pos = next_pos + 1;
+            }
+            let hi = section0 + (end_pos * stride) as u64;
+            scratch.clear();
+            scratch.resize((hi - lo) as usize, 0);
+            self.reader.read_exact_at(lo, scratch)?;
+            for &(out_i, pos) in &streamed[j..=k] {
+                let within = (section0 + (pos * stride) as u64 - lo) as usize;
+                out[out_i * stride..out_i * stride + stride]
+                    .copy_from_slice(&scratch[within..within + stride]);
+            }
+            j = k + 1;
+        }
+        Ok(())
+    }
+
+    /// Visit the original insertion index of every leaf whose box satisfies
+    /// `overlaps`. `overlaps` receives one box record (`record` bytes) and
+    /// decides intersection; this keeps the traversal dimension-independent.
+    ///
+    /// Descends the tree level by level: at each level the frontier's boxes are
+    /// fetched (cached or coalesced-streamed) and tested, survivors expand to
+    /// their child groups, and a parent that fails the test prunes its whole
+    /// subtree (the parent box encloses its children).
+    fn visit_overlapping<O, F>(&self, overlaps: O, mut visit: F) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        F: FnMut(usize),
+    {
+        if self.num_items == 0 {
+            return Ok(());
+        }
+
+        let mut frontier = vec![self.num_nodes - 1];
+        let mut level = self.level_count - 1;
+        let mut boxes = Vec::new();
+        let mut indices = Vec::new();
+        let mut scratch = Vec::new();
+        let mut survivors: Vec<usize> = Vec::new();
+
+        loop {
+            self.gather(
+                &frontier,
+                self.box0,
+                self.record,
+                &self.dir_boxes,
+                &mut boxes,
+                &mut scratch,
+            )?;
+            survivors.clear();
+            for (i, &pos) in frontier.iter().enumerate() {
+                if overlaps(&boxes[i * self.record..(i + 1) * self.record]) {
+                    survivors.push(pos);
+                }
+            }
+            if survivors.is_empty() {
+                return Ok(());
+            }
+
+            self.gather(
+                &survivors,
+                self.idx0,
+                8,
+                &self.dir_indices,
+                &mut indices,
+                &mut scratch,
+            )?;
+
+            if level == 0 {
+                for i in 0..survivors.len() {
+                    let id = read_index(&indices, i)?;
+                    if id >= self.num_items {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    visit(id);
+                }
+                return Ok(());
+            }
+
+            // Expand survivors to their child groups at the level below.
+            let child_level_end = self.level_bounds[level - 1];
+            let child_level_start = if level >= 2 {
+                self.level_bounds[level - 2]
+            } else {
+                0
+            };
+            let mut next = Vec::new();
+            for i in 0..survivors.len() {
+                let child0 = read_index(&indices, i)?;
+                // Validate the pointer against the child level (untrusted source).
+                if child0 < child_level_start
+                    || child0 >= child_level_end
+                    || (child0 - child_level_start) % self.node_size != 0
+                {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                let end = (child0 + self.node_size).min(child_level_end);
+                next.extend(child0..end);
+            }
+            frontier = next;
+            level -= 1;
+        }
+    }
+}
+
+/// Read index entry `i` (a little-endian `u64`) from gathered index bytes.
+fn read_index(bytes: &[u8], i: usize) -> Result<usize, StreamError> {
+    let value = read_u64_le_unchecked(bytes, i * 8);
+    usize::try_from(value).map_err(|_| StreamError::Format(LoadError::IntegerOverflow))
 }
 
 /// Choose the first node position to cache in the directory: walk levels from
@@ -410,6 +557,31 @@ impl<R: RangeReader> StreamIndex2D<R> {
         let root = self.core.num_nodes - 1;
         let bytes = self.core.cached_box_bytes(root)?;
         Some(parse_box2d(bytes))
+    }
+
+    /// Stream the indices of every item whose box intersects `query`, passing
+    /// each to `visitor`.
+    ///
+    /// Fallible: a read from the backing [`RangeReader`] can fail mid-query, and
+    /// a corrupt index is reported as [`StreamError::Format`]. Items are yielded
+    /// in tree-traversal order, which is not part of the API.
+    pub fn visit<F: FnMut(usize)>(&self, query: Box2D, visitor: F) -> Result<(), StreamError> {
+        self.core
+            .visit_overlapping(|record| parse_box2d(record).overlaps(query), visitor)
+    }
+
+    /// Stream the indices of every item whose box intersects `query`.
+    pub fn search(&self, query: Box2D) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.search_into(query, &mut out)?;
+        Ok(out)
+    }
+
+    /// Like [`search`](Self::search), but appends into a reused buffer (cleared
+    /// first) to avoid reallocating across queries.
+    pub fn search_into(&self, query: Box2D, out: &mut Vec<usize>) -> Result<(), StreamError> {
+        out.clear();
+        self.visit(query, |index| out.push(index))
     }
 }
 
@@ -568,5 +740,127 @@ mod tests {
         // Leaf level ends at level_bounds[0] = num_items; the directory starting
         // exactly there means every internal level is cached.
         assert_eq!(stream.core.dir_node_start, stream.core.level_bounds[0]);
+    }
+
+    /// Build random boxes; return both the owned index and its serialized bytes.
+    fn random_owned(n: usize, seed: u64) -> (crate::Index2D, Vec<u8>) {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut builder = Index2DBuilder::new(n).node_size(16);
+        for _ in 0..n {
+            let cx: f64 = rng.random_range(0.0..1000.0);
+            let cy: f64 = rng.random_range(0.0..1000.0);
+            let w: f64 = rng.random_range(0.1..10.0);
+            let h: f64 = rng.random_range(0.1..10.0);
+            builder.add(Box2D::new(cx, cy, cx + w, cy + h));
+        }
+        let owned = builder.finish().unwrap();
+        let bytes = owned.to_bytes();
+        (owned, bytes)
+    }
+
+    #[test]
+    fn streamed_search_matches_owned() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+        // 20k items so the leaf level (> the 8192-node directory budget) is
+        // genuinely streamed and coalesced, not served entirely from cache.
+        let (owned, bytes) = random_owned(20_000, 0xC0FFEE);
+        let stream = open_slice(bytes);
+        assert!(stream.core.dir_node_start > 0, "leaves should be streamed");
+
+        let mut rng = StdRng::seed_from_u64(0xBEEF);
+        for _ in 0..200 {
+            let qx: f64 = rng.random_range(0.0..1000.0);
+            let qy: f64 = rng.random_range(0.0..1000.0);
+            let qw: f64 = rng.random_range(0.0..200.0);
+            let qh: f64 = rng.random_range(0.0..200.0);
+            let query = Box2D::new(qx, qy, qx + qw, qy + qh);
+
+            let mut streamed = stream.search(query).unwrap();
+            let mut owned_hits = owned.search(query);
+            streamed.sort_unstable();
+            owned_hits.sort_unstable();
+            assert_eq!(streamed, owned_hits, "query {query:?}");
+        }
+    }
+
+    #[test]
+    fn edge_queries_match_owned() {
+        let (owned, bytes) = random_owned(20_000, 0x1234);
+        let stream = open_slice(bytes);
+
+        // Full extent: every item.
+        let full = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+        let mut a = stream.search(full).unwrap();
+        let mut b = owned.search(full);
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 20_000);
+
+        // No match: far away.
+        assert!(
+            stream
+                .search(Box2D::new(1e9, 1e9, 1e9 + 1.0, 1e9 + 1.0))
+                .unwrap()
+                .is_empty()
+        );
+
+        // Empty index.
+        let empty = open_slice(build_bytes(0, 16));
+        assert!(
+            empty
+                .search(Box2D::new(0.0, 0.0, 1.0, 1.0))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn query_streams_only_a_small_part_of_the_leaves() {
+        // A tight query over a large index should fetch only a few leaf groups,
+        // not the whole leaf section.
+        let (_, bytes) = random_owned(50_000, 0x77);
+        let file_len = bytes.len() as u64;
+        let stream = StreamIndex2D::open(CountingReader::new(SliceReader::new(bytes))).unwrap();
+
+        let reads_after_open = *stream.core.reader.reads.borrow();
+        let bytes_after_open = *stream.core.reader.bytes.borrow();
+
+        let _ = stream
+            .search(Box2D::new(500.0, 500.0, 505.0, 505.0))
+            .unwrap();
+
+        let query_reads = *stream.core.reader.reads.borrow() - reads_after_open;
+        let query_bytes = *stream.core.reader.bytes.borrow() - bytes_after_open;
+        assert!(query_reads <= 8, "tight query issued {query_reads} reads");
+        assert!(
+            query_bytes * 8 < file_len,
+            "tight query read {query_bytes} of {file_len} bytes"
+        );
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn file_reader_search_matches_owned() {
+        let (owned, bytes) = random_owned(20_000, 0xF11E);
+        let path = std::env::temp_dir().join(format!(
+            "psi_stream_{}_{}.psindex",
+            std::process::id(),
+            "search"
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let stream = StreamIndex2D::open(FileReader::open(&path).unwrap()).unwrap();
+        let query = Box2D::new(400.0, 400.0, 460.0, 460.0);
+        let mut streamed = stream.search(query).unwrap();
+        let mut owned_hits = owned.search(query);
+        streamed.sort_unstable();
+        owned_hits.sort_unstable();
+        assert_eq!(streamed, owned_hits);
+
+        std::fs::remove_file(&path).ok();
     }
 }

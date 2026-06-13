@@ -462,6 +462,15 @@ impl<R: RangeReader> StreamCore<R> {
                 let end = (child0 + self.node_size).min(child_level_end);
                 next.extend(child0..end);
             }
+            // A well-formed tree already yields a sorted, disjoint frontier, but
+            // an untrusted index may have in-range yet reordered or aliased child
+            // pointers. Sorting and deduping keeps `gather` fed ascending
+            // positions (it computes byte gaps by subtraction) and caps the
+            // frontier at the level width, so a crafted file cannot trigger an
+            // underflow or blow the frontier up level over level. For a valid
+            // tree this is a no-op on the result set.
+            next.sort_unstable();
+            next.dedup();
             frontier = next;
             level -= 1;
         }
@@ -984,6 +993,180 @@ mod tests {
             Err(StreamError::Format(LoadError::UnsupportedVersion)) => {}
             Ok(_) => panic!("2D-as-3D should be rejected, got a valid index"),
             Err(other) => panic!("2D-as-3D should be rejected, got {other:?}"),
+        }
+    }
+
+    // ---- Hardening: untrusted / adversarial input ----
+
+    /// A reader that hides its length, like a plain HTTP source without a HEAD.
+    /// `open` then skips the exact-length cross-check.
+    struct NoLenReader<R>(R);
+
+    impl<R: RangeReader> RangeReader for NoLenReader<R> {
+        fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            self.0.read_exact_at(offset, buf)
+        }
+        fn len(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    /// Byte offset of the index section, recomputed from the validated header.
+    fn indices_offset(stream: &StreamIndex2D<SliceReader<Vec<u8>>>) -> usize {
+        FORMAT_HEADER_LEN + 8 * stream.core.level_count + stream.core.record * stream.core.num_nodes
+    }
+
+    #[test]
+    fn fully_cached_small_index_search_matches_owned() {
+        // Small enough that the whole tree (incl. leaves) fits the directory
+        // budget, so search is served entirely from cache — exercises the
+        // cached-copy path of `gather` end to end.
+        let (owned, bytes) = random_owned(500, 0x5A5A);
+        let stream = open_slice(bytes);
+        assert_eq!(stream.core.dir_node_start, 0, "whole tree should be cached");
+
+        for q in [
+            Box2D::new(0.0, 0.0, 500.0, 500.0),
+            Box2D::new(100.0, 100.0, 120.0, 120.0),
+            Box2D::new(-9.0, -9.0, -8.0, -8.0),
+        ] {
+            let mut a = stream.search(q).unwrap();
+            let mut b = owned.search(q);
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "query {q:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_length_reader_works() {
+        let (owned, bytes) = random_owned(20_000, 0xA11);
+        let stream = StreamIndex2D::open(NoLenReader(SliceReader::new(bytes))).unwrap();
+        let q = Box2D::new(300.0, 300.0, 360.0, 360.0);
+        let mut a = stream.search(q).unwrap();
+        let mut b = owned.search(q);
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn too_short_body_rejected() {
+        let mut bytes = build_bytes(1000, 16);
+        bytes.truncate(bytes.len() - 8); // drop one index entry
+        match StreamIndex2D::open(SliceReader::new(bytes)) {
+            Err(StreamError::Format(LoadError::LengthMismatch { .. })) => {}
+            Ok(_) => panic!("expected LengthMismatch, got a valid index"),
+            Err(other) => panic!("expected LengthMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn corrupt_leaf_index_is_rejected_not_misread() {
+        let (_, mut bytes) = random_owned(1000, 0x9);
+        let idx0 = indices_offset(&open_slice(bytes.clone()));
+        // Leaf position 0 -> an item id far beyond num_items.
+        bytes[idx0..idx0 + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let stream = open_slice(bytes); // open does not validate indices
+        match stream.search(Box2D::new(-1.0, -1.0, 2000.0, 2000.0)) {
+            Err(StreamError::Format(LoadError::InvalidTree | LoadError::IntegerOverflow)) => {}
+            other => panic!("expected a rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn corrupt_internal_pointer_is_rejected_not_misread() {
+        let (_, mut bytes) = random_owned(1000, 0xA);
+        let opened = open_slice(bytes.clone());
+        let idx0 = indices_offset(&opened);
+        let num_items = opened.core.num_items;
+        // First internal node (position num_items) -> a child pointer out of range.
+        let off = idx0 + num_items * 8;
+        bytes[off..off + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let stream = open_slice(bytes);
+        match stream.search(Box2D::new(-1.0, -1.0, 2000.0, 2000.0)) {
+            Err(StreamError::Format(LoadError::InvalidTree | LoadError::IntegerOverflow)) => {}
+            other => panic!("expected a rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deep_tree_small_node_size_matches_owned() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+
+        // node_size 4 + 30k items: a deep tree where both the leaves and the
+        // level above them are streamed (directory caches only higher levels),
+        // exercising coalesced streaming of internal nodes, not just leaves.
+        let mut rng = StdRng::seed_from_u64(0xDEE9);
+        let n = 30_000;
+        let mut builder = Index2DBuilder::new(n).node_size(4);
+        for _ in 0..n {
+            let cx: f64 = rng.random_range(0.0..1000.0);
+            let cy: f64 = rng.random_range(0.0..1000.0);
+            let w: f64 = rng.random_range(0.1..10.0);
+            let h: f64 = rng.random_range(0.1..10.0);
+            builder.add(Box2D::new(cx, cy, cx + w, cy + h));
+        }
+        let owned = builder.finish().unwrap();
+        let stream = open_slice(owned.to_bytes());
+        assert!(stream.core.level_count >= 7, "tree should be deep");
+        assert!(
+            stream.core.dir_node_start > stream.core.level_bounds[0],
+            "at least leaves and the level above should be streamed"
+        );
+
+        for _ in 0..100 {
+            let qx: f64 = rng.random_range(0.0..1000.0);
+            let qy: f64 = rng.random_range(0.0..1000.0);
+            let q = Box2D::new(qx, qy, qx + 150.0, qy + 150.0);
+            let mut a = stream.search(q).unwrap();
+            let mut b = owned.search(q);
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "query {q:?}");
+        }
+    }
+
+    #[test]
+    fn concurrent_queries_on_shared_reader() {
+        // The `&self` positioned-read contract should let one reader serve many
+        // queries at once.
+        let (owned, bytes) = random_owned(20_000, 0xCAFE);
+        let stream = open_slice(bytes);
+        std::thread::scope(|scope| {
+            for t in 0..4 {
+                let stream = &stream;
+                let owned = &owned;
+                scope.spawn(move || {
+                    let base = t as f64 * 200.0;
+                    let q = Box2D::new(base, base, base + 120.0, base + 120.0);
+                    let mut a = stream.search(q).unwrap();
+                    let mut b = owned.search(q);
+                    a.sort_unstable();
+                    b.sort_unstable();
+                    assert_eq!(a, b);
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn corrupt_bytes_never_panic() {
+        // Flip a byte at many positions across a valid index and confirm neither
+        // `open` nor a full-extent query ever panics — they return Ok or Err.
+        // Covers in-range-but-reordered/aliased pointers (the frontier sort/dedup
+        // guard) and arbitrary box/level corruption.
+        let (_, base) = random_owned(800, 0xF0F0);
+        let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+        for i in (0..base.len()).step_by(37) {
+            let mut bytes = base.clone();
+            bytes[i] ^= 0xFF;
+            if let Ok(stream) = StreamIndex2D::open(SliceReader::new(bytes)) {
+                // Must terminate without panicking; result correctness is not
+                // asserted for a corrupt index, only that it does not crash.
+                let _ = stream.search(query);
+            }
         }
     }
 }

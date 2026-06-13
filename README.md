@@ -1,8 +1,10 @@
 # packed_spatial_index
 
-[![Rust CI](https://github.com/Filyus/packed_spatial_index/actions/workflows/ci.yml/badge.svg)](https://github.com/Filyus/packed_spatial_index/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/packed_spatial_index.svg)](https://crates.io/crates/packed_spatial_index)
 [![docs.rs](https://docs.rs/packed_spatial_index/badge.svg)](https://docs.rs/packed_spatial_index)
+[![Rust CI](https://github.com/Filyus/packed_spatial_index/actions/workflows/ci.yml/badge.svg)](https://github.com/Filyus/packed_spatial_index/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/crates/msrv/packed_spatial_index.svg)](https://crates.io/crates/packed_spatial_index)
+[![License](https://img.shields.io/crates/l/packed_spatial_index.svg)](LICENSE)
 
 A fast, packed **static spatial index** for 2D and 3D axis-aligned bounding
 boxes (AABBs). It builds a packed **Hilbert R-tree** (in the style of

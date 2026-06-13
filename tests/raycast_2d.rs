@@ -141,6 +141,26 @@ mod simd {
             assert_eq!(results, brute_all_hits(&boxes, ray));
         }
     }
+
+    #[test]
+    fn simd_raycast_closest_2d_ray_through_exact_face() {
+        // A ray parallel to Y whose origin lies *exactly* on a box face: the
+        // degenerate case that produces `0 * inf = NaN` in an unmasked slab.
+        let boxes = [
+            Box2D::new(0.0, 0.0, 10.0, 10.0),
+            Box2D::new(50.0, 0.0, 60.0, 10.0),
+        ];
+        let mut builder = Index2DBuilder::new(boxes.len()).node_size(8);
+        boxes.iter().for_each(|&b| builder.add(b));
+        let simd = builder.finish_simd().unwrap();
+
+        // origin.y == 0.0 == box.min_y, dir = +X, dir_y == 0.
+        let ray = Ray2D::new(Point2D::new(-5.0, 0.0), 1.0, 0.0, 100.0);
+        let mut ws = NeighborWorkspace::new();
+        let hit = simd.raycast_closest_with(ray, &mut ws);
+        assert_eq!(hit.map(|(_, t)| t), brute_closest(&boxes, ray));
+        assert!((hit.unwrap().1 - 5.0).abs() <= EPS, "entry t should be 5.0");
+    }
 }
 
 mod ordered_and_views {

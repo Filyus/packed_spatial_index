@@ -2627,32 +2627,95 @@ impl SimdIndex2D {
         &workspace.results
     }
 
-    /// Buffer-explicit raycast (mirrors `search_into_stack`).
+    /// Buffer-explicit raycast (mirrors `search_into_stack`). The per-node slab
+    /// test runs four children at a time through `wide::f64x4`.
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
         results.clear();
         stack.clear();
-        if self.num_items == 0 {
+        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
             return;
         }
+
+        let ox = f64x4::splat(ray.origin.x);
+        let oy = f64x4::splat(ray.origin.y);
+        let ix = f64x4::splat(ray.inv_dir_x);
+        let iy = f64x4::splat(ray.inv_dir_y);
+        let zero = f64x4::splat(0.0);
+        let maxd = f64x4::splat(ray.max_distance);
+        let pos_inf = f64x4::splat(f64::INFINITY);
+        let neg_inf = f64x4::splat(f64::NEG_INFINITY);
+        // A zero-direction axis imposes no `t` bound when the origin is inside
+        // (inclusive, so a ray on a face still hits) and an empty interval
+        // otherwise, computed with `blend` to dodge the `0 * inf = NaN` of the
+        // multiply path.
+        let (zx, zy) = (ray.dir_x == 0.0, ray.dir_y == 0.0);
+        let axis = |mn: f64x4, mx: f64x4, o: f64x4, inv: f64x4, degenerate: bool| {
+            if degenerate {
+                let inside = mn.simd_le(o) & o.simd_le(mx);
+                (
+                    inside.blend(neg_inf, pos_inf),
+                    inside.blend(pos_inf, neg_inf),
+                )
+            } else {
+                let t1 = (mn - o) * inv;
+                let t2 = (mx - o) * inv;
+                (t1.fast_min(t2), t1.fast_max(t2))
+            }
+        };
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                if !ray.intersects_box(self.box_at_soa(pos)) {
-                    continue;
+            let child_level = level.wrapping_sub(1);
+
+            let mut pos = node_index;
+            while pos + 4 <= end {
+                let (nx, fx) = axis(
+                    load4(&self.min_xs, pos),
+                    load4(&self.max_xs, pos),
+                    ox,
+                    ix,
+                    zx,
+                );
+                let (ny, fy) = axis(
+                    load4(&self.min_ys, pos),
+                    load4(&self.max_ys, pos),
+                    oy,
+                    iy,
+                    zy,
+                );
+                let near = nx.fast_max(ny).fast_max(zero);
+                let far = fx.fast_min(fy).fast_min(maxd);
+                let mut bits = near.simd_le(far).to_bitmask();
+                while bits != 0 {
+                    let k = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let index = self.indices[pos + k];
+                    if is_leaf {
+                        results.push(index);
+                    } else {
+                        stack.push(index);
+                        stack.push(child_level);
+                    }
                 }
-                let index = self.indices[pos];
-                if is_leaf {
-                    results.push(index);
-                } else {
-                    stack.push(index);
-                    stack.push(level - 1);
-                }
+                pos += 4;
             }
+            while pos < end {
+                if ray.intersects_box(self.box_at_soa(pos)) {
+                    let index = self.indices[pos];
+                    if is_leaf {
+                        results.push(index);
+                    } else {
+                        stack.push(index);
+                        stack.push(child_level);
+                    }
+                }
+                pos += 1;
+            }
+
             if stack.len() > 1 {
                 level = stack.pop().unwrap();
                 node_index = stack.pop().unwrap();

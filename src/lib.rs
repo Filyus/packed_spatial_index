@@ -47,6 +47,8 @@
 //! * `parallel` (default): adaptive parallel builds through rayon.
 //! * `simd` (default): SIMD search/raycast through `wide` and x86-64 AVX-512.
 //! * `f32-storage`: compact f32-storage SIMD indexes.
+//! * `stream`: query a serialized index over a `RangeReader` (local file or
+//!   remote object) without loading the whole file. No extra dependencies.
 
 // On docs.rs (built with `--cfg docsrs` on nightly), auto-render "Available on
 // crate feature X" badges for feature-gated items from their `#[cfg]`s.
@@ -83,6 +85,8 @@ mod persistence;
 mod ray;
 mod sort2d;
 mod sort3d;
+#[cfg(feature = "stream")]
+mod stream;
 mod traversal;
 mod tree;
 
@@ -108,6 +112,10 @@ pub use persistence::LoadError;
 pub use ray::{Ray2D, Ray3D};
 pub use sort2d::SortKey2D;
 pub use sort3d::SortKey3D;
+#[cfg(all(feature = "stream", any(unix, windows)))]
+pub use stream::FileReader;
+#[cfg(feature = "stream")]
+pub use stream::{RangeReader, SliceReader, StreamError, StreamIndex2D};
 pub use traversal::SearchWorkspace;
 
 /// Internal helpers exposed only for crate benchmarks and local performance tools.

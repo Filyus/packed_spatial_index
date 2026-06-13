@@ -54,48 +54,51 @@ impl Error for LoadError {}
 // as a little-endian u64 in the header.
 const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
 const FORMAT_VERSION: u64 = 1;
-const FORMAT_FLAGS_2D: u64 = 0;
-const FORMAT_FLAGS_3D: u64 = 1;
+pub(crate) const FORMAT_FLAGS_2D: u64 = 0;
+pub(crate) const FORMAT_FLAGS_3D: u64 = 1;
 #[cfg(feature = "f32-storage")]
 const FORMAT_FLAGS_2D_F32: u64 = 2;
 #[cfg(feature = "f32-storage")]
 const FORMAT_FLAGS_3D_F32: u64 = 3;
-const FORMAT_HEADER_LEN: usize = 64;
+pub(crate) const FORMAT_HEADER_LEN: usize = 64;
 
-pub(crate) struct ParsedIndexBytes<'a> {
+/// Validated header fields shared by the in-memory parser and the streaming
+/// reader. Every value here has already passed magic / version / flags /
+/// node-size-range / tree-shape validation.
+pub(crate) struct HeaderFields {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
     pub(crate) num_nodes: usize,
     pub(crate) level_count: usize,
-    pub(crate) level_bounds: &'a [u8],
-    pub(crate) entries: &'a [u8],
-    pub(crate) indices: &'a [u8],
 }
 
-pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
-    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D, 2, 8)
+/// Byte offsets of the three sections that follow the header, plus the box
+/// record size. Computed purely from validated header counts, so it is the one
+/// source of truth for where `level_bounds`, `boxes`, and `indices` live —
+/// shared by the in-memory parser and the streaming reader.
+pub(crate) struct SectionLayout {
+    /// Box record size in bytes (`dimensions * 2 * coord_bytes`). Read by the
+    /// streaming reader; the in-memory parser derives section sizes without it.
+    #[allow(dead_code)]
+    pub(crate) record: usize,
+    /// Start of the `level_bounds` section (always `FORMAT_HEADER_LEN`).
+    pub(crate) level_bounds_start: usize,
+    /// Start of the `boxes` section.
+    pub(crate) box0: usize,
+    /// Start of the `indices` section.
+    pub(crate) idx0: usize,
+    /// Total serialized length (end of the `indices` section).
+    pub(crate) total_len: usize,
 }
 
-pub(crate) fn parse_index3d_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
-    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D, 3, 8)
-}
-
-#[cfg(feature = "f32-storage")]
-pub(crate) fn parse_index2d_f32_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
-    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D_F32, 2, 4)
-}
-
-#[cfg(feature = "f32-storage")]
-pub(crate) fn parse_index3d_f32_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
-    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D_F32, 3, 4)
-}
-
-fn parse_index_bytes_with_flags(
+/// Parse and validate the fixed 64-byte header from `bytes` (which must be at
+/// least `FORMAT_HEADER_LEN` long; only the first 64 bytes are read). Performs
+/// every header-level check the in-memory parser does, except the
+/// whole-buffer length and section validation, which need the full sections.
+pub(crate) fn parse_and_validate_header(
     bytes: &[u8],
     expected_flags: u64,
-    dimensions: usize,
-    coord_bytes: usize,
-) -> Result<ParsedIndexBytes<'_>, LoadError> {
+) -> Result<HeaderFields, LoadError> {
     if bytes.len() < FORMAT_MAGIC.len() {
         return Err(LoadError::Truncated);
     }
@@ -131,74 +134,153 @@ fn parse_index_bytes_with_flags(
         return Err(LoadError::InvalidTree);
     }
 
-    let expected_len =
-        serialized_len_for_dimensions(level_count, num_nodes, dimensions, coord_bytes)?;
-    if bytes.len() < expected_len {
-        return Err(LoadError::Truncated);
-    }
-    if bytes.len() != expected_len {
-        return Err(LoadError::LengthMismatch {
-            expected: expected_len,
-            actual: bytes.len(),
-        });
-    }
-
-    let level_bounds_len = level_count
-        .checked_mul(8)
-        .ok_or(LoadError::IntegerOverflow)?;
-    let entries_len = num_nodes
-        .checked_mul(dimensions)
-        .and_then(|len| len.checked_mul(2 * coord_bytes))
-        .ok_or(LoadError::IntegerOverflow)?;
-    let indices_len = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
-
-    let level_start = FORMAT_HEADER_LEN;
-    let entries_start = level_start
-        .checked_add(level_bounds_len)
-        .ok_or(LoadError::IntegerOverflow)?;
-    let indices_start = entries_start
-        .checked_add(entries_len)
-        .ok_or(LoadError::IntegerOverflow)?;
-    let end = indices_start
-        .checked_add(indices_len)
-        .ok_or(LoadError::IntegerOverflow)?;
-
-    let parsed = ParsedIndexBytes {
+    Ok(HeaderFields {
         node_size,
         num_items,
         num_nodes,
         level_count,
-        level_bounds: &bytes[level_start..entries_start],
-        entries: &bytes[entries_start..indices_start],
-        indices: &bytes[indices_start..end],
+    })
+}
+
+/// Compute the section byte offsets from validated header counts.
+pub(crate) fn section_layout(
+    level_count: usize,
+    num_nodes: usize,
+    dimensions: usize,
+    coord_bytes: usize,
+) -> Result<SectionLayout, LoadError> {
+    let level_bounds_len = level_count
+        .checked_mul(8)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let record = dimensions
+        .checked_mul(2 * coord_bytes)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let entries_len = num_nodes
+        .checked_mul(record)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let indices_len = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
+
+    let level_bounds_start = FORMAT_HEADER_LEN;
+    let box0 = level_bounds_start
+        .checked_add(level_bounds_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let idx0 = box0
+        .checked_add(entries_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let total_len = idx0
+        .checked_add(indices_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+
+    Ok(SectionLayout {
+        record,
+        level_bounds_start,
+        box0,
+        idx0,
+        total_len,
+    })
+}
+
+pub(crate) struct ParsedIndexBytes<'a> {
+    pub(crate) node_size: usize,
+    pub(crate) num_items: usize,
+    pub(crate) num_nodes: usize,
+    pub(crate) level_count: usize,
+    pub(crate) level_bounds: &'a [u8],
+    pub(crate) entries: &'a [u8],
+    pub(crate) indices: &'a [u8],
+}
+
+pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D, 2, 8)
+}
+
+pub(crate) fn parse_index3d_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D, 3, 8)
+}
+
+#[cfg(feature = "f32-storage")]
+pub(crate) fn parse_index2d_f32_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D_F32, 2, 4)
+}
+
+#[cfg(feature = "f32-storage")]
+pub(crate) fn parse_index3d_f32_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D_F32, 3, 4)
+}
+
+fn parse_index_bytes_with_flags(
+    bytes: &[u8],
+    expected_flags: u64,
+    dimensions: usize,
+    coord_bytes: usize,
+) -> Result<ParsedIndexBytes<'_>, LoadError> {
+    let header = parse_and_validate_header(bytes, expected_flags)?;
+    let layout = section_layout(
+        header.level_count,
+        header.num_nodes,
+        dimensions,
+        coord_bytes,
+    )?;
+
+    if bytes.len() < layout.total_len {
+        return Err(LoadError::Truncated);
+    }
+    if bytes.len() != layout.total_len {
+        return Err(LoadError::LengthMismatch {
+            expected: layout.total_len,
+            actual: bytes.len(),
+        });
+    }
+
+    let parsed = ParsedIndexBytes {
+        node_size: header.node_size,
+        num_items: header.num_items,
+        num_nodes: header.num_nodes,
+        level_count: header.level_count,
+        level_bounds: &bytes[layout.level_bounds_start..layout.box0],
+        entries: &bytes[layout.box0..layout.idx0],
+        indices: &bytes[layout.idx0..layout.total_len],
     };
-    validate_level_bounds(&parsed)?;
+    validate_level_bounds(
+        parsed.level_bounds,
+        parsed.num_items,
+        parsed.num_nodes,
+        parsed.node_size,
+        parsed.level_count,
+    )?;
     validate_indices(&parsed)?;
     Ok(parsed)
 }
 
-fn validate_level_bounds(parsed: &ParsedIndexBytes<'_>) -> Result<(), LoadError> {
-    let mut n = parsed.num_items;
+/// Validate the `level_bounds` section against the declared tree shape. Reads
+/// only the (small) `level_bounds` bytes, so the streaming reader can call it at
+/// open time without the full buffer.
+pub(crate) fn validate_level_bounds(
+    level_bounds: &[u8],
+    num_items: usize,
+    num_nodes: usize,
+    node_size: usize,
+    level_count: usize,
+) -> Result<(), LoadError> {
+    let mut n = num_items;
     let mut running_total = n;
-    for level in 0..parsed.level_count {
-        let actual = read_u64_at(parsed.level_bounds, level * 8).and_then(usize_from_u64)?;
+    for level in 0..level_count {
+        let actual = read_u64_at(level_bounds, level * 8).and_then(usize_from_u64)?;
         if actual != running_total {
             return Err(LoadError::InvalidTree);
         }
-        if level + 1 == parsed.level_count {
+        if level + 1 == level_count {
             break;
         }
         if n == 0 {
             return Err(LoadError::InvalidTree);
         }
-        n = n.div_ceil(parsed.node_size);
+        n = n.div_ceil(node_size);
         running_total = running_total
             .checked_add(n)
             .ok_or(LoadError::IntegerOverflow)?;
     }
-    if read_u64_at(parsed.level_bounds, (parsed.level_count - 1) * 8).and_then(usize_from_u64)?
-        != parsed.num_nodes
-    {
+    if read_u64_at(level_bounds, (level_count - 1) * 8).and_then(usize_from_u64)? != num_nodes {
         return Err(LoadError::InvalidTree);
     }
     Ok(())
@@ -237,7 +319,10 @@ fn validate_indices(parsed: &ParsedIndexBytes<'_>) -> Result<(), LoadError> {
     Ok(())
 }
 
-fn expected_tree_shape(num_items: usize, node_size: usize) -> Result<(usize, usize), LoadError> {
+pub(crate) fn expected_tree_shape(
+    num_items: usize,
+    node_size: usize,
+) -> Result<(usize, usize), LoadError> {
     let mut num_nodes = num_items;
     let mut levels = 1usize;
     let mut n = num_items;
@@ -564,7 +649,7 @@ impl<'a> ByteWriter<'a> {
     }
 }
 
-fn read_u64_at(bytes: &[u8], offset: usize) -> Result<u64, LoadError> {
+pub(crate) fn read_u64_at(bytes: &[u8], offset: usize) -> Result<u64, LoadError> {
     let end = offset.checked_add(8).ok_or(LoadError::IntegerOverflow)?;
     let slice = bytes.get(offset..end).ok_or(LoadError::Truncated)?;
     Ok(u64::from_le_bytes(slice.try_into().unwrap()))

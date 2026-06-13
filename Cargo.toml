@@ -36,6 +36,9 @@ parallel = ["dep:rayon"]
 simd = ["dep:wide"]
 # Compact f32-storage SIMD indexes (`SimdIndex2DF32`, `SimdIndex3DF32`).
 f32-storage = ["simd"]
+# Streaming reader: query a serialized index over a `RangeReader` (local file or
+# remote object) without loading the whole file. No extra dependencies.
+stream = []
 # Hidden support API for crate benchmarks and local performance tools.
 bench-internals = []
 

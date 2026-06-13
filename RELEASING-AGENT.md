@@ -102,7 +102,7 @@ dropped as internal noise.
 | 05 | Indexes | `index` | keep |
 | 06 | Search | `search`, `visit(or)`, `traversal`, `workspace`, `raycast`, `ray(s)` | keep |
 | 07 | Nearest Neighbors | `knn`, `neighbor(s)`, `nearest` | keep |
-| 08 | Persistence | `persistence`, `serialize`, `load`, `view(s)`, `format`, `bytes`, `zero-copy` | keep |
+| 08 | Persistence | `persistence`, `serialize`, `load`, `view(s)`, `format`, `bytes`, `zero-copy`, `stream` | keep |
 | 09 | SIMD | `simd`, `soa`, `avx`, `avx512`, `sse` | keep |
 | 10 | WASM | `wasm`, `wasm-demo` | depends — drop if it touches only `wasm-demo/` |
 | 11 | Performance | `perf`, `parallel`, `radix`, `node(-size)`, `prefetch` | keep |

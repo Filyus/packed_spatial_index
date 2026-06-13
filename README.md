@@ -78,16 +78,25 @@ assert_eq!(hit, Some((0, 1.0)));
 
 ## Types at a glance
 
-- **Geometry**: `Box2D`, `Box3D` (inclusive `overlaps` / `contains` /
-  `contains_point` / `from_point`), `Point2D`, `Point3D`, `Ray2D`, `Ray3D`.
-- **Builders**: `Index2DBuilder`, `Index3DBuilder` — `finish()` (scalar),
-  `finish_simd()` (SoA + SIMD), `finish_simd_f32()` (compact f32 boxes).
-- **Indexes**: `Index2D` / `Index3D` (scalar), `SimdIndex2D` / `SimdIndex3D`
-  (SIMD), `SimdIndex2DF32` / `SimdIndex3DF32` (half-memory f32 boxes).
-- **Views**: zero-copy `*View` types over serialized bytes for every index.
-- **Workspaces**: `SearchWorkspace`, `NeighborWorkspace` reuse buffers in loops.
-- **Sorting / errors**: `SortKey2D` / `SortKey3D` (default `Hilbert`),
-  `BoundsError`, `BuildError`, `LoadError`.
+- **Geometry**: [`Box2D`][Box2D], [`Box3D`][Box3D] (inclusive `overlaps` /
+  `contains` / `contains_point` / `from_point`), [`Point2D`][Point2D],
+  [`Point3D`][Point3D], [`Ray2D`][Ray2D], [`Ray3D`][Ray3D].
+- **Builders**: [`Index2DBuilder`][Index2DBuilder],
+  [`Index3DBuilder`][Index3DBuilder] — [`finish`][finish] (scalar),
+  [`finish_simd`][finish_simd] (SoA + SIMD),
+  [`finish_simd_f32`][finish_simd_f32] (compact f32 boxes).
+- **Indexes**: [`Index2D`][Index2D] / [`Index3D`][Index3D] (scalar),
+  [`SimdIndex2D`][SimdIndex2D] / [`SimdIndex3D`][SimdIndex3D] (SIMD),
+  [`SimdIndex2DF32`][SimdIndex2DF32] / [`SimdIndex3DF32`][SimdIndex3DF32]
+  (half-memory f32 boxes).
+- **Views**: zero-copy [`Index2DView`][Index2DView] /
+  [`Index3DView`][Index3DView] (and SIMD / f32 view variants) over serialized
+  bytes.
+- **Workspaces**: [`SearchWorkspace`][SearchWorkspace] /
+  [`NeighborWorkspace`][NeighborWorkspace] reuse buffers in loops.
+- **Sorting / errors**: [`SortKey2D`][SortKey2D] / [`SortKey3D`][SortKey3D]
+  (default `Hilbert`), [`BoundsError`][BoundsError], [`BuildError`][BuildError],
+  [`LoadError`][LoadError].
 
 ## Features
 
@@ -171,3 +180,29 @@ Licensed under the Apache License, Version 2.0.
 [extent]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.extent
 [search_exact]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html#method.search_exact
 [neighbors_exact]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html#method.neighbors_exact
+[Box2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Box2D.html
+[Box3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Box3D.html
+[Point2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Point2D.html
+[Point3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Point3D.html
+[Ray2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Ray2D.html
+[Ray3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Ray3D.html
+[Index2DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html
+[Index3DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DBuilder.html
+[Index2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html
+[Index3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html
+[SimdIndex2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2D.html
+[SimdIndex3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex3D.html
+[SimdIndex2DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html
+[SimdIndex3DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex3DF32.html
+[Index2DView]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DView.html
+[Index3DView]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DView.html
+[SearchWorkspace]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SearchWorkspace.html
+[NeighborWorkspace]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.NeighborWorkspace.html
+[finish]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish
+[finish_simd]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish_simd
+[finish_simd_f32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish_simd_f32
+[SortKey2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.SortKey2D.html
+[SortKey3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.SortKey3D.html
+[BoundsError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BoundsError.html
+[BuildError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BuildError.html
+[LoadError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.LoadError.html

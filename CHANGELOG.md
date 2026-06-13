@@ -5,6 +5,17 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.6.0](https://github.com/Filyus/packed_spatial_index/compare/v0.5.1...v0.6.0) - 2026-06-14
+
+### Search
+- Add `search_iter`, a lazy iterator over the items intersecting a query box, on
+  `Index2D` and `Index3D`. It descends the tree on demand, so consuming only a
+  prefix (`.next()`, `.take(k)`, `.find(..)`) stops the traversal early and never
+  allocates a result `Vec`. Reach for it to compose with iterator adapters or to
+  bail out partway, where `search` (a whole owned `Vec`) and `visit` (a
+  push-based callback) are awkward.
+
+
 ## [0.5.1](https://github.com/Filyus/packed_spatial_index/compare/v0.5.0...v0.5.1) - 2026-06-13
 
 ### Documentation

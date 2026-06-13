@@ -13,8 +13,10 @@ Normal releases are optimized for a solo maintainer working with Codex:
    workflow publish to crates.io, create the annotated tag, and create the
    GitHub Release.
 
-`release-plz` is used only for local release preparation. It does not publish
-crates, push tags, or create GitHub Releases.
+Release preparation (version bump + changelog) is done by hand following
+[`RELEASING-AGENT.md`](RELEASING-AGENT.md). Nothing in this flow publishes
+crates, pushes tags, or creates GitHub Releases outside the gated publish
+workflow.
 
 ## Normal Release
 
@@ -33,8 +35,8 @@ git pull --ff-only origin main
 git status --short
 ```
 
-If `git status --short` prints anything, classify the changes before running
-`release-plz update`:
+If `git status --short` prints anything, classify the changes before preparing
+the release:
 
 - If the current conversation makes it clear what normal feature/fix/docs commit
   is missing, create that commit first, push it to `main`, and wait for CI.
@@ -46,18 +48,14 @@ If `git status --short` prints anything, classify the changes before running
 The release commit should be easy to review and should not accidentally absorb
 in-progress work.
 
-Generate the version bump and changelog draft:
+Codex prepares the version bump and changelog **by hand**, following the step
+list in [`RELEASING-AGENT.md`](RELEASING-AGENT.md). In short:
 
-```powershell
-release-plz update --config release-plz.toml
-```
-
-Then Codex must polish `CHANGELOG.md` before asking for approval:
-
-- keep the generated version and compare link;
-- rewrite terse commit messages into clear release notes;
-- group related changes by user-facing topic;
-- remove internal noise that is not useful to crate users;
+- bump `version` in `Cargo.toml` (minor for new API, patch for fixes);
+- write the `CHANGELOG.md` section grouped by the
+  [changelog taxonomy](RELEASING-AGENT.md#changelog-taxonomy);
+- rewrite terse commit subjects into clear, user-facing notes;
+- remove internal noise (wasm-demo-only commits, lint, CI/workflow, benches);
 - keep feature/code changes out of the release commit.
 
 Do not run release-only checks manually. The automatic publish preflight runs

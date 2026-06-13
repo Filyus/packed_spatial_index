@@ -512,6 +512,35 @@ impl Index3D {
         self.visit_with_stack(query, &mut stack, visitor)
     }
 
+    /// Return a lazy iterator over the items intersecting `query`.
+    ///
+    /// The tree is descended on demand, so consuming only a prefix
+    /// (`.next()`, `.take(k)`, `.find(..)`) stops the traversal early and never
+    /// allocates a result `Vec`. Yielded values are original insertion indices,
+    /// in tree-traversal order (not part of the API). See
+    /// [`Index2D::search_iter`](crate::Index2D::search_iter).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index3DBuilder, Box3D};
+    ///
+    /// let mut builder = Index3DBuilder::new(3);
+    /// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// builder.add(Box3D::new(2.0, 2.0, 2.0, 3.0, 3.0, 3.0));
+    /// builder.add(Box3D::new(9.0, 9.0, 9.0, 10.0, 10.0, 10.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let mut hits: Vec<_> = index
+    ///     .search_iter(Box3D::new(0.0, 0.0, 0.0, 4.0, 4.0, 4.0))
+    ///     .collect();
+    /// hits.sort_unstable();
+    /// assert_eq!(hits, vec![0, 1]);
+    /// ```
+    pub fn search_iter(&self, query: Box3D) -> Search3DIter<'_> {
+        Search3DIter::new(self, query)
+    }
+
     /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
     /// of `other`. See [`Index2D::join`](crate::Index2D::join).
     ///
@@ -2026,3 +2055,90 @@ impl Index3DView<'_> {
         }
     }
 }
+
+/// Lazy iterator over the items intersecting a query box, returned by
+/// [`Index3D::search_iter`].
+///
+/// Yields original insertion indices in tree-traversal order, descending the
+/// tree only as far as the consumer pulls. Holds a small traversal stack
+/// (`O(depth)`); it allocates no result `Vec`.
+pub struct Search3DIter<'a> {
+    index: &'a Index3D,
+    query: Box3D,
+    // (node_index, level) pairs still to visit, same encoding as the search stack.
+    stack: Vec<usize>,
+    // Half-open entry range of the leaf node currently being scanned.
+    leaf_pos: usize,
+    leaf_end: usize,
+}
+
+impl<'a> Search3DIter<'a> {
+    fn new(index: &'a Index3D, query: Box3D) -> Self {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        if index.num_items != 0 {
+            // Seed with the root so `next` drives the descent uniformly.
+            stack.push(index.entries.len() - 1);
+            stack.push(index.level_bounds.len() - 1);
+        }
+        Self {
+            index,
+            query,
+            stack,
+            leaf_pos: 0,
+            leaf_end: 0,
+        }
+    }
+}
+
+impl Iterator for Search3DIter<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        let index = self.index;
+        loop {
+            // Drain remaining hits in the leaf node currently being scanned.
+            while self.leaf_pos < self.leaf_end {
+                let at = self.leaf_pos;
+                self.leaf_pos += 1;
+                if index.entries[at].overlaps(self.query) {
+                    return Some(index.indices[at]);
+                }
+            }
+
+            // Pop the next node. The stack holds (node_index, level) pairs.
+            if self.stack.len() < 2 {
+                return None;
+            }
+            let level = self.stack.pop().unwrap();
+            let node_index = self.stack.pop().unwrap();
+            let end = (node_index + index.node_size).min(index.level_bounds[level]);
+
+            if node_index < index.num_items {
+                // Leaf node: scan its entries on the next loop turns.
+                self.leaf_pos = node_index;
+                self.leaf_end = end;
+            } else {
+                // Internal node: push overlapping children reversed so they pop
+                // in forward order (matching `visit`).
+                let child_level = level - 1;
+                for (b, &child) in index.entries[node_index..end]
+                    .iter()
+                    .zip(&index.indices[node_index..end])
+                    .rev()
+                {
+                    if b.overlaps(self.query) {
+                        self.stack.push(child);
+                        self.stack.push(child_level);
+                    }
+                }
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Exact count is unknown without traversing; at most every item matches.
+        (0, Some(self.index.num_items))
+    }
+}
+
+impl std::iter::FusedIterator for Search3DIter<'_> {}

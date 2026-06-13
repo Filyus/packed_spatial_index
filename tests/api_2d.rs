@@ -305,3 +305,72 @@ fn parallel_build_matches_serial() {
         assert_eq!(a, b);
     }
 }
+
+// A deterministic 20x20 grid of unit boxes, so search_iter tests run without
+// the rng helpers (which are gated behind the `parallel` feature here).
+fn grid_index() -> packed_spatial_index::Index2D {
+    let mut builder = Index2DBuilder::new(400);
+    for gy in 0..20 {
+        for gx in 0..20 {
+            let (x, y) = (gx as f64, gy as f64);
+            builder.add(Box2D::new(x, y, x + 0.5, y + 0.5));
+        }
+    }
+    builder.finish().unwrap()
+}
+
+#[test]
+fn search_iter_matches_search() {
+    let index = grid_index();
+    for &q in &[
+        Box2D::new(0.0, 0.0, 4.5, 4.5),
+        Box2D::new(5.0, 5.0, 5.5, 5.5),
+        Box2D::new(-10.0, -10.0, 100.0, 100.0),
+        Box2D::new(100.0, 100.0, 200.0, 200.0),
+        Box2D::new(3.2, 7.1, 9.9, 12.4),
+    ] {
+        let mut from_iter: Vec<usize> = index.search_iter(q).collect();
+        let mut from_search = index.search(q);
+        from_iter.sort_unstable();
+        from_search.sort_unstable();
+        assert_eq!(from_iter, from_search, "query {q:?}");
+    }
+}
+
+#[test]
+fn search_iter_partial_consumption_is_lazy_and_valid() {
+    let index = grid_index();
+    let q = Box2D::new(0.0, 0.0, 9.5, 9.5); // 100 boxes overlap
+    let total = index.search(q).len();
+    assert_eq!(total, 100);
+
+    // Every yielded item is a genuine hit, and `take(k)` yields exactly k.
+    let prefix: Vec<usize> = index.search_iter(q).take(7).collect();
+    assert_eq!(prefix.len(), 7);
+    let full: std::collections::HashSet<usize> = index.search(q).into_iter().collect();
+    assert!(prefix.iter().all(|i| full.contains(i)));
+
+    // `find` short-circuits and returns a real hit.
+    let found = index.search_iter(q).find(|&i| i % 5 == 0);
+    assert!(found.is_some_and(|i| full.contains(&i)));
+}
+
+#[test]
+fn search_iter_empty_and_no_match() {
+    let empty = Index2DBuilder::new(0).finish().unwrap();
+    assert_eq!(empty.search_iter(Box2D::new(0.0, 0.0, 1.0, 1.0)).count(), 0);
+
+    let index = grid_index();
+    let miss = Box2D::new(1000.0, 1000.0, 1001.0, 1001.0);
+    assert_eq!(index.search_iter(miss).next(), None);
+}
+
+#[test]
+fn search_iter_size_hint_bounds_results() {
+    let index = grid_index();
+    let (lo, hi) = index
+        .search_iter(Box2D::new(0.0, 0.0, 4.5, 4.5))
+        .size_hint();
+    assert_eq!(lo, 0);
+    assert_eq!(hi, Some(index.num_items()));
+}

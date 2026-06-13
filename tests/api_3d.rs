@@ -481,3 +481,54 @@ fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
         0.0
     }
 }
+
+// A deterministic 8x8x8 grid of unit boxes for the search_iter tests.
+fn grid_index_3d() -> packed_spatial_index::Index3D {
+    let mut builder = Index3DBuilder::new(512);
+    for gz in 0..8 {
+        for gy in 0..8 {
+            for gx in 0..8 {
+                let (x, y, z) = (gx as f64, gy as f64, gz as f64);
+                builder.add(Box3D::new(x, y, z, x + 0.5, y + 0.5, z + 0.5));
+            }
+        }
+    }
+    builder.finish().unwrap()
+}
+
+#[test]
+fn search_iter_matches_search_3d() {
+    let index = grid_index_3d();
+    for &q in &[
+        Box3D::new(0.0, 0.0, 0.0, 3.5, 3.5, 3.5),
+        Box3D::new(4.0, 4.0, 4.0, 4.5, 4.5, 4.5),
+        Box3D::new(-10.0, -10.0, -10.0, 100.0, 100.0, 100.0),
+        Box3D::new(100.0, 100.0, 100.0, 200.0, 200.0, 200.0),
+    ] {
+        let mut from_iter: Vec<usize> = index.search_iter(q).collect();
+        let mut from_search = index.search(q);
+        from_iter.sort_unstable();
+        from_search.sort_unstable();
+        assert_eq!(from_iter, from_search, "query {q:?}");
+    }
+}
+
+#[test]
+fn search_iter_partial_and_empty_3d() {
+    let index = grid_index_3d();
+    let q = Box3D::new(0.0, 0.0, 0.0, 3.5, 3.5, 3.5); // 4x4x4 = 64 boxes
+    let full: std::collections::HashSet<usize> = index.search(q).into_iter().collect();
+    assert_eq!(full.len(), 64);
+
+    let prefix: Vec<usize> = index.search_iter(q).take(5).collect();
+    assert_eq!(prefix.len(), 5);
+    assert!(prefix.iter().all(|i| full.contains(i)));
+
+    let empty = Index3DBuilder::new(0).finish().unwrap();
+    assert_eq!(
+        empty
+            .search_iter(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0))
+            .next(),
+        None
+    );
+}

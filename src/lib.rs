@@ -16,7 +16,8 @@
 //! insertion order.
 //!
 //! * **Range / intersection** — [`search`](Index2D::search) (plus `search_into`
-//!   / `search_with`), [`any`](Index2D::any), [`first`](Index2D::first),
+//!   / `search_with` / lazy [`search_iter`](Index2D::search_iter)),
+//!   [`any`](Index2D::any), [`first`](Index2D::first),
 //!   [`visit`](Index2D::visit).
 //! * **Nearest neighbors** — from a point [`neighbors`](Index2D::neighbors)
 //!   (plus `_within` / `_into` / `_with` /
@@ -92,12 +93,12 @@ pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use geometry::{BoundsError, Box2D, Box3D, Point2D, Point3D};
-pub use index2d::{Index2D, Index2DView};
+pub use index2d::{Index2D, Index2DView, Search2DIter};
 #[cfg(feature = "f32-storage")]
 pub use index2d_f32::{SimdIndex2DF32, SimdIndex2DF32View};
 #[cfg(feature = "simd")]
 pub use index2d_soa::{SimdIndex2D, SimdIndex2DView};
-pub use index3d::{Index3D, Index3DView};
+pub use index3d::{Index3D, Index3DView, Search3DIter};
 #[cfg(feature = "f32-storage")]
 pub use index3d_f32::{SimdIndex3DF32, SimdIndex3DF32View};
 #[cfg(feature = "simd")]

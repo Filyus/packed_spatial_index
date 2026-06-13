@@ -119,8 +119,14 @@ await init();
 validateWasmWrapper();
 setStatus('WASM module loaded');
 webgpuRenderer = await createWebGpuRenderer(gpuCanvas, showBuildError);
-if (!webgpuRenderer) {
-  disableRendererOption('webgpu');
+if (webgpuRenderer) {
+  // Prefer WebGPU when the browser supports it; WebGL stays the HTML default so
+  // the first paint before this async probe resolves always has a backend.
+  rendererSelect.value = 'webgpu';
+} else {
+  // Without WebGPU the picker only offers WebGL, so hide it entirely rather than
+  // showing a one-option dropdown.
+  hideRendererControl();
 }
 rebuild();
 
@@ -710,14 +716,12 @@ function scene(): Scene {
   };
 }
 
-function disableRendererOption(value: RendererMode): void {
-  const option = rendererSelect.querySelector<HTMLOptionElement>(`option[value="${value}"]`);
-  if (option) {
-    option.disabled = true;
-    option.textContent = `${option.textContent} (unavailable)`;
-  }
-  if (rendererSelect.value === value) {
-    rendererSelect.value = 'webgl';
+function hideRendererControl(): void {
+  // WebGL is the only remaining backend, so force it and hide the picker.
+  rendererSelect.value = 'webgl';
+  const control = rendererSelect.closest('label');
+  if (control) {
+    control.hidden = true;
   }
 }
 

@@ -41,6 +41,12 @@ label {
   text-transform: uppercase;
 }
 
+/* `display: grid` above wins over the default `[hidden]` rule, so opt hidden
+   controls (e.g. the renderer picker when WebGPU is unavailable) back out. */
+label[hidden] {
+  display: none;
+}
+
 input,
 select,
 button {

@@ -14,8 +14,9 @@ use crate::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
     },
     persistence::{
-        ByteWriter, LoadError, parse_index3d_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
-        serialized_len_3d,
+        ByteWriter, FORMAT_FLAG_PAYLOAD, FORMAT_FLAGS_3D, LoadError, ParsedPayload, PayloadError,
+        parse_index_and_payload, payload_layout, payload_slice, read_f64_le_unchecked,
+        read_u64_le_unchecked, serialized_len_3d,
     },
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
@@ -127,6 +128,66 @@ impl Index3D {
         bytes.write_box3d_slice(&self.entries);
         bytes.write_usize_slice_as_u64(&self.indices);
         bytes.finish();
+    }
+
+    /// Serialize this index together with one opaque payload per item. The 3D
+    /// counterpart of
+    /// [`Index2D::to_bytes_with_payloads`](crate::Index2D::to_bytes_with_payloads):
+    /// `payloads` is in item order, and the payload section is appended after the
+    /// index. Read blobs back by item index with a `StreamIndex3D` (the `stream`
+    /// feature) or [`Index3DView`].
+    pub fn to_bytes_with_payloads<P: AsRef<[u8]>>(
+        &self,
+        payloads: &[P],
+    ) -> Result<Vec<u8>, PayloadError> {
+        let mut out = Vec::new();
+        self.to_bytes_with_payloads_into(payloads, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`to_bytes_with_payloads`](Self::to_bytes_with_payloads) into a reused
+    /// buffer (cleared first).
+    pub fn to_bytes_with_payloads_into<P: AsRef<[u8]>>(
+        &self,
+        payloads: &[P],
+        out: &mut Vec<u8>,
+    ) -> Result<(), PayloadError> {
+        if payloads.len() != self.num_items {
+            return Err(PayloadError::CountMismatch {
+                expected: self.num_items,
+                got: payloads.len(),
+            });
+        }
+        let level_count = self.level_bounds.len();
+        let num_nodes = self.entries.len();
+        let index_len =
+            serialized_len_3d(level_count, num_nodes).map_err(|_| PayloadError::TooLarge)?;
+
+        let mut blob_total: u64 = 0;
+        for payload in payloads {
+            blob_total = blob_total
+                .checked_add(payload.as_ref().len() as u64)
+                .ok_or(PayloadError::TooLarge)?;
+        }
+        let blob_total = usize::try_from(blob_total).map_err(|_| PayloadError::TooLarge)?;
+        let layout = payload_layout(self.num_items, index_len, blob_total)
+            .map_err(|_| PayloadError::TooLarge)?;
+
+        let mut bytes = ByteWriter::new(out, layout.full_total);
+        bytes.write_magic();
+        bytes.write_format_version();
+        bytes.write_header_len();
+        bytes.write_u64(FORMAT_FLAGS_3D | FORMAT_FLAG_PAYLOAD);
+        bytes.write_u64(self.node_size as u64);
+        bytes.write_u64(self.num_items as u64);
+        bytes.write_u64(num_nodes as u64);
+        bytes.write_u64(level_count as u64);
+        bytes.write_usize_slice_as_u64(&self.level_bounds);
+        bytes.write_box3d_slice(&self.entries);
+        bytes.write_usize_slice_as_u64(&self.indices);
+        bytes.write_payload_offsets_and_blobs(payloads);
+        bytes.finish();
+        Ok(())
     }
 
     /// Load an owned 3D index from bytes previously produced by [`Index3D::to_bytes`].
@@ -950,6 +1011,7 @@ pub struct Index3DView<'a> {
     level_bounds: &'a [u8],
     entries: &'a [u8],
     indices: &'a [u8],
+    payload: Option<ParsedPayload<'a>>,
 }
 
 impl<'a> Index3DView<'a> {
@@ -969,7 +1031,7 @@ impl<'a> Index3DView<'a> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
-        let parsed = parse_index3d_bytes(bytes)?;
+        let (parsed, payload) = parse_index_and_payload(bytes, FORMAT_FLAGS_3D, 3, 8)?;
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -978,7 +1040,24 @@ impl<'a> Index3DView<'a> {
             level_bounds: parsed.level_bounds,
             entries: parsed.entries,
             indices: parsed.indices,
+            payload,
         })
+    }
+
+    /// Whether this view's bytes carry a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.payload.is_some()
+    }
+
+    /// Borrow item `id`'s payload blob, or `None` if the bytes have no payload
+    /// section or `id` is out of range. Zero-copy. See
+    /// [`Index2DView::payload`](crate::Index2DView::payload).
+    pub fn payload(&self, id: usize) -> Option<&'a [u8]> {
+        let payload = self.payload.as_ref()?;
+        if id >= self.num_items {
+            return None;
+        }
+        Some(payload_slice(payload.offsets, payload.blobs, id))
     }
 
     /// Return the number of indexed items.

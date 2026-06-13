@@ -1416,4 +1416,48 @@ mod tests {
         let stream = open_slice(bytes);
         assert!(stream.payload(10).unwrap().is_empty());
     }
+
+    #[test]
+    fn streamed_3d_payload_round_trips_with_search() {
+        use crate::{Box3D, Index3DBuilder};
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+
+        let mut rng = StdRng::seed_from_u64(0x3D_0AD);
+        let n = 20_000;
+        let mut builder = Index3DBuilder::new(n).node_size(16);
+        for _ in 0..n {
+            let c: [f64; 3] = [
+                rng.random_range(0.0..1000.0),
+                rng.random_range(0.0..1000.0),
+                rng.random_range(0.0..1000.0),
+            ];
+            builder.add(Box3D::new(
+                c[0],
+                c[1],
+                c[2],
+                c[0] + 2.0,
+                c[1] + 2.0,
+                c[2] + 2.0,
+            ));
+        }
+        let owned = builder.finish().unwrap();
+        let payloads: Vec<Vec<u8>> = (0..n)
+            .map(|i| format!("3d-blob-{i}").into_bytes())
+            .collect();
+        let bytes = owned.to_bytes_with_payloads(&payloads).unwrap();
+
+        let stream = StreamIndex3D::open(SliceReader::new(bytes)).unwrap();
+        assert!(stream.has_payload());
+
+        let query = Box3D::new(400.0, 400.0, 400.0, 460.0, 460.0, 460.0);
+        let mut hits = stream.search(query).unwrap();
+        let mut owned_hits = owned.search(query);
+        hits.sort_unstable();
+        owned_hits.sort_unstable();
+        assert_eq!(hits, owned_hits);
+        for &id in &hits {
+            assert_eq!(stream.payload(id).unwrap(), payloads[id]);
+        }
+    }
 }

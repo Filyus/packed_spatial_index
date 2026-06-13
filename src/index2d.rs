@@ -28,8 +28,9 @@ use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, max_distance_squared,
 };
 use crate::persistence::{
-    ByteWriter, FORMAT_FLAG_PAYLOAD, FORMAT_FLAGS_2D, LoadError, PayloadError, parse_index_bytes,
-    payload_layout, read_f64_le_unchecked, read_u64_le_unchecked, serialized_len,
+    ByteWriter, FORMAT_FLAG_PAYLOAD, FORMAT_FLAGS_2D, LoadError, ParsedPayload, PayloadError,
+    parse_index_and_payload, payload_layout, payload_slice, read_f64_le_unchecked,
+    read_u64_le_unchecked, serialized_len,
 };
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
@@ -1255,6 +1256,7 @@ pub struct Index2DView<'a> {
     level_bounds: &'a [u8],
     entries: &'a [u8],
     indices: &'a [u8],
+    payload: Option<ParsedPayload<'a>>,
 }
 
 impl<'a> Index2DView<'a> {
@@ -1274,7 +1276,7 @@ impl<'a> Index2DView<'a> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
-        let parsed = parse_index_bytes(bytes)?;
+        let (parsed, payload) = parse_index_and_payload(bytes, FORMAT_FLAGS_2D, 2, 8)?;
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -1283,7 +1285,24 @@ impl<'a> Index2DView<'a> {
             level_bounds: parsed.level_bounds,
             entries: parsed.entries,
             indices: parsed.indices,
+            payload,
         })
+    }
+
+    /// Whether this view's bytes carry a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.payload.is_some()
+    }
+
+    /// Borrow item `id`'s payload blob, or `None` if the bytes have no payload
+    /// section or `id` is out of range. Zero-copy: the slice borrows the view's
+    /// bytes.
+    pub fn payload(&self, id: usize) -> Option<&'a [u8]> {
+        let payload = self.payload.as_ref()?;
+        if id >= self.num_items {
+            return None;
+        }
+        Some(payload_slice(payload.offsets, payload.blobs, id))
     }
 
     /// Return the number of indexed items.

@@ -84,8 +84,11 @@ The low 8 bits of `flags` select dimension and coordinate width:
 
 Bit `8` (`0x100`) is the **payload flag**: when set, a payload section follows
 the index (see [Payload](#payload-optional)). It is orthogonal to the dimension
-bits. A reader that does not understand payloads must reject a file with this
-bit set rather than read it as index-only. Other high bits are reserved.
+bits. A reader must never interpret the trailing payload bytes as index data: it
+either rejects a file with this bit set, or reads only the index (validating but
+ignoring the payload). The scalar `Index2D` / `Index3D` loaders and views do the
+latter — the views additionally expose the blobs; the SIMD loaders reject.
+Other high bits are reserved.
 
 ## Payload (optional)
 

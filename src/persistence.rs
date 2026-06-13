@@ -260,9 +260,8 @@ pub(crate) fn payload_layout(
     })
 }
 
-/// Validated slices of the optional trailing payload section. Consumed by the
-/// zero-copy view payload reader (landing next).
-#[allow(dead_code)]
+/// Validated slices of the optional trailing payload section. Borrowed by the
+/// zero-copy views to serve `payload(id)`.
 pub(crate) struct ParsedPayload<'a> {
     /// `(num_items + 1)` little-endian `u64` prefix offsets into `blobs`.
     pub(crate) offsets: &'a [u8],
@@ -272,7 +271,6 @@ pub(crate) struct ParsedPayload<'a> {
 
 /// Validate and slice the payload section from a full byte buffer.
 /// `index_total_len` is where the index ends and the payload section begins.
-#[allow(dead_code)]
 pub(crate) fn parse_payload_section(
     bytes: &[u8],
     num_items: usize,
@@ -320,9 +318,7 @@ pub(crate) fn parse_payload_section(
 }
 
 /// Slice item `id`'s payload out of a validated offset table and blob region.
-/// Used by the zero-copy view payload reader (landing next).
 #[inline]
-#[allow(dead_code)]
 pub(crate) fn payload_slice<'a>(offsets: &[u8], blobs: &'a [u8], id: usize) -> &'a [u8] {
     let start = read_u64_le_unchecked(offsets, id * 8) as usize;
     let end = read_u64_le_unchecked(offsets, (id + 1) * 8) as usize;
@@ -382,7 +378,53 @@ fn parse_index_bytes_with_flags(
             actual: bytes.len(),
         });
     }
+    slice_and_validate_index(bytes, &header, &layout)
+}
 
+/// Parse the index allowing an optional trailing payload section. Used by the
+/// zero-copy views, which can borrow the payload; index-only loaders use
+/// [`parse_index_bytes`] and its siblings instead.
+pub(crate) fn parse_index_and_payload<'a>(
+    bytes: &'a [u8],
+    expected_flags: u64,
+    dimensions: usize,
+    coord_bytes: usize,
+) -> Result<(ParsedIndexBytes<'a>, Option<ParsedPayload<'a>>), LoadError> {
+    let header = parse_and_validate_header(bytes, expected_flags, true)?;
+    let layout = section_layout(
+        header.level_count,
+        header.num_nodes,
+        dimensions,
+        coord_bytes,
+    )?;
+
+    if bytes.len() < layout.total_len {
+        return Err(LoadError::Truncated);
+    }
+    let parsed = slice_and_validate_index(bytes, &header, &layout)?;
+
+    if header.has_payload {
+        let payload = parse_payload_section(bytes, header.num_items, layout.total_len)?;
+        Ok((parsed, Some(payload)))
+    } else {
+        if bytes.len() != layout.total_len {
+            return Err(LoadError::LengthMismatch {
+                expected: layout.total_len,
+                actual: bytes.len(),
+            });
+        }
+        Ok((parsed, None))
+    }
+}
+
+/// Slice and validate the index sections from `bytes` (which must be at least
+/// `layout.total_len` long). Does not check for trailing bytes, so callers add
+/// the length check appropriate to whether a payload section may follow.
+fn slice_and_validate_index<'a>(
+    bytes: &'a [u8],
+    header: &HeaderFields,
+    layout: &SectionLayout,
+) -> Result<ParsedIndexBytes<'a>, LoadError> {
     let parsed = ParsedIndexBytes {
         node_size: header.node_size,
         num_items: header.num_items,
@@ -917,12 +959,15 @@ mod tests {
     }
 
     #[test]
-    fn payload_file_rejected_by_index_only_loader() {
+    fn payload_file_loads_index_only_via_scalar_loader() {
         let index = build(10);
         let payloads: Vec<Vec<u8>> = (0..10).map(|_| vec![0u8; 4]).collect();
-        let bytes = index.to_bytes_with_payloads(&payloads).unwrap();
-        // The index-only loader must reject a payload file cleanly, not misread.
-        assert!(Index2D::from_bytes(&bytes).is_err());
+        let with = index.to_bytes_with_payloads(&payloads).unwrap();
+        // The scalar loader reads the index from a payload file, ignoring the
+        // payload (it validates the trailing section but does not retain it).
+        let owned = Index2D::from_bytes(&with).unwrap();
+        let query = Box2D::new(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(owned.search(query), index.search(query));
     }
 
     #[test]

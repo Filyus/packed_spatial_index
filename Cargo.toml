@@ -110,3 +110,7 @@ required-features = ["simd"]
 [[example]]
 name = "f32_exact_2d"
 required-features = ["f32-storage"]
+
+[[example]]
+name = "stream_query"
+required-features = ["stream"]

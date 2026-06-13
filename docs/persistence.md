@@ -62,6 +62,35 @@ The crate stays dependency-free here: it only consumes `&[u8]`, so you pick the
 mmap crate (`memmap2`, etc.). Storing the bytes as a database BLOB works the same
 way once the blob is in memory — load it and call `from_bytes`.
 
-For sources that cannot be mmapped (remote object storage, a database blob read
-without full download), streaming reads of individual tree nodes via `Read +
-Seek` or HTTP range requests are not yet implemented — see the project backlog.
+## Streaming (out-of-core / remote)
+
+For sources that cannot be memory-mapped — remote object storage, a database
+blob you do not want to download whole — the `stream` feature queries a
+serialized index by reading only the byte ranges a traversal needs. It works
+over the **same `PSINDEX` bytes**; nothing special is needed at write time.
+
+`StreamIndex2D` / `StreamIndex3D` open over any `RangeReader` (a one-method
+trait: `read_exact_at`). The crate ships `FileReader` (local file, positioned
+reads) and `SliceReader` (in-memory / mmap); a remote source is your own impl.
+At open the reader validates the header and level bounds and prefetches the
+upper tree levels; each query then streams only the lower levels, coalescing
+adjacent node ranges into few reads. Queries are fallible (a read can fail) and
+return item indices like the in-memory `search`. Child pointers are validated as
+they are followed, so the reader is safe on untrusted data.
+
+```rust,ignore
+// Cargo.toml: packed_spatial_index = { version = "0.6", features = ["stream"] }
+use packed_spatial_index::{Box2D, FileReader, StreamIndex2D};
+
+let reader = FileReader::open("planet.psindex")?;
+let index = StreamIndex2D::open(reader)?;
+let hits = index.search(Box2D::new(0.0, 0.0, 100.0, 100.0))?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+For a remote `RangeReader` backed by HTTP range requests, see the
+[`RangeReader` docs](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/trait.RangeReader.html).
+Compared with a memory map, streaming adds per-query I/O but never needs the
+whole file local or mapped, which is what makes a planet-scale index servable
+from object storage. kNN and raycast streaming are not implemented yet — see the
+project backlog.

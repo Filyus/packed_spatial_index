@@ -105,6 +105,8 @@ assert_eq!(hit, Some((0, 1.0)));
 - `parallel` *(default)* — adaptive rayon-based parallel builds.
 - `simd` *(default)* — SoA indexes and SIMD search/raycast (`wide` + AVX-512).
 - `f32-storage` — compact f32-storage SIMD indexes (implies `simd`).
+- `stream` — query a serialized index over a `RangeReader` (local file or remote
+  object) without loading the whole file. No extra dependencies.
 - `bench-internals` — hidden support API for this crate's benchmarks.
 
 ```bash
@@ -115,7 +117,7 @@ cargo build --no-default-features --features simd      # SIMD only
 ## Documentation
 
 - **[Guide](docs/guide.md)** — recipes, choosing a query method, builder configuration, examples, WASM demo.
-- **[Persistence](docs/persistence.md)** — serialize / load / zero-copy views, and querying large or on-disk indexes via mmap.
+- **[Persistence](docs/persistence.md)** — serialize / load / zero-copy views, querying large or on-disk indexes via mmap, and streaming queries over a `RangeReader` (local file or remote object).
 - **[Performance](docs/performance.md)** — benchmarks vs `static_aabb2d_index`, FlatGeobuf, and the `bvh` crate.
 - **[Binary format](FORMAT.md)** — the `PSINDEX` on-disk layout.
 - **API reference** — [docs.rs/packed_spatial_index](https://docs.rs/packed_spatial_index).

@@ -7,12 +7,16 @@
 //! ([`SliceReader`]), or — by implementing the one-method [`RangeReader`] trait
 //! — a remote object served through HTTP range requests.
 //!
-//! This module is the foundation layer: it validates the header and level
-//! bounds at [`open`](StreamIndex2D::open) time and prefetches the small upper
-//! levels of the tree (the "directory"), so later queries stream only the lower
-//! levels they need. The query traversal itself builds on top of this.
+//! [`open`](StreamIndex2D::open) validates the header and level bounds and
+//! prefetches the small upper levels of the tree (the "directory"). A range
+//! query then descends the tree level by level, fetching each level's boxes
+//! from the directory or in coalesced reads, so it touches only the lower levels
+//! and the few leaf runs the query actually overlaps. [`StreamIndex2D`] and
+//! [`StreamIndex3D`] expose `search` / `search_into` / `visit`.
 //!
-//! Available behind the `stream` feature.
+//! Pointers are validated as they are followed, so the reader is safe to point
+//! at untrusted data. Available behind the `stream` feature. See [`RangeReader`]
+//! for implementing a remote (e.g. HTTP range) source.
 
 use std::io;
 
@@ -47,6 +51,43 @@ const COALESCE_GAP_BYTES: u64 = 4096;
 /// Implementations must read from an absolute offset **without** disturbing any
 /// shared cursor (hence `&self`, not `&mut self`), so one reader can serve
 /// concurrent queries safely.
+///
+/// # A remote (HTTP range) reader
+///
+/// Implement the single required method to query an index that lives in object
+/// storage — no crate dependency on any HTTP client:
+///
+/// ```ignore
+/// use std::io;
+/// use packed_spatial_index::RangeReader;
+///
+/// struct HttpRange {
+///     url: String,
+///     client: reqwest::blocking::Client,
+/// }
+///
+/// impl RangeReader for HttpRange {
+///     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+///         let end = offset + buf.len() as u64 - 1;
+///         let bytes = self
+///             .client
+///             .get(&self.url)
+///             .header("Range", format!("bytes={offset}-{end}"))
+///             .send()
+///             .and_then(|r| r.error_for_status())
+///             .and_then(|r| r.bytes())
+///             .map_err(io::Error::other)?;
+///         if bytes.len() != buf.len() {
+///             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short range"));
+///         }
+///         buf.copy_from_slice(&bytes);
+///         Ok(())
+///     }
+///     // `len` defaults to `None`; `open` then skips the length cross-check and
+///     // relies on reads past the end failing. Override it (e.g. from a HEAD
+///     // request) for a stricter check.
+/// }
+/// ```
 // `len` reports the source's total byte length if known; "emptiness" is not a
 // meaningful concept for a random-access byte source, so no `is_empty`.
 #[allow(clippy::len_without_is_empty)]
@@ -524,6 +565,27 @@ fn directory_start(level_bounds: &[usize], level_count: usize, budget: usize) ->
 /// the byte ranges a traversal needs, instead of loading the whole serialized
 /// index. [`open`](Self::open) validates the header and level bounds and
 /// prefetches the upper levels of the tree.
+///
+/// Queries are fallible (a backing read can fail; a corrupt index is reported
+/// as [`StreamError::Format`]) and otherwise mirror [`Index2D`](crate::Index2D)
+/// range search. Results are item insertion indices, in traversal order.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{Box2D, Index2DBuilder, SliceReader, StreamIndex2D};
+///
+/// // Serialize an index once...
+/// let mut builder = Index2DBuilder::new(2);
+/// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+/// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+/// let bytes = builder.finish().unwrap().to_bytes();
+///
+/// // ...then query it through a RangeReader without rebuilding it in memory.
+/// let index = StreamIndex2D::open(SliceReader::new(bytes))?;
+/// assert_eq!(index.search(Box2D::new(0.0, 0.0, 2.0, 2.0))?, vec![0]);
+/// # Ok::<(), packed_spatial_index::StreamError>(())
+/// ```
 pub struct StreamIndex2D<R> {
     core: StreamCore<R>,
 }

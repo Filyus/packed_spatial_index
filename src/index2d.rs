@@ -28,8 +28,8 @@ use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, max_distance_squared,
 };
 use crate::persistence::{
-    ByteWriter, LoadError, parse_index_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
-    serialized_len,
+    ByteWriter, FORMAT_FLAG_PAYLOAD, FORMAT_FLAGS_2D, LoadError, PayloadError, parse_index_bytes,
+    payload_layout, read_f64_le_unchecked, read_u64_le_unchecked, serialized_len,
 };
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
@@ -152,6 +152,89 @@ impl Index2D {
         bytes.write_box2d_slice(&self.entries);
         bytes.write_usize_slice_as_u64(&self.indices);
         bytes.finish();
+    }
+
+    /// Serialize this index together with one opaque payload per item, producing
+    /// a self-contained file that carries both the spatial index and the data it
+    /// indexes.
+    ///
+    /// `payloads` is in item order: `payloads[i]` is the blob for the item added
+    /// `i`-th (the index that queries return). The payload section is appended
+    /// after the index, so the index data is unchanged — only a header flag bit
+    /// marks the payload's presence; readers that do not understand payloads
+    /// reject the file rather than misread it. Read the
+    /// blobs back by item index with a [`StreamIndex2D`](crate::StreamIndex2D) or
+    /// [`Index2DView`].
+    ///
+    /// Returns [`PayloadError::CountMismatch`] unless `payloads.len()` equals
+    /// [`num_items`](Self::num_items).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut builder = Index2DBuilder::new(2);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// let index = builder.finish()?;
+    ///
+    /// let bytes = index.to_bytes_with_payloads(&[b"first".as_slice(), b"second"])?;
+    /// assert!(bytes.len() > index.to_bytes().len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn to_bytes_with_payloads<P: AsRef<[u8]>>(
+        &self,
+        payloads: &[P],
+    ) -> Result<Vec<u8>, PayloadError> {
+        let mut out = Vec::new();
+        self.to_bytes_with_payloads_into(payloads, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`to_bytes_with_payloads`](Self::to_bytes_with_payloads) into a reused
+    /// buffer (cleared first).
+    pub fn to_bytes_with_payloads_into<P: AsRef<[u8]>>(
+        &self,
+        payloads: &[P],
+        out: &mut Vec<u8>,
+    ) -> Result<(), PayloadError> {
+        if payloads.len() != self.num_items {
+            return Err(PayloadError::CountMismatch {
+                expected: self.num_items,
+                got: payloads.len(),
+            });
+        }
+        let level_count = self.level_bounds.len();
+        let num_nodes = self.entries.len();
+        let index_len =
+            serialized_len(level_count, num_nodes).map_err(|_| PayloadError::TooLarge)?;
+
+        let mut blob_total: u64 = 0;
+        for payload in payloads {
+            blob_total = blob_total
+                .checked_add(payload.as_ref().len() as u64)
+                .ok_or(PayloadError::TooLarge)?;
+        }
+        let blob_total = usize::try_from(blob_total).map_err(|_| PayloadError::TooLarge)?;
+        let layout = payload_layout(self.num_items, index_len, blob_total)
+            .map_err(|_| PayloadError::TooLarge)?;
+
+        let mut bytes = ByteWriter::new(out, layout.full_total);
+        bytes.write_magic();
+        bytes.write_format_version();
+        bytes.write_header_len();
+        bytes.write_u64(FORMAT_FLAGS_2D | FORMAT_FLAG_PAYLOAD);
+        bytes.write_u64(self.node_size as u64);
+        bytes.write_u64(self.num_items as u64);
+        bytes.write_u64(num_nodes as u64);
+        bytes.write_u64(level_count as u64);
+        bytes.write_usize_slice_as_u64(&self.level_bounds);
+        bytes.write_box2d_slice(&self.entries);
+        bytes.write_usize_slice_as_u64(&self.indices);
+        bytes.write_payload_offsets_and_blobs(payloads);
+        bytes.finish();
+        Ok(())
     }
 
     /// Load an owned index from bytes previously produced by [`Index2D::to_bytes`].

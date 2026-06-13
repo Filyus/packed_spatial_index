@@ -50,6 +50,34 @@ impl fmt::Display for LoadError {
 
 impl Error for LoadError {}
 
+/// Error returned when serializing an index together with item payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PayloadError {
+    /// The number of payloads does not equal the index's item count.
+    CountMismatch {
+        /// Expected payload count (the index's `num_items`).
+        expected: usize,
+        /// Number of payloads supplied.
+        got: usize,
+    },
+    /// The combined payload size overflows the serialized-length calculation.
+    TooLarge,
+}
+
+impl fmt::Display for PayloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PayloadError::CountMismatch { expected, got } => write!(
+                f,
+                "payload count {got} does not match item count {expected}"
+            ),
+            PayloadError::TooLarge => write!(f, "combined payload size is too large to serialize"),
+        }
+    }
+}
+
+impl Error for PayloadError {}
+
 // Packed Spatial Index file signature. The format version is stored separately
 // as a little-endian u64 in the header.
 const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
@@ -61,6 +89,10 @@ const FORMAT_FLAGS_2D_F32: u64 = 2;
 #[cfg(feature = "f32-storage")]
 const FORMAT_FLAGS_3D_F32: u64 = 3;
 pub(crate) const FORMAT_HEADER_LEN: usize = 64;
+/// `flags` bit set when an optional payload section follows the index. Orthogonal
+/// to the dimension/coord bits, so a payload index keeps its variant flag and the
+/// index bytes stay byte-identical; only the trailing payload sections are added.
+pub(crate) const FORMAT_FLAG_PAYLOAD: u64 = 1 << 8;
 
 /// Validated header fields shared by the in-memory parser and the streaming
 /// reader. Every value here has already passed magic / version / flags /
@@ -70,6 +102,10 @@ pub(crate) struct HeaderFields {
     pub(crate) num_items: usize,
     pub(crate) num_nodes: usize,
     pub(crate) level_count: usize,
+    /// Whether a payload section follows the index (the `FORMAT_FLAG_PAYLOAD` bit).
+    /// Read by the payload-aware readers (stream / view), landing next.
+    #[allow(dead_code)]
+    pub(crate) has_payload: bool,
 }
 
 /// Byte offsets of the three sections that follow the header, plus the box
@@ -98,6 +134,7 @@ pub(crate) struct SectionLayout {
 pub(crate) fn parse_and_validate_header(
     bytes: &[u8],
     expected_flags: u64,
+    allow_payload: bool,
 ) -> Result<HeaderFields, LoadError> {
     if bytes.len() < FORMAT_MAGIC.len() {
         return Err(LoadError::Truncated);
@@ -116,7 +153,14 @@ pub(crate) fn parse_and_validate_header(
 
     let header_len = read_u64_at(bytes, 16).and_then(usize_from_u64)?;
     let flags = read_u64_at(bytes, 24)?;
-    if header_len != FORMAT_HEADER_LEN || flags != expected_flags {
+    let has_payload = flags & FORMAT_FLAG_PAYLOAD != 0;
+    let dimension_flags = flags & !FORMAT_FLAG_PAYLOAD;
+    // The dimension flag must match; the payload bit is only accepted when the
+    // caller knows how to read the trailing payload sections.
+    if header_len != FORMAT_HEADER_LEN
+        || dimension_flags != expected_flags
+        || (has_payload && !allow_payload)
+    {
         return Err(LoadError::UnsupportedVersion);
     }
 
@@ -139,6 +183,7 @@ pub(crate) fn parse_and_validate_header(
         num_items,
         num_nodes,
         level_count,
+        has_payload,
     })
 }
 
@@ -180,6 +225,112 @@ pub(crate) fn section_layout(
     })
 }
 
+/// Byte layout of the optional payload section that follows the index.
+pub(crate) struct PayloadLayout {
+    /// Byte offset of the `(num_items + 1)` `u64` offset table. Used by the
+    /// streaming payload reader (next step).
+    #[allow(dead_code)]
+    pub(crate) offsets_start: usize,
+    /// Byte offset of the blob region. Used by the streaming payload reader.
+    #[allow(dead_code)]
+    pub(crate) blobs_start: usize,
+    /// Full serialized length (end of the blob region).
+    pub(crate) full_total: usize,
+}
+
+/// Compute payload section offsets from the index length and total blob bytes.
+pub(crate) fn payload_layout(
+    num_items: usize,
+    index_total_len: usize,
+    blob_total: usize,
+) -> Result<PayloadLayout, LoadError> {
+    let offsets_len = num_items
+        .checked_add(1)
+        .and_then(|n| n.checked_mul(8))
+        .ok_or(LoadError::IntegerOverflow)?;
+    let offsets_start = index_total_len;
+    let blobs_start = offsets_start
+        .checked_add(offsets_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let full_total = blobs_start
+        .checked_add(blob_total)
+        .ok_or(LoadError::IntegerOverflow)?;
+    Ok(PayloadLayout {
+        offsets_start,
+        blobs_start,
+        full_total,
+    })
+}
+
+/// Validated slices of the optional trailing payload section. Consumed by the
+/// zero-copy view payload reader (landing next).
+#[allow(dead_code)]
+pub(crate) struct ParsedPayload<'a> {
+    /// `(num_items + 1)` little-endian `u64` prefix offsets into `blobs`.
+    pub(crate) offsets: &'a [u8],
+    /// Concatenated per-item payload bytes.
+    pub(crate) blobs: &'a [u8],
+}
+
+/// Validate and slice the payload section from a full byte buffer.
+/// `index_total_len` is where the index ends and the payload section begins.
+#[allow(dead_code)]
+pub(crate) fn parse_payload_section(
+    bytes: &[u8],
+    num_items: usize,
+    index_total_len: usize,
+) -> Result<ParsedPayload<'_>, LoadError> {
+    let offsets_len = num_items
+        .checked_add(1)
+        .and_then(|n| n.checked_mul(8))
+        .ok_or(LoadError::IntegerOverflow)?;
+    let offsets_end = index_total_len
+        .checked_add(offsets_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+    if bytes.len() < offsets_end {
+        return Err(LoadError::Truncated);
+    }
+    let offsets = &bytes[index_total_len..offsets_end];
+
+    // offsets[0] must be 0 and the table must be non-decreasing.
+    let mut prev = 0u64;
+    for i in 0..=num_items {
+        let off = read_u64_at(offsets, i * 8)?;
+        if (i == 0 && off != 0) || off < prev {
+            return Err(LoadError::InvalidTree);
+        }
+        prev = off;
+    }
+    let blob_total = usize_from_u64(prev)?;
+    let full_total = offsets_end
+        .checked_add(blob_total)
+        .ok_or(LoadError::IntegerOverflow)?;
+    if bytes.len() < full_total {
+        return Err(LoadError::Truncated);
+    }
+    if bytes.len() != full_total {
+        return Err(LoadError::LengthMismatch {
+            expected: full_total,
+            actual: bytes.len(),
+        });
+    }
+
+    Ok(ParsedPayload {
+        offsets,
+        blobs: &bytes[offsets_end..full_total],
+    })
+}
+
+/// Slice item `id`'s payload out of a validated offset table and blob region.
+/// Used by the zero-copy view payload reader (landing next).
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn payload_slice<'a>(offsets: &[u8], blobs: &'a [u8], id: usize) -> &'a [u8] {
+    let start = read_u64_le_unchecked(offsets, id * 8) as usize;
+    let end = read_u64_le_unchecked(offsets, (id + 1) * 8) as usize;
+    &blobs[start..end]
+}
+
 pub(crate) struct ParsedIndexBytes<'a> {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
@@ -214,7 +365,9 @@ fn parse_index_bytes_with_flags(
     dimensions: usize,
     coord_bytes: usize,
 ) -> Result<ParsedIndexBytes<'_>, LoadError> {
-    let header = parse_and_validate_header(bytes, expected_flags)?;
+    // Index-only readers do not understand a trailing payload section, so a
+    // payload index is rejected (clean) rather than misread.
+    let header = parse_and_validate_header(bytes, expected_flags, false)?;
     let layout = section_layout(
         header.level_count,
         header.num_nodes,
@@ -623,6 +776,20 @@ impl<'a> ByteWriter<'a> {
         }
     }
 
+    /// Write the optional payload section: a `(num_items + 1)` prefix-offset
+    /// table followed by the concatenated blobs. `payloads` is in item order.
+    pub(crate) fn write_payload_offsets_and_blobs<P: AsRef<[u8]>>(&mut self, payloads: &[P]) {
+        let mut acc: u64 = 0;
+        self.write_u64(0);
+        for payload in payloads {
+            acc += payload.as_ref().len() as u64;
+            self.write_u64(acc);
+        }
+        for payload in payloads {
+            self.write_bytes(payload.as_ref());
+        }
+    }
+
     pub(crate) fn finish(self) {
         debug_assert_eq!(self.bytes.len(), self.len);
     }
@@ -697,4 +864,82 @@ pub(crate) fn read_f32_le_unchecked(bytes: &[u8], offset: usize) -> f32 {
 
 fn usize_from_u64(value: u64) -> Result<usize, LoadError> {
     usize::try_from(value).map_err(|_| LoadError::IntegerOverflow)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Box2D, Index2D, Index2DBuilder};
+
+    fn build(n: usize) -> Index2D {
+        let mut builder = Index2DBuilder::new(n).node_size(16);
+        for i in 0..n {
+            let v = i as f64;
+            builder.add(Box2D::new(v, v, v + 1.0, v + 1.0));
+        }
+        builder.finish().unwrap()
+    }
+
+    #[test]
+    fn payload_round_trip() {
+        for &n in &[0usize, 1, 17, 100] {
+            let index = build(n);
+            let payloads: Vec<Vec<u8>> = (0..n).map(|i| format!("item-{i}").into_bytes()).collect();
+            let bytes = index.to_bytes_with_payloads(&payloads).unwrap();
+
+            // The index sections (after the header) are byte-identical to the
+            // index-only file; only the header's payload flag bit differs.
+            let index_only = index.to_bytes();
+            assert_eq!(&bytes[64..index_only.len()], &index_only[64..]);
+
+            let header = parse_and_validate_header(&bytes, FORMAT_FLAGS_2D, true).unwrap();
+            assert!(header.has_payload);
+            let layout = section_layout(header.level_count, header.num_nodes, 2, 8).unwrap();
+            let parsed = parse_payload_section(&bytes, header.num_items, layout.total_len).unwrap();
+            for (i, want) in payloads.iter().enumerate() {
+                assert_eq!(
+                    payload_slice(parsed.offsets, parsed.blobs, i),
+                    want.as_slice()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn payload_count_mismatch_rejected() {
+        let index = build(5);
+        let payloads = vec![vec![1u8]; 3];
+        assert_eq!(
+            index.to_bytes_with_payloads(&payloads),
+            Err(PayloadError::CountMismatch {
+                expected: 5,
+                got: 3
+            })
+        );
+    }
+
+    #[test]
+    fn payload_file_rejected_by_index_only_loader() {
+        let index = build(10);
+        let payloads: Vec<Vec<u8>> = (0..10).map(|_| vec![0u8; 4]).collect();
+        let bytes = index.to_bytes_with_payloads(&payloads).unwrap();
+        // The index-only loader must reject a payload file cleanly, not misread.
+        assert!(Index2D::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn variable_length_payloads_round_trip() {
+        let index = build(20);
+        let payloads: Vec<Vec<u8>> = (0..20).map(|i| vec![i as u8; i]).collect(); // len 0..19
+        let bytes = index.to_bytes_with_payloads(&payloads).unwrap();
+        let header = parse_and_validate_header(&bytes, FORMAT_FLAGS_2D, true).unwrap();
+        let layout = section_layout(header.level_count, header.num_nodes, 2, 8).unwrap();
+        let parsed = parse_payload_section(&bytes, header.num_items, layout.total_len).unwrap();
+        for (i, want) in payloads.iter().enumerate() {
+            assert_eq!(
+                payload_slice(parsed.offsets, parsed.blobs, i),
+                want.as_slice()
+            );
+        }
+    }
 }

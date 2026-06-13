@@ -108,7 +108,7 @@ pub use index3d_f32::{SimdIndex3DF32, SimdIndex3DF32View};
 #[cfg(feature = "simd")]
 pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
 pub use neighbors::NeighborWorkspace;
-pub use persistence::LoadError;
+pub use persistence::{LoadError, PayloadError};
 pub use ray::{Ray2D, Ray3D};
 pub use sort2d::SortKey2D;
 pub use sort3d::SortKey3D;

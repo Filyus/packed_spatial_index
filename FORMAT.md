@@ -2,7 +2,7 @@
 
 | Revision | Last revised |
 | -------- | ------------ |
-| 8        | 2026-06-05   |
+| 9        | 2026-06-14   |
 
 This document describes the binary format used by packed spatial indexes.
 
@@ -12,6 +12,7 @@ This document describes the binary format used by packed spatial indexes.
 | ------ | ----------- |
 | `fn to_bytes(&self) -> Vec<u8>` | Serialize into a new byte buffer. |
 | `fn to_bytes_into(&self, out: &mut Vec<u8>)` | Serialize into an existing byte buffer. |
+| `fn to_bytes_with_payloads(&self, payloads: &[P]) -> Result<Vec<u8>, PayloadError>` | Serialize the index plus one blob per item (sets the payload flag). |
 | `fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError>` | Load and validate a byte buffer. |
 
 ## Byte Order
@@ -20,17 +21,22 @@ All integer and coordinate fields are little-endian.
 
 ## Layout
 
-A serialized index buffer has one header and three contiguous sections:
+A serialized index buffer has one header and three contiguous sections, plus an
+optional payload section when the payload flag is set:
 
-| Part           | Bytes                  |
-| -------------- | ---------------------- |
-| header         | 64                     |
-| `level_bounds` | 8 x `level_count`      |
-| `boxes`        | `record` x `num_nodes` |
-| `indices`      | 8 x `num_nodes`        |
+| Part              | Bytes                  | Present                |
+| ----------------- | ---------------------- | ---------------------- |
+| header            | 64                     | always                 |
+| `level_bounds`    | 8 x `level_count`      | always                 |
+| `boxes`           | `record` x `num_nodes` | always                 |
+| `indices`         | 8 x `num_nodes`        | always                 |
+| `payload_offsets` | 8 x (`num_items` + 1)  | payload flag set       |
+| `payload_blobs`   | `payload_offsets[num_items]` | payload flag set |
 
 There is no padding. Each section starts on an 8-byte offset.
-`record` is selected by `flags`.
+`record` is selected by `flags`. The optional payload section is described under
+[Payload](#payload-optional); the index sections are byte-identical with or
+without it.
 
 ## Header
 
@@ -61,7 +67,7 @@ All header fields after `magic` are `u64`.
 
 ## Variants
 
-`flags` selects dimension and coordinate width:
+The low 8 bits of `flags` select dimension and coordinate width:
 
 | Flag | Coordinates | Record | Owned types              |
 | ---- | ----------- | ------ | ------------------------ |
@@ -74,7 +80,31 @@ All header fields after `magic` are `u64`.
 - flags `0` and `1` are shared by scalar and `f64` SIMD indexes;
 - flags `2` and `3` are used by the `f32-storage` feature;
 - `f32` boxes are rounded outward;
-- other flag values are reserved.
+- other low-byte flag values are reserved.
+
+Bit `8` (`0x100`) is the **payload flag**: when set, a payload section follows
+the index (see [Payload](#payload-optional)). It is orthogonal to the dimension
+bits. A reader that does not understand payloads must reject a file with this
+bit set rather than read it as index-only. Other high bits are reserved.
+
+## Payload (optional)
+
+When the payload flag is set, two sections follow `indices`, carrying one opaque
+blob per item so the file is self-contained (the spatial index plus the data it
+indexes).
+
+- `payload_offsets`: `num_items + 1` little-endian `u64` prefix offsets into
+  `payload_blobs`. `payload_offsets[0]` is `0` and the table is non-decreasing;
+  `payload_offsets[num_items]` equals the total blob byte length.
+- `payload_blobs`: the concatenated blobs.
+
+The blob for item `i` (the original insertion index, which queries return) is
+`payload_blobs[payload_offsets[i] .. payload_offsets[i + 1]]`. Blobs are opaque
+bytes with no required alignment or interpretation.
+
+Loaders reject a payload section whose offset table is not `0`-based and
+non-decreasing, whose final offset does not match the blob region length, or
+whose declared total length does not match the buffer.
 
 ## Box Records
 

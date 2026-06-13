@@ -942,6 +942,12 @@ impl Index2D {
             }
 
             if stack.len() > 1 {
+                prefetch_aos_node(
+                    &self.entries,
+                    &self.indices,
+                    stack[stack.len() - 2],
+                    self.node_size,
+                );
                 let encoded_level = stack.pop().unwrap();
                 level = encoded_level & LEVEL_MASK;
                 contained = (encoded_level & CONTAINED_FLAG) != 0;

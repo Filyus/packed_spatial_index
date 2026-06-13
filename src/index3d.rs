@@ -18,8 +18,21 @@ use crate::{
         serialized_len_3d,
     },
     ray::Ray3D,
-    traversal::{SearchWorkspace, upper_bound_level},
+    traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
 };
+
+#[inline]
+fn prefetch_aos_node3d(entries: &[Box3D], indices: &[usize], node_index: usize, node_size: usize) {
+    if node_index < entries.len() {
+        prefetch_read(entries.as_ptr().wrapping_add(node_index));
+        prefetch_read(indices.as_ptr().wrapping_add(node_index));
+    }
+    let next_line = node_index.saturating_add((64 / std::mem::size_of::<Box3D>()).max(1));
+    if node_size > 1 && next_line < entries.len() {
+        prefetch_read(entries.as_ptr().wrapping_add(next_line));
+        prefetch_read(indices.as_ptr().wrapping_add(next_line));
+    }
+}
 
 /// Finished static read-only 3D index.
 ///
@@ -794,6 +807,12 @@ impl Index3D {
             }
 
             if stack.len() > 1 {
+                prefetch_aos_node3d(
+                    &self.entries,
+                    &self.indices,
+                    stack[stack.len() - 2],
+                    self.node_size,
+                );
                 level = stack.pop().unwrap();
                 node_index = stack.pop().unwrap();
             } else {

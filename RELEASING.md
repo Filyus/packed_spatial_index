@@ -7,11 +7,16 @@ Normal releases are optimized for a solo maintainer working with Codex:
 3. The maintainer reviews the `CHANGELOG.md` diff.
 4. Codex pushes one release commit to `main`.
 5. CI validates that exact commit.
-6. `Release: publish crate` starts automatically after successful CI, runs
-   preflight checks, then waits for the `release` environment approval.
+6. Once CI is green, the `Release: publish crate` workflow is started manually
+   (`gh workflow run publish.yml --ref main`, or the "Run workflow" button). It
+   runs preflight checks, then waits for the `release` environment approval.
 7. The maintainer approves the environment deployment. Only then does the
    workflow publish to crates.io, create the annotated tag, and create the
    GitHub Release.
+
+The publish is started by hand rather than automatically after CI: crates.io
+Trusted Publishing rejects GitHub's `workflow_run` event, so the publish runs on
+the `workflow_dispatch` trigger instead.
 
 Release preparation (version bump + changelog) is done by hand following
 [`RELEASING-AGENT.md`](RELEASING-AGENT.md). Nothing in this flow publishes
@@ -58,7 +63,7 @@ list in [`RELEASING-AGENT.md`](RELEASING-AGENT.md). In short:
 - remove internal noise (wasm-demo-only commits, lint, CI/workflow, benches);
 - keep feature/code changes out of the release commit.
 
-Do not run release-only checks manually. The automatic publish preflight runs
+Do not run release-only checks manually. The publish workflow's preflight runs
 semver compatibility, docs.rs, duplicate-version, duplicate-tag, and
 `cargo publish --dry-run` checks before the final approval gate.
 
@@ -98,21 +103,31 @@ git push origin main
 The exact commit subject matters. The publish workflow ignores ordinary pushes
 and only continues when the subject matches the version in `Cargo.toml`.
 
-### 3. CI and Automatic Preflight
+### 3. Start the Publish Workflow and Preflight
 
-The push to `main` starts `CI: Rust checks`.
+The push to `main` starts `CI: Rust checks`. Wait for it to pass.
 
-After successful CI, `Release: publish crate` starts automatically through a
-`workflow_run` trigger. It checks out the exact CI commit SHA, not the latest
-moving `main`.
+Once CI is green, start `Release: publish crate` manually against `main`:
 
-For an ordinary non-release push, the workflow exits early:
+```powershell
+gh workflow run publish.yml --ref main
+```
+
+(or use the "Run workflow" button on the workflow's Actions page). It runs on the
+current `main` `HEAD`, which must still be the release commit. crates.io Trusted
+Publishing does not accept GitHub's `workflow_run` event, so the publish is
+started by hand on the `workflow_dispatch` trigger rather than automatically
+after CI.
+
+If `main` `HEAD` is not a release commit, the workflow exits early:
 
 ```text
 Not a release commit; nothing to publish.
 ```
 
 For a release commit, preflight checks:
+
+- a successful `CI: Rust checks` run exists for this commit;
 
 - the commit subject is exactly `release: prepare packed_spatial_index vX.Y.Z`;
 - `X.Y.Z` matches the `Cargo.toml` package version;
@@ -150,18 +165,20 @@ No normal release should require entering a version, setting `publish: true`, or
 typing a confirmation phrase. Those were part of the old manual publish
 workflow.
 
-### Manual Rerun
+### Rerun
 
-`Release: publish crate` still has `workflow_dispatch` as a recovery path. It
-has no inputs.
+`Release: publish crate` is started with `workflow_dispatch` and has no inputs,
+so a rerun is just starting it again (`gh workflow run publish.yml --ref main`).
+It runs against the current `main` commit and always requires:
 
-Use it only when the automatic run did not complete for infrastructure reasons.
-It runs against the current `main` commit and still requires:
-
-- a valid release commit subject;
+- a valid release commit subject (`main` `HEAD`);
 - successful `CI: Rust checks` for that exact commit;
 - all preflight checks;
 - the final `release` environment approval.
+
+A failed publish (e.g. a transient crates.io error) leaves nothing published as
+long as it stopped before `cargo publish`; rerun once `main` `HEAD` is still the
+release commit.
 
 ## First Release
 
@@ -223,8 +240,8 @@ For this repository the expected environment settings are:
 - Prevent self-review: disabled, so the repository owner can approve their own
   release deployment;
 - Wait timer: `0`;
-- Deployment branch policy: none. The workflow itself checks the release commit
-  through the CI `workflow_run` event and the commit subject.
+- Deployment branch policy: none. The workflow itself checks that it was started
+  from `main`, that `main` `HEAD` is a release commit, and that CI passed for it.
 
 To configure another personal repository through `gh`:
 

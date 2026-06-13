@@ -68,12 +68,22 @@ the [taxonomy](#changelog-taxonomy) below. The publish pipeline
    git push origin main
    ```
    The subject must match `Cargo.toml`'s version exactly, or the publish workflow
-   ignores the push.
+   refuses to publish.
 
-7. **Stop.** Do not run semver/docs.rs/`--dry-run` locally (the preflight does).
-   Do not publish, tag, or approve the `release` environment. After the push: CI
-   runs, then the publish workflow's preflight, then it waits at the `release`
-   environment for the maintainer's approval.
+7. **After CI passes, start the publish workflow.** It does not run
+   automatically (crates.io Trusted Publishing rejects the `workflow_run` event),
+   so start it by hand against `main`:
+   ```sh
+   gh workflow run publish.yml --ref main
+   ```
+   It runs on the current `main` `HEAD`, which must still be the release commit —
+   so do not push anything else before publishing. This only starts the pipeline;
+   it gates at the `release` environment for the maintainer's approval.
+
+8. **Stop.** Do not run semver/docs.rs/`--dry-run` locally (the preflight does).
+   Do not publish, tag, or approve the `release` environment — the maintainer
+   approves, and only then does the workflow publish, tag, and create the
+   release.
 
 ## Changelog taxonomy
 

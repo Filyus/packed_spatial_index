@@ -1,13 +1,10 @@
 name: "Release: publish crate"
 run-name: "release: publish crate"
 
+# Triggered manually after the release commit lands on `main` and CI passes.
+# crates.io Trusted Publishing rejects the `workflow_run` event, so the publish
+# cannot run automatically after CI; `workflow_dispatch` is the supported path.
 on:
-  workflow_run:
-    workflows: ["CI: Rust checks"]
-    branches:
-      - main
-    types:
-      - completed
   workflow_dispatch:
 
 concurrency:
@@ -25,7 +22,6 @@ jobs:
   preflight:
     name: preflight
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
     outputs:
       should_publish: ${{ steps.release.outputs.should_publish }}
       version: ${{ steps.release.outputs.version }}
@@ -34,20 +30,13 @@ jobs:
     steps:
       - name: Resolve release SHA
         id: resolve
-        env:
-          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF_NAME" != "main" ]; then
-            echo "Manual release reruns must be started from main, got '$GITHUB_REF_NAME'."
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "The publish workflow must be started from main, got '$GITHUB_REF_NAME'."
             exit 1
           fi
 
-          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
-            release_sha="$WORKFLOW_RUN_SHA"
-          else
-            release_sha="$GITHUB_SHA"
-          fi
-
+          release_sha="$GITHUB_SHA"
           if [ -z "$release_sha" ]; then
             echo "Unable to resolve the release SHA."
             exit 1
@@ -82,7 +71,7 @@ jobs:
           echo "should_publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Check CI passed for this commit
-        if: ${{ steps.release.outputs.should_publish == 'true' && github.event_name == 'workflow_dispatch' }}
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ steps.resolve.outputs.release_sha }}
@@ -103,15 +92,6 @@ jobs:
           fi
 
           echo "Using successful CI run: $ci_url"
-
-      - name: Confirm workflow-run CI success
-        if: ${{ steps.release.outputs.should_publish == 'true' && github.event_name == 'workflow_run' }}
-        env:
-          CI_URL: ${{ github.event.workflow_run.html_url }}
-          RELEASE_SHA: ${{ steps.resolve.outputs.release_sha }}
-        run: |
-          echo "Using successful CI run: $CI_URL"
-          echo "CI head SHA: $RELEASE_SHA"
 
       - name: Install stable Rust
         if: ${{ steps.release.outputs.should_publish == 'true' }}

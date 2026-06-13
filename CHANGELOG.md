@@ -5,6 +5,42 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.5.0](https://github.com/Filyus/packed_spatial_index/compare/v0.4.3...v0.5.0) - 2026-06-13
+
+### 2D
+- Reject 2D builds with more than `u32::MAX` items (returns
+  `BuildError::TreeTooLarge`) instead of silently truncating the `u32` item
+  indices and producing a corrupt index.
+
+### Search
+- Add spatial joins. `join`/`join_with` report every intersecting pair of items
+  between two indexes, and `self_join`/`self_join_with` report every unordered
+  pair of distinct intersecting items within one index. A single synchronized
+  descent over both trees replaces one search per item (about 7x faster than a
+  search loop for 1M-by-1M joins, about 19x for 1M self-joins). Available on
+  `Index2D`, `Index3D`, the SIMD indexes, and all zero-copy f64 views.
+- Add ray-segment queries. New `Ray2D` and `Ray3D` types, plus `raycast` /
+  `raycast_into` / `raycast_with` (all hits), `raycast_closest` /
+  `raycast_closest_with` (nearest box the segment enters), and `visit_raycast`
+  (visit hits in nondecreasing entry-`t` order with early exit). Available on
+  every f64 index and zero-copy view. The SIMD indexes evaluate the slab test
+  four (`wide`) or eight (AVX-512) children at a time, with a masked path that
+  keeps axis-parallel rays exact on box faces.
+
+### Nearest Neighbors
+- Add box-query nearest-neighbor search: `neighbors_of_box`,
+  `neighbors_of_box_within`, `neighbors_of_box_into`, `neighbors_of_box_with`,
+  and `visit_neighbors_of_box`. Distance is the box-to-box gap, so items
+  overlapping or touching the query box rank first at distance zero. Available
+  on all f64 indexes and views.
+
+### Performance
+- Extend the covered-range fast path to the owned SIMD `visit` traversals (2D
+  and 3D), matching the search paths and byte-view visitors.
+- Prefetch the next stacked node in the default scalar range search (`Index2D`
+  and `Index3D`), a consistent ~3-5% range-query speedup.
+
+
 ## [0.4.3](https://github.com/Filyus/packed_spatial_index/compare/v0.4.2...v0.4.3) - 2026-06-09
 
 ### Performance

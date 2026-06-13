@@ -5,6 +5,16 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.5.1](https://github.com/Filyus/packed_spatial_index/compare/v0.5.0...v0.5.1) - 2026-06-13
+
+### Documentation
+- Restructure the README into a concise reference and move the long-form guide,
+  persistence, and performance docs into `docs/`. Link every query method and
+  type to docs.rs, add examples to `search` / `any` / `first`, document querying
+  large or on-disk indexes via memory mapping, and add a clickable queries
+  overview to the crate landing page.
+
+
 ## [0.5.0](https://github.com/Filyus/packed_spatial_index/compare/v0.4.3...v0.5.0) - 2026-06-13
 
 ### 2D

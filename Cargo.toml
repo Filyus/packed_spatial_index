@@ -41,6 +41,7 @@ bench-internals = []
 
 [dev-dependencies]
 bvh = { version = "0.12.0", default-features = false, features = ["std"] }
+fast_hilbert = "2.1.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 flatgeobuf = { version = "6.0.1", default-features = false }
 nalgebra = { version = "0.34.2", default-features = false, features = ["std"] }

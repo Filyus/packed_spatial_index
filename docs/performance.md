@@ -14,10 +14,45 @@ The benchmarks below compare against:
   a Flatbush-inspired geospatial format (build, search, persistence).
 - [`bvh`](https://crates.io/crates/bvh) — used in the closest-hit raycast
   comparison.
+- [`fast_hilbert`](https://crates.io/crates/fast_hilbert) by Stephan Hügel — a
+  popular standalone Hilbert curve encoder (encode throughput).
 
 This crate's own design follows the packed Hilbert R-tree of
 [flatbush](https://github.com/mourner/flatbush) (Vladimir Agafonkin) and its
 Rust port `static_aabb2d_index`.
+
+## Hilbert encoder throughput
+
+The build step sorts items by the Hilbert index of their box centers, so encoder
+throughput feeds directly into build time. The `hilbert2d_bench` suite encodes
+100,000 random `(u16, u16)` points into an output buffer — independent
+iterations the compiler can pipeline and vectorize, which reflects real build
+usage. `black_box` wraps only the input and output buffers; wrapping every
+element would collapse the measurement into single-call latency and bias it
+toward the table-driven path. All Hilbert encoders produce identical indices for
+the full `u16` range, so this is a like-for-like speed comparison. Lower is
+better.
+
+| Encoder | 100k encode | Throughput | vs `fast_hilbert` |
+| --- | ---: | ---: | ---: |
+| `magic_bits` (crate default) | 186 us | 537 Melem/s | 6.9x |
+| reference `static_aabb2d_index::hilbert_xy_to_index` | 180 us | 556 Melem/s | 7.1x |
+| `lut` (4-bit state machine) | 243 us | 412 Melem/s | 5.3x |
+| `loop_rotation` | 1.02 ms | 98 Melem/s | 1.3x |
+| `fast_hilbert::xy2h` (order 16) | 1.28 ms | 78 Melem/s | 1.0x |
+| `morton` (Z-order baseline, not Hilbert) | 47 us | 2.1 Gelem/s | n/a |
+
+The crate's default `magic_bits` encoder is branchless bit arithmetic that
+auto-vectorizes, landing within a few percent of the `static_aabb2d_index`
+reference and about 6.9x faster than `fast_hilbert`. `fast_hilbert` is generic
+over coordinate width and curve order; that generality costs it throughput on the
+fixed `u16` path, where it lands near `loop_rotation`. Note the trade-off
+direction flips for single-call latency: in a dependent-accumulation loop the
+table-driven `lut` wins because it has no arithmetic dependency chain, while
+`magic_bits` is fastest only when iterations are independent (the build case).
+The Morton row is a Z-order curve, included only as a locality/speed baseline —
+it is not a Hilbert curve and is not used for ordering. Reproduce with
+`cargo bench --bench hilbert2d_bench --features bench-internals`.
 
 ## 2D competitors
 
@@ -201,6 +236,8 @@ cargo run --release --manifest-path benches/tools/Cargo.toml --bin node_size_3d
 
 Benchmark coverage:
 
+- `hilbert2d_bench` compares the crate's Hilbert encoders against the
+  `static_aabb2d_index` reference and the `fast_hilbert` crate;
 - `flatgeobuf2d_bench` compares against FlatGeobuf's packed Hilbert R-tree;
 - `index2d_bench` compares build/search paths against `static_aabb2d_index`;
 - `index3d_bench` covers 3D build/search/KNN, SIMD search/build, dimension
@@ -212,6 +249,7 @@ Benchmark coverage:
 ## Reproducing
 
 ```bash
+cargo bench --bench hilbert2d_bench --features bench-internals
 cargo bench --bench index2d_bench --no-default-features --features parallel,simd,bench-internals
 cargo bench --bench index3d_bench --no-default-features --features parallel,simd,bench-internals
 cargo bench --bench persistence_knn2d_bench --no-default-features --features simd,bench-internals

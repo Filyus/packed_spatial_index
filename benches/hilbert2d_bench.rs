@@ -1,5 +1,7 @@
 //! Hilbert encoder benchmark: crate implementations against the reference
-//! `static_aabb2d_index::hilbert_xy_to_index`.
+//! `static_aabb2d_index::hilbert_xy_to_index` and the popular `fast_hilbert`
+//! crate. All produce the same Hilbert values for `(u16, u16)`; only the speed
+//! differs.
 //!
 //! Measures **throughput**: encode a whole point array into an
 //! output buffer. This reflects real index-build usage and lets the
@@ -49,6 +51,18 @@ fn bench_hilbert(c: &mut Criterion) {
     bench!("lut", hilbert::lut);
     bench!("loop_rotation", hilbert::loop_rotation);
     bench!("morton", hilbert::morton);
+
+    // `fast_hilbert::xy2h` takes an explicit curve order, so it cannot use the
+    // 2-argument `bench!` macro. Order 16 covers the full `u16` coordinate range.
+    group.bench_function("fast_hilbert::xy2h", |b| {
+        b.iter(|| {
+            let pts = black_box(&points[..]);
+            for (i, &(x, y)) in pts.iter().enumerate() {
+                out[i] = fast_hilbert::xy2h(x, y, 16);
+            }
+            black_box(&out[..]);
+        })
+    });
 
     group.finish();
 }

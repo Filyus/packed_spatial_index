@@ -438,21 +438,27 @@ contain the origin).
 
 Positioning: this is a convenience for indexes you already hold for range/kNN
 queries — picking, line-of-sight, occasional rays — not a replacement for a
-dedicated ray-tracing BVH. The numbers below (100k boxes, 1,000 rays, closest
-hit; "BVH" is a fair hand-rolled ordered closest-hit traversal over the
-[`bvh`](https://crates.io/crates/bvh) crate's SAH tree) show the trade-off:
+dedicated ray-tracing BVH. The numbers below (100k boxes, 1,000 rays of length
+4,000) compare against the [`bvh`](https://crates.io/crates/bvh) crate: for
+closest hit, a fair hand-rolled ordered traversal over its SAH tree; for all
+hits, its own broad-phase `traverse_iterator`.
 
-| metric | packed AoS | packed SoA/SIMD | SAH BVH |
-|---|---:|---:|---:|
-| build (uniform) | **5 ms** | **5 ms** | 58 ms |
-| closest hit, uniform | 3.6 ms | **1.2 ms** | 1.8 ms |
-| closest hit, clustered | 170 µs | 111 µs | **54 µs** |
+| metric | packed SoA/SIMD | BVH |
+|---|---:|---:|
+| build (uniform) | **5 ms** | 58 ms |
+| closest hit, uniform | **1.2 ms** | 1.8 ms |
+| closest hit, clustered | 111 µs | **54 µs** |
+| all hits, uniform | **0.85 ms** | 3.2 ms |
+| all hits, clustered | **100 µs** | 104 µs |
 
-The packed Hilbert tree builds ~11x faster, and the SIMD closest-hit beats the
-ordered BVH on uniform scenes (a SIMD-vs-scalar win). A SAH BVH builds a
-structurally better tree for heavily clustered scenes and wins there (~2x). If
-rays are your dominant workload, use a BVH; if you already have this index,
-raycast it for free. Run `cargo bench --bench raycast3d_bench --features simd`
+The packed Hilbert tree builds ~11x faster. For **all hits** there is no
+early-exit advantage to a better tree, so the SIMD slab test wins outright on
+uniform scenes (~3.8x) and ties on clustered. For **closest hit** the SIMD path
+still beats the ordered BVH on uniform scenes (a SIMD-vs-scalar win), but a SAH
+BVH builds a structurally better tree for heavily clustered scenes and wins
+there (~2x). If clustered closest-hit is your dominant workload, use a BVH; if
+you already have this index, raycast it for free. Run
+`cargo bench --bench raycast3d_bench --features simd`
 to reproduce.
 
 ### `join` / `join_with`

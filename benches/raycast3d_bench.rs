@@ -15,12 +15,14 @@ use std::collections::BinaryHeap;
 use std::hint::black_box;
 use std::time::Instant;
 
-use bvh::aabb::{Aabb, Bounded};
+use bvh::aabb::{Aabb, Bounded, IntersectsAabb};
 use bvh::bounding_hierarchy::BHShape;
 use bvh::bvh::{Bvh, BvhNode};
 use criterion::{Criterion, criterion_group, criterion_main};
 use nalgebra::Point3;
-use packed_spatial_index::{Box3D, Index3D, Index3DBuilder, NeighborWorkspace, Point3D, Ray3D};
+use packed_spatial_index::{
+    Box3D, Index3D, Index3DBuilder, NeighborWorkspace, Point3D, Ray3D, SearchWorkspace, SimdIndex3D,
+};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -149,6 +151,16 @@ impl PartialOrd for NodeT {
 
 fn aabb_to_box(a: &Aabb<f64, 3>) -> Box3D {
     Box3D::new(a.min.x, a.min.y, a.min.z, a.max.x, a.max.y, a.max.z)
+}
+
+/// Ray adapter for the `bvh` crate's broad-phase `traverse_iterator` (all-hits):
+/// a leaf is yielded when the ray segment intersects its AABB.
+struct BvhRay(Ray3D);
+
+impl IntersectsAabb<f64, 3> for BvhRay {
+    fn intersects_aabb(&self, aabb: &Aabb<f64, 3>) -> bool {
+        self.0.intersects_box(aabb_to_box(aabb))
+    }
 }
 
 /// Fair ordered closest-hit traversal over the `bvh` crate's SAH tree.
@@ -280,6 +292,41 @@ fn bench_dataset(c: &mut Criterion, label: &str, boxes: Vec<Box3D>, rays: &[Ray3
         });
     });
     group.finish();
+
+    bench_all_hits(c, label, &simd, &bvh, &shapes, rays);
+}
+
+/// All-hits raycast: packed SoA/SIMD vs the `bvh` crate's broad-phase
+/// `traverse_iterator` (the crate's natural all-candidates query).
+fn bench_all_hits(
+    c: &mut Criterion,
+    label: &str,
+    simd: &SimdIndex3D,
+    bvh: &Bvh<f64, 3>,
+    shapes: &[BvhBox],
+    rays: &[Ray3D],
+) {
+    let mut group = c.benchmark_group(format!("all_hits_{label}"));
+    group.bench_function("packed_soa_simd", |b| {
+        let mut ws = SearchWorkspace::new();
+        b.iter(|| {
+            let mut acc = 0usize;
+            for &ray in rays {
+                acc += simd.raycast_with(ray, &mut ws).len();
+            }
+            black_box(acc)
+        });
+    });
+    group.bench_function("bvh_crate_broad", |b| {
+        b.iter(|| {
+            let mut acc = 0usize;
+            for &ray in rays {
+                acc += bvh.traverse_iterator(&BvhRay(ray), shapes).count();
+            }
+            black_box(acc)
+        });
+    });
+    group.finish();
 }
 
 fn raycast_benches(c: &mut Criterion) {
@@ -303,6 +350,16 @@ fn raycast_benches(c: &mut Criterion) {
                 _ => false,
             };
             assert!(agree, "closest-hit disagreement: packed {a:?} vs bvh {b:?}");
+
+            // All-hits sets must match exactly (both test the box AABB).
+            let mut packed_hits = packed.raycast(ray);
+            packed_hits.sort_unstable();
+            let mut bvh_hits: Vec<usize> = bvh
+                .traverse_iterator(&BvhRay(ray), &shapes)
+                .map(|s| s.id)
+                .collect();
+            bvh_hits.sort_unstable();
+            assert_eq!(packed_hits, bvh_hits, "all-hits set disagreement");
         }
         let _ = Instant::now();
     }

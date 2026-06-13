@@ -23,7 +23,7 @@ use std::io;
 use crate::geometry::{Box2D, Box3D};
 use crate::persistence::{
     FORMAT_FLAGS_2D, FORMAT_FLAGS_3D, FORMAT_HEADER_LEN, LoadError, parse_and_validate_header,
-    read_f64_le_unchecked, read_u64_at, read_u64_le_unchecked, section_layout,
+    payload_layout, read_f64_le_unchecked, read_u64_at, read_u64_le_unchecked, section_layout,
     validate_level_bounds,
 };
 
@@ -211,6 +211,9 @@ pub enum StreamError {
     /// The bytes are not a valid index of the expected variant. Carries the same
     /// [`LoadError`] categories as the in-memory loader.
     Format(LoadError),
+    /// A payload was requested but the index has no payload section, or the item
+    /// index was out of range.
+    NoPayload,
 }
 
 impl std::fmt::Display for StreamError {
@@ -218,6 +221,9 @@ impl std::fmt::Display for StreamError {
         match self {
             StreamError::Io(err) => write!(f, "streaming read failed: {err}"),
             StreamError::Format(err) => write!(f, "{err}"),
+            StreamError::NoPayload => {
+                write!(f, "no payload for this index or item index out of range")
+            }
         }
     }
 }
@@ -227,6 +233,7 @@ impl std::error::Error for StreamError {
         match self {
             StreamError::Io(err) => Some(err),
             StreamError::Format(err) => Some(err),
+            StreamError::NoPayload => None,
         }
     }
 }
@@ -268,6 +275,18 @@ pub(crate) struct StreamCore<R> {
     dir_boxes: Vec<u8>,
     /// Cached index bytes for the same node positions.
     dir_indices: Vec<u8>,
+    /// Optional payload section. `None` when the index carries no payload.
+    payload: Option<PayloadSection>,
+}
+
+/// Byte locations of a streamed index's payload section.
+struct PayloadSection {
+    /// Byte offset of the `(num_items + 1)` u64 prefix-offset table.
+    offsets_start: u64,
+    /// Byte offset of the blob region.
+    blobs_start: u64,
+    /// Total blob bytes (validated against the file length at open).
+    blob_total: u64,
 }
 
 impl<R: RangeReader> StreamCore<R> {
@@ -281,7 +300,7 @@ impl<R: RangeReader> StreamCore<R> {
         // 1. Header (fixed 64 bytes): magic, version, flags, counts, tree shape.
         let mut header = [0u8; FORMAT_HEADER_LEN];
         reader.read_exact_at(0, &mut header)?;
-        let fields = parse_and_validate_header(&header, expected_flags)?;
+        let fields = parse_and_validate_header(&header, expected_flags, true)?;
 
         // 2. Section offsets, derived purely from the validated header counts.
         let layout = section_layout(
@@ -291,17 +310,48 @@ impl<R: RangeReader> StreamCore<R> {
             coord_bytes,
         )?;
 
-        // 3. Cross-check the declared length against the source, when known.
+        // 3. Locate the optional payload section. Its blob total lives in the
+        //    last offset-table entry, so read just that one u64 (the table itself
+        //    is read on demand, per item, never wholesale).
+        let (payload, full_total) = if fields.has_payload {
+            let offsets_start = layout.total_len;
+            let last_offset_at = offsets_start
+                .checked_add(
+                    fields
+                        .num_items
+                        .checked_mul(8)
+                        .ok_or(LoadError::IntegerOverflow)?,
+                )
+                .ok_or(LoadError::IntegerOverflow)?;
+            let mut last = [0u8; 8];
+            reader.read_exact_at(last_offset_at as u64, &mut last)?;
+            let blob_total = u64::from_le_bytes(last);
+            let blob_total_usize =
+                usize::try_from(blob_total).map_err(|_| LoadError::IntegerOverflow)?;
+            let plan = payload_layout(fields.num_items, offsets_start, blob_total_usize)?;
+            (
+                Some(PayloadSection {
+                    offsets_start: plan.offsets_start as u64,
+                    blobs_start: plan.blobs_start as u64,
+                    blob_total,
+                }),
+                plan.full_total,
+            )
+        } else {
+            (None, layout.total_len)
+        };
+
+        // 4. Cross-check the declared length against the source, when known.
         if let Some(actual) = reader.len()
-            && actual != layout.total_len as u64
+            && actual != full_total as u64
         {
             return Err(StreamError::Format(LoadError::LengthMismatch {
-                expected: layout.total_len,
+                expected: full_total,
                 actual: usize::try_from(actual).unwrap_or(usize::MAX),
             }));
         }
 
-        // 4. Level bounds (small): read fully, validate, parse to positions.
+        // 5. Level bounds (small): read fully, validate, parse to positions.
         let level_bounds_len = fields.level_count * 8;
         let mut level_bounds_bytes = vec![0u8; level_bounds_len];
         reader.read_exact_at(layout.level_bounds_start as u64, &mut level_bounds_bytes)?;
@@ -319,7 +369,7 @@ impl<R: RangeReader> StreamCore<R> {
             level_bounds.push(value);
         }
 
-        // 5. Directory: cache the upper levels (a contiguous suffix of the box
+        // 6. Directory: cache the upper levels (a contiguous suffix of the box
         //    and index sections) up to the node budget.
         let dir_node_start =
             directory_start(&level_bounds, fields.level_count, DIRECTORY_NODE_BUDGET);
@@ -350,7 +400,38 @@ impl<R: RangeReader> StreamCore<R> {
             dir_node_start,
             dir_boxes,
             dir_indices,
+            payload,
         })
+    }
+
+    /// Whether the index carries a payload section.
+    fn has_payload(&self) -> bool {
+        self.payload.is_some()
+    }
+
+    /// Read item `id`'s payload blob, streaming its offset pair and the blob.
+    fn payload(&self, id: usize) -> Result<Vec<u8>, StreamError> {
+        let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
+        if id >= self.num_items {
+            return Err(StreamError::NoPayload);
+        }
+        // The offset table has num_items+1 entries, so id and id+1 are in range.
+        let mut pair = [0u8; 16];
+        self.reader
+            .read_exact_at(section.offsets_start + (id * 8) as u64, &mut pair)?;
+        let start = u64::from_le_bytes(pair[0..8].try_into().unwrap());
+        let end = u64::from_le_bytes(pair[8..16].try_into().unwrap());
+        // Validate against an untrusted source: non-decreasing and within the
+        // blob region.
+        if end < start || end > section.blob_total {
+            return Err(StreamError::Format(LoadError::InvalidTree));
+        }
+        let mut blob = vec![0u8; (end - start) as usize];
+        if !blob.is_empty() {
+            self.reader
+                .read_exact_at(section.blobs_start + start, &mut blob)?;
+        }
+        Ok(blob)
     }
 
     /// Cached box record bytes for node `position`, if the directory covers it.
@@ -654,6 +735,20 @@ impl<R: RangeReader> StreamIndex2D<R> {
         out.clear();
         self.visit(query, |index| out.push(index))
     }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.core.has_payload()
+    }
+
+    /// Stream the payload blob for item `id` (an index returned by a search).
+    ///
+    /// Reads just the item's offset pair and its blob, so it scales to a remote
+    /// file. Returns [`StreamError::NoPayload`] if the index has no payload
+    /// section or `id` is out of range.
+    pub fn payload(&self, id: usize) -> Result<Vec<u8>, StreamError> {
+        self.core.payload(id)
+    }
 }
 
 /// Parse one 2D box record (`[min_x, min_y, max_x, max_y]` little-endian f64).
@@ -727,6 +822,16 @@ impl<R: RangeReader> StreamIndex3D<R> {
     pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) -> Result<(), StreamError> {
         out.clear();
         self.visit(query, |index| out.push(index))
+    }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.core.has_payload()
+    }
+
+    /// Stream the payload blob for item `id`. See [`StreamIndex2D::payload`].
+    pub fn payload(&self, id: usize) -> Result<Vec<u8>, StreamError> {
+        self.core.payload(id)
     }
 }
 
@@ -1230,5 +1335,85 @@ mod tests {
                 let _ = stream.search(query);
             }
         }
+    }
+
+    // ---- Payload ----
+
+    /// Build a random index plus a variable-length payload per item; return the
+    /// owned index, the payloads, and the payload-carrying bytes.
+    fn random_with_payloads(n: usize, seed: u64) -> (crate::Index2D, Vec<Vec<u8>>, Vec<u8>) {
+        let (owned, _) = random_owned(n, seed);
+        let payloads: Vec<Vec<u8>> = (0..n)
+            .map(|i| format!("payload-for-item-{i}").into_bytes())
+            .collect();
+        let bytes = owned.to_bytes_with_payloads(&payloads).unwrap();
+        (owned, payloads, bytes)
+    }
+
+    #[test]
+    fn streamed_payload_round_trips_with_search() {
+        // 20k items so leaves stream; the payload section is queried by id.
+        let (owned, payloads, bytes) = random_with_payloads(20_000, 0x9EED);
+        let stream = open_slice(bytes);
+        assert!(stream.has_payload());
+
+        // Index queries still work on a payload file.
+        let query = Box2D::new(400.0, 400.0, 460.0, 460.0);
+        let mut a = stream.search(query).unwrap();
+        let mut b = owned.search(query);
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b);
+
+        // Every hit's payload streams back exactly.
+        for &id in &a {
+            assert_eq!(stream.payload(id).unwrap(), payloads[id]);
+        }
+        // And arbitrary ids, including the ends.
+        for id in [0usize, 1, 9999, 19_999] {
+            assert_eq!(stream.payload(id).unwrap(), payloads[id]);
+        }
+    }
+
+    #[test]
+    fn payload_absent_and_out_of_range() {
+        // Index-only file: no payload.
+        let (_, bytes) = random_owned(100, 0x1);
+        let stream = open_slice(bytes);
+        assert!(!stream.has_payload());
+        assert!(matches!(stream.payload(0), Err(StreamError::NoPayload)));
+
+        // Payload file: out-of-range id rejected.
+        let (_, _, pbytes) = random_with_payloads(100, 0x2);
+        let pstream = open_slice(pbytes);
+        assert!(pstream.has_payload());
+        assert!(matches!(pstream.payload(100), Err(StreamError::NoPayload)));
+    }
+
+    #[test]
+    fn payload_via_file_and_unknown_length_readers() {
+        let (_, payloads, bytes) = random_with_payloads(5_000, 0x3);
+
+        // FileReader round trip.
+        let path = std::env::temp_dir().join(format!("psi_payload_{}.psindex", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let fstream = StreamIndex2D::open(FileReader::open(&path).unwrap()).unwrap();
+        assert_eq!(fstream.payload(42).unwrap(), payloads[42]);
+        std::fs::remove_file(&path).ok();
+
+        // Unknown-length (HTTP-like) reader: open reads the last offset to size
+        // the file, payloads still stream.
+        let nstream = StreamIndex2D::open(NoLenReader(SliceReader::new(bytes))).unwrap();
+        assert_eq!(nstream.payload(42).unwrap(), payloads[42]);
+    }
+
+    #[test]
+    fn empty_payload_blobs_round_trip() {
+        // Zero-length payloads are valid (e.g. a presence-only store).
+        let (owned, _) = random_owned(50, 0x4);
+        let payloads: Vec<Vec<u8>> = vec![Vec::new(); 50];
+        let bytes = owned.to_bytes_with_payloads(&payloads).unwrap();
+        let stream = open_slice(bytes);
+        assert!(stream.payload(10).unwrap().is_empty());
     }
 }

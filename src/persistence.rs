@@ -103,8 +103,6 @@ pub(crate) struct HeaderFields {
     pub(crate) num_nodes: usize,
     pub(crate) level_count: usize,
     /// Whether a payload section follows the index (the `FORMAT_FLAG_PAYLOAD` bit).
-    /// Read by the payload-aware readers (stream / view), landing next.
-    #[allow(dead_code)]
     pub(crate) has_payload: bool,
 }
 

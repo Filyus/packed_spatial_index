@@ -163,7 +163,7 @@ impl Index2D {
     /// after the index, so the index data is unchanged — only a header flag bit
     /// marks the payload's presence; readers that do not understand payloads
     /// reject the file rather than misread it. Read the
-    /// blobs back by item index with a [`StreamIndex2D`](crate::StreamIndex2D) or
+    /// blobs back by item index with a `StreamIndex2D` (the `stream` feature) or
     /// [`Index2DView`].
     ///
     /// Returns [`PayloadError::CountMismatch`] unless `payloads.len()` equals

@@ -1,9 +1,9 @@
 //! Packed static spatial index for 2D and 3D axis-aligned bounding boxes.
 //!
 //! The canonical flow is [`Index2DBuilder`] -> [`Index2D`] -> [`Index2D::search`].
-//! With the `simd` feature, [`Index2DBuilder::finish_simd`] and
-//! [`Index3DBuilder::finish_simd`] build [`SimdIndex2D`] and [`SimdIndex3D`],
-//! which share the same query API backed by SoA layouts and SIMD traversal.
+//! With the `simd` feature, `Index2DBuilder::finish_simd` and
+//! `Index3DBuilder::finish_simd` build `SimdIndex2D` and `SimdIndex3D`, which
+//! share the same query API backed by SoA layouts and SIMD traversal.
 //! Indexes also serialize with `to_bytes` and load back as owned indexes or as
 //! zero-copy views ([`Index2DView`], [`Index3DView`]).
 //!

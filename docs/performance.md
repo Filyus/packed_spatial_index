@@ -4,16 +4,20 @@ Benchmark results and how to reproduce them. See the
 [README](https://github.com/Filyus/packed_spatial_index#readme) for the API
 overview.
 
-## Prior art
+## Baselines
 
-This crate builds on ideas from existing packed spatial index work:
+The benchmarks below compare against:
 
-- [`flatbush`](https://github.com/mourner/flatbush) by Vladimir Agafonkin — a
-  static packed Hilbert R-tree for 2D rectangles in JavaScript.
 - [`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index) by
-  Jedidiah McCready — the Rust Flatbush port.
+  Jedidiah McCready — a Rust Flatbush port (build and search).
 - [FlatGeobuf](https://flatgeobuf.org/) by Pirmin Kalberer and Björn Harrtell —
-  a geospatial format inspired by Flatbush.
+  a Flatbush-inspired geospatial format (build, search, persistence).
+- [`bvh`](https://crates.io/crates/bvh) — used in the closest-hit raycast
+  comparison.
+
+This crate's own design follows the packed Hilbert R-tree of
+[flatbush](https://github.com/mourner/flatbush) (Vladimir Agafonkin) and its
+Rust port `static_aabb2d_index`.
 
 ## 2D competitors
 

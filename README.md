@@ -105,7 +105,7 @@ cargo build --no-default-features --features simd      # SIMD only
 
 - **[Guide](https://github.com/Filyus/packed_spatial_index/blob/main/docs/guide.md)** — recipes, choosing a query method, builder configuration, examples, WASM demo.
 - **[Persistence](https://github.com/Filyus/packed_spatial_index/blob/main/docs/persistence.md)** — serialize / load / zero-copy views, and querying large or on-disk indexes via mmap.
-- **[Performance](https://github.com/Filyus/packed_spatial_index/blob/main/docs/performance.md)** — benchmarks vs `static_aabb2d_index`, FlatGeobuf, and the `bvh` crate; prior art.
+- **[Performance](https://github.com/Filyus/packed_spatial_index/blob/main/docs/performance.md)** — benchmarks vs `static_aabb2d_index`, FlatGeobuf, and the `bvh` crate.
 - **[Binary format](https://github.com/Filyus/packed_spatial_index/blob/main/FORMAT.md)** — the `PSINDEX` on-disk layout.
 - **API reference** — [docs.rs/packed_spatial_index](https://docs.rs/packed_spatial_index).
 

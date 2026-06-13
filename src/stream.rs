@@ -16,9 +16,9 @@
 
 use std::io;
 
-use crate::geometry::Box2D;
+use crate::geometry::{Box2D, Box3D};
 use crate::persistence::{
-    FORMAT_FLAGS_2D, FORMAT_HEADER_LEN, LoadError, parse_and_validate_header,
+    FORMAT_FLAGS_2D, FORMAT_FLAGS_3D, FORMAT_HEADER_LEN, LoadError, parse_and_validate_header,
     read_f64_le_unchecked, read_u64_at, read_u64_le_unchecked, section_layout,
     validate_level_bounds,
 };
@@ -595,6 +595,82 @@ fn parse_box2d(bytes: &[u8]) -> Box2D {
     )
 }
 
+/// Streaming reader for a 3D `f64` packed spatial index.
+///
+/// The 3D counterpart of [`StreamIndex2D`]: it shares the same open, validation,
+/// directory prefetch, and coalesced traversal, differing only in the 48-byte
+/// box record. See [`StreamIndex2D`] for the streaming model.
+pub struct StreamIndex3D<R> {
+    core: StreamCore<R>,
+}
+
+impl<R: RangeReader> StreamIndex3D<R> {
+    /// Open and validate a 3D `f64` index from `reader`.
+    pub fn open(reader: R) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open(reader, FORMAT_FLAGS_3D, 3, 8)?,
+        })
+    }
+
+    /// Number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.core.num_items
+    }
+
+    /// Whether the index has no items.
+    pub fn is_empty(&self) -> bool {
+        self.core.num_items == 0
+    }
+
+    /// Packed node size of the index.
+    pub fn node_size(&self) -> usize {
+        self.core.node_size
+    }
+
+    /// Total extent of all indexed items, or [`None`] for an empty index.
+    /// Read from the cached root box, so this costs no I/O.
+    pub fn extent(&self) -> Option<Box3D> {
+        if self.core.num_items == 0 {
+            return None;
+        }
+        let root = self.core.num_nodes - 1;
+        let bytes = self.core.cached_box_bytes(root)?;
+        Some(parse_box3d(bytes))
+    }
+
+    /// Stream the indices of every item whose box intersects `query`, passing
+    /// each to `visitor`. Fallible; see [`StreamIndex2D::visit`].
+    pub fn visit<F: FnMut(usize)>(&self, query: Box3D, visitor: F) -> Result<(), StreamError> {
+        self.core
+            .visit_overlapping(|record| parse_box3d(record).overlaps(query), visitor)
+    }
+
+    /// Stream the indices of every item whose box intersects `query`.
+    pub fn search(&self, query: Box3D) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.search_into(query, &mut out)?;
+        Ok(out)
+    }
+
+    /// Like [`search`](Self::search), but appends into a reused buffer.
+    pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) -> Result<(), StreamError> {
+        out.clear();
+        self.visit(query, |index| out.push(index))
+    }
+}
+
+/// Parse one 3D box record (`[min_x, min_y, min_z, max_x, max_y, max_z]` LE f64).
+fn parse_box3d(bytes: &[u8]) -> Box3D {
+    Box3D::new(
+        read_f64_le_unchecked(bytes, 0),
+        read_f64_le_unchecked(bytes, 8),
+        read_f64_le_unchecked(bytes, 16),
+        read_f64_le_unchecked(bytes, 24),
+        read_f64_le_unchecked(bytes, 32),
+        read_f64_le_unchecked(bytes, 40),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,5 +938,52 @@ mod tests {
         assert_eq!(streamed, owned_hits);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn streamed_search_matches_owned_3d() {
+        use crate::{Box3D, Index3DBuilder};
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+
+        let mut rng = StdRng::seed_from_u64(0x3D3D);
+        let n = 20_000;
+        let mut builder = Index3DBuilder::new(n).node_size(16);
+        for _ in 0..n {
+            let cx: f64 = rng.random_range(0.0..1000.0);
+            let cy: f64 = rng.random_range(0.0..1000.0);
+            let cz: f64 = rng.random_range(0.0..1000.0);
+            let w: f64 = rng.random_range(0.1..10.0);
+            let h: f64 = rng.random_range(0.1..10.0);
+            let d: f64 = rng.random_range(0.1..10.0);
+            builder.add(Box3D::new(cx, cy, cz, cx + w, cy + h, cz + d));
+        }
+        let owned = builder.finish().unwrap();
+        let stream = StreamIndex3D::open(SliceReader::new(owned.to_bytes())).unwrap();
+        assert!(stream.core.dir_node_start > 0, "leaves should be streamed");
+
+        for _ in 0..200 {
+            let qx: f64 = rng.random_range(0.0..1000.0);
+            let qy: f64 = rng.random_range(0.0..1000.0);
+            let qz: f64 = rng.random_range(0.0..1000.0);
+            let q = Box3D::new(qx, qy, qz, qx + 200.0, qy + 200.0, qz + 200.0);
+            let mut streamed = stream.search(q).unwrap();
+            let mut owned_hits = owned.search(q);
+            streamed.sort_unstable();
+            owned_hits.sort_unstable();
+            assert_eq!(streamed, owned_hits, "query {q:?}");
+        }
+    }
+
+    #[test]
+    fn three_d_bytes_rejected_as_2d_and_vice_versa() {
+        // A 2D index opened as a 3D stream (and the reverse) must be rejected on
+        // the flags check, never misread.
+        let two_d = build_bytes(64, 16);
+        match StreamIndex3D::open(SliceReader::new(two_d)) {
+            Err(StreamError::Format(LoadError::UnsupportedVersion)) => {}
+            Ok(_) => panic!("2D-as-3D should be rejected, got a valid index"),
+            Err(other) => panic!("2D-as-3D should be rejected, got {other:?}"),
+        }
     }
 }

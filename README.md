@@ -438,11 +438,22 @@ contain the origin).
 
 Positioning: this is a convenience for indexes you already hold for range/kNN
 queries — picking, line-of-sight, occasional rays — not a replacement for a
-dedicated ray-tracing BVH. The packed Hilbert tree builds much faster than a
-SAH BVH and the SIMD closest-hit is competitive on uniform scenes, but a good
-SAH BVH builds a structurally better tree for heavily clustered scenes. If rays
-are your dominant workload, use a BVH; if you already have this index, raycast
-it for free.
+dedicated ray-tracing BVH. The numbers below (100k boxes, 1,000 rays, closest
+hit; "BVH" is a fair hand-rolled ordered closest-hit traversal over the
+[`bvh`](https://crates.io/crates/bvh) crate's SAH tree) show the trade-off:
+
+| metric | packed AoS | packed SoA/SIMD | SAH BVH |
+|---|---:|---:|---:|
+| build (uniform) | **5 ms** | **5 ms** | 58 ms |
+| closest hit, uniform | 3.6 ms | **1.2 ms** | 1.8 ms |
+| closest hit, clustered | 170 µs | 111 µs | **54 µs** |
+
+The packed Hilbert tree builds ~11x faster, and the SIMD closest-hit beats the
+ordered BVH on uniform scenes (a SIMD-vs-scalar win). A SAH BVH builds a
+structurally better tree for heavily clustered scenes and wins there (~2x). If
+rays are your dominant workload, use a BVH; if you already have this index,
+raycast it for free. Run `cargo bench --bench raycast3d_bench --features simd`
+to reproduce.
 
 ### `join` / `join_with`
 

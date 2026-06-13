@@ -1,11 +1,47 @@
-// The crate-level docs (the docs.rs landing page) are the README, so its Rust
-// examples are compiled as doctests and cannot rot. README links to in-repo
-// files use absolute URLs so they resolve on docs.rs too.
-#![doc = include_str!("../README.md")]
+//! Packed static spatial index for 2D and 3D axis-aligned bounding boxes.
+//!
+//! The canonical flow is [`Index2DBuilder`] -> [`Index2D`] -> [`Index2D::search`].
+//! With the `simd` feature, [`Index2DBuilder::finish_simd`] and
+//! [`Index3DBuilder::finish_simd`] build [`SimdIndex2D`] and [`SimdIndex3D`],
+//! which share the same query API backed by SoA layouts and SIMD traversal.
+//! Indexes also serialize with `to_bytes` and load back as owned indexes or as
+//! zero-copy views ([`Index2DView`], [`Index3DView`]).
+//!
+//! Queries: range/intersection [`search`](Index2D::search), point and box
+//! nearest-neighbor [`neighbors`](Index2D::neighbors) /
+//! [`neighbors_of_box`](Index2D::neighbors_of_box),
+//! [`raycast`](Index2D::raycast) / [`raycast_closest`](Index2D::raycast_closest),
+//! and spatial [`join`](Index2D::join) / [`self_join`](Index2D::self_join).
+//!
+//! # Quick Start
+//! ```
+//! use packed_spatial_index::{Index2DBuilder, Box2D};
+//!
+//! let mut builder = Index2DBuilder::new(2);
+//! builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+//! builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+//! let index = builder.finish().unwrap();
+//!
+//! assert_eq!(index.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+//! ```
+//!
+//! # Cargo Features
+//! * `parallel` (default): adaptive parallel builds through rayon.
+//! * `simd` (default): SIMD search/raycast through `wide` and x86-64 AVX-512.
+//! * `f32-storage`: compact f32-storage SIMD indexes.
+
 // On docs.rs (built with `--cfg docsrs` on nightly), auto-render "Available on
 // crate feature X" badges for feature-gated items from their `#[cfg]`s.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(docsrs, doc(auto_cfg))]
+
+// Compile the README's Rust examples as doctests (so they cannot rot) without
+// making the README the docs.rs landing page. This keeps the README's in-repo
+// links relative — they resolve on GitHub and crates.io, which render the
+// README; docs.rs renders the crate-level docs above instead.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 mod build;
 mod builder2d;

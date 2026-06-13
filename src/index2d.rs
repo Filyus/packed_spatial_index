@@ -183,6 +183,17 @@ impl Index2D {
     }
 
     /// Return the indices of all items whose boxes intersect `query`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use packed_spatial_index::{Index2DBuilder, Box2D};
+    /// # let mut builder = Index2DBuilder::new(2);
+    /// # builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// # builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// # let index = builder.finish().unwrap();
+    /// assert_eq!(index.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
+    /// ```
     pub fn search(&self, query: Box2D) -> Vec<usize> {
         let mut results = Vec::new();
         self.search_into(query, &mut results);
@@ -220,6 +231,18 @@ impl Index2D {
     ///
     /// This is an early-exit path: traversal stops at the first hit and does not
     /// allocate a result `Vec`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use packed_spatial_index::{Index2DBuilder, Box2D};
+    /// # let mut builder = Index2DBuilder::new(2);
+    /// # builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// # builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// # let index = builder.finish().unwrap();
+    /// assert!(index.any(Box2D::new(0.0, 0.0, 2.0, 2.0)));
+    /// assert!(!index.any(Box2D::new(20.0, 20.0, 21.0, 21.0)));
+    /// ```
     pub fn any(&self, query: Box2D) -> bool {
         self.visit(query, |_| ControlFlow::Break(())).is_break()
     }
@@ -228,6 +251,18 @@ impl Index2D {
     ///
     /// Tree traversal order is not part of the API, so this returns just some first
     /// found item, not the minimum insertion index.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use packed_spatial_index::{Index2DBuilder, Box2D};
+    /// # let mut builder = Index2DBuilder::new(2);
+    /// # builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// # builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// # let index = builder.finish().unwrap();
+    /// assert_eq!(index.first(Box2D::new(0.0, 0.0, 2.0, 2.0)), Some(0));
+    /// assert_eq!(index.first(Box2D::new(20.0, 20.0, 21.0, 21.0)), None);
+    /// ```
     pub fn first(&self, query: Box2D) -> Option<usize> {
         match self.visit(query, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),

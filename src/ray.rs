@@ -37,8 +37,17 @@ pub struct Ray2D {
 
 impl Ray2D {
     /// Create a finite ray segment covering `origin + t * dir` for
-    /// `t in [0, max_distance]`. The direction does not need to be normalized;
-    /// `max_distance` is in units of the direction length.
+    /// `t in [0, max_distance]`.
+    ///
+    /// The direction does not need to be normalized. `max_distance` and every
+    /// returned entry `t` are in units of the direction length, so the
+    /// Euclidean distance to a hit is `t * hypot(dir_x, dir_y)`; normalize the
+    /// direction (length 1) if you want `t` and `max_distance` in world units.
+    ///
+    /// A fully zero direction (`dir_x == dir_y == 0.0`) is a point probe: it
+    /// hits only boxes that contain `origin`, all at `t == 0.0`. Direction
+    /// components should be finite; a `NaN` direction produces unspecified
+    /// results.
     #[inline]
     pub const fn new(origin: Point2D, dir_x: f64, dir_y: f64, max_distance: f64) -> Self {
         Self {
@@ -147,8 +156,18 @@ pub struct Ray3D {
 
 impl Ray3D {
     /// Create a finite ray segment covering `origin + t * dir` for
-    /// `t in [0, max_distance]`. The direction does not need to be normalized;
-    /// `max_distance` is in units of the direction length.
+    /// `t in [0, max_distance]`.
+    ///
+    /// The direction does not need to be normalized. `max_distance` and every
+    /// returned entry `t` are in units of the direction length, so the
+    /// Euclidean distance to a hit is `t * (dir_x.hypot(dir_y).hypot(dir_z))`;
+    /// normalize the direction (length 1) if you want `t` and `max_distance` in
+    /// world units.
+    ///
+    /// A fully zero direction (`dir_x == dir_y == dir_z == 0.0`) is a point
+    /// probe: it hits only boxes that contain `origin`, all at `t == 0.0`.
+    /// Direction components should be finite; a `NaN` direction produces
+    /// unspecified results.
     #[inline]
     pub const fn new(
         origin: Point3D,

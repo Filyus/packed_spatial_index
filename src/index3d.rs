@@ -1720,7 +1720,8 @@ impl Index3D {
     /// Nodes are visited front-to-back by entry distance and pruned once a
     /// closer hit is known, so the cost is roughly independent of
     /// `max_distance` after the first hit. `t` is `0.0` when the ray origin
-    /// starts inside the item's box.
+    /// starts inside the item's box, and is measured in units of the ray
+    /// direction length (see [`Ray3D::new`]).
     pub fn raycast_closest(&self, ray: Ray3D) -> Option<(usize, f64)> {
         let mut workspace = NeighborWorkspace::new();
         self.raycast_closest_with(ray, &mut workspace)

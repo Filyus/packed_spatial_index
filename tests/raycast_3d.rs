@@ -133,6 +133,24 @@ fn raycast_3d_empty_and_degenerate_rays() {
     assert_eq!(index.raycast_closest(inside), Some((0, 0.0)));
 }
 
+#[test]
+fn zero_direction_ray_is_a_point_probe() {
+    let mut builder = Index3DBuilder::new(2);
+    builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    builder.add(Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+    let index = builder.finish().unwrap();
+
+    // A fully zero direction collapses every slab to an inside test, so the ray
+    // probes only boxes that contain the origin (entry t == 0).
+    let inside = Ray3D::new(Point3D::new(0.5, 0.5, 0.5), 0.0, 0.0, 0.0, 10.0);
+    assert_eq!(index.raycast(inside), vec![0]);
+    assert_eq!(index.raycast_closest(inside), Some((0, 0.0)));
+
+    let outside = Ray3D::new(Point3D::new(3.0, 3.0, 3.0), 0.0, 0.0, 0.0, 10.0);
+    assert!(index.raycast(outside).is_empty());
+    assert_eq!(index.raycast_closest(outside), None);
+}
+
 #[cfg(feature = "simd")]
 mod simd {
     use super::*;

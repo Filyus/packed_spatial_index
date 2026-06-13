@@ -431,6 +431,11 @@ assert_eq!(index.raycast_closest(ray), Some((0, 1.0)));
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
+Entry `t` and `max_distance` are in units of the ray direction length, so the
+Euclidean distance to a hit is `t * |dir|` — normalize the direction if you
+want world units. A fully zero direction is a point probe (hits only boxes that
+contain the origin).
+
 Positioning: this is a convenience for indexes you already hold for range/kNN
 queries — picking, line-of-sight, occasional rays — not a replacement for a
 dedicated ray-tracing BVH. The packed Hilbert tree builds much faster than a

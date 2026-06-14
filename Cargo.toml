@@ -3,13 +3,13 @@ name = "packed_spatial_index"
 version = "0.6.0"
 edition = "2024"
 rust-version = "1.89"
-description = "Packed static spatial index for 2D and 3D AABBs with Hilbert ordering, adaptive parallel builds, and SIMD queries."
+description = "Packed static spatial index (Hilbert R-tree) for 2D/3D AABBs — SIMD range, kNN, raycast, and spatial-join queries, with zero-copy and streaming serialization."
 license = "Apache-2.0"
 repository = "https://github.com/Filyus/packed_spatial_index"
 documentation = "https://docs.rs/packed_spatial_index"
 readme = "README.md"
-keywords = ["spatial", "index", "aabb", "hilbert", "rtree"]
-categories = ["algorithms", "data-structures"]
+keywords = ["spatial", "rtree", "aabb", "knn", "bvh"]
+categories = ["algorithms", "data-structures", "game-development", "science::geo"]
 exclude = ["/.github/", "/benches/tools/", "/wasm-demo/"]
 
 [package.metadata.docs.rs]

@@ -5,6 +5,38 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.7.0](https://github.com/Filyus/packed_spatial_index/compare/v0.6.0...v0.7.0) - 2026-06-14
+
+### API
+- Add a `serialize()` builder (`Serializer2D` / `Serializer3D`) that replaces the
+  growing family of `to_bytes_*` methods. Chain `.payloads(..)`, `.interleaved()`,
+  `.crs(..)`, `.content_type(..)`, `.attribution(..)`, then finish with
+  `.to_bytes()` or `.to_bytes_into(..)`.
+- Add `FileMetadata` and `read_metadata()` to read file-level metadata (CRS,
+  content type, attribution) from a serialized index without loading the tree.
+
+### Safety
+- Harden the streaming reader and the payload path against untrusted or remote
+  input. Chunk ranges, tree pointers, and payload offsets are bounds-checked as
+  they are followed, and broad queries are bounded by per-query cost limits. The
+  new `SAFETY.md` documents the memory-safety and untrusted-input guarantees.
+
+### Persistence
+- **Breaking:** new on-disk format (`format_version` 2), a chunk container with a
+  superblock and a typed chunk directory (TREE / PYLD / META). v1 files no longer
+  load. The container is forward-compatible: readers skip unknown optional chunks
+  and reject unknown critical ones, and descriptors can grow without breaking
+  older readers.
+- Add a streaming reader. `StreamIndex2D` / `StreamIndex3D` query a serialized
+  index over a `RangeReader` (sync) or `AsyncRangeReader` (async) without loading
+  the whole file, with coalesced per-level range reads. An optional interleaved
+  layout fetches each level in a single read.
+- Add an optional per-item payload (the `PYLD` chunk): attach one opaque blob per
+  item to make a file self-contained. Blobs are stored in leaf (Hilbert) order so
+  a spatial query reads them in coalesced runs, and they are served by both the
+  zero-copy views and the streaming reader, in 2D and 3D.
+
+
 ## [0.6.0](https://github.com/Filyus/packed_spatial_index/compare/v0.5.1...v0.6.0) - 2026-06-14
 
 ### Search

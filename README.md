@@ -141,6 +141,15 @@ The metadata is opaque (the crate stores the strings you give it, verbatim).
 Pair query results with their payloads via the zero-copy views or the streaming
 reader — see [Persistence](docs/persistence.md) and the [binary format](FORMAT.md).
 
+When every record is the same size, `.records(stride, ..)` (or `.triangles(..)`
+for `Triangle2D` / `Triangle3D`, and the compact `Triangle2DF32` / `Triangle3DF32`)
+stores a **fixed-width** payload: no offset table, so the file is smaller, a
+streamed query reads one fewer time, and a view can borrow the records as a
+zero-copy typed slice. A triangle payload plus the index over each triangle's
+bounding box (`Index3D::from_triangles`) is a streamable mesh BVH; `raycast` finds
+candidates and `Ray3D::closest_triangle` does the exact hit (the `f32` records test
+8 at a time with `simd`). See the [`raycast_mesh`](examples/raycast_mesh.rs) example.
+
 ## Features
 
 | Feature | Pulls in | Adds |

@@ -2,7 +2,7 @@
 
 | Revision | Last revised |
 | -------- | ------------ |
-| 11       | 2026-06-14   |
+| 12       | 2026-06-15   |
 
 This document describes the binary format used by packed spatial indexes
 (`format_version` 2).
@@ -170,36 +170,48 @@ level's end.
 ## `PYLD` chunk (optional)
 
 The `PYLD` chunk carries one opaque blob per item, making a file self-contained
-(the spatial index plus the data it indexes). It is a descriptor followed by a
-prefix-offset table and the blob region.
+(the spatial index plus the data it indexes). It is a descriptor followed by the
+blob region, optionally preceded by a prefix-offset table.
 
 ```text
-descriptor (8 B):
+descriptor (8 or 12 B):
 offset  size  field
-0       4     desc_len     u32 = 8
-4       1     ordering     u8 = 0 (leaf rank)
-5       1     compression  u8 = 0 (none)
+0       4     desc_len       u32 = 8 (variable-width) or 12 (fixed-width)
+4       1     ordering       u8 = 0 (leaf rank)
+5       1     compression    u8 = 0 (none)
 6       2     reserved
+8       4     record_stride  u32, present only when desc_len = 12; 0 = variable
 
 then:
-payload_offsets   (num_items + 1) x u64
+payload_offsets   (num_items + 1) x u64   (variable-width only)
 payload_blobs     concatenated blobs
 ```
 
-Both the table and the blobs are ordered by **leaf rank** — the position of an
-item among the leaves (the Hilbert order) — so a spatial query, which visits
-leaves in contiguous runs, fetches their offsets and blobs in coalesced reads.
+There are two layouts, chosen by `record_stride`:
 
-- `payload_offsets[0]` is `0`, the table is non-decreasing, and
-  `payload_offsets[num_items]` equals the blob region length.
-- The blob of the item at leaf rank `r` is
-  `payload_blobs[payload_offsets[r] .. payload_offsets[r + 1]]`; that item's
-  original insertion index (what queries return) is the leaf entry of `indices`
-  at rank `r`. To look a blob up by insertion index, invert that mapping.
+- **Variable-width** (`record_stride` absent or `0`): a `(num_items + 1)`
+  prefix-offset table precedes the blobs. The blob at leaf rank `r` is
+  `payload_blobs[payload_offsets[r] .. payload_offsets[r + 1]]`.
+- **Fixed-width** (`record_stride > 0`): every blob is exactly `record_stride`
+  bytes and there is **no** offset table. The blob at leaf rank `r` is
+  `payload_blobs[r * record_stride ..][.. record_stride]`. This drops the table
+  (smaller file, one fewer streamed read) and lets a reader borrow the blobs as a
+  typed slice. Triangle meshes use it (a 2D/3D triangle is 48/72 fixed bytes in
+  `f64`, or 24/36 in `f32`).
 
-Blobs are opaque bytes with no required alignment or interpretation. A reader
-that does not handle payloads simply skips the optional `PYLD` chunk and reads
-the index from `TREE`.
+Both layouts order the blobs by **leaf rank** (the position of an item among the
+leaves in Hilbert order), so a spatial query, which visits leaves in contiguous
+runs, fetches them in coalesced reads.
+
+The item at leaf rank `r` has its original insertion index (what queries return)
+in the leaf entry of `indices` at rank `r`; to look a blob up by insertion index,
+invert that mapping. For the variable-width table, `payload_offsets[0]` is `0`,
+the table is non-decreasing, and `payload_offsets[num_items]` equals the blob
+region length.
+
+Blobs are opaque bytes with no required interpretation. A reader that does not
+handle payloads simply skips the optional `PYLD` chunk and reads the index from
+`TREE`.
 
 ## `META` chunk (optional)
 

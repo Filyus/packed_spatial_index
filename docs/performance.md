@@ -169,6 +169,29 @@ SIMD slab test wins on uniform scenes and ties on clustered; for closest hit a
 SAH BVH builds a structurally better tree and wins on heavily clustered scenes.
 Reproduce with `cargo bench --bench raycast3d_bench --features simd`.
 
+## Ray-triangle closest hit (mesh payload)
+
+A triangle payload plus the index over each triangle's bounding box is a
+streamable mesh BVH: `raycast` returns candidate boxes, then
+`Ray3D::closest_triangle` runs the exact Moller-Trumbore test only on those. The
+records are fixed-width, so the payload drops its offset table (smaller file, one
+fewer streamed read) and a view borrows them as a zero-copy typed slice. The
+`f32` records (`Triangle3DF32`, 36 bytes) are half the size of `f64`
+(`Triangle3D`, 72 bytes) and test 8 at a time through `wide::f32x8`; the `f64`
+path is scalar. Workload: 4,096 rays against 4,096 candidate triangles (the
+narrow-phase test). Lower is better.
+
+| `closest_triangle` | per batch | per ray x triangle |
+| --- | ---: | ---: |
+| `f64` `Triangle3D` (scalar) | 202.8 ms | 12.1 ns |
+| `f32` `Triangle3DF32` (SIMD) | 90.9 ms | 5.4 ns |
+
+The `f32` SIMD kernel runs ~2.2x faster than scalar `f64` here. Most of that is
+the kernel: in pure scalar (no `simd` feature) `f32` is only modestly ahead of
+`f64`, since both autovectorize and the win is mainly the 8-wide test. f32's
+other benefit is size — half the payload bytes on disk and over the wire.
+Reproduce with `cargo bench --bench raytriangle3d_bench --features simd`.
+
 ## f32 storage vs f64
 
 The `coord_precision` suite compares compact f32 storage with f64 storage.
@@ -244,7 +267,9 @@ Benchmark coverage:
   comparisons, node sizes, and a hidden Morton baseline;
 - `persistence_knn2d_bench` / `persistence_knn3d_bench` cover scalar/SIMD
   persistence, loaded views, and KNN;
-- `raycast3d_bench` compares closest-hit raycast against the `bvh` crate.
+- `raycast3d_bench` compares closest-hit raycast against the `bvh` crate;
+- `raytriangle3d_bench` compares `closest_triangle` over `f64` vs compact `f32`
+  triangle records.
 
 ## Reproducing
 
@@ -257,4 +282,5 @@ cargo bench --bench persistence_knn3d_bench --no-default-features --features sim
 cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd,bench-internals
 cargo bench --bench coord_precision --no-default-features --features f32-storage
 cargo bench --bench raycast3d_bench --features simd
+cargo bench --bench raytriangle3d_bench --features simd
 ```

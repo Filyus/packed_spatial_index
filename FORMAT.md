@@ -2,9 +2,10 @@
 
 | Revision | Last revised |
 | -------- | ------------ |
-| 10       | 2026-06-14   |
+| 11       | 2026-06-14   |
 
-This document describes the binary format used by packed spatial indexes.
+This document describes the binary format used by packed spatial indexes
+(`format_version` 2).
 
 ## Related Methods
 
@@ -12,122 +13,130 @@ This document describes the binary format used by packed spatial indexes.
 | ------ | ----------- |
 | `fn to_bytes(&self) -> Vec<u8>` | Serialize into a new byte buffer. |
 | `fn to_bytes_into(&self, out: &mut Vec<u8>)` | Serialize into an existing byte buffer. |
-| `fn to_bytes_with_payloads(&self, payloads: &[P]) -> Result<Vec<u8>, PayloadError>` | Serialize the index plus one blob per item (sets the payload flag). |
+| `fn to_bytes_with_payloads(&self, payloads: &[P]) -> Result<Vec<u8>, PayloadError>` | Serialize the index plus one blob per item (adds a `PYLD` chunk). |
+| `fn to_bytes_interleaved(&self) -> Vec<u8>` | Serialize with the interleaved `TREE` layout (streaming-tuned). |
 | `fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError>` | Load and validate a byte buffer. |
 
 ## Byte Order
 
 All integer and coordinate fields are little-endian.
 
-## Layout
+## Overview
 
-A serialized index buffer has one header and three contiguous sections, plus an
-optional payload section when the payload flag is set:
+A file is a **chunk container**: a fixed superblock, a flat directory of typed
+chunks, then the chunks themselves.
 
-| Part              | Bytes                  | Present                |
-| ----------------- | ---------------------- | ---------------------- |
-| header            | 64                     | always                 |
-| `level_bounds`    | 8 x `level_count`      | always                 |
-| `boxes`           | `record` x `num_nodes` | always                 |
-| `indices`         | 8 x `num_nodes`        | always                 |
-| `payload_offsets` | 8 x (`num_items` + 1)  | payload flag set       |
-| `payload_blobs`   | `payload_offsets[num_items]` | payload flag set |
+```text
++-------------------+
+| superblock (32 B) |  magic, version, chunk_count
++-------------------+
+| chunk directory   |  chunk_count entries x 24 B
++-------------------+
+| chunk 0           |  (8-byte aligned)
+| chunk 1           |
+| ...               |
++-------------------+
+```
 
-There is no padding. Each section starts on an 8-byte offset.
-`record` is selected by `flags`. The optional payload section is described under
-[Payload](#payload-optional); the index sections are byte-identical with or
-without it.
+Each directory entry carries a **critical** bit. A reader rejects a file that
+contains a *critical* chunk whose tag it does not understand, and silently skips
+an *optional* chunk it does not understand. New chunk types can therefore be
+added without breaking older readers, as long as they are marked optional.
 
-## Header
+Only **non-derivable** data is stored. The tree's `num_nodes`, `level_count`, and
+the whole `level_bounds` table are functions of `num_items` and `node_size`, so
+they are recomputed at load rather than stored — there is no second copy that
+could drift.
+
+Two chunk types are defined:
+
+| Tag    | Critical | Contents |
+| ------ | -------- | -------- |
+| `TREE` | yes      | The packed tree: a descriptor plus the node data. Exactly one. |
+| `PYLD` | no       | Optional payload: one opaque blob per item. At most one. |
+| `META` | no       | Optional descriptive fields (CRS / content type / attribution). At most one. |
+
+## Superblock
 
 ```text
 offset  size  field
-0       8     magic
-8       8     format_version
-16      8     header_len
-24      8     flags
-32      8     node_size
-40      8     num_items
-48      8     num_nodes
-56      8     level_count
+0       8     magic          b"PSINDEX\0"
+8       8     format_version  u64 = 2
+16      4     chunk_count     u32
+20      12    reserved        (zero)
 ```
 
-All header fields after `magic` are `u64`.
+A reader rejects any `magic` other than `PSINDEX\0` and any `format_version`
+other than `2`.
 
-| Field            | Value / meaning |
-| ---------------- | --------------- |
-| `magic`          | `b"PSINDEX\0"` |
-| `format_version` | `1` |
-| `header_len`     | `64` |
-| `flags`          | Variant selector. See [Variants](#variants). |
-| `node_size`      | Maximum children per internal node. Valid range: `2..=65535`. |
-| `num_items`      | Number of leaf items. Leaf indices must be lower than this value. |
-| `num_nodes`      | Total stored nodes: leaves plus internal nodes. |
-| `level_count`    | Number of tree levels. Empty indexes use `1`. |
+## Chunk directory
 
-## Variants
+The directory begins at offset 32 and holds `chunk_count` entries of 24 bytes:
 
-The low 8 bits of `flags` select dimension and coordinate width:
+```text
+offset  size  field
+0       4     tag        4 ASCII bytes (e.g. "TREE")
+4       4     flags      u32; bit 0 = critical
+8       8     offset     u64, absolute byte offset of the chunk content
+16      8     length     u64, byte length of the chunk content
+```
 
-| Flag | Coordinates | Record | Owned types              |
-| ---- | ----------- | ------ | ------------------------ |
-| `0`  | 2D `f64`    | 32 B   | `Index2D`, `SimdIndex2D` |
-| `1`  | 3D `f64`    | 48 B   | `Index3D`, `SimdIndex3D` |
-| `2`  | 2D `f32`    | 16 B   | `SimdIndex2DF32`         |
-| `3`  | 3D `f32`    | 24 B   | `SimdIndex3DF32`         |
+Chunk content is 8-byte aligned. Each chunk's `[offset, offset + length)` must
+lie within the file. A file may end with up to 7 alignment-pad bytes after the
+last chunk; any further trailing bytes are rejected.
 
-- each type's `...View` reads the same flag;
-- flags `0` and `1` are shared by scalar and `f64` SIMD indexes;
-- flags `2` and `3` are used by the `f32-storage` feature;
-- `f32` boxes are rounded outward;
-- other low-byte flag values are reserved.
+## `TREE` chunk
 
-Bit `8` (`0x100`) is the **payload flag**: when set, a payload section follows
-the index (see [Payload](#payload-optional)). It is orthogonal to the dimension
-bits. A reader must never interpret the trailing payload bytes as index data: it
-either rejects a file with this bit set, or reads only the index (validating but
-ignoring the payload). The scalar `Index2D` / `Index3D` loaders and views do the
-latter — the views additionally expose the blobs; the SIMD loaders reject.
-Other high bits are reserved.
+The `TREE` chunk is a descriptor followed by the raw node data.
 
-## Payload (optional)
+```text
+descriptor (24 B):
+offset  size  field
+0       4     desc_len    u32 = 24
+4       1     dimensions  u8: 2 or 3
+5       1     coord_bytes u8: 4 (f32) or 8 (f64)
+6       1     layout      u8: 0 = SoA, 1 = interleaved
+7       1     reserved
+8       8     num_items   u64
+16      2     node_size   u16, in 2..=65535
+18      6     reserved
+```
 
-When the payload flag is set, two sections follow `indices`, carrying one opaque
-blob per item so the file is self-contained (the spatial index plus the data it
-indexes). Both are ordered by **leaf rank** — the position of an item among the
-leaves (`indices[0..num_items]`), i.e. the Hilbert order — so that a spatial
-query, which visits leaves in contiguous runs, fetches their blobs and offsets in
-coalesced reads.
+Node data follows the descriptor (at `offset + desc_len`). Let
+`record = dimensions * 2 * coord_bytes` (the box size: 32 / 48 / 16 / 24 bytes
+for 2D-f64 / 3D-f64 / 2D-f32 / 3D-f32) and `num_nodes` be the derived node count.
 
-- `payload_offsets`: `num_items + 1` little-endian `u64` prefix offsets into
-  `payload_blobs`, indexed by leaf rank. `payload_offsets[0]` is `0` and the
-  table is non-decreasing; `payload_offsets[num_items]` equals the total blob
-  byte length.
-- `payload_blobs`: the concatenated blobs in leaf order.
+- **SoA layout** (`layout = 0`): a `boxes` section (`record` x `num_nodes`)
+  followed by an `indices` section (8 x `num_nodes`).
+- **Interleaved layout** (`layout = 1`): a single `nodes` section in which each
+  node's `record` box bytes are immediately followed by its 8-byte index entry
+  (stride `record + 8`).
 
-The blob of the item at leaf rank `r` is
-`payload_blobs[payload_offsets[r] .. payload_offsets[r + 1]]`, and that item's
-original insertion index (what queries return) is `indices[r]`. To look a blob up
-by insertion index, invert `indices` to get the leaf rank. Blobs are opaque
-bytes with no required alignment or interpretation.
+The total node bytes are identical either way (`record + 8` per node), so the
+layout does not change the file size. The interleaved layout lets a streaming
+reader fetch a node's box and child pointer in one coalesced read per level
+instead of two; it is produced by `to_bytes_interleaved` /
+`to_bytes_interleaved_with_payloads` and read by the streaming reader. The
+in-memory loaders and SIMD views read the SoA layout only and reject an
+interleaved `TREE` (`UnsupportedVersion`).
 
-Loaders reject a payload section whose offset table is not `0`-based and
-non-decreasing, whose final offset does not match the blob region length, or
-whose declared total length does not match the buffer.
+`desc_len` is stored so the descriptor can grow (new fields appended) without
+breaking readers: an older reader reads the prefix it understands and skips to
+`offset + desc_len` for the node data.
 
-## Box Records
+### Box records
 
-Each node has one box record.
+Each node has one box record:
 
 ```text
 2D: min_x, min_y, max_x, max_y
 3D: min_x, min_y, min_z, max_x, max_y, max_z
 ```
 
-Fields are `f64` for flags `0` and `1`.
-Fields are `f32` for flags `2` and `3`.
+Fields are `f64` when `coord_bytes = 8`, `f32` when `coord_bytes = 4`. `f32`
+boxes are rounded outward.
 
-## Tree Storage
+### Tree storage
 
 Nodes are stored in level order:
 
@@ -135,51 +144,136 @@ Nodes are stored in level order:
 2. parent levels;
 3. root as the final node, for non-empty trees.
 
-`level_bounds[i]` is the exclusive end offset of level `i`.
-The first entry equals `num_items`.
-The last entry equals `num_nodes`.
-
-For a non-empty tree:
+The per-level boundaries are derived (not stored). For a non-empty tree:
 
 ```text
-level_width[0] = num_items
+level_width[0]     = num_items
 level_width[i + 1] = ceil(level_width[i] / node_size)
+level_bounds[i]    = sum(level_width[0..=i])     (exclusive end of level i)
 ```
 
-For an empty tree:
+The first bound equals `num_items`; the last equals `num_nodes`. An empty tree
+has `num_items = 0`, `num_nodes = 0`, `level_count = 1`.
 
-```text
-num_items = 0
-num_nodes = 0
-level_count = 1
-level_bounds = [0]
-```
+### Indices
 
-## Indices
-
-Each `indices` entry pairs with the box at the same position.
+Each index entry pairs with the box at the same node position.
 
 | Node kind | Stored value |
 | --------- | ------------ |
 | leaf      | Original insertion index. |
-| internal  | Offset of the first child in the previous level. |
+| internal  | Position of the first child in the previous level. |
 
-An internal node spans up to `node_size` children.
-The span is clipped by the previous level's end offset.
+An internal node spans up to `node_size` children, clipped by the previous
+level's end.
+
+## `PYLD` chunk (optional)
+
+The `PYLD` chunk carries one opaque blob per item, making a file self-contained
+(the spatial index plus the data it indexes). It is a descriptor followed by a
+prefix-offset table and the blob region.
+
+```text
+descriptor (8 B):
+offset  size  field
+0       4     desc_len     u32 = 8
+4       1     ordering     u8 = 0 (leaf rank)
+5       1     compression  u8 = 0 (none)
+6       2     reserved
+
+then:
+payload_offsets   (num_items + 1) x u64
+payload_blobs     concatenated blobs
+```
+
+Both the table and the blobs are ordered by **leaf rank** — the position of an
+item among the leaves (the Hilbert order) — so a spatial query, which visits
+leaves in contiguous runs, fetches their offsets and blobs in coalesced reads.
+
+- `payload_offsets[0]` is `0`, the table is non-decreasing, and
+  `payload_offsets[num_items]` equals the blob region length.
+- The blob of the item at leaf rank `r` is
+  `payload_blobs[payload_offsets[r] .. payload_offsets[r + 1]]`; that item's
+  original insertion index (what queries return) is the leaf entry of `indices`
+  at rank `r`. To look a blob up by insertion index, invert that mapping.
+
+Blobs are opaque bytes with no required alignment or interpretation. A reader
+that does not handle payloads simply skips the optional `PYLD` chunk and reads
+the index from `TREE`.
+
+## `META` chunk (optional)
+
+The `META` chunk carries small descriptive fields. It is a flat list of fields,
+read until the chunk ends:
+
+```text
+repeat until end of chunk:
+  field_id  u16
+  length    u32
+  value     length bytes (UTF-8)
+```
+
+| field_id | field          | example value             |
+| -------- | -------------- | ------------------------- |
+| 0        | `crs`          | `"EPSG:4326"`             |
+| 1        | `content_type` | `"application/geo+json"`  |
+| 2        | `attribution`  | `"© Example"`             |
+
+Values are **opaque** strings the writer supplied; this format does not parse or
+interpret them (the CRS is whatever identifier the producer chose). Only the
+fields actually set are written. An unknown `field_id` is **skipped**, so new
+fields are non-breaking. A reader gets the metadata with `read_metadata` without
+loading the index; index loaders skip the chunk entirely.
+
+`META` holds only generic descriptive fields. Derivable facts (extent, counts)
+are recomputed rather than stored, and application-specific data belongs in an
+application-private chunk (a lowercase-first tag), not here.
+
+## Extensibility
+
+The container is designed so future additions do not break readers:
+
+- a new **optional** chunk type is ignored by older readers (skipped via the
+  directory), so it is non-breaking;
+- a new **critical** chunk type is rejected by older readers, which is the safe
+  outcome when they cannot interpret required data;
+- a `TREE` / `PYLD` descriptor may gain trailing fields (its `desc_len` grows);
+  older readers read the prefix they know.
+
+`format_version` is bumped only on a change that breaks these rules.
+
+### Tag namespace
+
+Chunk tags are split into two spaces by the case of the first byte:
+
+- **uppercase ASCII first byte** (e.g. `TREE`, `PYLD`) — reserved for this format.
+  New format-defined chunks come from this space.
+- **lowercase ASCII first byte** — free for application-private chunks. This
+  format will never define such a tag, so applications can attach their own
+  chunks without risking a collision with a future format version.
+
+Application chunks should be marked **optional** (so format-only readers skip
+them); a critical application chunk is allowed but limits the file to
+application-aware readers.
 
 ## Validation
 
 Loaders reject:
 
-- wrong magic;
-- unsupported `format_version`, `header_len`, or `flags`;
-- truncated buffers;
-- buffers with trailing bytes;
+- wrong magic, or a `format_version` other than `2`;
+- a chunk whose byte range falls outside the buffer;
+- an unknown **critical** chunk;
+- trailing bytes beyond the last chunk's alignment pad;
+- a missing `TREE` chunk, or a `TREE` whose length does not match the derived
+  tree shape;
 - `node_size` outside `2..=65535`;
-- tree shape that does not match `num_items` and `node_size`;
-- invalid `level_bounds`;
 - leaf indices outside `0..num_items`;
-- internal pointers outside the previous level;
-- internal pointers not at a child-group start.
+- internal pointers outside the previous level, or not at a child-group start;
+- a `PYLD` offset table that is not `0`-based and non-decreasing, or whose final
+  offset does not match the blob region length.
 
 `LoadError` reports the failure category, not a byte offset.
+
+The streaming reader cannot validate the whole buffer up front (it fetches only
+what a query needs), so it validates chunk ranges, pointers, and payload offsets
+lazily as it follows them. See [SAFETY.md](SAFETY.md) for that hardening.

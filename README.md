@@ -6,14 +6,21 @@
 [![MSRV](https://img.shields.io/crates/msrv/packed_spatial_index.svg)](https://crates.io/crates/packed_spatial_index)
 [![License](https://img.shields.io/crates/l/packed_spatial_index.svg)](LICENSE)
 
-A fast, packed **static spatial index** for 2D and 3D axis-aligned bounding
-boxes (AABBs). It builds a packed **Hilbert R-tree** (in the style of
-[flatbush](https://github.com/mourner/flatbush) /
-[`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index)) once, then
-answers many queries: **range / intersection search**, **nearest-neighbor (kNN)**
-from a point or a box, **ray casts**, and **spatial joins**. With the `simd`
-feature the SoA indexes use AVX2 / AVX-512 intersection tests; indexes also
-serialize to a stable byte format with **zero-copy views** (mmap-friendly).
+A packed **static spatial index** for 2D and 3D axis-aligned bounding boxes
+(AABBs), in the style of [flatbush](https://github.com/mourner/flatbush) /
+[`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index). Pack the
+boxes into a Hilbert R-tree once, then run many queries over it with SIMD:
+
+- **range / intersection** search
+- **nearest neighbors** (kNN) from a point or a box
+- **ray casts** (all hits or the closest)
+- **spatial joins** between two indexes
+
+Builds and SIMD searches run **faster** than comparable Rust indexes
+([benchmarks](docs/performance.md)), and the same bytes load back as
+**zero-copy**, mmap-friendly views. A file can also carry an optional
+per-item **payload** and file-level **metadata**, and a **streaming reader** can
+query a large or remote index without loading the whole file.
 
 [Live WASM demo](https://filyus.github.io/packed_spatial_index/)
 
@@ -46,6 +53,14 @@ results by insertion-order index into your own payload array, and you want a
 compact in-memory (or mmap'd) index with reusable buffers for high query
 throughput. It is **not** a dynamic R-tree — there are no insert/delete
 operations after `finish()`.
+
+## Performance
+
+Built for throughput on static geometry: fast builds, SIMD range / kNN / raycast
+(AVX2 / AVX-512), and reusable query buffers for tight loops. The
+[Performance](docs/performance.md) page has the full benchmarks against
+`static_aabb2d_index`, FlatGeobuf and the `bvh` crate, showing where it leads and
+where it doesn't.
 
 ## Queries at a glance
 
@@ -100,19 +115,48 @@ assert_eq!(hit, Some((0, 1.0)));
   (default `Hilbert`), [`BoundsError`][BoundsError], [`BuildError`][BuildError],
   [`LoadError`][LoadError].
 
+## Serialization & metadata
+
+`to_bytes` / `from_bytes` round-trip an index; the `serialize()` builder adds the
+optional pieces — one opaque payload blob per item and descriptive metadata
+(coordinate reference system, payload content type, attribution):
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, read_metadata};
+# let mut b = Index2DBuilder::new(1);
+# b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# let index = b.finish()?;
+let bytes = index
+    .serialize()
+    .crs("EPSG:4326")
+    .payloads(&[b"feature-0".as_slice()])
+    .to_bytes()?;
+
+// Read the metadata back without loading the index.
+assert_eq!(read_metadata(&bytes)?.crs.as_deref(), Some("EPSG:4326"));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The metadata is opaque (the crate stores the strings you give it, verbatim).
+Pair query results with their payloads via the zero-copy views or the streaming
+reader — see [Persistence](docs/persistence.md) and the [binary format](FORMAT.md).
+
 ## Features
 
-- `parallel` *(default)* — adaptive rayon-based parallel builds.
-- `simd` *(default)* — SoA indexes and SIMD search/raycast (`wide` + AVX-512).
-- `f32-storage` — compact f32-storage SIMD indexes (implies `simd`).
-- `stream` — query a serialized index over a `RangeReader` (local file or remote
-  object) without loading the whole file. No extra dependencies.
-- `async` — query over an `AsyncRangeReader` for async I/O (browser / edge worker
-  over HTTP range or object storage). Implies `stream`.
-- `bench-internals` — hidden support API for this crate's benchmarks.
+| Feature | Pulls in | Adds |
+| --- | --- | --- |
+| `parallel` *(default)* | `rayon` | adaptive parallel index builds |
+| `simd` *(default)* | `wide` | SoA indexes + SIMD search / raycast (AVX2 / AVX-512) |
+| `f32-storage` | *(implies `simd`)* | compact f32-storage SIMD indexes |
+| `stream` | — | query a serialized index over a `RangeReader` (local file or remote object) without loading it whole |
+| `async` | `futures-util` *(implies `stream`)* | query over an `AsyncRangeReader` (browser / edge worker, HTTP range or object storage) |
+| `bench-internals` | — | hidden support API for this crate's benchmarks |
+
+Serialization, metadata, and the scalar indexes are always available — no feature
+required.
 
 ```bash
-cargo build --no-default-features                      # minimal
+cargo build --no-default-features                      # minimal: scalar + serialize + metadata
 cargo build --no-default-features --features simd      # SIMD only
 ```
 
@@ -135,16 +179,28 @@ cargo build --no-default-features --features simd      # SIMD only
 
 ## Safety
 
-The public API is safe Rust. Internally `unsafe` is confined to narrow, audited
-paths: validated unaligned little-endian reads in the byte views, bulk
-`repr(C)` byte copies during serialization on little-endian targets, and
-runtime-feature-gated x86-64 SIMD (AVX-512) loads/prefetch. Loaded buffers are
-validated before use, so malformed input returns `LoadError` rather than relying
-on caller invariants.
+The public API is safe Rust; `unsafe` is confined to narrow, audited paths
+(validated unaligned reads, `repr(C)` bulk copies, gated x86-64 SIMD). Serialized
+input is treated as untrusted: the in-memory loaders validate the whole buffer
+before use, and the streaming reader validates pointers and payload offsets as it
+follows them, with per-query cost limits to bound broad queries. See
+[SAFETY.md](SAFETY.md) for the memory-safety and untrusted-input hardening
+details.
 
 ## Status
 
-Major API changes are not planned, but remain possible before a `1.0` release.
+Pre-`1.0`: the API and on-disk format may still change between minor releases.
+The crate is covered by unit, property and fuzz tests across the feature matrix,
+but it has not yet been proven in production. Validate it for your workload
+before you depend on it.
+
+## Feedback
+
+Built something with it? I'd love to hear about it! Start a
+[discussion](https://github.com/Filyus/packed_spatial_index/discussions) with your
+use case, your numbers or any rough edges, and file an
+[issue](https://github.com/Filyus/packed_spatial_index/issues) for bugs.
+Real-world reports are what push it toward `1.0`.
 
 ## AI usage note
 

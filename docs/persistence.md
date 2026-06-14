@@ -24,8 +24,9 @@ assert_eq!(view.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-3D persistence uses the same header and sections, with a dimension flag and six
-`f64` coordinates per stored box. With the `simd` feature, `SimdIndex2D` and
+3D persistence uses the same container format, with the dimension recorded in the
+`TREE` descriptor and six `f64` coordinates per stored box. With the `simd`
+feature, `SimdIndex2D` and
 `SimdIndex3D` read and write the same canonical bytes as the scalar indexes:
 loading a SIMD index scatters the canonical box records into SoA columns, while
 `SimdIndex2DView` / `SimdIndex3DView` borrow the same bytes for zero-copy
@@ -72,8 +73,8 @@ over the **same `PSINDEX` bytes**; nothing special is needed at write time.
 `StreamIndex2D` / `StreamIndex3D` open over any `RangeReader` (a one-method
 trait: `read_exact_at`). The crate ships `FileReader` (local file, positioned
 reads) and `SliceReader` (in-memory / mmap); a remote source is your own impl.
-At open the reader validates the header and level bounds and prefetches the
-upper tree levels; each query then streams only the lower levels, coalescing
+At open the reader validates the superblock and chunk directory and prefetches
+the upper tree levels; each query then streams only the lower levels, coalescing
 adjacent node ranges into few reads. Queries are fallible (a read can fail) and
 return item indices like the in-memory `search`. Child pointers are validated as
 they are followed, so the reader is safe on untrusted data.
@@ -88,9 +89,55 @@ let hits = index.search(Box2D::new(0.0, 0.0, 100.0, 100.0))?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-For a remote `RangeReader` backed by HTTP range requests, see the
-[`RangeReader` docs](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/trait.RangeReader.html).
-Compared with a memory map, streaming adds per-query I/O but never needs the
-whole file local or mapped, which is what makes a planet-scale index servable
-from object storage. kNN and raycast streaming are not implemented yet — see the
-project backlog.
+For a remote source, implement `RangeReader` over HTTP range requests. It is one
+method — return the bytes for `[offset, offset + len)`:
+
+```rust,ignore
+use packed_spatial_index::RangeReader;
+use std::io::{self, Read};
+
+struct HttpRange {
+    url: String,
+}
+
+impl RangeReader for HttpRange {
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let end = offset + buf.len() as u64 - 1;
+        // Any HTTP client works; the request is a single ranged GET.
+        let resp = ureq::get(&self.url)
+            .set("Range", &format!("bytes={offset}-{end}"))
+            .call()
+            .map_err(io::Error::other)?;
+        resp.into_reader().read_exact(buf)
+    }
+
+    // Optional: returning the object size (e.g. from a HEAD request) lets `open`
+    // cross-check the declared length. `None` skips that check.
+    fn len(&self) -> Option<u64> {
+        None
+    }
+}
+```
+
+The server only needs to honor the HTTP `Range` header — S3, R2, GCS, and most
+CDNs do. For async I/O (a browser `fetch`, or a Cloudflare Worker over R2) enable
+the `async` feature and implement `AsyncRangeReader` the same way; `open_async` /
+`search_async` mirror the sync API and issue a level's reads concurrently.
+
+**What streams today:** 2D and 3D range search (`search` / `search_into` /
+`visit`), optionally returning a stored blob per hit (`search_payloads`, when the
+file was written with `to_bytes_with_payloads`), sync or async, with optional
+per-query cost limits (`open_with_limits` + `StreamLimits` — bound reads, bytes,
+and items so a broad query cannot run unbounded). For a remote-tuned layout,
+`to_bytes_interleaved` stores each node's box and child pointer together so the
+descent fetches them in one read per level instead of two.
+
+**What does not stream:** nearest-neighbor and raycast queries are in-memory only.
+Their best-first traversal jumps around the tree, so adjacent reads do not
+coalesce and streaming would be a read per node — load those with `from_bytes` or
+a memory map instead.
+
+Compared with a memory map, streaming trades per-query I/O for never needing the
+whole file local or mapped — which is what makes a planet-scale index servable
+straight from object storage. Untrusted and remote bytes are handled safely; see
+[SAFETY.md](../SAFETY.md).

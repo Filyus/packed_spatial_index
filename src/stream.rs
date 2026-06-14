@@ -769,7 +769,11 @@ fn emit_run_payloads<F: FnMut(usize, &[u8])>(
         let i = j + offset;
         let o0 = read_u64_le_unchecked(off_buf, (p - lo) * 8);
         let o1 = read_u64_le_unchecked(off_buf, (p + 1 - lo) * 8);
-        if o1 < o0 || o1 > blob_hi {
+        // Untrusted offsets: the stream never validates the whole table, so a
+        // run's entries may be out of order. Require `blob_lo <= o0 <= o1 <=
+        // blob_hi` so the blob slice stays in `blob_buf` (a missing `o0 >=
+        // blob_lo` check would underflow `o0 - blob_lo`).
+        if o0 < blob_lo || o1 < o0 || o1 > blob_hi {
             return Err(StreamError::Format(LoadError::InvalidTree));
         }
         let id = read_index(indices, i)?;
@@ -1945,6 +1949,39 @@ mod tests {
                 // asserted for a corrupt index, only that it does not crash.
                 let _ = stream.search(query);
             }
+        }
+    }
+
+    #[test]
+    fn corrupt_payload_bytes_never_panic() {
+        // Flip a byte across the WHOLE payload file (header, index, offset table,
+        // blobs) and confirm `open` + `search_payloads` never panic. Covers the
+        // untrusted-offset path (e.g. a run with out-of-order offsets, which must
+        // be rejected, not underflow the blob slice).
+        let (_, _, base) = random_with_payloads(500, 0xF0F1);
+        let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+        for i in (0..base.len()).step_by(31) {
+            let mut bytes = base.clone();
+            bytes[i] ^= 0xFF;
+            if let Ok(stream) = StreamIndex2D::open(SliceReader::new(bytes)) {
+                let _ = stream.search_payloads(query);
+            }
+        }
+    }
+
+    #[test]
+    fn out_of_order_payload_offset_is_rejected() {
+        // Directly craft an out-of-order offset entry and confirm search_payloads
+        // rejects it (InvalidTree) rather than panicking.
+        let (_, _, mut bytes) = random_with_payloads(1_000, 0x0FF5);
+        let stream = open_slice(bytes.clone());
+        let offsets_start = stream.core.payload.as_ref().unwrap().offsets_start as usize;
+        // Set offset entry 1 to a huge value (> later entries -> out of order).
+        bytes[offsets_start + 8..offsets_start + 16].copy_from_slice(&u64::MAX.to_le_bytes());
+        let stream = open_slice(bytes);
+        match stream.search_payloads(Box2D::new(-1.0, -1.0, 2000.0, 2000.0)) {
+            Err(StreamError::Format(LoadError::InvalidTree | LoadError::IntegerOverflow)) => {}
+            other => panic!("expected rejection, got {:?}", other.map(|v| v.len())),
         }
     }
 

@@ -73,6 +73,26 @@ fn index_only_file_has_no_payload() {
 }
 
 #[test]
+fn corrupt_payload_bytes_view_never_panic() {
+    // Flip a byte across the whole payload file; the view must reject it or read
+    // it without panicking (offsets are validated, so blob slices stay in range).
+    let index = build_2d(400);
+    let payloads: Vec<Vec<u8>> = (0..400).map(|i| vec![i as u8; (i % 11) + 1]).collect();
+    let base = index.to_bytes_with_payloads(&payloads).unwrap();
+    let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+    for i in (0..base.len()).step_by(43) {
+        let mut bytes = base.clone();
+        bytes[i] ^= 0xFF;
+        if let Ok(view) = Index2DView::from_bytes(&bytes) {
+            let _ = view.search_payloads(query);
+            for id in [0usize, 137, 399, 400] {
+                let _ = view.payload(id);
+            }
+        }
+    }
+}
+
+#[test]
 fn owned_loader_ignores_payload() {
     // A payload file loads as an owned index (payload dropped), giving the same
     // query results as the index-only file.

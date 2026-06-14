@@ -206,6 +206,64 @@ impl RangeReader for FileReader {
     }
 }
 
+/// Per-query cost limits for a streaming index.
+///
+/// All fields are optional; `None` is unbounded (the default). The caller picks
+/// values to fit its environment — for example a Cloudflare Worker bounds reads
+/// by its subrequest limit and bytes/items by its memory budget. A query that
+/// would exceed any limit aborts with [`StreamError::LimitExceeded`] instead of
+/// running unbounded over a broad window.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StreamLimits {
+    /// Maximum number of range reads a single query may issue.
+    pub max_reads: Option<usize>,
+    /// Maximum total bytes a single query may read.
+    pub max_read_bytes: Option<u64>,
+    /// Maximum number of items a single query may return.
+    pub max_items: Option<usize>,
+}
+
+/// Running per-query cost counters checked against [`StreamLimits`].
+struct Budget {
+    limits: StreamLimits,
+    reads: usize,
+    bytes: u64,
+    items: usize,
+}
+
+impl Budget {
+    fn new(limits: StreamLimits) -> Self {
+        Self {
+            limits,
+            reads: 0,
+            bytes: 0,
+            items: 0,
+        }
+    }
+
+    /// Account for one read of `len` bytes; call before issuing it so an
+    /// over-budget read is never performed.
+    fn charge_read(&mut self, len: usize) -> Result<(), StreamError> {
+        self.reads += 1;
+        self.bytes += len as u64;
+        if self.limits.max_reads.is_some_and(|m| self.reads > m)
+            || self.limits.max_read_bytes.is_some_and(|m| self.bytes > m)
+        {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(())
+    }
+
+    /// Account for one returned item; call before emitting it.
+    fn charge_item(&mut self) -> Result<(), StreamError> {
+        self.items += 1;
+        if self.limits.max_items.is_some_and(|m| self.items > m) {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(())
+    }
+}
+
 /// Error returned by the streaming reader.
 #[derive(Debug)]
 pub enum StreamError {
@@ -216,6 +274,8 @@ pub enum StreamError {
     Format(LoadError),
     /// Payloads were requested but the index has no payload section.
     NoPayload,
+    /// The query exceeded a configured [`StreamLimits`] budget and was aborted.
+    LimitExceeded,
 }
 
 impl std::fmt::Display for StreamError {
@@ -224,6 +284,7 @@ impl std::fmt::Display for StreamError {
             StreamError::Io(err) => write!(f, "streaming read failed: {err}"),
             StreamError::Format(err) => write!(f, "{err}"),
             StreamError::NoPayload => write!(f, "index has no payload section"),
+            StreamError::LimitExceeded => write!(f, "query exceeded its configured limits"),
         }
     }
 }
@@ -233,7 +294,7 @@ impl std::error::Error for StreamError {
         match self {
             StreamError::Io(err) => Some(err),
             StreamError::Format(err) => Some(err),
-            StreamError::NoPayload => None,
+            StreamError::NoPayload | StreamError::LimitExceeded => None,
         }
     }
 }
@@ -277,6 +338,8 @@ pub(crate) struct StreamCore<R> {
     dir_indices: Vec<u8>,
     /// Optional payload section. `None` when the index carries no payload.
     payload: Option<PayloadSection>,
+    /// Per-query cost limits applied to every query (default: unbounded).
+    limits: StreamLimits,
 }
 
 /// Byte locations of a streamed index's payload section.
@@ -304,6 +367,7 @@ impl<R: RangeReader> StreamCore<R> {
         expected_flags: u64,
         dimensions: usize,
         coord_bytes: usize,
+        limits: StreamLimits,
     ) -> Result<Self, StreamError> {
         // 1. Header (fixed 64 bytes): magic, version, flags, counts, tree shape.
         let mut header = [0u8; FORMAT_HEADER_LEN];
@@ -409,6 +473,7 @@ impl<R: RangeReader> StreamCore<R> {
             dir_boxes,
             dir_indices,
             payload,
+            limits,
         })
     }
 
@@ -425,6 +490,7 @@ impl<R: RangeReader> StreamCore<R> {
     /// `section0` into `out`. The planning and scatter live in [`plan_gather`] /
     /// [`apply_gather_run`] (shared with the async path); here we just read each
     /// coalesced run.
+    #[allow(clippy::too_many_arguments)]
     fn gather(
         &self,
         positions: &[usize],
@@ -433,9 +499,11 @@ impl<R: RangeReader> StreamCore<R> {
         cache: &[u8],
         out: &mut Vec<u8>,
         scratch: &mut Vec<u8>,
+        budget: &mut Budget,
     ) -> Result<(), StreamError> {
         let runs = plan_gather(positions, section0, stride, self.dir_node_start, cache, out);
         for run in &runs {
+            budget.charge_read(run.len)?;
             scratch.clear();
             scratch.resize(run.len, 0);
             self.reader.read_exact_at(run.offset, scratch)?;
@@ -455,12 +523,13 @@ impl<R: RangeReader> StreamCore<R> {
     fn traverse<O, L>(&self, overlaps: O, mut leaf: L) -> Result<(), StreamError>
     where
         O: Fn(&[u8]) -> bool,
-        L: FnMut(&[usize], &[u8]) -> Result<(), StreamError>,
+        L: FnMut(&[usize], &[u8], &mut Budget) -> Result<(), StreamError>,
     {
         if self.num_items == 0 {
             return Ok(());
         }
 
+        let mut budget = Budget::new(self.limits);
         let mut frontier = vec![self.num_nodes - 1];
         let mut level = self.level_count - 1;
         let mut boxes = Vec::new();
@@ -476,6 +545,7 @@ impl<R: RangeReader> StreamCore<R> {
                 &self.dir_boxes,
                 &mut boxes,
                 &mut scratch,
+                &mut budget,
             )?;
             survivors.clear();
             for (i, &pos) in frontier.iter().enumerate() {
@@ -494,11 +564,12 @@ impl<R: RangeReader> StreamCore<R> {
                 &self.dir_indices,
                 &mut indices,
                 &mut scratch,
+                &mut budget,
             )?;
 
             if level == 0 {
                 // `survivors` are sorted leaf positions; `indices` their ids.
-                return leaf(&survivors, &indices);
+                return leaf(&survivors, &indices, &mut budget);
             }
 
             frontier = expand_frontier(
@@ -518,12 +589,13 @@ impl<R: RangeReader> StreamCore<R> {
         O: Fn(&[u8]) -> bool,
         F: FnMut(usize),
     {
-        self.traverse(overlaps, |survivors, indices| {
+        self.traverse(overlaps, |survivors, indices, budget| {
             for i in 0..survivors.len() {
                 let id = read_index(indices, i)?;
                 if id >= self.num_items {
                     return Err(StreamError::Format(LoadError::InvalidTree));
                 }
+                budget.charge_item()?;
                 visit(id);
             }
             Ok(())
@@ -541,13 +613,14 @@ impl<R: RangeReader> StreamCore<R> {
         let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
         let mut off_buf = Vec::new();
         let mut blob_buf = Vec::new();
-        self.traverse(overlaps, |survivors, indices| {
+        self.traverse(overlaps, |survivors, indices, budget| {
             self.gather_payloads(
                 section,
                 survivors,
                 indices,
                 &mut off_buf,
                 &mut blob_buf,
+                budget,
                 &mut emit,
             )
         })
@@ -556,6 +629,7 @@ impl<R: RangeReader> StreamCore<R> {
     /// Stream the blobs for `leaf_positions` (sorted leaf ranks) and their
     /// `indices` (insertion ids, same order), coalescing the leaf-ordered offset
     /// table and blob region into runs. Emits `(id, blob)` per leaf.
+    #[allow(clippy::too_many_arguments)]
     fn gather_payloads<F>(
         &self,
         section: &PayloadSection,
@@ -563,6 +637,7 @@ impl<R: RangeReader> StreamCore<R> {
         indices: &[u8],
         off_buf: &mut Vec<u8>,
         blob_buf: &mut Vec<u8>,
+        budget: &mut Budget,
         emit: &mut F,
     ) -> Result<(), StreamError>
     where
@@ -576,6 +651,7 @@ impl<R: RangeReader> StreamCore<R> {
 
             off_buf.clear();
             off_buf.resize((hi + 2 - lo) * 8, 0);
+            budget.charge_read(off_buf.len())?;
             self.reader
                 .read_exact_at(section.offsets_start + (lo * 8) as u64, off_buf)?;
             let (blob_lo, blob_hi) = payload_blob_span(off_buf, lo, hi, section.blob_total)?;
@@ -583,6 +659,7 @@ impl<R: RangeReader> StreamCore<R> {
             blob_buf.clear();
             blob_buf.resize((blob_hi - blob_lo) as usize, 0);
             if !blob_buf.is_empty() {
+                budget.charge_read(blob_buf.len())?;
                 self.reader
                     .read_exact_at(section.blobs_start + blob_lo, blob_buf)?;
             }
@@ -598,6 +675,7 @@ impl<R: RangeReader> StreamCore<R> {
                 blob_hi,
                 blob_buf,
                 self.num_items,
+                budget,
                 emit,
             )?;
             j = k + 1;
@@ -763,6 +841,7 @@ fn emit_run_payloads<F: FnMut(usize, &[u8])>(
     blob_hi: u64,
     blob_buf: &[u8],
     num_items: usize,
+    budget: &mut Budget,
     emit: &mut F,
 ) -> Result<(), StreamError> {
     for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
@@ -780,6 +859,7 @@ fn emit_run_payloads<F: FnMut(usize, &[u8])>(
         if id >= num_items {
             return Err(StreamError::Format(LoadError::InvalidTree));
         }
+        budget.charge_item()?;
         emit(
             id,
             &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
@@ -861,8 +941,16 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// levels of the tree. Returns [`StreamError::Format`] for a corrupt or
     /// wrong-variant index and [`StreamError::Io`] for a read failure.
     pub fn open(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits(reader, StreamLimits::default())
+    }
+
+    /// Open with per-query cost [`StreamLimits`]. Every query then aborts with
+    /// [`StreamError::LimitExceeded`] if it would exceed a limit — use this to
+    /// bound a broad query's reads / bytes / results to your environment (e.g. a
+    /// worker's subrequest and memory budgets).
+    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
         Ok(Self {
-            core: StreamCore::open(reader, FORMAT_FLAGS_2D, 2, 8)?,
+            core: StreamCore::open(reader, FORMAT_FLAGS_2D, 2, 8, limits)?,
         })
     }
 
@@ -971,8 +1059,14 @@ pub struct StreamIndex3D<R> {
 impl<R: RangeReader> StreamIndex3D<R> {
     /// Open and validate a 3D `f64` index from `reader`.
     pub fn open(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits(reader, StreamLimits::default())
+    }
+
+    /// Open with per-query cost [`StreamLimits`]. See
+    /// [`StreamIndex2D::open_with_limits`].
+    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
         Ok(Self {
-            core: StreamCore::open(reader, FORMAT_FLAGS_3D, 3, 8)?,
+            core: StreamCore::open(reader, FORMAT_FLAGS_3D, 3, 8, limits)?,
         })
     }
 
@@ -1101,6 +1195,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         expected_flags: u64,
         dimensions: usize,
         coord_bytes: usize,
+        limits: StreamLimits,
     ) -> Result<Self, StreamError> {
         let mut header = [0u8; FORMAT_HEADER_LEN];
         reader.read_exact_at(0, &mut header).await?;
@@ -1201,10 +1296,12 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             dir_boxes,
             dir_indices,
             payload,
+            limits,
         })
     }
 
     /// Async mirror of [`gather`](StreamCore::gather).
+    #[allow(clippy::too_many_arguments)]
     async fn gather_async(
         &self,
         positions: &[usize],
@@ -1213,9 +1310,11 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         cache: &[u8],
         out: &mut Vec<u8>,
         scratch: &mut Vec<u8>,
+        budget: &mut Budget,
     ) -> Result<(), StreamError> {
         let runs = plan_gather(positions, section0, stride, self.dir_node_start, cache, out);
         for run in &runs {
+            budget.charge_read(run.len)?;
             scratch.clear();
             scratch.resize(run.len, 0);
             self.reader.read_exact_at(run.offset, scratch).await?;
@@ -1225,6 +1324,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
     }
 
     /// Async mirror of [`gather_payloads`](StreamCore::gather_payloads).
+    #[allow(clippy::too_many_arguments)]
     async fn gather_payloads_async<F>(
         &self,
         section: &PayloadSection,
@@ -1232,6 +1332,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         indices: &[u8],
         off_buf: &mut Vec<u8>,
         blob_buf: &mut Vec<u8>,
+        budget: &mut Budget,
         sink: &mut F,
     ) -> Result<(), StreamError>
     where
@@ -1245,6 +1346,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
 
             off_buf.clear();
             off_buf.resize((hi + 2 - lo) * 8, 0);
+            budget.charge_read(off_buf.len())?;
             self.reader
                 .read_exact_at(section.offsets_start + (lo * 8) as u64, off_buf)
                 .await?;
@@ -1253,6 +1355,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             blob_buf.clear();
             blob_buf.resize((blob_hi - blob_lo) as usize, 0);
             if !blob_buf.is_empty() {
+                budget.charge_read(blob_buf.len())?;
                 self.reader
                     .read_exact_at(section.blobs_start + blob_lo, blob_buf)
                     .await?;
@@ -1269,6 +1372,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 blob_hi,
                 blob_buf,
                 self.num_items,
+                budget,
                 sink,
             )?;
             j = k + 1;
@@ -1297,6 +1401,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             return Ok(());
         }
 
+        let mut budget = Budget::new(self.limits);
         let mut frontier = vec![self.num_nodes - 1];
         let mut level = self.level_count - 1;
         let mut boxes = Vec::new();
@@ -1314,6 +1419,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 &self.dir_boxes,
                 &mut boxes,
                 &mut scratch,
+                &mut budget,
             )
             .await?;
             survivors.clear();
@@ -1333,6 +1439,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 &self.dir_indices,
                 &mut indices,
                 &mut scratch,
+                &mut budget,
             )
             .await?;
 
@@ -1345,6 +1452,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                             &indices,
                             &mut off_buf,
                             &mut blob_buf,
+                            &mut budget,
                             &mut sink,
                         )
                         .await?;
@@ -1355,6 +1463,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                             if id >= self.num_items {
                                 return Err(StreamError::Format(LoadError::InvalidTree));
                             }
+                            budget.charge_item()?;
                             sink(id, &[]);
                         }
                     }
@@ -1381,8 +1490,17 @@ impl<R: AsyncRangeReader> StreamCore<R> {
 impl<R: AsyncRangeReader> StreamIndex2D<R> {
     /// Open and validate a 2D `f64` index from an async `reader`.
     pub async fn open_async(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits_async(reader, StreamLimits::default()).await
+    }
+
+    /// Open from an async `reader` with per-query [`StreamLimits`]. See
+    /// [`StreamIndex2D::open_with_limits`].
+    pub async fn open_with_limits_async(
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, StreamError> {
         Ok(Self {
-            core: StreamCore::open_async(reader, FORMAT_FLAGS_2D, 2, 8).await?,
+            core: StreamCore::open_async(reader, FORMAT_FLAGS_2D, 2, 8, limits).await?,
         })
     }
 
@@ -1427,8 +1545,16 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
 impl<R: AsyncRangeReader> StreamIndex3D<R> {
     /// Open and validate a 3D `f64` index from an async `reader`.
     pub async fn open_async(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits_async(reader, StreamLimits::default()).await
+    }
+
+    /// Open from an async `reader` with per-query [`StreamLimits`].
+    pub async fn open_with_limits_async(
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, StreamError> {
         Ok(Self {
-            core: StreamCore::open_async(reader, FORMAT_FLAGS_3D, 3, 8).await?,
+            core: StreamCore::open_async(reader, FORMAT_FLAGS_3D, 3, 8, limits).await?,
         })
     }
 
@@ -2070,6 +2196,105 @@ mod tests {
             .unwrap();
         assert!(!all.is_empty());
         assert!(all.iter().all(|(_, blob)| blob.is_empty()));
+    }
+
+    // ---- Per-query limits ----
+
+    #[test]
+    fn limits_bound_broad_queries() {
+        let (owned, bytes) = random_owned(50_000, 0x71117);
+        let full = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+        let narrow = Box2D::new(500.0, 500.0, 510.0, 510.0);
+
+        // max_items: a broad query aborts; a narrow one (few hits) succeeds.
+        let item_capped = StreamIndex2D::open_with_limits(
+            SliceReader::new(bytes.clone()),
+            StreamLimits {
+                max_items: Some(100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            item_capped.search(full),
+            Err(StreamError::LimitExceeded)
+        ));
+        let mut hits = item_capped.search(narrow).unwrap();
+        let mut want = owned.search(narrow);
+        hits.sort_unstable();
+        want.sort_unstable();
+        assert!(hits.len() < 100 && hits == want);
+
+        // max_reads: coalescing keeps the count low even for a huge result (the
+        // leaf section is a couple of big reads), so `max_reads` mainly guards
+        // scattered queries; a budget below the minimum still aborts.
+        let read_capped = StreamIndex2D::open_with_limits(
+            SliceReader::new(bytes.clone()),
+            StreamLimits {
+                max_reads: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_capped.search(full),
+            Err(StreamError::LimitExceeded)
+        ));
+
+        // max_read_bytes: tiny budget aborts the broad query.
+        let byte_capped = StreamIndex2D::open_with_limits(
+            SliceReader::new(bytes.clone()),
+            StreamLimits {
+                max_read_bytes: Some(4096),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            byte_capped.search(full),
+            Err(StreamError::LimitExceeded)
+        ));
+
+        // Default (no limits): the full query returns everything.
+        let unlimited = open_slice(bytes);
+        assert_eq!(unlimited.search(full).unwrap().len(), 50_000);
+    }
+
+    #[test]
+    fn limits_bound_payload_queries() {
+        let (_, _, bytes) = random_with_payloads(20_000, 0x71118);
+        let capped = StreamIndex2D::open_with_limits(
+            SliceReader::new(bytes),
+            StreamLimits {
+                max_items: Some(50),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            capped.search_payloads(Box2D::new(-1.0, -1.0, 2000.0, 2000.0)),
+            Err(StreamError::LimitExceeded)
+        ));
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn async_limits_match_sync() {
+        let (_, bytes) = random_owned(50_000, 0x71119);
+        let limits = StreamLimits {
+            max_items: Some(100),
+            ..Default::default()
+        };
+        let astream = pollster::block_on(StreamIndex2D::open_with_limits_async(
+            AsyncSlice(bytes),
+            limits,
+        ))
+        .unwrap();
+        let full = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+        assert!(matches!(
+            pollster::block_on(astream.search_async(full)),
+            Err(StreamError::LimitExceeded)
+        ));
     }
 
     #[test]

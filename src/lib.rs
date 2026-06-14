@@ -119,7 +119,9 @@ pub use stream::AsyncRangeReader;
 #[cfg(all(feature = "stream", any(unix, windows)))]
 pub use stream::FileReader;
 #[cfg(feature = "stream")]
-pub use stream::{RangeReader, SliceReader, StreamError, StreamIndex2D, StreamIndex3D};
+pub use stream::{
+    RangeReader, SliceReader, StreamError, StreamIndex2D, StreamIndex3D, StreamLimits,
+};
 pub use traversal::SearchWorkspace;
 
 /// Internal helpers exposed only for crate benchmarks and local performance tools.

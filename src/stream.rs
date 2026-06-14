@@ -421,11 +421,10 @@ impl<R: RangeReader> StreamCore<R> {
         self.dir_boxes.get(start..start + self.record)
     }
 
-    /// Gather `stride`-byte records for `positions` (sorted, ascending) from the
-    /// section beginning at `section0`, into `out` (cleared, then filled so that
-    /// record `i` lands at `out[i*stride..]`). Records covered by the directory
-    /// `cache` are copied; the rest are streamed with adjacent ranges coalesced.
-    /// `cache` holds records for node positions `[dir_node_start, num_nodes)`.
+    /// Gather `stride`-byte records for `positions` (sorted) from the section at
+    /// `section0` into `out`. The planning and scatter live in [`plan_gather`] /
+    /// [`apply_gather_run`] (shared with the async path); here we just read each
+    /// coalesced run.
     fn gather(
         &self,
         positions: &[usize],
@@ -435,46 +434,12 @@ impl<R: RangeReader> StreamCore<R> {
         out: &mut Vec<u8>,
         scratch: &mut Vec<u8>,
     ) -> Result<(), StreamError> {
-        out.clear();
-        out.resize(positions.len() * stride, 0);
-
-        // Copy cached records; collect the streamed ones as (out index, position).
-        let mut streamed: Vec<(usize, usize)> = Vec::new();
-        for (i, &pos) in positions.iter().enumerate() {
-            if pos >= self.dir_node_start {
-                let src = (pos - self.dir_node_start) * stride;
-                out[i * stride..i * stride + stride].copy_from_slice(&cache[src..src + stride]);
-            } else {
-                streamed.push((i, pos));
-            }
-        }
-
-        // Stream the rest, coalescing runs whose byte gap is within the budget.
-        let mut j = 0;
-        while j < streamed.len() {
-            let lo = section0 + (streamed[j].1 * stride) as u64;
-            let mut k = j;
-            // One past the last position bundled into this read, in node units.
-            let mut end_pos = streamed[j].1 + 1;
-            while k + 1 < streamed.len() {
-                let next_pos = streamed[k + 1].1;
-                let gap = (next_pos - end_pos) as u64 * stride as u64;
-                if gap > COALESCE_GAP_BYTES {
-                    break;
-                }
-                k += 1;
-                end_pos = next_pos + 1;
-            }
-            let hi = section0 + (end_pos * stride) as u64;
+        let runs = plan_gather(positions, section0, stride, self.dir_node_start, cache, out);
+        for run in &runs {
             scratch.clear();
-            scratch.resize((hi - lo) as usize, 0);
-            self.reader.read_exact_at(lo, scratch)?;
-            for &(out_i, pos) in &streamed[j..=k] {
-                let within = (section0 + (pos * stride) as u64 - lo) as usize;
-                out[out_i * stride..out_i * stride + stride]
-                    .copy_from_slice(&scratch[within..within + stride]);
-            }
-            j = k + 1;
+            scratch.resize(run.len, 0);
+            self.reader.read_exact_at(run.offset, scratch)?;
+            apply_gather_run(out, run, scratch, stride);
         }
         Ok(())
     }
@@ -536,36 +501,13 @@ impl<R: RangeReader> StreamCore<R> {
                 return leaf(&survivors, &indices);
             }
 
-            // Expand survivors to their child groups at the level below.
-            let child_level_end = self.level_bounds[level - 1];
-            let child_level_start = if level >= 2 {
-                self.level_bounds[level - 2]
-            } else {
-                0
-            };
-            let mut next = Vec::new();
-            for i in 0..survivors.len() {
-                let child0 = read_index(&indices, i)?;
-                // Validate the pointer against the child level (untrusted source).
-                if child0 < child_level_start
-                    || child0 >= child_level_end
-                    || (child0 - child_level_start) % self.node_size != 0
-                {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                let end = (child0 + self.node_size).min(child_level_end);
-                next.extend(child0..end);
-            }
-            // A well-formed tree already yields a sorted, disjoint frontier, but
-            // an untrusted index may have in-range yet reordered or aliased child
-            // pointers. Sorting and deduping keeps `gather` fed ascending
-            // positions (it computes byte gaps by subtraction) and caps the
-            // frontier at the level width, so a crafted file cannot trigger an
-            // underflow or blow the frontier up level over level. For a valid
-            // tree this is a no-op on the result set.
-            next.sort_unstable();
-            next.dedup();
-            frontier = next;
+            frontier = expand_frontier(
+                &self.level_bounds,
+                self.node_size,
+                level,
+                survivors.len(),
+                &indices,
+            )?;
             level -= 1;
         }
     }
@@ -628,30 +570,16 @@ impl<R: RangeReader> StreamCore<R> {
     {
         let mut j = 0;
         while j < leaf_positions.len() {
-            // Coalesce leaf positions whose offset-table gap is within budget.
-            let mut k = j;
-            while k + 1 < leaf_positions.len() {
-                let gap = (leaf_positions[k + 1] - leaf_positions[k]) as u64 * 8;
-                if gap > COALESCE_GAP_BYTES {
-                    break;
-                }
-                k += 1;
-            }
+            let k = payload_run_end(leaf_positions, j);
             let lo = leaf_positions[j];
             let hi = leaf_positions[k];
 
-            // Read offset entries [lo ..= hi+1] (one extra for the last blob end).
-            let entries = hi + 2 - lo;
             off_buf.clear();
-            off_buf.resize(entries * 8, 0);
+            off_buf.resize((hi + 2 - lo) * 8, 0);
             self.reader
                 .read_exact_at(section.offsets_start + (lo * 8) as u64, off_buf)?;
+            let (blob_lo, blob_hi) = payload_blob_span(off_buf, lo, hi, section.blob_total)?;
 
-            let blob_lo = read_u64_le_unchecked(off_buf, 0);
-            let blob_hi = read_u64_le_unchecked(off_buf, (hi + 1 - lo) * 8);
-            if blob_hi < blob_lo || blob_hi > section.blob_total {
-                return Err(StreamError::Format(LoadError::InvalidTree));
-            }
             blob_buf.clear();
             blob_buf.resize((blob_hi - blob_lo) as usize, 0);
             if !blob_buf.is_empty() {
@@ -659,22 +587,19 @@ impl<R: RangeReader> StreamCore<R> {
                     .read_exact_at(section.blobs_start + blob_lo, blob_buf)?;
             }
 
-            for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
-                let i = j + offset;
-                let o0 = read_u64_le_unchecked(off_buf, (p - lo) * 8);
-                let o1 = read_u64_le_unchecked(off_buf, (p + 1 - lo) * 8);
-                if o1 < o0 || o1 > blob_hi {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                let id = read_index(indices, i)?;
-                if id >= self.num_items {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                emit(
-                    id,
-                    &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
-                );
-            }
+            emit_run_payloads(
+                leaf_positions,
+                indices,
+                j,
+                k,
+                lo,
+                off_buf,
+                blob_lo,
+                blob_hi,
+                blob_buf,
+                self.num_items,
+                emit,
+            )?;
             j = k + 1;
         }
         Ok(())
@@ -685,6 +610,178 @@ impl<R: RangeReader> StreamCore<R> {
 fn read_index(bytes: &[u8], i: usize) -> Result<usize, StreamError> {
     let value = read_u64_le_unchecked(bytes, i * 8);
     usize::try_from(value).map_err(|_| StreamError::Format(LoadError::IntegerOverflow))
+}
+
+/// I/O-free pieces of the traversal, shared by the sync and async drivers so the
+/// descent logic — including the untrusted-input validation — lives in one place.
+///
+/// A coalesced run to read from a section: the byte `offset`/`len` to fetch and
+/// where each record lands (`(out index, byte offset within the run)`).
+struct GatherRun {
+    offset: u64,
+    len: usize,
+    scatter: Vec<(usize, usize)>,
+}
+
+/// Plan the reads to gather `stride`-byte records for `positions` (sorted) from
+/// the section at `section0`. Records covered by the directory `cache` are
+/// copied into `out` immediately; the rest become coalesced [`GatherRun`]s for
+/// the driver to read and scatter. `out` is cleared and sized to hold all
+/// records in order.
+fn plan_gather(
+    positions: &[usize],
+    section0: u64,
+    stride: usize,
+    dir_node_start: usize,
+    cache: &[u8],
+    out: &mut Vec<u8>,
+) -> Vec<GatherRun> {
+    out.clear();
+    out.resize(positions.len() * stride, 0);
+    let mut streamed: Vec<(usize, usize)> = Vec::new();
+    for (i, &pos) in positions.iter().enumerate() {
+        if pos >= dir_node_start {
+            let src = (pos - dir_node_start) * stride;
+            out[i * stride..i * stride + stride].copy_from_slice(&cache[src..src + stride]);
+        } else {
+            streamed.push((i, pos));
+        }
+    }
+
+    let mut runs = Vec::new();
+    let mut j = 0;
+    while j < streamed.len() {
+        let lo = section0 + (streamed[j].1 * stride) as u64;
+        let mut k = j;
+        let mut end_pos = streamed[j].1 + 1;
+        while k + 1 < streamed.len() {
+            let next_pos = streamed[k + 1].1;
+            let gap = (next_pos - end_pos) as u64 * stride as u64;
+            if gap > COALESCE_GAP_BYTES {
+                break;
+            }
+            k += 1;
+            end_pos = next_pos + 1;
+        }
+        let hi = section0 + (end_pos * stride) as u64;
+        let scatter = streamed[j..=k]
+            .iter()
+            .map(|&(out_i, pos)| (out_i, (section0 + (pos * stride) as u64 - lo) as usize))
+            .collect();
+        runs.push(GatherRun {
+            offset: lo,
+            len: (hi - lo) as usize,
+            scatter,
+        });
+        j = k + 1;
+    }
+    runs
+}
+
+/// Scatter a run's fetched bytes into `out` at `stride`-byte records.
+fn apply_gather_run(out: &mut [u8], run: &GatherRun, buf: &[u8], stride: usize) {
+    for &(out_i, within) in &run.scatter {
+        out[out_i * stride..out_i * stride + stride].copy_from_slice(&buf[within..within + stride]);
+    }
+}
+
+/// Expand surviving internal nodes into the next-level frontier, validating
+/// child pointers against an untrusted source and sorting/deduping the result
+/// (which keeps `plan_gather` fed ascending positions and caps the frontier at
+/// the level width). `indices` holds the survivors' gathered child pointers.
+fn expand_frontier(
+    level_bounds: &[usize],
+    node_size: usize,
+    level: usize,
+    survivors_count: usize,
+    indices: &[u8],
+) -> Result<Vec<usize>, StreamError> {
+    let child_level_end = level_bounds[level - 1];
+    let child_level_start = if level >= 2 {
+        level_bounds[level - 2]
+    } else {
+        0
+    };
+    let mut next = Vec::new();
+    for i in 0..survivors_count {
+        let child0 = read_index(indices, i)?;
+        if child0 < child_level_start
+            || child0 >= child_level_end
+            || (child0 - child_level_start) % node_size != 0
+        {
+            return Err(StreamError::Format(LoadError::InvalidTree));
+        }
+        let end = (child0 + node_size).min(child_level_end);
+        next.extend(child0..end);
+    }
+    next.sort_unstable();
+    next.dedup();
+    Ok(next)
+}
+
+/// Index of the last leaf position coalesced into the run starting at `j` (leaf
+/// positions whose offset-table byte gap is within budget read together).
+fn payload_run_end(leaf_positions: &[usize], j: usize) -> usize {
+    let mut k = j;
+    while k + 1 < leaf_positions.len() {
+        let gap = (leaf_positions[k + 1] - leaf_positions[k]) as u64 * 8;
+        if gap > COALESCE_GAP_BYTES {
+            break;
+        }
+        k += 1;
+    }
+    k
+}
+
+/// Validate and return the blob byte span `[blob_lo, blob_hi)` for a run whose
+/// offset table `[lo ..= hi+1]` was read into `off_buf`.
+fn payload_blob_span(
+    off_buf: &[u8],
+    lo: usize,
+    hi: usize,
+    blob_total: u64,
+) -> Result<(u64, u64), StreamError> {
+    let blob_lo = read_u64_le_unchecked(off_buf, 0);
+    let blob_hi = read_u64_le_unchecked(off_buf, (hi + 1 - lo) * 8);
+    if blob_hi < blob_lo || blob_hi > blob_total {
+        return Err(StreamError::Format(LoadError::InvalidTree));
+    }
+    Ok((blob_lo, blob_hi))
+}
+
+/// Emit `(insertion id, blob)` for every survivor in a payload run, slicing each
+/// blob out of the run's fetched `blob_buf` and validating offsets/ids.
+#[allow(clippy::too_many_arguments)]
+fn emit_run_payloads<F: FnMut(usize, &[u8])>(
+    leaf_positions: &[usize],
+    indices: &[u8],
+    j: usize,
+    k: usize,
+    lo: usize,
+    off_buf: &[u8],
+    blob_lo: u64,
+    blob_hi: u64,
+    blob_buf: &[u8],
+    num_items: usize,
+    emit: &mut F,
+) -> Result<(), StreamError> {
+    for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
+        let i = j + offset;
+        let o0 = read_u64_le_unchecked(off_buf, (p - lo) * 8);
+        let o1 = read_u64_le_unchecked(off_buf, (p + 1 - lo) * 8);
+        if o1 < o0 || o1 > blob_hi {
+            return Err(StreamError::Format(LoadError::InvalidTree));
+        }
+        let id = read_index(indices, i)?;
+        if id >= num_items {
+            return Err(StreamError::Format(LoadError::InvalidTree));
+        }
+        emit(
+            id,
+            &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
+        );
+    }
+    Ok(())
 }
 
 /// Choose the first node position to cache in the directory: walk levels from
@@ -1113,41 +1210,12 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         out: &mut Vec<u8>,
         scratch: &mut Vec<u8>,
     ) -> Result<(), StreamError> {
-        out.clear();
-        out.resize(positions.len() * stride, 0);
-        let mut streamed: Vec<(usize, usize)> = Vec::new();
-        for (i, &pos) in positions.iter().enumerate() {
-            if pos >= self.dir_node_start {
-                let src = (pos - self.dir_node_start) * stride;
-                out[i * stride..i * stride + stride].copy_from_slice(&cache[src..src + stride]);
-            } else {
-                streamed.push((i, pos));
-            }
-        }
-        let mut j = 0;
-        while j < streamed.len() {
-            let lo = section0 + (streamed[j].1 * stride) as u64;
-            let mut k = j;
-            let mut end_pos = streamed[j].1 + 1;
-            while k + 1 < streamed.len() {
-                let next_pos = streamed[k + 1].1;
-                let gap = (next_pos - end_pos) as u64 * stride as u64;
-                if gap > COALESCE_GAP_BYTES {
-                    break;
-                }
-                k += 1;
-                end_pos = next_pos + 1;
-            }
-            let hi = section0 + (end_pos * stride) as u64;
+        let runs = plan_gather(positions, section0, stride, self.dir_node_start, cache, out);
+        for run in &runs {
             scratch.clear();
-            scratch.resize((hi - lo) as usize, 0);
-            self.reader.read_exact_at(lo, scratch).await?;
-            for &(out_i, pos) in &streamed[j..=k] {
-                let within = (section0 + (pos * stride) as u64 - lo) as usize;
-                out[out_i * stride..out_i * stride + stride]
-                    .copy_from_slice(&scratch[within..within + stride]);
-            }
-            j = k + 1;
+            scratch.resize(run.len, 0);
+            self.reader.read_exact_at(run.offset, scratch).await?;
+            apply_gather_run(out, run, scratch, stride);
         }
         Ok(())
     }
@@ -1167,27 +1235,17 @@ impl<R: AsyncRangeReader> StreamCore<R> {
     {
         let mut j = 0;
         while j < leaf_positions.len() {
-            let mut k = j;
-            while k + 1 < leaf_positions.len() {
-                let gap = (leaf_positions[k + 1] - leaf_positions[k]) as u64 * 8;
-                if gap > COALESCE_GAP_BYTES {
-                    break;
-                }
-                k += 1;
-            }
+            let k = payload_run_end(leaf_positions, j);
             let lo = leaf_positions[j];
             let hi = leaf_positions[k];
-            let entries = hi + 2 - lo;
+
             off_buf.clear();
-            off_buf.resize(entries * 8, 0);
+            off_buf.resize((hi + 2 - lo) * 8, 0);
             self.reader
                 .read_exact_at(section.offsets_start + (lo * 8) as u64, off_buf)
                 .await?;
-            let blob_lo = read_u64_le_unchecked(off_buf, 0);
-            let blob_hi = read_u64_le_unchecked(off_buf, (hi + 1 - lo) * 8);
-            if blob_hi < blob_lo || blob_hi > section.blob_total {
-                return Err(StreamError::Format(LoadError::InvalidTree));
-            }
+            let (blob_lo, blob_hi) = payload_blob_span(off_buf, lo, hi, section.blob_total)?;
+
             blob_buf.clear();
             blob_buf.resize((blob_hi - blob_lo) as usize, 0);
             if !blob_buf.is_empty() {
@@ -1195,22 +1253,20 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                     .read_exact_at(section.blobs_start + blob_lo, blob_buf)
                     .await?;
             }
-            for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
-                let i = j + offset;
-                let o0 = read_u64_le_unchecked(off_buf, (p - lo) * 8);
-                let o1 = read_u64_le_unchecked(off_buf, (p + 1 - lo) * 8);
-                if o1 < o0 || o1 > blob_hi {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                let id = read_index(indices, i)?;
-                if id >= self.num_items {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                sink(
-                    id,
-                    &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
-                );
-            }
+
+            emit_run_payloads(
+                leaf_positions,
+                indices,
+                j,
+                k,
+                lo,
+                off_buf,
+                blob_lo,
+                blob_hi,
+                blob_buf,
+                self.num_items,
+                sink,
+            )?;
             j = k + 1;
         }
         Ok(())
@@ -1302,27 +1358,13 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 return Ok(());
             }
 
-            let child_level_end = self.level_bounds[level - 1];
-            let child_level_start = if level >= 2 {
-                self.level_bounds[level - 2]
-            } else {
-                0
-            };
-            let mut next = Vec::new();
-            for i in 0..survivors.len() {
-                let child0 = read_index(&indices, i)?;
-                if child0 < child_level_start
-                    || child0 >= child_level_end
-                    || (child0 - child_level_start) % self.node_size != 0
-                {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                let end = (child0 + self.node_size).min(child_level_end);
-                next.extend(child0..end);
-            }
-            next.sort_unstable();
-            next.dedup();
-            frontier = next;
+            frontier = expand_frontier(
+                &self.level_bounds,
+                self.node_size,
+                level,
+                survivors.len(),
+                &indices,
+            )?;
             level -= 1;
         }
     }

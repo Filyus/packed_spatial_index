@@ -91,6 +91,7 @@ mod sort3d;
 mod stream;
 mod traversal;
 mod tree;
+mod triangle;
 
 pub use build::BuildError;
 pub use builder2d::Index2DBuilder;
@@ -123,6 +124,9 @@ pub use stream::{
     RangeReader, SliceReader, StreamError, StreamIndex2D, StreamIndex3D, StreamLimits,
 };
 pub use traversal::SearchWorkspace;
+pub use triangle::{
+    Triangle2, Triangle2D, Triangle2DF32, Triangle3, Triangle3D, Triangle3DF32, TriangleHit,
+};
 
 /// Internal helpers exposed only for crate benchmarks and local performance tools.
 #[cfg(feature = "bench-internals")]

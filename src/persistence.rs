@@ -62,6 +62,13 @@ pub enum PayloadError {
     },
     /// The combined payload size overflows the serialized-length calculation.
     TooLarge,
+    /// A fixed-width record's length does not equal the declared stride.
+    RecordSizeMismatch {
+        /// The declared fixed record stride.
+        stride: usize,
+        /// The length of the offending record.
+        got: usize,
+    },
 }
 
 impl fmt::Display for PayloadError {
@@ -72,6 +79,10 @@ impl fmt::Display for PayloadError {
                 "payload count {got} does not match item count {expected}"
             ),
             PayloadError::TooLarge => write!(f, "combined payload size is too large to serialize"),
+            PayloadError::RecordSizeMismatch { stride, got } => write!(
+                f,
+                "fixed-width record length {got} does not match stride {stride}"
+            ),
         }
     }
 }
@@ -84,19 +95,29 @@ const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
 /// Validated slices of the optional trailing payload section. Borrowed by the
 /// zero-copy views to serve `payload(id)`.
 pub(crate) struct ParsedPayload<'a> {
-    /// `(num_items + 1)` little-endian `u64` prefix offsets into `blobs`.
+    /// `(num_items + 1)` little-endian `u64` prefix offsets into `blobs`. Empty
+    /// for a fixed-width payload (`stride != 0`), which needs no table.
     pub(crate) offsets: &'a [u8],
     /// Concatenated per-item payload bytes.
     pub(crate) blobs: &'a [u8],
+    /// Fixed record stride in bytes, or `0` for a variable-width payload (use
+    /// `offsets`). When non-zero every blob is exactly `stride` bytes, so the
+    /// blob at leaf rank `r` is `blobs[r * stride ..][.. stride]`.
+    pub(crate) stride: usize,
 }
 
-/// Slice the payload at leaf rank `r` out of a validated leaf-ordered offset
-/// table and blob region.
+/// Slice the payload at leaf rank `r`: by arithmetic for a fixed-width payload,
+/// or out of the leaf-ordered offset table for a variable-width one.
 #[inline]
-pub(crate) fn payload_slice<'a>(offsets: &[u8], blobs: &'a [u8], r: usize) -> &'a [u8] {
-    let start = read_u64_le_unchecked(offsets, r * 8) as usize;
-    let end = read_u64_le_unchecked(offsets, (r + 1) * 8) as usize;
-    &blobs[start..end]
+pub(crate) fn payload_slice<'a>(payload: &ParsedPayload<'a>, r: usize) -> &'a [u8] {
+    if payload.stride != 0 {
+        let start = r * payload.stride;
+        &payload.blobs[start..start + payload.stride]
+    } else {
+        let start = read_u64_le_unchecked(payload.offsets, r * 8) as usize;
+        let end = read_u64_le_unchecked(payload.offsets, (r + 1) * 8) as usize;
+        &payload.blobs[start..end]
+    }
 }
 
 /// Build the `insertion id -> leaf rank` map by inverting the leaf entries of
@@ -400,6 +421,16 @@ impl<'a> ByteWriter<'a> {
         }
     }
 
+    /// Write a fixed-width payload section in **leaf order**: just the blobs,
+    /// each exactly `stride` bytes, with no offset table (the reader addresses
+    /// blob `r` at `r * stride`). `leaf_order[r]` is the insertion id at leaf
+    /// rank `r`; callers must have validated every blob is `stride` bytes.
+    pub(crate) fn write_payload_blobs_fixed(&mut self, payloads: &[&[u8]], leaf_order: &[usize]) {
+        for &id in leaf_order {
+            self.write_bytes(payloads[id]);
+        }
+    }
+
     pub(crate) fn finish(self) {
         debug_assert_eq!(self.bytes.len(), self.len);
     }
@@ -594,8 +625,13 @@ pub(crate) struct TreeDesc {
 
 /// Minimum `TREE` descriptor length this version writes.
 pub(crate) const TREE_DESC_LEN: usize = 24;
-/// Minimum `PYLD` descriptor length this version writes.
+/// Minimum `PYLD` descriptor length an older reader must tolerate (`desc_len`
+/// floor). Readers accept any `desc_len >= PYLD_DESC_LEN` and skip to the body.
 pub(crate) const PYLD_DESC_LEN: usize = 8;
+/// `PYLD` descriptor length this version writes: the 8-byte base plus the
+/// `record_stride` u32. A reader before this field existed reads only the base
+/// and treats the payload as variable-width (`record_stride = 0`).
+pub(crate) const PYLD_DESC_LEN_FIXED: usize = 12;
 
 /// Parse a `TREE` chunk's descriptor; returns it plus the node-data slice that
 /// follows. Validates the fixed fields but not the node data (the dimension
@@ -636,10 +672,13 @@ pub(crate) fn parse_tree_chunk(chunk: &[u8]) -> Result<(TreeDesc, &[u8]), LoadEr
 /// Decoded `PYLD` descriptor; returns it plus the slice that follows (offset
 /// table + blobs).
 pub(crate) struct PyldDesc {
-    /// Only the streaming reader consults this (to locate the offset table); the
+    /// Only the streaming reader consults this (to locate the body); the
     /// in-memory parser uses the body slice it comes paired with.
     #[cfg_attr(not(feature = "stream"), allow(dead_code))]
     pub(crate) desc_len: usize,
+    /// Fixed record stride in bytes, or `0` for a variable-width payload (offset
+    /// table present). Read from the descriptor when `desc_len` covers it.
+    pub(crate) record_stride: usize,
 }
 
 pub(crate) fn parse_pyld_chunk(chunk: &[u8]) -> Result<(PyldDesc, &[u8]), LoadError> {
@@ -656,7 +695,20 @@ pub(crate) fn parse_pyld_chunk(chunk: &[u8]) -> Result<(PyldDesc, &[u8]), LoadEr
     if ordering != 0 || compression != 0 {
         return Err(LoadError::UnsupportedVersion);
     }
-    Ok((PyldDesc { desc_len }, &chunk[desc_len..]))
+    // `record_stride` was appended after the 8-byte base; an older file without
+    // it has `desc_len == 8` and is read as variable-width (stride 0).
+    let record_stride = if desc_len >= PYLD_DESC_LEN_FIXED {
+        read_u32_at(chunk, 8)? as usize
+    } else {
+        0
+    };
+    Ok((
+        PyldDesc {
+            desc_len,
+            record_stride,
+        },
+        &chunk[desc_len..],
+    ))
 }
 
 /// Optional descriptive metadata chunk (CRS / content type / attribution).
@@ -770,6 +822,7 @@ pub(crate) fn write_index_container(
     node_size: usize,
     write_nodes: impl FnOnce(&mut ByteWriter),
     payloads: Option<&[&[u8]]>,
+    record_stride: Option<u32>,
     leaf_order: &[usize],
     meta: &MetaFields<'_>,
 ) -> Result<(), PayloadError> {
@@ -786,14 +839,36 @@ pub(crate) fn write_index_container(
                     got: p.len(),
                 });
             }
-            let mut blob_total: u64 = 0;
-            for b in p {
-                blob_total = blob_total
-                    .checked_add(b.len() as u64)
-                    .ok_or(PayloadError::TooLarge)?;
+            match record_stride {
+                // Fixed-width: every blob is `stride` bytes, no offset table.
+                Some(stride) => {
+                    let stride = stride as usize;
+                    for b in p {
+                        if b.len() != stride {
+                            return Err(PayloadError::RecordSizeMismatch {
+                                stride,
+                                got: b.len(),
+                            });
+                        }
+                    }
+                    let blob_total = num_items
+                        .checked_mul(stride)
+                        .ok_or(PayloadError::TooLarge)?;
+                    Some(PYLD_DESC_LEN_FIXED + blob_total)
+                }
+                // Variable-width: prefix-offset table plus the blobs.
+                None => {
+                    let mut blob_total: u64 = 0;
+                    for b in p {
+                        blob_total = blob_total
+                            .checked_add(b.len() as u64)
+                            .ok_or(PayloadError::TooLarge)?;
+                    }
+                    let blob_total =
+                        usize::try_from(blob_total).map_err(|_| PayloadError::TooLarge)?;
+                    Some(PYLD_DESC_LEN + (num_items + 1) * 8 + blob_total)
+                }
             }
-            let blob_total = usize::try_from(blob_total).map_err(|_| PayloadError::TooLarge)?;
-            Some(PYLD_DESC_LEN + (num_items + 1) * 8 + blob_total)
         }
         None => None,
     };
@@ -828,8 +903,11 @@ pub(crate) fn write_index_container(
     pos = off[0] + tree_len;
     if let (Some(i), Some(p)) = (pyld_idx, payloads) {
         bytes.write_zeros(off[i] - pos);
-        bytes.write_pyld_desc();
-        bytes.write_payload_offsets_and_blobs(p, leaf_order);
+        bytes.write_pyld_desc(record_stride);
+        match record_stride {
+            Some(_) => bytes.write_payload_blobs_fixed(p, leaf_order),
+            None => bytes.write_payload_offsets_and_blobs(p, leaf_order),
+        }
         pos = off[i] + lens[i];
     }
     if let Some(i) = meta_idx {
@@ -935,11 +1013,21 @@ impl ByteWriter<'_> {
         self.write_zeros(6);
     }
 
-    pub(crate) fn write_pyld_desc(&mut self) {
-        self.write_u32(PYLD_DESC_LEN as u32);
+    /// Write the `PYLD` descriptor. A variable-width payload keeps the original
+    /// 8-byte descriptor (byte-identical to older files); a fixed-width one
+    /// appends the `record_stride` field, growing `desc_len` to 12.
+    pub(crate) fn write_pyld_desc(&mut self, record_stride: Option<u32>) {
+        let desc_len = match record_stride {
+            Some(_) => PYLD_DESC_LEN_FIXED,
+            None => PYLD_DESC_LEN,
+        };
+        self.write_u32(desc_len as u32);
         self.write_u8(0); // ordering = leaf rank
         self.write_u8(0); // compression = none
-        self.write_u16(0);
+        self.write_u16(0); // reserved
+        if let Some(stride) = record_stride {
+            self.write_u32(stride);
+        }
     }
 }
 
@@ -1034,8 +1122,8 @@ pub(crate) fn parse_index(
 
     let payload = match find_chunk(&chunks, TAG_PYLD) {
         Some(p) => {
-            let (_pd, body) = parse_pyld_chunk(&bytes[p.offset..p.offset + p.len])?;
-            Some(parse_payload_body(body, desc.num_items)?)
+            let (pd, body) = parse_pyld_chunk(&bytes[p.offset..p.offset + p.len])?;
+            Some(parse_payload_body(body, desc.num_items, pd.record_stride)?)
         }
         None => None,
     };
@@ -1072,9 +1160,31 @@ fn validate_tree_indices(p: &ParsedTree<'_>) -> Result<(), LoadError> {
     Ok(())
 }
 
-/// Validate and slice the payload body (`(num_items + 1)` prefix offsets followed
-/// by the blob region) out of a `PYLD` chunk's post-descriptor bytes.
-fn parse_payload_body(body: &[u8], num_items: usize) -> Result<ParsedPayload<'_>, LoadError> {
+/// Validate and slice a `PYLD` chunk's post-descriptor bytes. A fixed-width
+/// payload (`stride != 0`) is just `num_items * stride` blob bytes with no table;
+/// a variable-width one is a `(num_items + 1)` prefix-offset table followed by the
+/// blob region.
+fn parse_payload_body(
+    body: &[u8],
+    num_items: usize,
+    stride: usize,
+) -> Result<ParsedPayload<'_>, LoadError> {
+    if stride != 0 {
+        let total = num_items
+            .checked_mul(stride)
+            .ok_or(LoadError::IntegerOverflow)?;
+        if body.len() != total {
+            return Err(LoadError::LengthMismatch {
+                expected: total,
+                actual: body.len(),
+            });
+        }
+        return Ok(ParsedPayload {
+            offsets: &[],
+            blobs: body,
+            stride,
+        });
+    }
     let offsets_len = num_items
         .checked_add(1)
         .and_then(|n| n.checked_mul(8))
@@ -1099,7 +1209,11 @@ fn parse_payload_body(body: &[u8], num_items: usize) -> Result<ParsedPayload<'_>
             actual: body.len(),
         });
     }
-    Ok(ParsedPayload { offsets, blobs })
+    Ok(ParsedPayload {
+        offsets,
+        blobs,
+        stride: 0,
+    })
 }
 
 #[cfg(test)]
@@ -1161,7 +1275,7 @@ mod tests {
         let mut pyld = Vec::new();
         {
             let mut w = ByteWriter::new(&mut pyld, PYLD_DESC_LEN + 8 + b"blob".len());
-            w.write_pyld_desc();
+            w.write_pyld_desc(None); // variable-width
             w.write_u64(0); // one-entry offset table fragment, just bytes here
             w.write_raw(b"blob");
             w.finish();
@@ -1269,10 +1383,7 @@ mod tests {
             // leaf rank `r`, whose insertion id is `index.indices[r]`.
             for r in 0..n {
                 let insertion_id = index.indices[r];
-                assert_eq!(
-                    payload_slice(parsed.offsets, parsed.blobs, r),
-                    payloads[insertion_id].as_slice()
-                );
+                assert_eq!(payload_slice(&parsed, r), payloads[insertion_id].as_slice());
             }
         }
     }
@@ -1311,9 +1422,56 @@ mod tests {
         let parsed = payload.expect("payload present");
         for r in 0..20 {
             assert_eq!(
-                payload_slice(parsed.offsets, parsed.blobs, r),
+                payload_slice(&parsed, r),
                 payloads[index.indices[r]].as_slice()
             );
         }
+    }
+
+    #[test]
+    fn fixed_width_payload_round_trips_without_a_table() {
+        const STRIDE: usize = 12;
+        let n = 20;
+        let index = build(n);
+        // One 12-byte record per item, in item order.
+        let mut flat = Vec::with_capacity(n * STRIDE);
+        for i in 0..n {
+            flat.extend_from_slice(&(i as u32).to_le_bytes());
+            flat.extend_from_slice(&[i as u8; STRIDE - 4]);
+        }
+        let fixed = index.serialize().records(STRIDE, &flat).to_bytes().unwrap();
+        let variable: Vec<Vec<u8>> = (0..n)
+            .map(|i| flat[i * STRIDE..(i + 1) * STRIDE].to_vec())
+            .collect();
+        let var_bytes = index.to_bytes_with_payloads(&variable).unwrap();
+
+        // The table-less layout is smaller by roughly the dropped offset table
+        // (minus the 4-byte stride field the fixed descriptor adds, plus padding).
+        let saving = var_bytes.len() - fixed.len();
+        assert!((n * 8..=(n + 1) * 8).contains(&saving), "saving {saving}");
+
+        let (_parsed, payload) = parse_index(&fixed, 2, 8).unwrap();
+        let parsed = payload.expect("payload present");
+        assert_eq!(parsed.stride, STRIDE);
+        assert!(parsed.offsets.is_empty());
+        for r in 0..n {
+            let id = index.indices[r];
+            assert_eq!(
+                payload_slice(&parsed, r),
+                &flat[id * STRIDE..(id + 1) * STRIDE]
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_width_wrong_record_size_rejected() {
+        let index = build(4);
+        // Three 8-byte records for four items, then declare stride 8: the count
+        // (3 != 4) is caught first.
+        let flat = vec![0u8; 3 * 8];
+        assert!(matches!(
+            index.serialize().records(8, &flat).to_bytes(),
+            Err(PayloadError::CountMismatch { .. })
+        ));
     }
 }

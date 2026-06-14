@@ -25,9 +25,10 @@ use std::io;
 
 use crate::geometry::{Box2D, Box3D};
 use crate::persistence::{
-    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PYLD_DESC_LEN, SUPERBLOCK_LEN,
-    TAG_PYLD, TAG_TREE, TREE_DESC_LEN, derive_level_bounds, expected_tree_shape, parse_pyld_chunk,
-    parse_tree_chunk, read_f64_le_unchecked, read_u32_at, read_u64_at, read_u64_le_unchecked,
+    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PYLD_DESC_LEN,
+    PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PYLD, TAG_TREE, TREE_DESC_LEN, derive_level_bounds,
+    expected_tree_shape, parse_pyld_chunk, parse_tree_chunk, read_f64_le_unchecked, read_u32_at,
+    read_u64_at, read_u64_le_unchecked,
 };
 
 /// Upper bound on how many nodes the open-time "directory" prefetch caches.
@@ -354,12 +355,17 @@ pub(crate) struct StreamCore<R> {
 
 /// Byte locations of a streamed index's payload section.
 struct PayloadSection {
-    /// Byte offset of the `(num_items + 1)` u64 prefix-offset table.
+    /// Byte offset of the `(num_items + 1)` u64 prefix-offset table. Unused (and
+    /// `0`) for a fixed-width payload, which has no table.
     offsets_start: u64,
     /// Byte offset of the blob region.
     blobs_start: u64,
     /// Total blob bytes (validated against the file length at open).
     blob_total: u64,
+    /// Fixed record stride in bytes, or `0` for a variable-width payload (read
+    /// the offset table). When non-zero the blob at leaf rank `r` is at
+    /// `blobs_start + r * stride`, no table read needed.
+    stride: u64,
 }
 
 impl<R> StreamCore<R> {
@@ -468,24 +474,44 @@ impl<R: RangeReader> StreamCore<R> {
                 if plen < PYLD_DESC_LEN as u64 {
                     return Err(StreamError::Format(LoadError::Truncated));
                 }
-                let mut pd = [0u8; PYLD_DESC_LEN];
-                reader.read_exact_at(poff, &mut pd)?;
-                let (pdesc, _) = parse_pyld_chunk(&pd)?;
-                let offsets_start = poff + pdesc.desc_len as u64;
-                let last_at = offsets_start + (td.num_items as u64) * 8;
-                let mut last = [0u8; 8];
-                reader.read_exact_at(last_at, &mut last)?;
-                let blob_total = u64::from_le_bytes(last);
-                let blobs_start = offsets_start + (td.num_items as u64 + 1) * 8;
-                let need = pdesc.desc_len as u64 + (td.num_items as u64 + 1) * 8 + blob_total;
-                if plen != need {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
+                let dn = (PYLD_DESC_LEN_FIXED as u64).min(plen) as usize;
+                let mut pd = [0u8; PYLD_DESC_LEN_FIXED];
+                reader.read_exact_at(poff, &mut pd[..dn])?;
+                let (pdesc, _) = parse_pyld_chunk(&pd[..dn])?;
+                let body0 = poff + pdesc.desc_len as u64;
+                if pdesc.record_stride != 0 {
+                    let stride = pdesc.record_stride as u64;
+                    let blob_total = (td.num_items as u64)
+                        .checked_mul(stride)
+                        .ok_or(StreamError::Format(LoadError::IntegerOverflow))?;
+                    let need = pdesc.desc_len as u64 + blob_total;
+                    if plen != need {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    Some(PayloadSection {
+                        offsets_start: 0,
+                        blobs_start: body0,
+                        blob_total,
+                        stride,
+                    })
+                } else {
+                    let offsets_start = body0;
+                    let last_at = offsets_start + (td.num_items as u64) * 8;
+                    let mut last = [0u8; 8];
+                    reader.read_exact_at(last_at, &mut last)?;
+                    let blob_total = u64::from_le_bytes(last);
+                    let blobs_start = offsets_start + (td.num_items as u64 + 1) * 8;
+                    let need = pdesc.desc_len as u64 + (td.num_items as u64 + 1) * 8 + blob_total;
+                    if plen != need {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    Some(PayloadSection {
+                        offsets_start,
+                        blobs_start,
+                        blob_total,
+                        stride: 0,
+                    })
                 }
-                Some(PayloadSection {
-                    offsets_start,
-                    blobs_start,
-                    blob_total,
-                })
             }
             None => None,
         };
@@ -683,15 +709,26 @@ impl<R: RangeReader> StreamCore<R> {
         let mut off_buf = Vec::new();
         let mut blob_buf = Vec::new();
         self.traverse(overlaps, |survivors, indices, budget| {
-            self.gather_payloads(
-                section,
-                survivors,
-                indices,
-                &mut off_buf,
-                &mut blob_buf,
-                budget,
-                &mut emit,
-            )
+            if section.stride != 0 {
+                self.gather_payloads_fixed(
+                    section,
+                    survivors,
+                    indices,
+                    &mut blob_buf,
+                    budget,
+                    &mut emit,
+                )
+            } else {
+                self.gather_payloads(
+                    section,
+                    survivors,
+                    indices,
+                    &mut off_buf,
+                    &mut blob_buf,
+                    budget,
+                    &mut emit,
+                )
+            }
         })
     }
 
@@ -742,6 +779,52 @@ impl<R: RangeReader> StreamCore<R> {
                 off_buf,
                 blob_lo,
                 blob_hi,
+                blob_buf,
+                self.num_items,
+                budget,
+                emit,
+            )?;
+            j = k + 1;
+        }
+        Ok(())
+    }
+
+    /// Fixed-width payload variant of [`gather_payloads`](Self::gather_payloads):
+    /// no offset table, so each coalesced run is one contiguous blob read whose
+    /// byte span is pure arithmetic (`lo * stride`).
+    fn gather_payloads_fixed<F>(
+        &self,
+        section: &PayloadSection,
+        leaf_positions: &[usize],
+        indices: &[u8],
+        blob_buf: &mut Vec<u8>,
+        budget: &mut Budget,
+        emit: &mut F,
+    ) -> Result<(), StreamError>
+    where
+        F: FnMut(usize, &[u8]),
+    {
+        let stride = section.stride as usize;
+        let mut j = 0;
+        while j < leaf_positions.len() {
+            let k = payload_run_end_fixed(leaf_positions, j, stride);
+            let lo = leaf_positions[j];
+            let hi = leaf_positions[k];
+            let span = (hi + 1 - lo) * stride;
+
+            blob_buf.clear();
+            blob_buf.resize(span, 0);
+            budget.charge_read(span)?;
+            self.reader
+                .read_exact_at(section.blobs_start + (lo * stride) as u64, blob_buf)?;
+
+            emit_run_payloads_fixed(
+                leaf_positions,
+                indices,
+                j,
+                k,
+                lo,
+                stride,
                 blob_buf,
                 self.num_items,
                 budget,
@@ -941,6 +1024,52 @@ fn emit_run_payloads<F: FnMut(usize, &[u8])>(
             id,
             &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
         );
+    }
+    Ok(())
+}
+
+/// Last leaf position coalesced into a fixed-width run starting at `j`: leaf
+/// positions whose blob byte gap (`gap * stride`) is within budget read together.
+fn payload_run_end_fixed(leaf_positions: &[usize], j: usize, stride: usize) -> usize {
+    let mut k = j;
+    while k + 1 < leaf_positions.len() {
+        let gap = (leaf_positions[k + 1] - leaf_positions[k]) as u64 * stride as u64;
+        if gap > COALESCE_GAP_BYTES {
+            break;
+        }
+        k += 1;
+    }
+    k
+}
+
+/// Emit `(insertion id, blob)` for a fixed-width payload run already read into
+/// `blob_buf` (records `lo` through `leaf_positions[k]`, each `stride` bytes).
+/// No offset table: blob of rank `p` is at `(p - lo) * stride`.
+#[allow(clippy::too_many_arguments)]
+fn emit_run_payloads_fixed<F: FnMut(usize, &[u8])>(
+    leaf_positions: &[usize],
+    indices: &[u8],
+    j: usize,
+    k: usize,
+    lo: usize,
+    stride: usize,
+    blob_buf: &[u8],
+    num_items: usize,
+    budget: &mut Budget,
+    emit: &mut F,
+) -> Result<(), StreamError> {
+    for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
+        let i = j + offset;
+        // `leaf_positions` are sorted leaf ranks in `[lo, leaf_positions[k]]`, so
+        // `within + stride` stays inside `blob_buf` (length `(k_pos + 1 - lo) *
+        // stride`).
+        let within = (p - lo) * stride;
+        let id = read_index(indices, i)?;
+        if id >= num_items {
+            return Err(StreamError::Format(LoadError::InvalidTree));
+        }
+        budget.charge_item()?;
+        emit(id, &blob_buf[within..within + stride]);
     }
     Ok(())
 }
@@ -1360,24 +1489,44 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 if plen < PYLD_DESC_LEN as u64 {
                     return Err(StreamError::Format(LoadError::Truncated));
                 }
-                let mut pd = [0u8; PYLD_DESC_LEN];
-                reader.read_exact_at(poff, &mut pd).await?;
-                let (pdesc, _) = parse_pyld_chunk(&pd)?;
-                let offsets_start = poff + pdesc.desc_len as u64;
-                let last_at = offsets_start + (td.num_items as u64) * 8;
-                let mut last = [0u8; 8];
-                reader.read_exact_at(last_at, &mut last).await?;
-                let blob_total = u64::from_le_bytes(last);
-                let blobs_start = offsets_start + (td.num_items as u64 + 1) * 8;
-                let need = pdesc.desc_len as u64 + (td.num_items as u64 + 1) * 8 + blob_total;
-                if plen != need {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
+                let dn = (PYLD_DESC_LEN_FIXED as u64).min(plen) as usize;
+                let mut pd = [0u8; PYLD_DESC_LEN_FIXED];
+                reader.read_exact_at(poff, &mut pd[..dn]).await?;
+                let (pdesc, _) = parse_pyld_chunk(&pd[..dn])?;
+                let body0 = poff + pdesc.desc_len as u64;
+                if pdesc.record_stride != 0 {
+                    let stride = pdesc.record_stride as u64;
+                    let blob_total = (td.num_items as u64)
+                        .checked_mul(stride)
+                        .ok_or(StreamError::Format(LoadError::IntegerOverflow))?;
+                    let need = pdesc.desc_len as u64 + blob_total;
+                    if plen != need {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    Some(PayloadSection {
+                        offsets_start: 0,
+                        blobs_start: body0,
+                        blob_total,
+                        stride,
+                    })
+                } else {
+                    let offsets_start = body0;
+                    let last_at = offsets_start + (td.num_items as u64) * 8;
+                    let mut last = [0u8; 8];
+                    reader.read_exact_at(last_at, &mut last).await?;
+                    let blob_total = u64::from_le_bytes(last);
+                    let blobs_start = offsets_start + (td.num_items as u64 + 1) * 8;
+                    let need = pdesc.desc_len as u64 + (td.num_items as u64 + 1) * 8 + blob_total;
+                    if plen != need {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    Some(PayloadSection {
+                        offsets_start,
+                        blobs_start,
+                        blob_total,
+                        stride: 0,
+                    })
                 }
-                Some(PayloadSection {
-                    offsets_start,
-                    blobs_start,
-                    blob_total,
-                })
             }
             None => None,
         };
@@ -1539,6 +1688,62 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         Ok(())
     }
 
+    /// Fixed-width async payload gather: one contiguous blob read per coalesced
+    /// run, all runs issued concurrently. No offset-table phase (the variable
+    /// `gather_payloads_async` needs two round trips; this needs one).
+    async fn gather_payloads_fixed_async<F>(
+        &self,
+        section: &PayloadSection,
+        leaf_positions: &[usize],
+        indices: &[u8],
+        budget: &mut Budget,
+        sink: &mut F,
+    ) -> Result<(), StreamError>
+    where
+        F: FnMut(usize, &[u8]),
+    {
+        let stride = section.stride as usize;
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut j = 0;
+        while j < leaf_positions.len() {
+            let k = payload_run_end_fixed(leaf_positions, j, stride);
+            runs.push((j, k));
+            j = k + 1;
+        }
+
+        let mut blob_bufs: Vec<Vec<u8>> = runs
+            .iter()
+            .map(|&(j, k)| vec![0u8; (leaf_positions[k] + 1 - leaf_positions[j]) * stride])
+            .collect();
+        for buf in &blob_bufs {
+            budget.charge_read(buf.len())?;
+        }
+        let reads = runs.iter().zip(blob_bufs.iter_mut()).map(|(&(j, _), buf)| {
+            let lo = leaf_positions[j];
+            self.reader.read_exact_at(
+                section.blobs_start + (lo * stride) as u64,
+                buf.as_mut_slice(),
+            )
+        });
+        futures_util::future::try_join_all(reads).await?;
+
+        for (&(j, k), blob_buf) in runs.iter().zip(&blob_bufs) {
+            emit_run_payloads_fixed(
+                leaf_positions,
+                indices,
+                j,
+                k,
+                leaf_positions[j],
+                stride,
+                blob_buf,
+                self.num_items,
+                budget,
+                sink,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Async mirror of the synchronous traversal, parameterized by `want` (ids or
     /// id+payload). `overlaps` and `sink` are synchronous; only reads are awaited.
     async fn traverse_async<O, F>(
@@ -1609,6 +1814,16 @@ impl<R: AsyncRangeReader> StreamCore<R> {
 
             if level == 0 {
                 match section {
+                    Some(section) if section.stride != 0 => {
+                        self.gather_payloads_fixed_async(
+                            section,
+                            &survivors,
+                            &indices,
+                            &mut budget,
+                            &mut sink,
+                        )
+                        .await?;
+                    }
                     Some(section) => {
                         self.gather_payloads_async(
                             section,
@@ -2262,6 +2477,26 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_fixed_width_payload_bytes_never_panic() {
+        // Same fuzz for the table-less layout: flip a byte across the whole file
+        // (including the record_stride field and the blob region) and confirm
+        // open + search_payloads never panic.
+        const STRIDE: usize = 12;
+        let (owned, _) = random_owned(500, 0xF1F2);
+        let n = owned.num_items();
+        let flat = vec![0x5Au8; n * STRIDE];
+        let base = owned.serialize().records(STRIDE, &flat).to_bytes().unwrap();
+        let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+        for i in (0..base.len()).step_by(29) {
+            let mut bytes = base.clone();
+            bytes[i] ^= 0xFF;
+            if let Ok(stream) = StreamIndex2D::open(SliceReader::new(bytes)) {
+                let _ = stream.search_payloads(query);
+            }
+        }
+    }
+
+    #[test]
     fn out_of_order_payload_offset_is_rejected() {
         // Directly craft an out-of-order offset entry and confirm search_payloads
         // rejects it (InvalidTree) rather than panicking.
@@ -2318,6 +2553,64 @@ mod tests {
         for (id, blob) in &all {
             assert_eq!(blob, &payloads[*id]);
         }
+    }
+
+    #[test]
+    fn fixed_width_payload_streams_table_less() {
+        const STRIDE: usize = 12;
+        let (owned, _) = random_owned(20_000, 0x713A);
+        let n = owned.num_items();
+        // Record `id` encodes its own id, so streamed blobs are self-checking.
+        let mut flat = vec![0u8; n * STRIDE];
+        for id in 0..n {
+            flat[id * STRIDE..id * STRIDE + 8].copy_from_slice(&(id as u64).to_le_bytes());
+            flat[id * STRIDE + 8..id * STRIDE + STRIDE].copy_from_slice(&[0xAB, 0xCD, id as u8, 0]);
+        }
+        let fixed_bytes = owned.serialize().records(STRIDE, &flat).to_bytes().unwrap();
+        let variable: Vec<Vec<u8>> = (0..n)
+            .map(|id| flat[id * STRIDE..(id + 1) * STRIDE].to_vec())
+            .collect();
+        let var_bytes = owned.serialize().payloads(&variable).to_bytes().unwrap();
+
+        let stream = open_slice(fixed_bytes.clone());
+        assert!(stream.has_payload());
+        assert!(stream.core.dir_node_start > 0, "leaves should be streamed");
+
+        let query = Box2D::new(400.0, 400.0, 460.0, 460.0);
+        let pairs = stream.search_payloads(query).unwrap();
+        let mut got: Vec<usize> = pairs.iter().map(|(id, _)| *id).collect();
+        let mut want = owned.search(query);
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want);
+        for (id, blob) in &pairs {
+            assert_eq!(blob.as_slice(), &flat[*id * STRIDE..(*id + 1) * STRIDE]);
+            assert_eq!(&blob[..8], &(*id as u64).to_le_bytes());
+        }
+
+        // Full-extent: every record streams back.
+        let all = stream
+            .search_payloads(Box2D::new(-1.0, -1.0, 2000.0, 2000.0))
+            .unwrap();
+        assert_eq!(all.len(), n);
+
+        // Table-less wins a round trip: the same windowed query reads strictly
+        // fewer times than the variable layout (which also reads the offset table).
+        let fixed_r =
+            StreamIndex2D::open(CountingReader::new(SliceReader::new(fixed_bytes))).unwrap();
+        let before = *fixed_r.core.reader.reads.borrow();
+        let _ = fixed_r.search_payloads(query).unwrap();
+        let fixed_reads = *fixed_r.core.reader.reads.borrow() - before;
+
+        let var_r = StreamIndex2D::open(CountingReader::new(SliceReader::new(var_bytes))).unwrap();
+        let before = *var_r.core.reader.reads.borrow();
+        let _ = var_r.search_payloads(query).unwrap();
+        let var_reads = *var_r.core.reader.reads.borrow() - before;
+
+        assert!(
+            fixed_reads < var_reads,
+            "fixed {fixed_reads} should read fewer than variable {var_reads}"
+        );
     }
 
     #[test]
@@ -2852,6 +3145,31 @@ mod tests {
             assert_eq!(blob, &payloads[*id]);
         }
         assert!(astream.has_payload_async());
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn async_fixed_width_payload_matches_sync() {
+        const STRIDE: usize = 12;
+        let (owned, _) = random_owned(20_000, 0xA6F);
+        let n = owned.num_items();
+        let mut flat = vec![0u8; n * STRIDE];
+        for id in 0..n {
+            flat[id * STRIDE..id * STRIDE + 8].copy_from_slice(&(id as u64).to_le_bytes());
+        }
+        let bytes = owned.serialize().records(STRIDE, &flat).to_bytes().unwrap();
+        let sync = open_slice(bytes.clone());
+        let astream = pollster::block_on(StreamIndex2D::open_async(AsyncSlice(bytes))).unwrap();
+
+        let q = Box2D::new(300.0, 300.0, 380.0, 380.0);
+        let mut sync_pairs = sync.search_payloads(q).unwrap();
+        let mut async_pairs = pollster::block_on(astream.search_payloads_async(q)).unwrap();
+        sync_pairs.sort();
+        async_pairs.sort();
+        assert_eq!(sync_pairs, async_pairs);
+        for (id, blob) in &async_pairs {
+            assert_eq!(&blob[..8], &(*id as u64).to_le_bytes());
+        }
     }
 
     #[cfg(feature = "async")]

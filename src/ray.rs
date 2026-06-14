@@ -8,6 +8,7 @@
 //! face still hits.
 
 use crate::geometry::{Box2D, Box3D, Point2D, Point3D};
+use crate::triangle::{Triangle3, TriangleHit};
 
 /// Finite 2D ray segment used by `raycast` searches.
 ///
@@ -270,6 +271,23 @@ impl Ray3D {
         );
         hit.then_some(t_min)
     }
+
+    /// The closest triangle in `triangles` hit by this ray segment, as a
+    /// [`TriangleHit`] (`index` into the slice and `t` in direction-length
+    /// units), or `None` if the ray misses them all, by the Moller-Trumbore test.
+    ///
+    /// Works over either record type: [`Triangle3D`](crate::Triangle3D) tests in
+    /// `f64`, [`Triangle3DF32`](crate::Triangle3DF32) in `f32` (8 at a time with
+    /// the `simd` feature). Pair this with a query that yields candidate triangles
+    /// — an [`Index3DView`](crate::Index3DView)'s
+    /// [`triangles`](crate::Index3DView::triangles) payload, or the items a
+    /// `raycast` / `search` returns — for exact ray-mesh intersection.
+    #[inline]
+    pub fn closest_triangle<T: Triangle3>(&self, triangles: &[T]) -> Option<TriangleHit> {
+        let o = [self.origin.x, self.origin.y, self.origin.z];
+        let d = [self.dir_x, self.dir_y, self.dir_z];
+        T::closest_hit(o, d, self.max_distance, triangles)
+    }
 }
 
 #[inline]
@@ -295,4 +313,52 @@ fn slab(
     *t_min = (*t_min).max(near);
     *t_max = (*t_max).min(far);
     *t_min <= *t_max
+}
+
+#[cfg(test)]
+mod triangle_tests {
+    use super::*;
+    use crate::{Point3D, Triangle3D};
+
+    fn ray(o: [f64; 3], d: [f64; 3]) -> Ray3D {
+        Ray3D::new(Point3D::new(o[0], o[1], o[2]), d[0], d[1], d[2], 100.0)
+    }
+
+    #[test]
+    fn closest_triangle_hits_nearest_and_misses() {
+        // Two triangles facing the ray at z = 2 and z = 5; a +z ray should pick
+        // the nearer one regardless of slice order.
+        let near = Triangle3D::new([0.0, 0.0, 2.0], [2.0, 0.0, 2.0], [0.0, 2.0, 2.0]);
+        let far = Triangle3D::new([0.0, 0.0, 5.0], [2.0, 0.0, 5.0], [0.0, 2.0, 5.0]);
+        let tris = [far, near];
+        let hit = ray([0.25, 0.25, 0.0], [0.0, 0.0, 1.0])
+            .closest_triangle(&tris)
+            .unwrap();
+        assert_eq!(hit.index, 1);
+        assert!((hit.t - 2.0).abs() < 1e-4, "t={}", hit.t);
+
+        // Pointing away, and an empty slice, both miss.
+        assert!(
+            ray([0.25, 0.25, 0.0], [0.0, 0.0, -1.0])
+                .closest_triangle(&tris)
+                .is_none()
+        );
+        assert!(
+            ray([0.25, 0.25, 0.0], [0.0, 0.0, 1.0])
+                .closest_triangle::<Triangle3D>(&[])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn closest_triangle_f32_records() {
+        use crate::Triangle3DF32;
+        let near = Triangle3DF32::new([0.0, 0.0, 2.0], [2.0, 0.0, 2.0], [0.0, 2.0, 2.0]);
+        let far = Triangle3DF32::new([0.0, 0.0, 5.0], [2.0, 0.0, 5.0], [0.0, 2.0, 5.0]);
+        let hit = ray([0.25, 0.25, 0.0], [0.0, 0.0, 1.0])
+            .closest_triangle(&[far, near])
+            .unwrap();
+        assert_eq!(hit.index, 1);
+        assert!((hit.t - 2.0).abs() < 1e-4, "t={}", hit.t);
+    }
 }

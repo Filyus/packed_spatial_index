@@ -33,6 +33,7 @@ use crate::persistence::{
 };
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
+use crate::triangle::{Triangle2, blobs_as_records, records_as_bytes};
 
 #[inline]
 fn prefetch_aos_node(entries: &[Box2D], indices: &[usize], node_index: usize, node_size: usize) {
@@ -223,6 +224,20 @@ impl Index2D {
     /// ```
     pub fn serialize(&self) -> Serializer2D<'_> {
         Serializer2D::new(self)
+    }
+
+    /// Build an index over the bounding box of each triangle, in slice order
+    /// (item `i` is `triangles[i]`). A convenience over looping
+    /// [`Index2DBuilder::add`](crate::Index2DBuilder::add) with
+    /// [`Triangle2::aabb`](crate::Triangle2::aabb); the index is queryable in memory, and
+    /// `index.serialize().triangles(triangles)` stores the geometry alongside it.
+    /// Use the builder directly for custom boxes or build options like `node_size`.
+    pub fn from_triangles<T: Triangle2>(triangles: &[T]) -> Result<Self, crate::BuildError> {
+        let mut builder = crate::Index2DBuilder::new(triangles.len());
+        for t in triangles {
+            builder.add(t.aabb());
+        }
+        builder.finish()
     }
 
     /// Load an owned index from bytes previously produced by [`Index2D::to_bytes`].
@@ -1297,7 +1312,36 @@ impl<'a> Index2DView<'a> {
         let payload = self.payload.as_ref()?;
         let id_to_leaf = self.id_to_leaf.as_ref()?;
         let leaf_rank = *id_to_leaf.get(id)? as usize;
-        Some(payload_slice(payload.offsets, payload.blobs, leaf_rank))
+        Some(payload_slice(payload, leaf_rank))
+    }
+
+    /// Borrow every triangle record as a zero-copy `&[T]` (with `T` =
+    /// [`Triangle2D`](crate::Triangle2D) / [`Triangle2DF32`](crate::Triangle2DF32)),
+    /// in leaf (storage) order, when the payload is a fixed-width section of that
+    /// record type and the underlying bytes are aligned (an mmap or an aligned
+    /// buffer). Returns `None` otherwise; [`triangle`](Self::triangle) reads one
+    /// record by item id regardless of alignment.
+    pub fn triangles<T: Triangle2>(&self) -> Option<&'a [T]> {
+        let payload = self.payload.as_ref()?;
+        if payload.stride != T::STRIDE {
+            return None;
+        }
+        blobs_as_records::<T>(payload.blobs)
+    }
+
+    /// The triangle stored for item `id`, by value (works at any alignment).
+    /// `None` if there is no triangle payload of the requested type, or `id` is
+    /// out of range. The type parameter chooses the record format
+    /// ([`Triangle2D`](crate::Triangle2D) for `f64`,
+    /// [`Triangle2DF32`](crate::Triangle2DF32) for `f32`).
+    pub fn triangle<T: Triangle2>(&self, id: usize) -> Option<T> {
+        let payload = self.payload.as_ref()?;
+        if payload.stride != T::STRIDE {
+            return None;
+        }
+        let id_to_leaf = self.id_to_leaf.as_ref()?;
+        let leaf_rank = *id_to_leaf.get(id)? as usize;
+        Some(T::read_le(payload_slice(payload, leaf_rank)))
     }
 
     /// Return `(item index, payload blob)` for every item intersecting `query`.
@@ -2493,6 +2537,8 @@ pub struct Serializer2D<'a> {
     index: &'a Index2D,
     interleaved: bool,
     payloads: Option<Vec<&'a [u8]>>,
+    /// `Some(stride)` selects the fixed-width (table-less) payload layout.
+    record_stride: Option<u32>,
     meta: MetaFields<'a>,
 }
 
@@ -2502,6 +2548,7 @@ impl<'a> Serializer2D<'a> {
             index,
             interleaved: false,
             payloads: None,
+            record_stride: None,
             meta: MetaFields::default(),
         }
     }
@@ -2510,6 +2557,32 @@ impl<'a> Serializer2D<'a> {
     pub fn payloads<P: AsRef<[u8]>>(mut self, payloads: &'a [P]) -> Self {
         self.payloads = Some(payloads.iter().map(|p| p.as_ref()).collect());
         self
+    }
+
+    /// Attach a **fixed-width** payload: `flat` is the concatenation of one
+    /// `stride`-byte record per item, in item order (item `i` is
+    /// `flat[i * stride ..][.. stride]`). Because every record is the same size,
+    /// the offset table is dropped (the reader addresses record `r` by
+    /// arithmetic), which shrinks the file and lets a view borrow the records as
+    /// a zero-copy typed slice. `flat.len()` must be `num_items * stride`.
+    pub fn records(mut self, stride: usize, flat: &'a [u8]) -> Self {
+        self.record_stride = Some(stride as u32);
+        self.payloads = Some(if stride == 0 {
+            Vec::new()
+        } else {
+            flat.chunks_exact(stride).collect()
+        });
+        self
+    }
+
+    /// Attach a fixed-width triangle payload (`T` =
+    /// [`Triangle2D`](crate::Triangle2D) for `f64` or
+    /// [`Triangle2DF32`](crate::Triangle2DF32) for `f32`): one triangle per item,
+    /// in item order. A convenience over [`records`](Self::records); pair it with
+    /// [`Index2D::from_triangles`](crate::Index2D::from_triangles).
+    pub fn triangles<T: Triangle2>(self, triangles: &'a [T]) -> Self {
+        let bytes = records_as_bytes(triangles);
+        self.records(T::STRIDE, bytes)
     }
 
     /// Use the streaming-tuned interleaved node layout (see
@@ -2549,6 +2622,7 @@ impl<'a> Serializer2D<'a> {
     pub fn to_bytes_into(self, out: &mut Vec<u8>) -> Result<(), PayloadError> {
         let idx = self.index;
         let interleaved = self.interleaved;
+        let record_stride = self.record_stride;
         write_index_container(
             out,
             2,
@@ -2567,6 +2641,7 @@ impl<'a> Serializer2D<'a> {
                 bytes.write_usize_slice_as_u64(&idx.indices);
             },
             self.payloads.as_deref(),
+            record_stride,
             &idx.indices[..idx.num_items],
             &self.meta,
         )

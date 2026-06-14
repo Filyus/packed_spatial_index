@@ -348,10 +348,15 @@ pub(crate) struct ParsedIndexBytes<'a> {
     pub(crate) indices: &'a [u8],
 }
 
+// Index-only parsing is used by the SIMD readers; the scalar views go through
+// `parse_index_and_payload`. Without `simd`/`f32-storage` these are unused, so
+// allow dead code rather than tangle the call sites with cfgs.
+#[allow(dead_code)]
 pub(crate) fn parse_index_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
     parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_2D, 2, 8)
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_index3d_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'_>, LoadError> {
     parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D, 3, 8)
 }
@@ -366,6 +371,7 @@ pub(crate) fn parse_index3d_f32_bytes(bytes: &[u8]) -> Result<ParsedIndexBytes<'
     parse_index_bytes_with_flags(bytes, FORMAT_FLAGS_3D_F32, 3, 4)
 }
 
+#[allow(dead_code)]
 fn parse_index_bytes_with_flags(
     bytes: &[u8],
     expected_flags: u64,

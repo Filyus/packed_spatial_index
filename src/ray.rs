@@ -64,6 +64,7 @@ impl Ray2D {
     /// vectorized slab test uses `1/dir = inf` and is not NaN-safe at a box face, so
     /// such rays take a masked path.
     #[inline]
+    #[allow(dead_code)] // used by the SIMD raycast paths only
     pub(crate) fn has_zero_direction(self) -> bool {
         self.dir_x == 0.0 || self.dir_y == 0.0
     }
@@ -192,6 +193,7 @@ impl Ray3D {
     /// vectorized slab test uses `1/dir = inf` and is not NaN-safe at a box face, so
     /// such rays take a masked path.
     #[inline]
+    #[allow(dead_code)] // used by the SIMD raycast paths only
     pub(crate) fn has_zero_direction(self) -> bool {
         self.dir_x == 0.0 || self.dir_y == 0.0 || self.dir_z == 0.0
     }

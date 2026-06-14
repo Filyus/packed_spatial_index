@@ -39,6 +39,9 @@ f32-storage = ["simd"]
 # Streaming reader: query a serialized index over a `RangeReader` (local file or
 # remote object) without loading the whole file. No extra dependencies.
 stream = []
+# Async streaming: query over an `AsyncRangeReader` (e.g. HTTP range / object
+# storage in a browser or edge worker, where I/O is async). Implies `stream`.
+async = ["stream"]
 # Hidden support API for crate benchmarks and local performance tools.
 bench-internals = []
 
@@ -46,6 +49,8 @@ bench-internals = []
 bvh = { version = "0.12.0", default-features = false, features = ["std"] }
 fast_hilbert = "2.1.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }
+# Minimal executor to drive async streaming tests (no runtime in the crate).
+pollster = "0.4"
 flatgeobuf = { version = "6.0.1", default-features = false }
 nalgebra = { version = "0.34.2", default-features = false, features = ["std"] }
 proptest = "1"

@@ -107,6 +107,8 @@ assert_eq!(hit, Some((0, 1.0)));
 - `f32-storage` — compact f32-storage SIMD indexes (implies `simd`).
 - `stream` — query a serialized index over a `RangeReader` (local file or remote
   object) without loading the whole file. No extra dependencies.
+- `async` — query over an `AsyncRangeReader` for async I/O (browser / edge worker
+  over HTTP range or object storage). Implies `stream`.
 - `bench-internals` — hidden support API for this crate's benchmarks.
 
 ```bash

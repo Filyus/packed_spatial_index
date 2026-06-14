@@ -289,6 +289,14 @@ struct PayloadSection {
     blob_total: u64,
 }
 
+impl<R> StreamCore<R> {
+    /// Whether the index carries a payload section. No I/O, so available for
+    /// both sync and async readers.
+    fn has_payload(&self) -> bool {
+        self.payload.is_some()
+    }
+}
+
 impl<R: RangeReader> StreamCore<R> {
     /// Open and validate an index of the given variant from `reader`.
     fn open(
@@ -402,11 +410,6 @@ impl<R: RangeReader> StreamCore<R> {
             dir_indices,
             payload,
         })
-    }
-
-    /// Whether the index carries a payload section.
-    fn has_payload(&self) -> bool {
-        self.payload.is_some()
     }
 
     /// Cached box record bytes for node `position`, if the directory covers it.
@@ -952,6 +955,465 @@ fn parse_box3d(bytes: &[u8]) -> Box3D {
         read_f64_le_unchecked(bytes, 32),
         read_f64_le_unchecked(bytes, 40),
     )
+}
+
+// ---- Async streaming (behind the `async` feature) ----
+//
+// Mirror of the synchronous traversal for sources whose reads are async (browser
+// / edge worker over HTTP range or object storage). The descent logic is the
+// same — only the reads are awaited; the overlap test and the result sink stay
+// synchronous closures so no async closures are needed. (The sync and async
+// paths are kept in lockstep by an equivalence test; a future sans-io refactor
+// could share one core.)
+
+/// Async counterpart of [`RangeReader`]: read a byte range, returning a future.
+///
+/// Implement this to query an index that lives behind async I/O — an HTTP range
+/// request from WebAssembly, an object-storage `get(range)` in an edge worker.
+/// The returned futures need not be `Send` (edge/browser executors are
+/// single-threaded). See [`RangeReader`] for the sync analogue and an HTTP
+/// implementation sketch.
+#[cfg(feature = "async")]
+#[allow(async_fn_in_trait, clippy::len_without_is_empty)]
+pub trait AsyncRangeReader {
+    /// Read exactly `buf.len()` bytes starting at `offset`.
+    async fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
+
+    /// Total length in bytes, if known.
+    fn len(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// What a traversal collects at the leaves.
+#[cfg(feature = "async")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Want {
+    Ids,
+    Payloads,
+}
+
+#[cfg(feature = "async")]
+impl<R: AsyncRangeReader> StreamCore<R> {
+    async fn open_async(
+        reader: R,
+        expected_flags: u64,
+        dimensions: usize,
+        coord_bytes: usize,
+    ) -> Result<Self, StreamError> {
+        let mut header = [0u8; FORMAT_HEADER_LEN];
+        reader.read_exact_at(0, &mut header).await?;
+        let fields = parse_and_validate_header(&header, expected_flags, true)?;
+        let layout = section_layout(
+            fields.level_count,
+            fields.num_nodes,
+            dimensions,
+            coord_bytes,
+        )?;
+
+        let (payload, full_total) = if fields.has_payload {
+            let offsets_start = layout.total_len;
+            let last_offset_at = offsets_start
+                .checked_add(
+                    fields
+                        .num_items
+                        .checked_mul(8)
+                        .ok_or(LoadError::IntegerOverflow)?,
+                )
+                .ok_or(LoadError::IntegerOverflow)?;
+            let mut last = [0u8; 8];
+            reader
+                .read_exact_at(last_offset_at as u64, &mut last)
+                .await?;
+            let blob_total = u64::from_le_bytes(last);
+            let blob_total_usize =
+                usize::try_from(blob_total).map_err(|_| LoadError::IntegerOverflow)?;
+            let plan = payload_layout(fields.num_items, offsets_start, blob_total_usize)?;
+            (
+                Some(PayloadSection {
+                    offsets_start: plan.offsets_start as u64,
+                    blobs_start: plan.blobs_start as u64,
+                    blob_total,
+                }),
+                plan.full_total,
+            )
+        } else {
+            (None, layout.total_len)
+        };
+
+        if let Some(actual) = reader.len()
+            && actual != full_total as u64
+        {
+            return Err(StreamError::Format(LoadError::LengthMismatch {
+                expected: full_total,
+                actual: usize::try_from(actual).unwrap_or(usize::MAX),
+            }));
+        }
+
+        let level_bounds_len = fields.level_count * 8;
+        let mut level_bounds_bytes = vec![0u8; level_bounds_len];
+        reader
+            .read_exact_at(layout.level_bounds_start as u64, &mut level_bounds_bytes)
+            .await?;
+        validate_level_bounds(
+            &level_bounds_bytes,
+            fields.num_items,
+            fields.num_nodes,
+            fields.node_size,
+            fields.level_count,
+        )?;
+        let mut level_bounds = Vec::with_capacity(fields.level_count);
+        for level in 0..fields.level_count {
+            let value = read_u64_at(&level_bounds_bytes, level * 8)
+                .and_then(|v| usize::try_from(v).map_err(|_| LoadError::IntegerOverflow))?;
+            level_bounds.push(value);
+        }
+
+        let dir_node_start =
+            directory_start(&level_bounds, fields.level_count, DIRECTORY_NODE_BUDGET);
+        let cached_nodes = fields.num_nodes - dir_node_start;
+
+        let mut dir_boxes = vec![0u8; cached_nodes * layout.record];
+        if !dir_boxes.is_empty() {
+            let offset = layout.box0 + (dir_node_start * layout.record);
+            reader.read_exact_at(offset as u64, &mut dir_boxes).await?;
+        }
+        let mut dir_indices = vec![0u8; cached_nodes * 8];
+        if !dir_indices.is_empty() {
+            let offset = layout.idx0 + (dir_node_start * 8);
+            reader
+                .read_exact_at(offset as u64, &mut dir_indices)
+                .await?;
+        }
+
+        Ok(StreamCore {
+            reader,
+            node_size: fields.node_size,
+            num_items: fields.num_items,
+            num_nodes: fields.num_nodes,
+            level_count: fields.level_count,
+            level_bounds,
+            record: layout.record,
+            box0: layout.box0 as u64,
+            idx0: layout.idx0 as u64,
+            dir_node_start,
+            dir_boxes,
+            dir_indices,
+            payload,
+        })
+    }
+
+    /// Async mirror of [`gather`](StreamCore::gather).
+    async fn gather_async(
+        &self,
+        positions: &[usize],
+        section0: u64,
+        stride: usize,
+        cache: &[u8],
+        out: &mut Vec<u8>,
+        scratch: &mut Vec<u8>,
+    ) -> Result<(), StreamError> {
+        out.clear();
+        out.resize(positions.len() * stride, 0);
+        let mut streamed: Vec<(usize, usize)> = Vec::new();
+        for (i, &pos) in positions.iter().enumerate() {
+            if pos >= self.dir_node_start {
+                let src = (pos - self.dir_node_start) * stride;
+                out[i * stride..i * stride + stride].copy_from_slice(&cache[src..src + stride]);
+            } else {
+                streamed.push((i, pos));
+            }
+        }
+        let mut j = 0;
+        while j < streamed.len() {
+            let lo = section0 + (streamed[j].1 * stride) as u64;
+            let mut k = j;
+            let mut end_pos = streamed[j].1 + 1;
+            while k + 1 < streamed.len() {
+                let next_pos = streamed[k + 1].1;
+                let gap = (next_pos - end_pos) as u64 * stride as u64;
+                if gap > COALESCE_GAP_BYTES {
+                    break;
+                }
+                k += 1;
+                end_pos = next_pos + 1;
+            }
+            let hi = section0 + (end_pos * stride) as u64;
+            scratch.clear();
+            scratch.resize((hi - lo) as usize, 0);
+            self.reader.read_exact_at(lo, scratch).await?;
+            for &(out_i, pos) in &streamed[j..=k] {
+                let within = (section0 + (pos * stride) as u64 - lo) as usize;
+                out[out_i * stride..out_i * stride + stride]
+                    .copy_from_slice(&scratch[within..within + stride]);
+            }
+            j = k + 1;
+        }
+        Ok(())
+    }
+
+    /// Async mirror of [`gather_payloads`](StreamCore::gather_payloads).
+    async fn gather_payloads_async<F>(
+        &self,
+        section: &PayloadSection,
+        leaf_positions: &[usize],
+        indices: &[u8],
+        off_buf: &mut Vec<u8>,
+        blob_buf: &mut Vec<u8>,
+        sink: &mut F,
+    ) -> Result<(), StreamError>
+    where
+        F: FnMut(usize, &[u8]),
+    {
+        let mut j = 0;
+        while j < leaf_positions.len() {
+            let mut k = j;
+            while k + 1 < leaf_positions.len() {
+                let gap = (leaf_positions[k + 1] - leaf_positions[k]) as u64 * 8;
+                if gap > COALESCE_GAP_BYTES {
+                    break;
+                }
+                k += 1;
+            }
+            let lo = leaf_positions[j];
+            let hi = leaf_positions[k];
+            let entries = hi + 2 - lo;
+            off_buf.clear();
+            off_buf.resize(entries * 8, 0);
+            self.reader
+                .read_exact_at(section.offsets_start + (lo * 8) as u64, off_buf)
+                .await?;
+            let blob_lo = read_u64_le_unchecked(off_buf, 0);
+            let blob_hi = read_u64_le_unchecked(off_buf, (hi + 1 - lo) * 8);
+            if blob_hi < blob_lo || blob_hi > section.blob_total {
+                return Err(StreamError::Format(LoadError::InvalidTree));
+            }
+            blob_buf.clear();
+            blob_buf.resize((blob_hi - blob_lo) as usize, 0);
+            if !blob_buf.is_empty() {
+                self.reader
+                    .read_exact_at(section.blobs_start + blob_lo, blob_buf)
+                    .await?;
+            }
+            for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
+                let i = j + offset;
+                let o0 = read_u64_le_unchecked(off_buf, (p - lo) * 8);
+                let o1 = read_u64_le_unchecked(off_buf, (p + 1 - lo) * 8);
+                if o1 < o0 || o1 > blob_hi {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                let id = read_index(indices, i)?;
+                if id >= self.num_items {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                sink(
+                    id,
+                    &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
+                );
+            }
+            j = k + 1;
+        }
+        Ok(())
+    }
+
+    /// Async mirror of the synchronous traversal, parameterized by `want` (ids or
+    /// id+payload). `overlaps` and `sink` are synchronous; only reads are awaited.
+    async fn traverse_async<O, F>(
+        &self,
+        overlaps: O,
+        want: Want,
+        mut sink: F,
+    ) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        F: FnMut(usize, &[u8]),
+    {
+        let section = if want == Want::Payloads {
+            Some(self.payload.as_ref().ok_or(StreamError::NoPayload)?)
+        } else {
+            None
+        };
+        if self.num_items == 0 {
+            return Ok(());
+        }
+
+        let mut frontier = vec![self.num_nodes - 1];
+        let mut level = self.level_count - 1;
+        let mut boxes = Vec::new();
+        let mut indices = Vec::new();
+        let mut scratch = Vec::new();
+        let mut off_buf = Vec::new();
+        let mut blob_buf = Vec::new();
+        let mut survivors: Vec<usize> = Vec::new();
+
+        loop {
+            self.gather_async(
+                &frontier,
+                self.box0,
+                self.record,
+                &self.dir_boxes,
+                &mut boxes,
+                &mut scratch,
+            )
+            .await?;
+            survivors.clear();
+            for (i, &pos) in frontier.iter().enumerate() {
+                if overlaps(&boxes[i * self.record..(i + 1) * self.record]) {
+                    survivors.push(pos);
+                }
+            }
+            if survivors.is_empty() {
+                return Ok(());
+            }
+
+            self.gather_async(
+                &survivors,
+                self.idx0,
+                8,
+                &self.dir_indices,
+                &mut indices,
+                &mut scratch,
+            )
+            .await?;
+
+            if level == 0 {
+                match section {
+                    Some(section) => {
+                        self.gather_payloads_async(
+                            section,
+                            &survivors,
+                            &indices,
+                            &mut off_buf,
+                            &mut blob_buf,
+                            &mut sink,
+                        )
+                        .await?;
+                    }
+                    None => {
+                        for i in 0..survivors.len() {
+                            let id = read_index(&indices, i)?;
+                            if id >= self.num_items {
+                                return Err(StreamError::Format(LoadError::InvalidTree));
+                            }
+                            sink(id, &[]);
+                        }
+                    }
+                }
+                return Ok(());
+            }
+
+            let child_level_end = self.level_bounds[level - 1];
+            let child_level_start = if level >= 2 {
+                self.level_bounds[level - 2]
+            } else {
+                0
+            };
+            let mut next = Vec::new();
+            for i in 0..survivors.len() {
+                let child0 = read_index(&indices, i)?;
+                if child0 < child_level_start
+                    || child0 >= child_level_end
+                    || (child0 - child_level_start) % self.node_size != 0
+                {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                let end = (child0 + self.node_size).min(child_level_end);
+                next.extend(child0..end);
+            }
+            next.sort_unstable();
+            next.dedup();
+            frontier = next;
+            level -= 1;
+        }
+    }
+}
+
+/// Streaming reader for a 2D `f64` index over async I/O. Mirrors
+/// [`StreamIndex2D`]; use it when reads return futures (e.g. browser / edge
+/// worker). Behind the `async` feature.
+#[cfg(feature = "async")]
+impl<R: AsyncRangeReader> StreamIndex2D<R> {
+    /// Open and validate a 2D `f64` index from an async `reader`.
+    pub async fn open_async(reader: R) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open_async(reader, FORMAT_FLAGS_2D, 2, 8).await?,
+        })
+    }
+
+    /// Stream the indices of every item whose box intersects `query`.
+    pub async fn search_async(&self, query: Box2D) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.core
+            .traverse_async(
+                |r| parse_box2d(r).overlaps(query),
+                Want::Ids,
+                |id, _| out.push(id),
+            )
+            .await?;
+        Ok(out)
+    }
+
+    /// Stream `(item index, payload blob)` for every item intersecting `query`.
+    pub async fn search_payloads_async(
+        &self,
+        query: Box2D,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.core
+            .traverse_async(
+                |r| parse_box2d(r).overlaps(query),
+                Want::Payloads,
+                |id, blob| out.push((id, blob.to_vec())),
+            )
+            .await?;
+        Ok(out)
+    }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload_async(&self) -> bool {
+        self.core.has_payload()
+    }
+}
+
+/// Streaming reader for a 3D `f64` index over async I/O. See [`StreamIndex2D`]'s
+/// async methods. Behind the `async` feature.
+#[cfg(feature = "async")]
+impl<R: AsyncRangeReader> StreamIndex3D<R> {
+    /// Open and validate a 3D `f64` index from an async `reader`.
+    pub async fn open_async(reader: R) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open_async(reader, FORMAT_FLAGS_3D, 3, 8).await?,
+        })
+    }
+
+    /// Stream the indices of every item whose box intersects `query`.
+    pub async fn search_async(&self, query: Box3D) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.core
+            .traverse_async(
+                |r| parse_box3d(r).overlaps(query),
+                Want::Ids,
+                |id, _| out.push(id),
+            )
+            .await?;
+        Ok(out)
+    }
+
+    /// Stream `(item index, payload blob)` for every item intersecting `query`.
+    pub async fn search_payloads_async(
+        &self,
+        query: Box3D,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.core
+            .traverse_async(
+                |r| parse_box3d(r).overlaps(query),
+                Want::Payloads,
+                |id, blob| out.push((id, blob.to_vec())),
+            )
+            .await?;
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -1587,6 +2049,109 @@ mod tests {
         let pairs = stream.search_payloads(query).unwrap();
         let mut got: Vec<usize> = pairs.iter().map(|(id, _)| *id).collect();
         let mut want = owned.search(query);
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want);
+        for (id, blob) in &pairs {
+            assert_eq!(blob, &payloads[*id]);
+        }
+    }
+
+    // ---- Async (equivalence with the sync path) ----
+
+    #[cfg(feature = "async")]
+    struct AsyncSlice(Vec<u8>);
+
+    #[cfg(feature = "async")]
+    impl AsyncRangeReader for AsyncSlice {
+        async fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            let start = usize::try_from(offset).map_err(|_| unexpected_eof())?;
+            let end = start.checked_add(buf.len()).ok_or_else(unexpected_eof)?;
+            let src = self.0.get(start..end).ok_or_else(unexpected_eof)?;
+            buf.copy_from_slice(src);
+            Ok(())
+        }
+        fn len(&self) -> Option<u64> {
+            Some(self.0.len() as u64)
+        }
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn async_search_matches_sync() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+
+        let (_, bytes) = random_owned(20_000, 0xA5);
+        let sync = open_slice(bytes.clone());
+        let astream = pollster::block_on(StreamIndex2D::open_async(AsyncSlice(bytes))).unwrap();
+
+        let mut rng = StdRng::seed_from_u64(0xA51);
+        for _ in 0..100 {
+            let qx: f64 = rng.random_range(0.0..1000.0);
+            let qy: f64 = rng.random_range(0.0..1000.0);
+            let q = Box2D::new(qx, qy, qx + 150.0, qy + 150.0);
+            let mut s = sync.search(q).unwrap();
+            let mut a = pollster::block_on(astream.search_async(q)).unwrap();
+            s.sort_unstable();
+            a.sort_unstable();
+            assert_eq!(s, a, "query {q:?}");
+        }
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn async_search_payloads_matches_sync() {
+        let (_, payloads, bytes) = random_with_payloads(20_000, 0xA6);
+        let sync = open_slice(bytes.clone());
+        let astream = pollster::block_on(StreamIndex2D::open_async(AsyncSlice(bytes))).unwrap();
+
+        let q = Box2D::new(300.0, 300.0, 380.0, 380.0);
+        let mut sync_pairs = sync.search_payloads(q).unwrap();
+        let mut async_pairs = pollster::block_on(astream.search_payloads_async(q)).unwrap();
+        sync_pairs.sort();
+        async_pairs.sort();
+        assert_eq!(sync_pairs, async_pairs);
+        for (id, blob) in &async_pairs {
+            assert_eq!(blob, &payloads[*id]);
+        }
+        assert!(astream.has_payload_async());
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn async_3d_search_payloads_matches_sync() {
+        use crate::{Box3D, Index3DBuilder};
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+
+        let mut rng = StdRng::seed_from_u64(0xA7);
+        let n = 20_000;
+        let mut builder = Index3DBuilder::new(n).node_size(16);
+        for _ in 0..n {
+            let c: [f64; 3] = [
+                rng.random_range(0.0..1000.0),
+                rng.random_range(0.0..1000.0),
+                rng.random_range(0.0..1000.0),
+            ];
+            builder.add(Box3D::new(
+                c[0],
+                c[1],
+                c[2],
+                c[0] + 2.0,
+                c[1] + 2.0,
+                c[2] + 2.0,
+            ));
+        }
+        let owned = builder.finish().unwrap();
+        let payloads: Vec<Vec<u8>> = (0..n).map(|i| format!("a3d-{i}").into_bytes()).collect();
+        let bytes = owned.to_bytes_with_payloads(&payloads).unwrap();
+
+        let astream = pollster::block_on(StreamIndex3D::open_async(AsyncSlice(bytes))).unwrap();
+        let q = Box3D::new(300.0, 300.0, 300.0, 380.0, 380.0, 380.0);
+        let pairs = pollster::block_on(astream.search_payloads_async(q)).unwrap();
+        let mut got: Vec<usize> = pairs.iter().map(|(id, _)| *id).collect();
+        let mut want = owned.search(q);
         got.sort_unstable();
         want.sort_unstable();
         assert_eq!(got, want);

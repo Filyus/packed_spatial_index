@@ -49,6 +49,8 @@
 //! * `f32-storage`: compact f32-storage SIMD indexes.
 //! * `stream`: query a serialized index over a `RangeReader` (local file or
 //!   remote object) without loading the whole file. No extra dependencies.
+//! * `async`: query over an `AsyncRangeReader` for async I/O sources (browser /
+//!   edge worker over HTTP range or object storage). Implies `stream`.
 
 // On docs.rs (built with `--cfg docsrs` on nightly), auto-render "Available on
 // crate feature X" badges for feature-gated items from their `#[cfg]`s.
@@ -112,6 +114,8 @@ pub use persistence::{LoadError, PayloadError};
 pub use ray::{Ray2D, Ray3D};
 pub use sort2d::SortKey2D;
 pub use sort3d::SortKey3D;
+#[cfg(feature = "async")]
+pub use stream::AsyncRangeReader;
 #[cfg(all(feature = "stream", any(unix, windows)))]
 pub use stream::FileReader;
 #[cfg(feature = "stream")]

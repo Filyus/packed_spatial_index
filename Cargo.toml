@@ -27,6 +27,8 @@ undocumented_unsafe_blocks = "warn"
 [dependencies]
 rayon = { version = "1", optional = true }
 wide = { version = "1.5.0", optional = true }
+# `try_join_all` to issue a level's range reads concurrently (async feature only).
+futures-util = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
 
 [features]
 default = ["parallel", "simd"]
@@ -41,7 +43,7 @@ f32-storage = ["simd"]
 stream = []
 # Async streaming: query over an `AsyncRangeReader` (e.g. HTTP range / object
 # storage in a browser or edge worker, where I/O is async). Implies `stream`.
-async = ["stream"]
+async = ["stream", "dep:futures-util"]
 # Hidden support API for crate benchmarks and local performance tools.
 bench-internals = []
 

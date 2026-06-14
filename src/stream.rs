@@ -1300,8 +1300,10 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         })
     }
 
-    /// Async mirror of [`gather`](StreamCore::gather).
-    #[allow(clippy::too_many_arguments)]
+    /// Async mirror of [`gather`](StreamCore::gather), but issues all of a
+    /// level's coalesced runs concurrently (one buffer each). On a
+    /// single-threaded async executor this puts several range fetches in flight
+    /// at once, so the level's latency is one round trip rather than the sum.
     async fn gather_async(
         &self,
         positions: &[usize],
@@ -1309,64 +1311,103 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         stride: usize,
         cache: &[u8],
         out: &mut Vec<u8>,
-        scratch: &mut Vec<u8>,
         budget: &mut Budget,
     ) -> Result<(), StreamError> {
         let runs = plan_gather(positions, section0, stride, self.dir_node_start, cache, out);
         for run in &runs {
             budget.charge_read(run.len)?;
-            scratch.clear();
-            scratch.resize(run.len, 0);
-            self.reader.read_exact_at(run.offset, scratch).await?;
-            apply_gather_run(out, run, scratch, stride);
+        }
+        let mut bufs: Vec<Vec<u8>> = runs.iter().map(|run| vec![0u8; run.len]).collect();
+        let reads = runs
+            .iter()
+            .zip(bufs.iter_mut())
+            .map(|(run, buf)| self.reader.read_exact_at(run.offset, buf.as_mut_slice()));
+        futures_util::future::try_join_all(reads).await?;
+        for (run, buf) in runs.iter().zip(&bufs) {
+            apply_gather_run(out, run, buf, stride);
         }
         Ok(())
     }
 
-    /// Async mirror of [`gather_payloads`](StreamCore::gather_payloads).
-    #[allow(clippy::too_many_arguments)]
+    /// Async mirror of [`gather_payloads`](StreamCore::gather_payloads). Reads
+    /// every run's offset table concurrently, then every run's blobs
+    /// concurrently — two round trips for the whole leaf frontier rather than two
+    /// per run.
     async fn gather_payloads_async<F>(
         &self,
         section: &PayloadSection,
         leaf_positions: &[usize],
         indices: &[u8],
-        off_buf: &mut Vec<u8>,
-        blob_buf: &mut Vec<u8>,
         budget: &mut Budget,
         sink: &mut F,
     ) -> Result<(), StreamError>
     where
         F: FnMut(usize, &[u8]),
     {
+        // Group leaf positions into coalesced runs.
+        let mut runs: Vec<(usize, usize)> = Vec::new();
         let mut j = 0;
         while j < leaf_positions.len() {
             let k = payload_run_end(leaf_positions, j);
+            runs.push((j, k));
+            j = k + 1;
+        }
+
+        // Phase 1: read every run's offset table concurrently.
+        let mut off_bufs: Vec<Vec<u8>> = runs
+            .iter()
+            .map(|&(j, k)| vec![0u8; (leaf_positions[k] + 2 - leaf_positions[j]) * 8])
+            .collect();
+        for buf in &off_bufs {
+            budget.charge_read(buf.len())?;
+        }
+        let off_reads = runs.iter().zip(off_bufs.iter_mut()).map(|(&(j, _), buf)| {
             let lo = leaf_positions[j];
-            let hi = leaf_positions[k];
-
-            off_buf.clear();
-            off_buf.resize((hi + 2 - lo) * 8, 0);
-            budget.charge_read(off_buf.len())?;
             self.reader
-                .read_exact_at(section.offsets_start + (lo * 8) as u64, off_buf)
-                .await?;
-            let (blob_lo, blob_hi) = payload_blob_span(off_buf, lo, hi, section.blob_total)?;
+                .read_exact_at(section.offsets_start + (lo * 8) as u64, buf.as_mut_slice())
+        });
+        futures_util::future::try_join_all(off_reads).await?;
 
-            blob_buf.clear();
-            blob_buf.resize((blob_hi - blob_lo) as usize, 0);
-            if !blob_buf.is_empty() {
-                budget.charge_read(blob_buf.len())?;
-                self.reader
-                    .read_exact_at(section.blobs_start + blob_lo, blob_buf)
-                    .await?;
+        // Validate each run's blob span.
+        let mut spans = Vec::with_capacity(runs.len());
+        for (&(j, k), off_buf) in runs.iter().zip(&off_bufs) {
+            spans.push(payload_blob_span(
+                off_buf,
+                leaf_positions[j],
+                leaf_positions[k],
+                section.blob_total,
+            )?);
+        }
+
+        // Phase 2: read every run's blobs concurrently (empty spans are no-ops).
+        let mut blob_bufs: Vec<Vec<u8>> = spans
+            .iter()
+            .map(|&(lo, hi)| vec![0u8; (hi - lo) as usize])
+            .collect();
+        for buf in &blob_bufs {
+            if !buf.is_empty() {
+                budget.charge_read(buf.len())?;
             }
+        }
+        let blob_reads = spans
+            .iter()
+            .zip(blob_bufs.iter_mut())
+            .map(|(&(lo, _), buf)| {
+                self.reader
+                    .read_exact_at(section.blobs_start + lo, buf.as_mut_slice())
+            });
+        futures_util::future::try_join_all(blob_reads).await?;
 
+        // Emit every run.
+        for ((&(j, k), off_buf), (&(blob_lo, blob_hi), blob_buf)) in
+            runs.iter().zip(&off_bufs).zip(spans.iter().zip(&blob_bufs))
+        {
             emit_run_payloads(
                 leaf_positions,
                 indices,
                 j,
                 k,
-                lo,
+                leaf_positions[j],
                 off_buf,
                 blob_lo,
                 blob_hi,
@@ -1375,7 +1416,6 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 budget,
                 sink,
             )?;
-            j = k + 1;
         }
         Ok(())
     }
@@ -1406,9 +1446,6 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         let mut level = self.level_count - 1;
         let mut boxes = Vec::new();
         let mut indices = Vec::new();
-        let mut scratch = Vec::new();
-        let mut off_buf = Vec::new();
-        let mut blob_buf = Vec::new();
         let mut survivors: Vec<usize> = Vec::new();
 
         loop {
@@ -1418,7 +1455,6 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 self.record,
                 &self.dir_boxes,
                 &mut boxes,
-                &mut scratch,
                 &mut budget,
             )
             .await?;
@@ -1438,7 +1474,6 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 8,
                 &self.dir_indices,
                 &mut indices,
-                &mut scratch,
                 &mut budget,
             )
             .await?;
@@ -1450,8 +1485,6 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                             section,
                             &survivors,
                             &indices,
-                            &mut off_buf,
-                            &mut blob_buf,
                             &mut budget,
                             &mut sink,
                         )
@@ -2378,6 +2411,83 @@ mod tests {
         fn len(&self) -> Option<u64> {
             Some(self.0.len() as u64)
         }
+    }
+
+    /// A future that returns `Pending` exactly once (waking itself) so that a
+    /// read appears in flight for one poll round before completing.
+    #[cfg(feature = "async")]
+    struct YieldOnce(bool);
+
+    #[cfg(feature = "async")]
+    impl std::future::Future for YieldOnce {
+        type Output = ();
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<()> {
+            if self.0 {
+                std::task::Poll::Ready(())
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    }
+
+    /// An async reader that yields once per read and tracks the peak number of
+    /// reads in flight at the same time — `> 1` proves a level's reads were
+    /// issued concurrently rather than awaited one by one.
+    #[cfg(feature = "async")]
+    struct YieldReader {
+        inner: Vec<u8>,
+        in_flight: std::cell::Cell<usize>,
+        peak: std::cell::Cell<usize>,
+    }
+
+    #[cfg(feature = "async")]
+    impl AsyncRangeReader for YieldReader {
+        async fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            self.in_flight.set(self.in_flight.get() + 1);
+            self.peak.set(self.peak.get().max(self.in_flight.get()));
+            YieldOnce(false).await;
+            self.in_flight.set(self.in_flight.get() - 1);
+            let start = usize::try_from(offset).map_err(|_| unexpected_eof())?;
+            let end = start.checked_add(buf.len()).ok_or_else(unexpected_eof)?;
+            let src = self.inner.get(start..end).ok_or_else(unexpected_eof)?;
+            buf.copy_from_slice(src);
+            Ok(())
+        }
+        fn len(&self) -> Option<u64> {
+            Some(self.inner.len() as u64)
+        }
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn async_reads_a_level_concurrently() {
+        // A 2D window query crosses the Hilbert curve several times, so the leaf
+        // gather has multiple coalesced runs; the async path must issue them
+        // concurrently (peak in-flight > 1).
+        let (owned, bytes) = random_owned(50_000, 0xC04C);
+        let reader = YieldReader {
+            inner: bytes,
+            in_flight: std::cell::Cell::new(0),
+            peak: std::cell::Cell::new(0),
+        };
+        let stream = pollster::block_on(StreamIndex2D::open_async(reader)).unwrap();
+        let query = Box2D::new(200.0, 200.0, 600.0, 600.0);
+
+        let mut got = pollster::block_on(stream.search_async(query)).unwrap();
+        let mut want = owned.search(query);
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want);
+        let peak = stream.core.reader.peak.get();
+        assert!(
+            peak > 1,
+            "expected concurrent reads, peak in-flight was {peak}"
+        );
     }
 
     #[cfg(feature = "async")]

@@ -19,8 +19,8 @@ use crate::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
     },
     persistence::{
-        ByteWriter, LoadError, parse_index3d_bytes, read_f64_le_unchecked, read_u64_le_unchecked,
-        serialized_len_3d,
+        ByteWriter, CHUNK_ENTRY_LEN, LoadError, SUPERBLOCK_LEN, TAG_TREE, TREE_DESC_LEN,
+        parse_index, plan_container, read_f64_le_unchecked, read_u64_le_unchecked,
     },
     ray::Ray3D,
     sort3d::{SortKey3DContext, encode_sort_by_key_3d},
@@ -306,19 +306,14 @@ impl SimdIndex3D {
     ///
     /// Equivalent to [`to_bytes`](Self::to_bytes) but writes into `out` (cleared first).
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
-        let level_count = self.level_bounds.len();
         let num_nodes = self.min_xs.len();
-        let len = serialized_len_3d(level_count, num_nodes).expect("serialized index is too large");
-        let mut bytes = ByteWriter::new(out, len);
-        bytes.write_magic();
-        bytes.write_format_version();
-        bytes.write_header_len();
-        bytes.write_3d_flags();
-        bytes.write_u64(self.node_size as u64);
-        bytes.write_u64(self.num_items as u64);
-        bytes.write_u64(num_nodes as u64);
-        bytes.write_u64(level_count as u64);
-        bytes.write_usize_slice_as_u64(&self.level_bounds);
+        let tree_len = TREE_DESC_LEN + num_nodes * 48 + num_nodes * 8;
+        let (total, off) = plan_container(&[tree_len]).expect("serialized index is too large");
+        let mut bytes = ByteWriter::new(out, total);
+        bytes.write_superblock(1);
+        bytes.write_chunk_entry(&TAG_TREE, true, off[0], tree_len);
+        bytes.write_zeros(off[0] - (SUPERBLOCK_LEN + CHUNK_ENTRY_LEN));
+        bytes.write_tree_desc(3, 8, false, self.num_items, self.node_size);
         bytes.write_soa_boxes_3d(
             &self.min_xs,
             &self.min_ys,
@@ -328,6 +323,7 @@ impl SimdIndex3D {
             &self.max_zs,
         );
         bytes.write_usize_slice_as_u64(&self.indices);
+        bytes.write_zeros(total - (off[0] + tree_len));
         bytes.finish();
     }
 
@@ -335,13 +331,12 @@ impl SimdIndex3D {
     /// [`Index3D::to_bytes`](crate::Index3D::to_bytes); the AoS box records are
     /// scattered into the structure-of-arrays columns.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
-        let parsed = parse_index3d_bytes(bytes)?;
-        let num_nodes = parsed.num_nodes;
-
-        let mut level_bounds = Vec::with_capacity(parsed.level_count);
-        for i in 0..parsed.level_count {
-            level_bounds.push(read_u64_le_unchecked(parsed.level_bounds, i * 8) as usize);
+        let (parsed, payload) = parse_index(bytes, 3, 8)?;
+        if payload.is_some() {
+            return Err(LoadError::UnsupportedVersion);
         }
+        let num_nodes = parsed.num_nodes;
+        let level_bounds = parsed.level_bounds;
 
         let mut min_xs = Vec::with_capacity(num_nodes);
         let mut min_ys = Vec::with_capacity(num_nodes);
@@ -1518,7 +1513,8 @@ pub struct SimdIndex3DView<'a> {
     num_items: usize,
     num_nodes: usize,
     level_count: usize,
-    level_bounds: &'a [u8],
+    /// Derived at load (not stored), so owned rather than borrowed.
+    level_bounds: Vec<usize>,
     entries: &'a [u8],
     indices: &'a [u8],
 }
@@ -1526,7 +1522,10 @@ pub struct SimdIndex3DView<'a> {
 impl<'a> SimdIndex3DView<'a> {
     /// Borrow a zero-copy view over the canonical `PSINDEX` 3D bytes.
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
-        let parsed = parse_index3d_bytes(bytes)?;
+        let (parsed, payload) = parse_index(bytes, 3, 8)?;
+        if payload.is_some() {
+            return Err(LoadError::UnsupportedVersion);
+        }
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -1577,7 +1576,7 @@ impl<'a> SimdIndex3DView<'a> {
 
     #[inline]
     fn level_bound_unchecked(&self, index: usize) -> usize {
-        read_u64_le_unchecked(self.level_bounds, index * 8) as usize
+        self.level_bounds[index]
     }
 
     #[inline]

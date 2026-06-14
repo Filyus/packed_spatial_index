@@ -28,9 +28,8 @@ use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, max_distance_squared,
 };
 use crate::persistence::{
-    ByteWriter, FORMAT_FLAG_PAYLOAD, FORMAT_FLAGS_2D, LoadError, ParsedPayload, PayloadError,
-    build_id_to_leaf, parse_index_and_payload, payload_layout, payload_slice,
-    read_f64_le_unchecked, read_u64_le_unchecked, serialized_len,
+    LoadError, MetaFields, ParsedPayload, PayloadError, build_id_to_leaf, parse_index,
+    payload_slice, read_f64_le_unchecked, read_u64_le_unchecked, write_index_container,
 };
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
@@ -137,50 +136,27 @@ impl Index2D {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
-        let level_count = self.level_bounds.len();
-        let num_nodes = self.entries.len();
-        let len = serialized_len(level_count, num_nodes).expect("serialized index is too large");
-        let mut bytes = ByteWriter::new(out, len);
-        bytes.write_magic();
-        bytes.write_format_version();
-        bytes.write_header_len();
-        bytes.write_flags();
-        bytes.write_u64(self.node_size as u64);
-        bytes.write_u64(self.num_items as u64);
-        bytes.write_u64(num_nodes as u64);
-        bytes.write_u64(level_count as u64);
-        bytes.write_usize_slice_as_u64(&self.level_bounds);
-        bytes.write_box2d_slice(&self.entries);
-        bytes.write_usize_slice_as_u64(&self.indices);
-        bytes.finish();
+        self.serialize()
+            .to_bytes_into(out)
+            .expect("serialization without payloads cannot fail");
     }
 
     /// Serialize this index together with one opaque payload per item, producing
-    /// a self-contained file that carries both the spatial index and the data it
-    /// indexes.
+    /// a self-contained file (the spatial index plus the data it indexes).
     ///
     /// `payloads` is in item order: `payloads[i]` is the blob for the item added
-    /// `i`-th (the index that queries return). The blobs are stored in leaf
-    /// (Hilbert) order so a spatial query fetches them in coalesced reads. The
-    /// index data is unchanged — only a header flag bit marks the payload's
-    /// presence; readers that do not understand payloads reject the file rather
-    /// than misread it. Read the blobs back paired with query results via
-    /// `StreamIndex2D::search_payloads` (the `stream` feature, remote-friendly)
-    /// or [`Index2DView::search_payloads`] / [`Index2DView::payload`].
-    ///
+    /// `i`-th. Read them back via `StreamIndex2D::search_payloads` (`stream`
+    /// feature) or [`Index2DView::search_payloads`] / [`Index2DView::payload`].
     /// Returns [`PayloadError::CountMismatch`] unless `payloads.len()` equals
-    /// [`num_items`](Self::num_items).
-    ///
-    /// # Example
+    /// [`num_items`](Self::num_items). Shorthand for
+    /// [`serialize().payloads(..)`](Self::serialize).
     ///
     /// ```
     /// use packed_spatial_index::{Box2D, Index2DBuilder};
-    ///
     /// let mut builder = Index2DBuilder::new(2);
     /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
     /// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
     /// let index = builder.finish()?;
-    ///
     /// let bytes = index.to_bytes_with_payloads(&[b"first".as_slice(), b"second"])?;
     /// assert!(bytes.len() > index.to_bytes().len());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -189,9 +165,7 @@ impl Index2D {
         &self,
         payloads: &[P],
     ) -> Result<Vec<u8>, PayloadError> {
-        let mut out = Vec::new();
-        self.to_bytes_with_payloads_into(payloads, &mut out)?;
-        Ok(out)
+        self.serialize().payloads(payloads).to_bytes()
     }
 
     /// [`to_bytes_with_payloads`](Self::to_bytes_with_payloads) into a reused
@@ -201,44 +175,54 @@ impl Index2D {
         payloads: &[P],
         out: &mut Vec<u8>,
     ) -> Result<(), PayloadError> {
-        if payloads.len() != self.num_items {
-            return Err(PayloadError::CountMismatch {
-                expected: self.num_items,
-                got: payloads.len(),
-            });
-        }
-        let level_count = self.level_bounds.len();
-        let num_nodes = self.entries.len();
-        let index_len =
-            serialized_len(level_count, num_nodes).map_err(|_| PayloadError::TooLarge)?;
+        self.serialize().payloads(payloads).to_bytes_into(out)
+    }
 
-        let mut blob_total: u64 = 0;
-        for payload in payloads {
-            blob_total = blob_total
-                .checked_add(payload.as_ref().len() as u64)
-                .ok_or(PayloadError::TooLarge)?;
-        }
-        let blob_total = usize::try_from(blob_total).map_err(|_| PayloadError::TooLarge)?;
-        let layout = payload_layout(self.num_items, index_len, blob_total)
-            .map_err(|_| PayloadError::TooLarge)?;
+    /// Serialize in the **interleaved** layout (each node's box followed by its
+    /// index), a streaming-tuned layout a [`StreamIndex2D`] fetches in one read
+    /// per level instead of two. The in-memory loaders and SIMD views read the
+    /// default layout only. Shorthand for
+    /// [`serialize().interleaved()`](Self::serialize); available with `stream`.
+    ///
+    /// [`StreamIndex2D`]: crate::StreamIndex2D
+    #[cfg(feature = "stream")]
+    pub fn to_bytes_interleaved(&self) -> Vec<u8> {
+        self.serialize()
+            .interleaved()
+            .to_bytes()
+            .expect("serialization without payloads cannot fail")
+    }
 
-        let mut bytes = ByteWriter::new(out, layout.full_total);
-        bytes.write_magic();
-        bytes.write_format_version();
-        bytes.write_header_len();
-        bytes.write_u64(FORMAT_FLAGS_2D | FORMAT_FLAG_PAYLOAD);
-        bytes.write_u64(self.node_size as u64);
-        bytes.write_u64(self.num_items as u64);
-        bytes.write_u64(num_nodes as u64);
-        bytes.write_u64(level_count as u64);
-        bytes.write_usize_slice_as_u64(&self.level_bounds);
-        bytes.write_box2d_slice(&self.entries);
-        bytes.write_usize_slice_as_u64(&self.indices);
-        // Leaf entries `indices[0..num_items]` map leaf rank -> insertion id, so
-        // they are the order in which to lay out payloads (leaf order).
-        bytes.write_payload_offsets_and_blobs(payloads, &self.indices[..self.num_items]);
-        bytes.finish();
-        Ok(())
+    /// Interleaved layout plus one payload per item. Shorthand for
+    /// [`serialize().interleaved().payloads(..)`](Self::serialize); available with
+    /// `stream`.
+    #[cfg(feature = "stream")]
+    pub fn to_bytes_interleaved_with_payloads<P: AsRef<[u8]>>(
+        &self,
+        payloads: &[P],
+    ) -> Result<Vec<u8>, PayloadError> {
+        self.serialize().interleaved().payloads(payloads).to_bytes()
+    }
+
+    /// Start a serialization builder for fine-grained control: optional per-item
+    /// payloads, the streaming-tuned interleaved layout, and descriptive metadata
+    /// (CRS / content type / attribution). See [`Serializer2D`].
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    /// let mut builder = Index2DBuilder::new(1);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// let index = builder.finish()?;
+    /// let bytes = index
+    ///     .serialize()
+    ///     .crs("EPSG:4326")
+    ///     .payloads(&[b"feature-0".as_slice()])
+    ///     .to_bytes()?;
+    /// assert_eq!(packed_spatial_index::read_metadata(&bytes)?.crs.as_deref(), Some("EPSG:4326"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn serialize(&self) -> Serializer2D<'_> {
+        Serializer2D::new(self)
     }
 
     /// Load an owned index from bytes previously produced by [`Index2D::to_bytes`].
@@ -1256,7 +1240,8 @@ pub struct Index2DView<'a> {
     num_items: usize,
     num_nodes: usize,
     level_count: usize,
-    level_bounds: &'a [u8],
+    /// Derived at load (not stored), so owned rather than borrowed.
+    level_bounds: Vec<usize>,
     entries: &'a [u8],
     indices: &'a [u8],
     payload: Option<ParsedPayload<'a>>,
@@ -1282,7 +1267,7 @@ impl<'a> Index2DView<'a> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
-        let (parsed, payload) = parse_index_and_payload(bytes, FORMAT_FLAGS_2D, 2, 8)?;
+        let (parsed, payload) = parse_index(bytes, 2, 8)?;
         // The payload is leaf-ordered; build the id -> leaf-rank map so random
         // `payload(id)` lookups work. Only allocated when a payload is present.
         let id_to_leaf = payload
@@ -1971,7 +1956,7 @@ impl<'a> Index2DView<'a> {
 
     #[inline]
     fn level_bound_unchecked(&self, index: usize) -> usize {
-        read_u64_le_unchecked(self.level_bounds, index * 8) as usize
+        self.level_bounds[index]
     }
 
     #[inline]
@@ -2496,3 +2481,94 @@ impl Iterator for Search2DIter<'_> {
 }
 
 impl std::iter::FusedIterator for Search2DIter<'_> {}
+
+/// Builder for [`Index2D`] serialization, created by [`Index2D::serialize`].
+///
+/// Set optional per-item payloads, the streaming-tuned interleaved layout, and
+/// descriptive metadata (CRS / content type / attribution), then call
+/// [`to_bytes`](Self::to_bytes) or [`to_bytes_into`](Self::to_bytes_into). The
+/// metadata strings are stored opaquely and read back with
+/// [`read_metadata`](crate::read_metadata).
+pub struct Serializer2D<'a> {
+    index: &'a Index2D,
+    interleaved: bool,
+    payloads: Option<Vec<&'a [u8]>>,
+    meta: MetaFields<'a>,
+}
+
+impl<'a> Serializer2D<'a> {
+    fn new(index: &'a Index2D) -> Self {
+        Self {
+            index,
+            interleaved: false,
+            payloads: None,
+            meta: MetaFields::default(),
+        }
+    }
+
+    /// Attach one opaque payload blob per item, in item order.
+    pub fn payloads<P: AsRef<[u8]>>(mut self, payloads: &'a [P]) -> Self {
+        self.payloads = Some(payloads.iter().map(|p| p.as_ref()).collect());
+        self
+    }
+
+    /// Use the streaming-tuned interleaved node layout (see
+    /// [`Index2D::to_bytes_interleaved`]).
+    #[cfg(feature = "stream")]
+    pub fn interleaved(mut self) -> Self {
+        self.interleaved = true;
+        self
+    }
+
+    /// Set the coordinate reference system identifier (opaque, e.g. `"EPSG:4326"`).
+    pub fn crs(mut self, crs: &'a str) -> Self {
+        self.meta.crs = Some(crs);
+        self
+    }
+
+    /// Set the payload content type / media type (e.g. `"application/geo+json"`).
+    pub fn content_type(mut self, content_type: &'a str) -> Self {
+        self.meta.content_type = Some(content_type);
+        self
+    }
+
+    /// Set an attribution / license string.
+    pub fn attribution(mut self, attribution: &'a str) -> Self {
+        self.meta.attribution = Some(attribution);
+        self
+    }
+
+    /// Serialize into a new buffer.
+    pub fn to_bytes(self) -> Result<Vec<u8>, PayloadError> {
+        let mut out = Vec::new();
+        self.to_bytes_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// Serialize into a reused buffer (cleared first).
+    pub fn to_bytes_into(self, out: &mut Vec<u8>) -> Result<(), PayloadError> {
+        let idx = self.index;
+        let interleaved = self.interleaved;
+        write_index_container(
+            out,
+            2,
+            8,
+            interleaved,
+            idx.num_items,
+            idx.entries.len(),
+            idx.node_size,
+            |bytes| {
+                #[cfg(feature = "stream")]
+                if interleaved {
+                    bytes.write_interleaved_2d(&idx.entries, &idx.indices);
+                    return;
+                }
+                bytes.write_box2d_slice(&idx.entries);
+                bytes.write_usize_slice_as_u64(&idx.indices);
+            },
+            self.payloads.as_deref(),
+            &idx.indices[..idx.num_items],
+            &self.meta,
+        )
+    }
+}

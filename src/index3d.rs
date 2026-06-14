@@ -14,9 +14,8 @@ use crate::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
     },
     persistence::{
-        ByteWriter, FORMAT_FLAG_PAYLOAD, FORMAT_FLAGS_3D, LoadError, ParsedPayload, PayloadError,
-        build_id_to_leaf, parse_index_and_payload, payload_layout, payload_slice,
-        read_f64_le_unchecked, read_u64_le_unchecked, serialized_len_3d,
+        LoadError, MetaFields, ParsedPayload, PayloadError, build_id_to_leaf, parse_index,
+        payload_slice, read_f64_le_unchecked, read_u64_le_unchecked, write_index_container,
     },
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
@@ -112,37 +111,20 @@ impl Index3D {
     /// first). Reusing one buffer across many serializations avoids repeated
     /// multi-megabyte allocation and page-faulting.
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
-        let level_count = self.level_bounds.len();
-        let num_nodes = self.entries.len();
-        let len = serialized_len_3d(level_count, num_nodes).expect("serialized index is too large");
-        let mut bytes = ByteWriter::new(out, len);
-        bytes.write_magic();
-        bytes.write_format_version();
-        bytes.write_header_len();
-        bytes.write_3d_flags();
-        bytes.write_u64(self.node_size as u64);
-        bytes.write_u64(self.num_items as u64);
-        bytes.write_u64(num_nodes as u64);
-        bytes.write_u64(level_count as u64);
-        bytes.write_usize_slice_as_u64(&self.level_bounds);
-        bytes.write_box3d_slice(&self.entries);
-        bytes.write_usize_slice_as_u64(&self.indices);
-        bytes.finish();
+        self.serialize()
+            .to_bytes_into(out)
+            .expect("serialization without payloads cannot fail");
     }
 
     /// Serialize this index together with one opaque payload per item. The 3D
     /// counterpart of
-    /// [`Index2D::to_bytes_with_payloads`](crate::Index2D::to_bytes_with_payloads):
-    /// `payloads` is in item order, and the payload section is appended after the
-    /// index. Read blobs back by item index with a `StreamIndex3D` (the `stream`
-    /// feature) or [`Index3DView`].
+    /// [`Index2D::to_bytes_with_payloads`](crate::Index2D::to_bytes_with_payloads).
+    /// Shorthand for [`serialize().payloads(..)`](Self::serialize).
     pub fn to_bytes_with_payloads<P: AsRef<[u8]>>(
         &self,
         payloads: &[P],
     ) -> Result<Vec<u8>, PayloadError> {
-        let mut out = Vec::new();
-        self.to_bytes_with_payloads_into(payloads, &mut out)?;
-        Ok(out)
+        self.serialize().payloads(payloads).to_bytes()
     }
 
     /// [`to_bytes_with_payloads`](Self::to_bytes_with_payloads) into a reused
@@ -152,43 +134,35 @@ impl Index3D {
         payloads: &[P],
         out: &mut Vec<u8>,
     ) -> Result<(), PayloadError> {
-        if payloads.len() != self.num_items {
-            return Err(PayloadError::CountMismatch {
-                expected: self.num_items,
-                got: payloads.len(),
-            });
-        }
-        let level_count = self.level_bounds.len();
-        let num_nodes = self.entries.len();
-        let index_len =
-            serialized_len_3d(level_count, num_nodes).map_err(|_| PayloadError::TooLarge)?;
+        self.serialize().payloads(payloads).to_bytes_into(out)
+    }
 
-        let mut blob_total: u64 = 0;
-        for payload in payloads {
-            blob_total = blob_total
-                .checked_add(payload.as_ref().len() as u64)
-                .ok_or(PayloadError::TooLarge)?;
-        }
-        let blob_total = usize::try_from(blob_total).map_err(|_| PayloadError::TooLarge)?;
-        let layout = payload_layout(self.num_items, index_len, blob_total)
-            .map_err(|_| PayloadError::TooLarge)?;
+    /// Serialize in the **interleaved** layout (streaming-tuned). Shorthand for
+    /// [`serialize().interleaved()`](Self::serialize); available with `stream`.
+    #[cfg(feature = "stream")]
+    pub fn to_bytes_interleaved(&self) -> Vec<u8> {
+        self.serialize()
+            .interleaved()
+            .to_bytes()
+            .expect("serialization without payloads cannot fail")
+    }
 
-        let mut bytes = ByteWriter::new(out, layout.full_total);
-        bytes.write_magic();
-        bytes.write_format_version();
-        bytes.write_header_len();
-        bytes.write_u64(FORMAT_FLAGS_3D | FORMAT_FLAG_PAYLOAD);
-        bytes.write_u64(self.node_size as u64);
-        bytes.write_u64(self.num_items as u64);
-        bytes.write_u64(num_nodes as u64);
-        bytes.write_u64(level_count as u64);
-        bytes.write_usize_slice_as_u64(&self.level_bounds);
-        bytes.write_box3d_slice(&self.entries);
-        bytes.write_usize_slice_as_u64(&self.indices);
-        // Lay payloads out in leaf order (indices[0..num_items] = leaf -> id).
-        bytes.write_payload_offsets_and_blobs(payloads, &self.indices[..self.num_items]);
-        bytes.finish();
-        Ok(())
+    /// Interleaved layout plus one payload per item. Shorthand for
+    /// [`serialize().interleaved().payloads(..)`](Self::serialize); available with
+    /// `stream`.
+    #[cfg(feature = "stream")]
+    pub fn to_bytes_interleaved_with_payloads<P: AsRef<[u8]>>(
+        &self,
+        payloads: &[P],
+    ) -> Result<Vec<u8>, PayloadError> {
+        self.serialize().interleaved().payloads(payloads).to_bytes()
+    }
+
+    /// Start a serialization builder for fine-grained control: optional per-item
+    /// payloads, the streaming-tuned interleaved layout, and descriptive metadata
+    /// (CRS / content type / attribution). See [`Serializer3D`].
+    pub fn serialize(&self) -> Serializer3D<'_> {
+        Serializer3D::new(self)
     }
 
     /// Load an owned 3D index from bytes previously produced by [`Index3D::to_bytes`].
@@ -1009,7 +983,8 @@ pub struct Index3DView<'a> {
     num_items: usize,
     num_nodes: usize,
     level_count: usize,
-    level_bounds: &'a [u8],
+    /// Derived at load (not stored), so owned rather than borrowed.
+    level_bounds: Vec<usize>,
     entries: &'a [u8],
     indices: &'a [u8],
     payload: Option<ParsedPayload<'a>>,
@@ -1035,7 +1010,7 @@ impl<'a> Index3DView<'a> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
-        let (parsed, payload) = parse_index_and_payload(bytes, FORMAT_FLAGS_3D, 3, 8)?;
+        let (parsed, payload) = parse_index(bytes, 3, 8)?;
         let id_to_leaf = payload
             .is_some()
             .then(|| build_id_to_leaf(parsed.indices, parsed.num_items));
@@ -1715,7 +1690,7 @@ impl<'a> Index3DView<'a> {
 
     #[inline]
     fn level_bound_unchecked(&self, index: usize) -> usize {
-        read_u64_le_unchecked(self.level_bounds, index * 8) as usize
+        self.level_bounds[index]
     }
 
     #[inline]
@@ -2242,3 +2217,91 @@ impl Iterator for Search3DIter<'_> {
 }
 
 impl std::iter::FusedIterator for Search3DIter<'_> {}
+
+/// Builder for [`Index3D`] serialization, created by [`Index3D::serialize`]. The
+/// 3D counterpart of [`Serializer2D`](crate::Serializer2D): optional per-item
+/// payloads, the streaming-tuned interleaved layout, and descriptive metadata
+/// (CRS / content type / attribution), read back with
+/// [`read_metadata`](crate::read_metadata).
+pub struct Serializer3D<'a> {
+    index: &'a Index3D,
+    interleaved: bool,
+    payloads: Option<Vec<&'a [u8]>>,
+    meta: MetaFields<'a>,
+}
+
+impl<'a> Serializer3D<'a> {
+    fn new(index: &'a Index3D) -> Self {
+        Self {
+            index,
+            interleaved: false,
+            payloads: None,
+            meta: MetaFields::default(),
+        }
+    }
+
+    /// Attach one opaque payload blob per item, in item order.
+    pub fn payloads<P: AsRef<[u8]>>(mut self, payloads: &'a [P]) -> Self {
+        self.payloads = Some(payloads.iter().map(|p| p.as_ref()).collect());
+        self
+    }
+
+    /// Use the streaming-tuned interleaved node layout.
+    #[cfg(feature = "stream")]
+    pub fn interleaved(mut self) -> Self {
+        self.interleaved = true;
+        self
+    }
+
+    /// Set the coordinate reference system identifier (opaque, e.g. `"EPSG:4979"`).
+    pub fn crs(mut self, crs: &'a str) -> Self {
+        self.meta.crs = Some(crs);
+        self
+    }
+
+    /// Set the payload content type / media type.
+    pub fn content_type(mut self, content_type: &'a str) -> Self {
+        self.meta.content_type = Some(content_type);
+        self
+    }
+
+    /// Set an attribution / license string.
+    pub fn attribution(mut self, attribution: &'a str) -> Self {
+        self.meta.attribution = Some(attribution);
+        self
+    }
+
+    /// Serialize into a new buffer.
+    pub fn to_bytes(self) -> Result<Vec<u8>, PayloadError> {
+        let mut out = Vec::new();
+        self.to_bytes_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// Serialize into a reused buffer (cleared first).
+    pub fn to_bytes_into(self, out: &mut Vec<u8>) -> Result<(), PayloadError> {
+        let idx = self.index;
+        let interleaved = self.interleaved;
+        write_index_container(
+            out,
+            3,
+            8,
+            interleaved,
+            idx.num_items,
+            idx.entries.len(),
+            idx.node_size,
+            |bytes| {
+                #[cfg(feature = "stream")]
+                if interleaved {
+                    bytes.write_interleaved_3d(&idx.entries, &idx.indices);
+                    return;
+                }
+                bytes.write_box3d_slice(&idx.entries);
+                bytes.write_usize_slice_as_u64(&idx.indices);
+            },
+            self.payloads.as_deref(),
+            &idx.indices[..idx.num_items],
+            &self.meta,
+        )
+    }
+}

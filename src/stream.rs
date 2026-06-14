@@ -25,9 +25,9 @@ use std::io;
 
 use crate::geometry::{Box2D, Box3D};
 use crate::persistence::{
-    FORMAT_FLAGS_2D, FORMAT_FLAGS_3D, FORMAT_HEADER_LEN, LoadError, parse_and_validate_header,
-    payload_layout, read_f64_le_unchecked, read_u64_at, read_u64_le_unchecked, section_layout,
-    validate_level_bounds,
+    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PYLD_DESC_LEN, SUPERBLOCK_LEN,
+    TAG_PYLD, TAG_TREE, TREE_DESC_LEN, derive_level_bounds, expected_tree_shape, parse_pyld_chunk,
+    parse_tree_chunk, read_f64_le_unchecked, read_u32_at, read_u64_at, read_u64_le_unchecked,
 };
 
 /// Upper bound on how many nodes the open-time "directory" prefetch caches.
@@ -326,15 +326,25 @@ pub(crate) struct StreamCore<R> {
     level_bounds: Vec<usize>,
     /// Box record size in bytes.
     record: usize,
-    /// Byte offset of the box section.
+    /// Byte stride from one node's box to the next: `record` for the SoA layout,
+    /// `record + 8` for the interleaved layout (box immediately followed by its
+    /// index). The box of node `n` is always its first `record` bytes.
+    box_stride: usize,
+    /// Whether the node section is interleaved (box + index per node). When set,
+    /// a node's index is read from its own record, so no separate index gather is
+    /// issued — one coalesced read per level instead of two.
+    interleaved: bool,
+    /// Byte offset of the box / node section.
     box0: u64,
-    /// Byte offset of the index section.
+    /// Byte offset of the separate index section (SoA layout; unused interleaved).
     idx0: u64,
     /// First node position covered by the cached directory.
     dir_node_start: usize,
-    /// Cached box bytes for node positions `[dir_node_start, num_nodes)`.
+    /// Cached box (or node, when interleaved) bytes for positions
+    /// `[dir_node_start, num_nodes)`, strided by `box_stride`.
     dir_boxes: Vec<u8>,
-    /// Cached index bytes for the same node positions.
+    /// Cached index bytes for the same positions (SoA layout only; empty when
+    /// interleaved, where indices live inside `dir_boxes`).
     dir_indices: Vec<u8>,
     /// Optional payload section. `None` when the index carries no payload.
     payload: Option<PayloadSection>,
@@ -361,114 +371,159 @@ impl<R> StreamCore<R> {
 }
 
 impl<R: RangeReader> StreamCore<R> {
-    /// Open and validate an index of the given variant from `reader`.
+    /// Open and validate a chunk-container index from `reader`: check the
+    /// superblock, read the directory, locate the `TREE` (and optional `PYLD`)
+    /// chunk, derive the tree shape, and prefetch the upper-level directory.
     fn open(
         reader: R,
-        expected_flags: u64,
         dimensions: usize,
         coord_bytes: usize,
         limits: StreamLimits,
     ) -> Result<Self, StreamError> {
-        // 1. Header (fixed 64 bytes): magic, version, flags, counts, tree shape.
-        let mut header = [0u8; FORMAT_HEADER_LEN];
-        reader.read_exact_at(0, &mut header)?;
-        let fields = parse_and_validate_header(&header, expected_flags, true)?;
+        // One leading read covers the superblock (magic + version + chunk_count).
+        let mut head = [0u8; SUPERBLOCK_LEN];
+        reader.read_exact_at(0, &mut head)?;
+        if &head[..8] != b"PSINDEX\0" {
+            return Err(StreamError::Format(LoadError::BadMagic));
+        }
+        if u64::from_le_bytes(head[8..16].try_into().unwrap()) != FORMAT_VERSION {
+            return Err(StreamError::Format(LoadError::UnsupportedVersion));
+        }
+        let chunk_count = read_u32_at(&head, 16)? as usize;
+        let dir_len = chunk_count
+            .checked_mul(CHUNK_ENTRY_LEN)
+            .ok_or(LoadError::IntegerOverflow)?;
+        let mut dir = vec![0u8; dir_len];
+        reader.read_exact_at(SUPERBLOCK_LEN as u64, &mut dir)?;
 
-        // 2. Section offsets, derived purely from the validated header counts.
-        let layout = section_layout(
-            fields.level_count,
-            fields.num_nodes,
-            dimensions,
-            coord_bytes,
-        )?;
+        let file_len = reader.len();
+        let mut max_end = SUPERBLOCK_LEN as u64 + dir_len as u64;
+        let mut tree: Option<(u64, u64)> = None;
+        let mut pyld: Option<(u64, u64)> = None;
+        for i in 0..chunk_count {
+            let base = i * CHUNK_ENTRY_LEN;
+            let mut tag = [0u8; 4];
+            tag.copy_from_slice(&dir[base..base + 4]);
+            let flags = read_u32_at(&dir, base + 4)?;
+            let offset = read_u64_at(&dir, base + 8)?;
+            let len = read_u64_at(&dir, base + 16)?;
+            let end = offset.checked_add(len).ok_or(LoadError::IntegerOverflow)?;
+            if file_len.is_some_and(|fl| end > fl) {
+                return Err(StreamError::Format(LoadError::InvalidTree));
+            }
+            max_end = max_end.max(end);
+            if tag == TAG_TREE {
+                tree = Some((offset, len));
+            } else if tag == TAG_PYLD {
+                pyld = Some((offset, len));
+            } else if flags & CHUNK_FLAG_CRITICAL != 0 {
+                return Err(StreamError::Format(LoadError::UnsupportedVersion));
+            }
+        }
 
-        // 3. Locate the optional payload section. Its blob total lives in the
-        //    last offset-table entry, so read just that one u64 (the table itself
-        //    is read on demand, per item, never wholesale).
-        let (payload, full_total) = if fields.has_payload {
-            let offsets_start = layout.total_len;
-            let last_offset_at = offsets_start
-                .checked_add(
-                    fields
-                        .num_items
-                        .checked_mul(8)
-                        .ok_or(LoadError::IntegerOverflow)?,
-                )
-                .ok_or(LoadError::IntegerOverflow)?;
-            let mut last = [0u8; 8];
-            reader.read_exact_at(last_offset_at as u64, &mut last)?;
-            let blob_total = u64::from_le_bytes(last);
-            let blob_total_usize =
-                usize::try_from(blob_total).map_err(|_| LoadError::IntegerOverflow)?;
-            let plan = payload_layout(fields.num_items, offsets_start, blob_total_usize)?;
-            (
-                Some(PayloadSection {
-                    offsets_start: plan.offsets_start as u64,
-                    blobs_start: plan.blobs_start as u64,
-                    blob_total,
-                }),
-                plan.full_total,
-            )
-        } else {
-            (None, layout.total_len)
-        };
-
-        // 4. Cross-check the declared length against the source, when known.
-        if let Some(actual) = reader.len()
-            && actual != full_total as u64
+        // TREE descriptor.
+        // Reject a file longer than the last chunk plus its alignment pad — a
+        // stray trailing byte the directory does not account for.
+        let aligned_end = (max_end + 7) & !7;
+        if let Some(fl) = file_len
+            && fl > aligned_end
         {
             return Err(StreamError::Format(LoadError::LengthMismatch {
-                expected: full_total,
-                actual: usize::try_from(actual).unwrap_or(usize::MAX),
+                expected: max_end as usize,
+                actual: fl as usize,
             }));
         }
-
-        // 5. Level bounds (small): read fully, validate, parse to positions.
-        let level_bounds_len = fields.level_count * 8;
-        let mut level_bounds_bytes = vec![0u8; level_bounds_len];
-        reader.read_exact_at(layout.level_bounds_start as u64, &mut level_bounds_bytes)?;
-        validate_level_bounds(
-            &level_bounds_bytes,
-            fields.num_items,
-            fields.num_nodes,
-            fields.node_size,
-            fields.level_count,
-        )?;
-        let mut level_bounds = Vec::with_capacity(fields.level_count);
-        for level in 0..fields.level_count {
-            let value = read_u64_at(&level_bounds_bytes, level * 8)
-                .and_then(|v| usize::try_from(v).map_err(|_| LoadError::IntegerOverflow))?;
-            level_bounds.push(value);
+        let (toff, tlen) = tree.ok_or(LoadError::InvalidTree)?;
+        if tlen < TREE_DESC_LEN as u64 {
+            return Err(StreamError::Format(LoadError::Truncated));
         }
+        let mut desc = [0u8; TREE_DESC_LEN];
+        reader.read_exact_at(toff, &mut desc)?;
+        let (td, _) = parse_tree_chunk(&desc)?;
+        if td.dimensions != dimensions || td.coord_bytes != coord_bytes {
+            return Err(StreamError::Format(LoadError::UnsupportedVersion));
+        }
+        let (num_nodes, level_count) = expected_tree_shape(td.num_items, td.node_size)?;
+        let record = dimensions
+            .checked_mul(2 * coord_bytes)
+            .ok_or(LoadError::IntegerOverflow)?;
+        let box_stride = if td.interleaved { record + 8 } else { record };
+        let box0 = toff + td.desc_len as u64;
+        let node_len = num_nodes
+            .checked_mul(box_stride + if td.interleaved { 0 } else { 8 })
+            .ok_or(LoadError::IntegerOverflow)?;
+        if tlen != td.desc_len as u64 + node_len as u64 {
+            return Err(StreamError::Format(LoadError::InvalidTree));
+        }
+        let idx0 = if td.interleaved {
+            box0
+        } else {
+            box0 + (num_nodes * record) as u64
+        };
+        let level_bounds = derive_level_bounds(td.num_items, td.node_size, level_count);
 
-        // 6. Directory: cache the upper levels (a contiguous suffix of the box
-        //    and index sections) up to the node budget.
-        let dir_node_start =
-            directory_start(&level_bounds, fields.level_count, DIRECTORY_NODE_BUDGET);
-        let cached_nodes = fields.num_nodes - dir_node_start;
+        // Optional payload chunk.
+        let payload = match pyld {
+            Some((poff, plen)) => {
+                if plen < PYLD_DESC_LEN as u64 {
+                    return Err(StreamError::Format(LoadError::Truncated));
+                }
+                let mut pd = [0u8; PYLD_DESC_LEN];
+                reader.read_exact_at(poff, &mut pd)?;
+                let (pdesc, _) = parse_pyld_chunk(&pd)?;
+                let offsets_start = poff + pdesc.desc_len as u64;
+                let last_at = offsets_start + (td.num_items as u64) * 8;
+                let mut last = [0u8; 8];
+                reader.read_exact_at(last_at, &mut last)?;
+                let blob_total = u64::from_le_bytes(last);
+                let blobs_start = offsets_start + (td.num_items as u64 + 1) * 8;
+                let need = pdesc.desc_len as u64 + (td.num_items as u64 + 1) * 8 + blob_total;
+                if plen != need {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                Some(PayloadSection {
+                    offsets_start,
+                    blobs_start,
+                    blob_total,
+                })
+            }
+            None => None,
+        };
 
-        let mut dir_boxes = vec![0u8; cached_nodes * layout.record];
+        // Directory: cache the upper levels (a contiguous suffix of the node
+        // section) up to the node budget.
+        let dir_node_start = directory_start(&level_bounds, level_count, DIRECTORY_NODE_BUDGET);
+        let cached_nodes = num_nodes - dir_node_start;
+
+        let mut dir_boxes = vec![0u8; cached_nodes * box_stride];
         if !dir_boxes.is_empty() {
-            let offset = layout.box0 + (dir_node_start * layout.record);
-            reader.read_exact_at(offset as u64, &mut dir_boxes)?;
+            let offset = box0 + (dir_node_start * box_stride) as u64;
+            reader.read_exact_at(offset, &mut dir_boxes)?;
         }
-
-        let mut dir_indices = vec![0u8; cached_nodes * 8];
+        // The interleaved layout carries indices inside the node records, so the
+        // separate index cache is read only for the SoA layout.
+        let mut dir_indices = if td.interleaved {
+            Vec::new()
+        } else {
+            vec![0u8; cached_nodes * 8]
+        };
         if !dir_indices.is_empty() {
-            let offset = layout.idx0 + (dir_node_start * 8);
-            reader.read_exact_at(offset as u64, &mut dir_indices)?;
+            let offset = idx0 + (dir_node_start * 8) as u64;
+            reader.read_exact_at(offset, &mut dir_indices)?;
         }
 
         Ok(StreamCore {
             reader,
-            node_size: fields.node_size,
-            num_items: fields.num_items,
-            num_nodes: fields.num_nodes,
-            level_count: fields.level_count,
+            node_size: td.node_size,
+            num_items: td.num_items,
+            num_nodes,
+            level_count,
             level_bounds,
-            record: layout.record,
-            box0: layout.box0 as u64,
-            idx0: layout.idx0 as u64,
+            record,
+            box_stride,
+            interleaved: td.interleaved,
+            box0,
+            idx0,
             dir_node_start,
             dir_boxes,
             dir_indices,
@@ -478,11 +533,13 @@ impl<R: RangeReader> StreamCore<R> {
     }
 
     /// Cached box record bytes for node `position`, if the directory covers it.
+    /// The box is the first `record` bytes of the node's `box_stride`-byte slot
+    /// (interleaved nodes carry their index in the trailing 8 bytes).
     fn cached_box_bytes(&self, position: usize) -> Option<&[u8]> {
         if position < self.dir_node_start || position >= self.num_nodes {
             return None;
         }
-        let start = (position - self.dir_node_start) * self.record;
+        let start = (position - self.dir_node_start) * self.box_stride;
         self.dir_boxes.get(start..start + self.record)
     }
 
@@ -538,34 +595,46 @@ impl<R: RangeReader> StreamCore<R> {
         let mut survivors: Vec<usize> = Vec::new();
 
         loop {
+            // One gather fetches each frontier node's box (interleaved: box +
+            // index in the same `box_stride`-byte record; SoA: box only).
             self.gather(
                 &frontier,
                 self.box0,
-                self.record,
+                self.box_stride,
                 &self.dir_boxes,
                 &mut boxes,
                 &mut scratch,
                 &mut budget,
             )?;
             survivors.clear();
+            indices.clear();
             for (i, &pos) in frontier.iter().enumerate() {
-                if overlaps(&boxes[i * self.record..(i + 1) * self.record]) {
+                let slot = i * self.box_stride;
+                if overlaps(&boxes[slot..slot + self.record]) {
                     survivors.push(pos);
+                    // Interleaved: the index trails the box in the same record, so
+                    // no second gather is needed.
+                    if self.interleaved {
+                        indices
+                            .extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
+                    }
                 }
             }
             if survivors.is_empty() {
                 return Ok(());
             }
 
-            self.gather(
-                &survivors,
-                self.idx0,
-                8,
-                &self.dir_indices,
-                &mut indices,
-                &mut scratch,
-                &mut budget,
-            )?;
+            if !self.interleaved {
+                self.gather(
+                    &survivors,
+                    self.idx0,
+                    8,
+                    &self.dir_indices,
+                    &mut indices,
+                    &mut scratch,
+                    &mut budget,
+                )?;
+            }
 
             if level == 0 {
                 // `survivors` are sorted leaf positions; `indices` their ids.
@@ -714,6 +783,14 @@ fn plan_gather(
     cache: &[u8],
     out: &mut Vec<u8>,
 ) -> Vec<GatherRun> {
+    // The coalescing below (and the unchecked record reads its callers do into
+    // `out`) assume positions are strictly ascending: `expand_frontier` sorts and
+    // dedups every frontier, so this holds for a well-formed traversal. The assert
+    // pins that contract so a future change cannot silently break the run gaps.
+    debug_assert!(
+        positions.windows(2).all(|w| w[0] < w[1]),
+        "gather positions must be strictly ascending"
+    );
     out.clear();
     out.resize(positions.len() * stride, 0);
     let mut streamed: Vec<(usize, usize)> = Vec::new();
@@ -950,7 +1027,7 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// worker's subrequest and memory budgets).
     pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
         Ok(Self {
-            core: StreamCore::open(reader, FORMAT_FLAGS_2D, 2, 8, limits)?,
+            core: StreamCore::open(reader, 2, 8, limits)?,
         })
     }
 
@@ -1066,7 +1143,7 @@ impl<R: RangeReader> StreamIndex3D<R> {
     /// [`StreamIndex2D::open_with_limits`].
     pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
         Ok(Self {
-            core: StreamCore::open(reader, FORMAT_FLAGS_3D, 3, 8, limits)?,
+            core: StreamCore::open(reader, 3, 8, limits)?,
         })
     }
 
@@ -1192,106 +1269,148 @@ enum Want {
 impl<R: AsyncRangeReader> StreamCore<R> {
     async fn open_async(
         reader: R,
-        expected_flags: u64,
         dimensions: usize,
         coord_bytes: usize,
         limits: StreamLimits,
     ) -> Result<Self, StreamError> {
-        let mut header = [0u8; FORMAT_HEADER_LEN];
-        reader.read_exact_at(0, &mut header).await?;
-        let fields = parse_and_validate_header(&header, expected_flags, true)?;
-        let layout = section_layout(
-            fields.level_count,
-            fields.num_nodes,
-            dimensions,
-            coord_bytes,
-        )?;
+        let mut head = [0u8; SUPERBLOCK_LEN];
+        reader.read_exact_at(0, &mut head).await?;
+        if &head[..8] != b"PSINDEX\0" {
+            return Err(StreamError::Format(LoadError::BadMagic));
+        }
+        if u64::from_le_bytes(head[8..16].try_into().unwrap()) != FORMAT_VERSION {
+            return Err(StreamError::Format(LoadError::UnsupportedVersion));
+        }
+        let chunk_count = read_u32_at(&head, 16)? as usize;
+        let dir_len = chunk_count
+            .checked_mul(CHUNK_ENTRY_LEN)
+            .ok_or(LoadError::IntegerOverflow)?;
+        let mut dir = vec![0u8; dir_len];
+        reader
+            .read_exact_at(SUPERBLOCK_LEN as u64, &mut dir)
+            .await?;
 
-        let (payload, full_total) = if fields.has_payload {
-            let offsets_start = layout.total_len;
-            let last_offset_at = offsets_start
-                .checked_add(
-                    fields
-                        .num_items
-                        .checked_mul(8)
-                        .ok_or(LoadError::IntegerOverflow)?,
-                )
-                .ok_or(LoadError::IntegerOverflow)?;
-            let mut last = [0u8; 8];
-            reader
-                .read_exact_at(last_offset_at as u64, &mut last)
-                .await?;
-            let blob_total = u64::from_le_bytes(last);
-            let blob_total_usize =
-                usize::try_from(blob_total).map_err(|_| LoadError::IntegerOverflow)?;
-            let plan = payload_layout(fields.num_items, offsets_start, blob_total_usize)?;
-            (
-                Some(PayloadSection {
-                    offsets_start: plan.offsets_start as u64,
-                    blobs_start: plan.blobs_start as u64,
-                    blob_total,
-                }),
-                plan.full_total,
-            )
-        } else {
-            (None, layout.total_len)
-        };
+        let file_len = reader.len();
+        let mut max_end = SUPERBLOCK_LEN as u64 + dir_len as u64;
+        let mut tree: Option<(u64, u64)> = None;
+        let mut pyld: Option<(u64, u64)> = None;
+        for i in 0..chunk_count {
+            let base = i * CHUNK_ENTRY_LEN;
+            let mut tag = [0u8; 4];
+            tag.copy_from_slice(&dir[base..base + 4]);
+            let flags = read_u32_at(&dir, base + 4)?;
+            let offset = read_u64_at(&dir, base + 8)?;
+            let len = read_u64_at(&dir, base + 16)?;
+            let end = offset.checked_add(len).ok_or(LoadError::IntegerOverflow)?;
+            if file_len.is_some_and(|fl| end > fl) {
+                return Err(StreamError::Format(LoadError::InvalidTree));
+            }
+            max_end = max_end.max(end);
+            if tag == TAG_TREE {
+                tree = Some((offset, len));
+            } else if tag == TAG_PYLD {
+                pyld = Some((offset, len));
+            } else if flags & CHUNK_FLAG_CRITICAL != 0 {
+                return Err(StreamError::Format(LoadError::UnsupportedVersion));
+            }
+        }
 
-        if let Some(actual) = reader.len()
-            && actual != full_total as u64
+        // Reject a file longer than the last chunk plus its alignment pad — a
+        // stray trailing byte the directory does not account for.
+        let aligned_end = (max_end + 7) & !7;
+        if let Some(fl) = file_len
+            && fl > aligned_end
         {
             return Err(StreamError::Format(LoadError::LengthMismatch {
-                expected: full_total,
-                actual: usize::try_from(actual).unwrap_or(usize::MAX),
+                expected: max_end as usize,
+                actual: fl as usize,
             }));
         }
-
-        let level_bounds_len = fields.level_count * 8;
-        let mut level_bounds_bytes = vec![0u8; level_bounds_len];
-        reader
-            .read_exact_at(layout.level_bounds_start as u64, &mut level_bounds_bytes)
-            .await?;
-        validate_level_bounds(
-            &level_bounds_bytes,
-            fields.num_items,
-            fields.num_nodes,
-            fields.node_size,
-            fields.level_count,
-        )?;
-        let mut level_bounds = Vec::with_capacity(fields.level_count);
-        for level in 0..fields.level_count {
-            let value = read_u64_at(&level_bounds_bytes, level * 8)
-                .and_then(|v| usize::try_from(v).map_err(|_| LoadError::IntegerOverflow))?;
-            level_bounds.push(value);
+        let (toff, tlen) = tree.ok_or(LoadError::InvalidTree)?;
+        if tlen < TREE_DESC_LEN as u64 {
+            return Err(StreamError::Format(LoadError::Truncated));
         }
+        let mut desc = [0u8; TREE_DESC_LEN];
+        reader.read_exact_at(toff, &mut desc).await?;
+        let (td, _) = parse_tree_chunk(&desc)?;
+        if td.dimensions != dimensions || td.coord_bytes != coord_bytes {
+            return Err(StreamError::Format(LoadError::UnsupportedVersion));
+        }
+        let (num_nodes, level_count) = expected_tree_shape(td.num_items, td.node_size)?;
+        let record = dimensions
+            .checked_mul(2 * coord_bytes)
+            .ok_or(LoadError::IntegerOverflow)?;
+        let box_stride = if td.interleaved { record + 8 } else { record };
+        let box0 = toff + td.desc_len as u64;
+        let node_len = num_nodes
+            .checked_mul(box_stride + if td.interleaved { 0 } else { 8 })
+            .ok_or(LoadError::IntegerOverflow)?;
+        if tlen != td.desc_len as u64 + node_len as u64 {
+            return Err(StreamError::Format(LoadError::InvalidTree));
+        }
+        let idx0 = if td.interleaved {
+            box0
+        } else {
+            box0 + (num_nodes * record) as u64
+        };
+        let level_bounds = derive_level_bounds(td.num_items, td.node_size, level_count);
 
-        let dir_node_start =
-            directory_start(&level_bounds, fields.level_count, DIRECTORY_NODE_BUDGET);
-        let cached_nodes = fields.num_nodes - dir_node_start;
+        let payload = match pyld {
+            Some((poff, plen)) => {
+                if plen < PYLD_DESC_LEN as u64 {
+                    return Err(StreamError::Format(LoadError::Truncated));
+                }
+                let mut pd = [0u8; PYLD_DESC_LEN];
+                reader.read_exact_at(poff, &mut pd).await?;
+                let (pdesc, _) = parse_pyld_chunk(&pd)?;
+                let offsets_start = poff + pdesc.desc_len as u64;
+                let last_at = offsets_start + (td.num_items as u64) * 8;
+                let mut last = [0u8; 8];
+                reader.read_exact_at(last_at, &mut last).await?;
+                let blob_total = u64::from_le_bytes(last);
+                let blobs_start = offsets_start + (td.num_items as u64 + 1) * 8;
+                let need = pdesc.desc_len as u64 + (td.num_items as u64 + 1) * 8 + blob_total;
+                if plen != need {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                Some(PayloadSection {
+                    offsets_start,
+                    blobs_start,
+                    blob_total,
+                })
+            }
+            None => None,
+        };
 
-        let mut dir_boxes = vec![0u8; cached_nodes * layout.record];
+        // Directory prefetch (mirror of the sync `open` epilogue).
+        let dir_node_start = directory_start(&level_bounds, level_count, DIRECTORY_NODE_BUDGET);
+        let cached_nodes = num_nodes - dir_node_start;
+        let mut dir_boxes = vec![0u8; cached_nodes * box_stride];
         if !dir_boxes.is_empty() {
-            let offset = layout.box0 + (dir_node_start * layout.record);
-            reader.read_exact_at(offset as u64, &mut dir_boxes).await?;
+            let offset = box0 + (dir_node_start * box_stride) as u64;
+            reader.read_exact_at(offset, &mut dir_boxes).await?;
         }
-        let mut dir_indices = vec![0u8; cached_nodes * 8];
+        let mut dir_indices = if td.interleaved {
+            Vec::new()
+        } else {
+            vec![0u8; cached_nodes * 8]
+        };
         if !dir_indices.is_empty() {
-            let offset = layout.idx0 + (dir_node_start * 8);
-            reader
-                .read_exact_at(offset as u64, &mut dir_indices)
-                .await?;
+            let offset = idx0 + (dir_node_start * 8) as u64;
+            reader.read_exact_at(offset, &mut dir_indices).await?;
         }
-
         Ok(StreamCore {
             reader,
-            node_size: fields.node_size,
-            num_items: fields.num_items,
-            num_nodes: fields.num_nodes,
-            level_count: fields.level_count,
+            node_size: td.node_size,
+            num_items: td.num_items,
+            num_nodes,
+            level_count,
             level_bounds,
-            record: layout.record,
-            box0: layout.box0 as u64,
-            idx0: layout.idx0 as u64,
+            record,
+            box_stride,
+            interleaved: td.interleaved,
+            box0,
+            idx0,
             dir_node_start,
             dir_boxes,
             dir_indices,
@@ -1449,34 +1568,44 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         let mut survivors: Vec<usize> = Vec::new();
 
         loop {
+            // One gather per level fetches each frontier node's box (interleaved:
+            // box + index together; SoA: box only).
             self.gather_async(
                 &frontier,
                 self.box0,
-                self.record,
+                self.box_stride,
                 &self.dir_boxes,
                 &mut boxes,
                 &mut budget,
             )
             .await?;
             survivors.clear();
+            indices.clear();
             for (i, &pos) in frontier.iter().enumerate() {
-                if overlaps(&boxes[i * self.record..(i + 1) * self.record]) {
+                let slot = i * self.box_stride;
+                if overlaps(&boxes[slot..slot + self.record]) {
                     survivors.push(pos);
+                    if self.interleaved {
+                        indices
+                            .extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
+                    }
                 }
             }
             if survivors.is_empty() {
                 return Ok(());
             }
 
-            self.gather_async(
-                &survivors,
-                self.idx0,
-                8,
-                &self.dir_indices,
-                &mut indices,
-                &mut budget,
-            )
-            .await?;
+            if !self.interleaved {
+                self.gather_async(
+                    &survivors,
+                    self.idx0,
+                    8,
+                    &self.dir_indices,
+                    &mut indices,
+                    &mut budget,
+                )
+                .await?;
+            }
 
             if level == 0 {
                 match section {
@@ -1533,7 +1662,7 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
         limits: StreamLimits,
     ) -> Result<Self, StreamError> {
         Ok(Self {
-            core: StreamCore::open_async(reader, FORMAT_FLAGS_2D, 2, 8, limits).await?,
+            core: StreamCore::open_async(reader, 2, 8, limits).await?,
         })
     }
 
@@ -1587,7 +1716,7 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
         limits: StreamLimits,
     ) -> Result<Self, StreamError> {
         Ok(Self {
-            core: StreamCore::open_async(reader, FORMAT_FLAGS_3D, 3, 8, limits).await?,
+            core: StreamCore::open_async(reader, 3, 8, limits).await?,
         })
     }
 
@@ -1730,7 +1859,7 @@ mod tests {
     #[test]
     fn rejects_truncated_header() {
         let bytes = build_bytes(10, 16);
-        let short = bytes[..40].to_vec(); // shorter than the 64-byte header
+        let short = bytes[..40].to_vec(); // shorter than the 32-byte superblock
         match StreamIndex2D::open(SliceReader::new(short)) {
             Err(StreamError::Io(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
             Ok(_) => panic!("expected UnexpectedEof, got a valid index"),
@@ -1749,7 +1878,8 @@ mod tests {
 
         let reads = *stream.core.reader.reads.borrow();
         let read_bytes = *stream.core.reader.bytes.borrow();
-        assert!(reads <= 4, "open should issue at most 4 reads, did {reads}");
+        // open: leading read + directory + TREE descriptor + two directory ranges.
+        assert!(reads <= 6, "open should issue at most 6 reads, did {reads}");
         assert!(
             read_bytes * 4 < file_len,
             "open read {read_bytes} of {file_len} bytes; should be a small fraction"
@@ -1952,9 +2082,10 @@ mod tests {
         }
     }
 
-    /// Byte offset of the index section, recomputed from the validated header.
+    /// Byte offset of the index section (start of the `TREE` chunk's indices, for
+    /// the SoA layout) — the streaming core already resolved it as `idx0`.
     fn indices_offset(stream: &StreamIndex2D<SliceReader<Vec<u8>>>) -> usize {
-        FORMAT_HEADER_LEN + 8 * stream.core.level_count + stream.core.record * stream.core.num_nodes
+        stream.core.idx0 as usize
     }
 
     #[test]
@@ -1995,10 +2126,12 @@ mod tests {
     fn too_short_body_rejected() {
         let mut bytes = build_bytes(1000, 16);
         bytes.truncate(bytes.len() - 8); // drop one index entry
+        // The TREE chunk now claims more bytes than the file holds.
         match StreamIndex2D::open(SliceReader::new(bytes)) {
-            Err(StreamError::Format(LoadError::LengthMismatch { .. })) => {}
-            Ok(_) => panic!("expected LengthMismatch, got a valid index"),
-            Err(other) => panic!("expected LengthMismatch, got {other:?}"),
+            Err(StreamError::Format(LoadError::InvalidTree | LoadError::LengthMismatch { .. })) => {
+            }
+            Ok(_) => panic!("expected rejection, got a valid index"),
+            Err(other) => panic!("expected InvalidTree/LengthMismatch, got {other:?}"),
         }
     }
 
@@ -2184,6 +2317,195 @@ mod tests {
         assert_eq!(all.len(), 20_000);
         for (id, blob) in &all {
             assert_eq!(blob, &payloads[*id]);
+        }
+    }
+
+    #[test]
+    fn interleaved_search_matches_soa_and_owned() {
+        // The interleaved layout must return identical results to the default SoA
+        // layout (and the owned index) for plain search and search_payloads.
+        for &n in &[0usize, 1, 16, 17, 1000, 20_000] {
+            let (owned, _) = random_owned(n, 0xC0FFEE ^ n as u64);
+            let payloads: Vec<Vec<u8>> = (0..n)
+                .map(|i| format!("blob-{i}-xx").into_bytes())
+                .collect();
+
+            let soa = open_slice(owned.to_bytes());
+            let inter = open_slice(owned.to_bytes_interleaved());
+            let inter_pay =
+                open_slice(owned.to_bytes_interleaved_with_payloads(&payloads).unwrap());
+            assert!(inter_pay.has_payload(), "n={n}");
+
+            for q in [
+                Box2D::new(400.0, 400.0, 460.0, 460.0),
+                Box2D::new(-1.0, -1.0, 2000.0, 2000.0),
+                Box2D::new(0.0, 0.0, 100.0, 100.0),
+            ] {
+                let mut want = owned.search(q);
+                want.sort_unstable();
+                let mut from_soa = soa.search(q).unwrap();
+                from_soa.sort_unstable();
+                let mut from_inter = inter.search(q).unwrap();
+                from_inter.sort_unstable();
+                assert_eq!(from_soa, want, "soa n={n}");
+                assert_eq!(from_inter, want, "interleaved n={n}");
+
+                let pairs = inter_pay.search_payloads(q).unwrap();
+                let mut ids: Vec<usize> = pairs.iter().map(|(id, _)| *id).collect();
+                ids.sort_unstable();
+                assert_eq!(ids, want, "interleaved payloads n={n}");
+                for (id, blob) in &pairs {
+                    assert_eq!(blob, &payloads[*id], "blob n={n}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interleaved_uses_fewer_reads_than_soa() {
+        // The interleaved layout fetches a node's box and pointer together, so a
+        // query issues fewer reads than the SoA layout's separate box/index passes.
+        let (owned, _) = random_owned(50_000, 0x5EED);
+        let query = Box2D::new(300.0, 300.0, 360.0, 360.0);
+
+        let soa =
+            StreamIndex2D::open(CountingReader::new(SliceReader::new(owned.to_bytes()))).unwrap();
+        soa.search(query).unwrap();
+        let soa_reads = *soa.core.reader.reads.borrow();
+
+        let inter = StreamIndex2D::open(CountingReader::new(SliceReader::new(
+            owned.to_bytes_interleaved(),
+        )))
+        .unwrap();
+        inter.search(query).unwrap();
+        let inter_reads = *inter.core.reader.reads.borrow();
+
+        assert!(
+            inter_reads < soa_reads,
+            "interleaved {inter_reads} should be fewer reads than SoA {soa_reads}"
+        );
+    }
+
+    #[test]
+    fn interleaved_rejected_by_soa_loaders() {
+        // An interleaved file is streaming-targeted; the in-memory loaders and
+        // views read the SoA layout only and must reject it cleanly.
+        let (owned, _) = random_owned(100, 0x1);
+        let bytes = owned.to_bytes_interleaved();
+        assert!(matches!(
+            crate::Index2D::from_bytes(&bytes),
+            Err(LoadError::UnsupportedVersion)
+        ));
+        assert!(matches!(
+            crate::Index2DView::from_bytes(&bytes),
+            Err(LoadError::UnsupportedVersion)
+        ));
+    }
+
+    #[test]
+    fn interleaved_corrupt_bytes_never_panic() {
+        // Fuzz: flipping bytes of an interleaved payload file must never panic;
+        // open / search / search_payloads return Ok or Err.
+        let (owned, _) = random_owned(500, 0x77);
+        let payloads: Vec<Vec<u8>> = (0..500).map(|i| vec![i as u8; (i % 7) + 1]).collect();
+        let clean = owned.to_bytes_interleaved_with_payloads(&payloads).unwrap();
+        let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+        for i in (0..clean.len()).step_by(31) {
+            let mut bytes = clean.clone();
+            bytes[i] ^= 0xA5;
+            if let Ok(stream) = StreamIndex2D::open(SliceReader::new(bytes)) {
+                let _ = stream.search(query);
+                let _ = stream.search_payloads(query);
+            }
+        }
+    }
+
+    /// A `RangeReader` that serves a clean header + `level_bounds` (so `open`
+    /// succeeds) but returns adversarial garbage for every byte of the node and
+    /// payload sections, varying per read. Models a hostile or inconsistent
+    /// backing store: the streaming reader reads each range once and validates
+    /// every file-derived value at use, so the descent must yield `Ok` or `Err`,
+    /// never panic, no matter what bytes come back.
+    struct HostileReader {
+        clean: Vec<u8>,
+        clean_below: u64,
+        counter: RefCell<u8>,
+    }
+
+    impl HostileReader {
+        fn new(clean: Vec<u8>) -> Self {
+            // level_bounds ends at 64 + 8 * level_count (header field at offset 56).
+            let level_count = u64::from_le_bytes(clean[56..64].try_into().unwrap());
+            let clean_below = 64 + 8 * level_count;
+            Self {
+                clean,
+                clean_below,
+                counter: RefCell::new(1),
+            }
+        }
+    }
+
+    impl RangeReader for HostileReader {
+        fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            let start = usize::try_from(offset).map_err(|_| unexpected_eof())?;
+            let end = start.checked_add(buf.len()).ok_or_else(unexpected_eof)?;
+            let src = self.clean.get(start..end).ok_or_else(unexpected_eof)?;
+            let mut c = self.counter.borrow_mut();
+            for (i, (dst, &b)) in buf.iter_mut().zip(src).enumerate() {
+                let pos = offset + i as u64;
+                // Pristine header + level_bounds; everything else is corrupted with
+                // a per-read-varying mask so no two reads agree.
+                *dst = if pos < self.clean_below {
+                    b
+                } else {
+                    b ^ c.wrapping_add(pos as u8) ^ 0x5A
+                };
+            }
+            *c = c.wrapping_add(31);
+            Ok(())
+        }
+
+        fn len(&self) -> Option<u64> {
+            Some(self.clean.len() as u64)
+        }
+    }
+
+    #[test]
+    fn hostile_reader_never_panics() {
+        // The node/payload bytes are adversarial (and inconsistent across reads),
+        // but the header/level_bounds are valid. The descent reads each range once
+        // and validates every file-derived value at use, so it must never panic.
+        let (owned, _) = random_owned(2_000, 0xDEAD);
+        let payloads: Vec<Vec<u8>> = (0..2_000).map(|i| vec![i as u8; (i % 5) + 1]).collect();
+        let queries = [
+            Box2D::new(-1.0, -1.0, 2000.0, 2000.0),
+            Box2D::new(400.0, 400.0, 460.0, 460.0),
+            Box2D::new(0.0, 0.0, 10.0, 10.0),
+        ];
+
+        // Index-only files have no blob total for `open` to read from the hostile
+        // region, so `open` succeeds and the search descent runs entirely against
+        // hostile node bytes.
+        for clean in [owned.to_bytes(), owned.to_bytes_interleaved()] {
+            let stream = StreamIndex2D::open(HostileReader::new(clean)).unwrap();
+            for q in queries {
+                let _ = stream.search(q);
+            }
+        }
+
+        // Payload files: `open` reads the (hostile) blob total and may reject the
+        // file on the length cross-check — a valid outcome. When it does open, the
+        // payload descent must still never panic.
+        for clean in [
+            owned.to_bytes_with_payloads(&payloads).unwrap(),
+            owned.to_bytes_interleaved_with_payloads(&payloads).unwrap(),
+        ] {
+            if let Ok(stream) = StreamIndex2D::open(HostileReader::new(clean)) {
+                for q in queries {
+                    let _ = stream.search(q);
+                    let _ = stream.search_payloads(q);
+                }
+            }
         }
     }
 

@@ -12,10 +12,10 @@ fn persistence_3d_round_trip_and_view_agree() {
     let index = build_index_3d(&boxes, 8);
 
     let bytes = index.to_bytes();
+    // superblock: magic, version 2, one chunk (TREE).
     assert_eq!(&bytes[..8], b"PSINDEX\0");
-    assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 1);
-    assert_eq!(u64::from_le_bytes(bytes[16..24].try_into().unwrap()), 64);
-    assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 1);
+    assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 2);
+    assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 1);
 
     let loaded = Index3D::from_bytes(&bytes).unwrap();
     let view = Index3DView::from_bytes(&bytes).unwrap();
@@ -141,6 +141,24 @@ fn persistence_3d_rejects_malformed_buffers() {
         .collect();
     let bytes = build_index_3d(&boxes, 4).to_bytes();
 
+    // TREE chunk at 56; descriptor 24B (num_items @ +8 u64, node_size @ +16
+    // u16), then 48B box records and 8B index entries.
+    let tree = 56usize;
+    let num_items = u64::from_le_bytes(bytes[tree + 8..tree + 16].try_into().unwrap()) as usize;
+    let node_size = u16::from_le_bytes(bytes[tree + 16..tree + 18].try_into().unwrap()) as usize;
+    let mut num_nodes = num_items;
+    let mut n = num_items;
+    if num_items > 0 {
+        loop {
+            n = n.div_ceil(node_size);
+            num_nodes += n;
+            if n == 1 {
+                break;
+            }
+        }
+    }
+    let indices_offset = tree + 24 + num_nodes * 48;
+
     let mut bad_magic = bytes.clone();
     bad_magic[0] = b'X';
     assert!(matches!(
@@ -155,23 +173,9 @@ fn persistence_3d_rejects_malformed_buffers() {
         Err(LoadError::UnsupportedVersion)
     ));
 
-    let mut bad_header_len = bytes.clone();
-    bad_header_len[16..24].copy_from_slice(&48u64.to_le_bytes());
-    assert!(matches!(
-        Index3DView::from_bytes(&bad_header_len),
-        Err(LoadError::UnsupportedVersion)
-    ));
-
-    let mut bad_flags = bytes.clone();
-    bad_flags[24..32].copy_from_slice(&2u64.to_le_bytes());
-    assert!(matches!(
-        Index3DView::from_bytes(&bad_flags),
-        Err(LoadError::UnsupportedVersion)
-    ));
-
     assert!(matches!(
         Index3DView::from_bytes(&bytes[..bytes.len() - 1]),
-        Err(LoadError::Truncated)
+        Err(LoadError::InvalidTree | LoadError::Truncated)
     ));
 
     let mut extra = bytes.clone();
@@ -181,23 +185,26 @@ fn persistence_3d_rejects_malformed_buffers() {
         Err(LoadError::LengthMismatch { .. })
     ));
 
+    let mut bad_tag = bytes.clone();
+    bad_tag[32..36].copy_from_slice(b"JUNK");
+    assert!(matches!(
+        Index3DView::from_bytes(&bad_tag),
+        Err(LoadError::UnsupportedVersion)
+    ));
+
     let mut invalid_node_size = bytes.clone();
-    invalid_node_size[32..40].copy_from_slice(&1u64.to_le_bytes());
+    invalid_node_size[tree + 16..tree + 18].copy_from_slice(&1u16.to_le_bytes());
     assert!(matches!(
         Index3DView::from_bytes(&invalid_node_size),
         Err(LoadError::InvalidNodeSize { node_size: 1 })
     ));
 
-    let mut invalid_level_bounds = bytes.clone();
-    invalid_level_bounds[64..72].copy_from_slice(&999u64.to_le_bytes());
+    let mut bad_num_items = bytes.clone();
+    bad_num_items[tree + 8..tree + 16].copy_from_slice(&999u64.to_le_bytes());
     assert!(matches!(
-        Index3DView::from_bytes(&invalid_level_bounds),
+        Index3DView::from_bytes(&bad_num_items),
         Err(LoadError::InvalidTree)
     ));
-
-    let num_nodes = u64::from_le_bytes(bytes[48..56].try_into().unwrap()) as usize;
-    let level_count = u64::from_le_bytes(bytes[56..64].try_into().unwrap()) as usize;
-    let indices_offset = 64 + level_count * 8 + num_nodes * 48;
 
     let mut invalid_leaf_index = bytes.clone();
     invalid_leaf_index[indices_offset..indices_offset + 8].copy_from_slice(&999u64.to_le_bytes());

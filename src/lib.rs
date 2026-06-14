@@ -99,18 +99,18 @@ pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use geometry::{BoundsError, Box2D, Box3D, Point2D, Point3D};
-pub use index2d::{Index2D, Index2DView, Search2DIter};
+pub use index2d::{Index2D, Index2DView, Search2DIter, Serializer2D};
 #[cfg(feature = "f32-storage")]
 pub use index2d_f32::{SimdIndex2DF32, SimdIndex2DF32View};
 #[cfg(feature = "simd")]
 pub use index2d_soa::{SimdIndex2D, SimdIndex2DView};
-pub use index3d::{Index3D, Index3DView, Search3DIter};
+pub use index3d::{Index3D, Index3DView, Search3DIter, Serializer3D};
 #[cfg(feature = "f32-storage")]
 pub use index3d_f32::{SimdIndex3DF32, SimdIndex3DF32View};
 #[cfg(feature = "simd")]
 pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
 pub use neighbors::NeighborWorkspace;
-pub use persistence::{LoadError, PayloadError};
+pub use persistence::{FileMetadata, LoadError, PayloadError, read_metadata};
 pub use ray::{Ray2D, Ray3D};
 pub use sort2d::SortKey2D;
 pub use sort3d::SortKey3D;

@@ -114,6 +114,12 @@ name = "raycast3d_bench"
 harness = false
 required-features = ["simd"]
 
+# Ray-triangle closest hit over a candidate slice: f64 vs compact f32.
+[[bench]]
+name = "raytriangle3d_bench"
+harness = false
+required-features = ["simd"]
+
 [[example]]
 name = "f32_exact_2d"
 required-features = ["f32-storage"]

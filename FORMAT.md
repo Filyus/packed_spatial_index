@@ -2,7 +2,7 @@
 
 | Revision | Last revised |
 | -------- | ------------ |
-| 9        | 2026-06-14   |
+| 10       | 2026-06-14   |
 
 This document describes the binary format used by packed spatial indexes.
 
@@ -94,15 +94,21 @@ Other high bits are reserved.
 
 When the payload flag is set, two sections follow `indices`, carrying one opaque
 blob per item so the file is self-contained (the spatial index plus the data it
-indexes).
+indexes). Both are ordered by **leaf rank** — the position of an item among the
+leaves (`indices[0..num_items]`), i.e. the Hilbert order — so that a spatial
+query, which visits leaves in contiguous runs, fetches their blobs and offsets in
+coalesced reads.
 
 - `payload_offsets`: `num_items + 1` little-endian `u64` prefix offsets into
-  `payload_blobs`. `payload_offsets[0]` is `0` and the table is non-decreasing;
-  `payload_offsets[num_items]` equals the total blob byte length.
-- `payload_blobs`: the concatenated blobs.
+  `payload_blobs`, indexed by leaf rank. `payload_offsets[0]` is `0` and the
+  table is non-decreasing; `payload_offsets[num_items]` equals the total blob
+  byte length.
+- `payload_blobs`: the concatenated blobs in leaf order.
 
-The blob for item `i` (the original insertion index, which queries return) is
-`payload_blobs[payload_offsets[i] .. payload_offsets[i + 1]]`. Blobs are opaque
+The blob of the item at leaf rank `r` is
+`payload_blobs[payload_offsets[r] .. payload_offsets[r + 1]]`, and that item's
+original insertion index (what queries return) is `indices[r]`. To look a blob up
+by insertion index, invert `indices` to get the leaf rank. Blobs are opaque
 bytes with no required alignment or interpretation.
 
 Loaders reject a payload section whose offset table is not `0`-based and

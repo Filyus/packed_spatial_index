@@ -34,6 +34,15 @@ fn view_2d_payload_round_trip_and_search() {
     assert_eq!(view.payload(0), Some(b"blob-0".as_slice()));
     assert_eq!(view.payload(n - 1), Some(payloads[n - 1].as_slice()));
     assert_eq!(view.payload(n), None); // out of range
+
+    // search_payloads pairs each hit with its blob (zero-copy).
+    let pairs = view.search_payloads(Box2D::new(0.0, 0.0, 10.5, 10.5));
+    let mut ids: Vec<usize> = pairs.iter().map(|(id, _)| *id).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, index.search(Box2D::new(0.0, 0.0, 10.5, 10.5)));
+    for (id, blob) in pairs {
+        assert_eq!(blob, payloads[id].as_slice());
+    }
 }
 
 #[test]

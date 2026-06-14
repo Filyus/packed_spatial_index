@@ -12,7 +12,10 @@
 //! query then descends the tree level by level, fetching each level's boxes
 //! from the directory or in coalesced reads, so it touches only the lower levels
 //! and the few leaf runs the query actually overlaps. [`StreamIndex2D`] and
-//! [`StreamIndex3D`] expose `search` / `search_into` / `visit`.
+//! [`StreamIndex3D`] expose `search` / `search_into` / `visit`, and — when the
+//! index carries a payload section — `search_payloads` / `visit_payloads`, which
+//! also stream each matching item's stored blob (the payload is laid out in leaf
+//! order, so a query fetches its blobs in coalesced reads).
 //!
 //! Pointers are validated as they are followed, so the reader is safe to point
 //! at untrusted data. Available behind the `stream` feature. See [`RangeReader`]
@@ -211,8 +214,7 @@ pub enum StreamError {
     /// The bytes are not a valid index of the expected variant. Carries the same
     /// [`LoadError`] categories as the in-memory loader.
     Format(LoadError),
-    /// A payload was requested but the index has no payload section, or the item
-    /// index was out of range.
+    /// Payloads were requested but the index has no payload section.
     NoPayload,
 }
 
@@ -221,9 +223,7 @@ impl std::fmt::Display for StreamError {
         match self {
             StreamError::Io(err) => write!(f, "streaming read failed: {err}"),
             StreamError::Format(err) => write!(f, "{err}"),
-            StreamError::NoPayload => {
-                write!(f, "no payload for this index or item index out of range")
-            }
+            StreamError::NoPayload => write!(f, "index has no payload section"),
         }
     }
 }
@@ -409,31 +409,6 @@ impl<R: RangeReader> StreamCore<R> {
         self.payload.is_some()
     }
 
-    /// Read item `id`'s payload blob, streaming its offset pair and the blob.
-    fn payload(&self, id: usize) -> Result<Vec<u8>, StreamError> {
-        let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
-        if id >= self.num_items {
-            return Err(StreamError::NoPayload);
-        }
-        // The offset table has num_items+1 entries, so id and id+1 are in range.
-        let mut pair = [0u8; 16];
-        self.reader
-            .read_exact_at(section.offsets_start + (id * 8) as u64, &mut pair)?;
-        let start = u64::from_le_bytes(pair[0..8].try_into().unwrap());
-        let end = u64::from_le_bytes(pair[8..16].try_into().unwrap());
-        // Validate against an untrusted source: non-decreasing and within the
-        // blob region.
-        if end < start || end > section.blob_total {
-            return Err(StreamError::Format(LoadError::InvalidTree));
-        }
-        let mut blob = vec![0u8; (end - start) as usize];
-        if !blob.is_empty() {
-            self.reader
-                .read_exact_at(section.blobs_start + start, &mut blob)?;
-        }
-        Ok(blob)
-    }
-
     /// Cached box record bytes for node `position`, if the directory covers it.
     fn cached_box_bytes(&self, position: usize) -> Option<&[u8]> {
         if position < self.dir_node_start || position >= self.num_nodes {
@@ -501,18 +476,18 @@ impl<R: RangeReader> StreamCore<R> {
         Ok(())
     }
 
-    /// Visit the original insertion index of every leaf whose box satisfies
-    /// `overlaps`. `overlaps` receives one box record (`record` bytes) and
-    /// decides intersection; this keeps the traversal dimension-independent.
+    /// Descend the tree level by level, calling `leaf` once at the leaf level
+    /// with the surviving leaf positions (sorted) and their gathered index bytes
+    /// (the insertion ids, in the same order). `overlaps` decides box
+    /// intersection; this keeps the traversal dimension- and payload-independent.
     ///
-    /// Descends the tree level by level: at each level the frontier's boxes are
-    /// fetched (cached or coalesced-streamed) and tested, survivors expand to
-    /// their child groups, and a parent that fails the test prunes its whole
-    /// subtree (the parent box encloses its children).
-    fn visit_overlapping<O, F>(&self, overlaps: O, mut visit: F) -> Result<(), StreamError>
+    /// At each level the frontier's boxes are fetched (cached or
+    /// coalesced-streamed) and tested; survivors expand to their child groups,
+    /// and a parent that fails the test prunes its whole subtree.
+    fn traverse<O, L>(&self, overlaps: O, mut leaf: L) -> Result<(), StreamError>
     where
         O: Fn(&[u8]) -> bool,
-        F: FnMut(usize),
+        L: FnMut(&[usize], &[u8]) -> Result<(), StreamError>,
     {
         if self.num_items == 0 {
             return Ok(());
@@ -554,14 +529,8 @@ impl<R: RangeReader> StreamCore<R> {
             )?;
 
             if level == 0 {
-                for i in 0..survivors.len() {
-                    let id = read_index(&indices, i)?;
-                    if id >= self.num_items {
-                        return Err(StreamError::Format(LoadError::InvalidTree));
-                    }
-                    visit(id);
-                }
-                return Ok(());
+                // `survivors` are sorted leaf positions; `indices` their ids.
+                return leaf(&survivors, &indices);
             }
 
             // Expand survivors to their child groups at the level below.
@@ -596,6 +565,116 @@ impl<R: RangeReader> StreamCore<R> {
             frontier = next;
             level -= 1;
         }
+    }
+
+    /// Visit the insertion id of every leaf whose box satisfies `overlaps`.
+    fn visit_ids<O, F>(&self, overlaps: O, mut visit: F) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        F: FnMut(usize),
+    {
+        self.traverse(overlaps, |survivors, indices| {
+            for i in 0..survivors.len() {
+                let id = read_index(indices, i)?;
+                if id >= self.num_items {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                visit(id);
+            }
+            Ok(())
+        })
+    }
+
+    /// Visit `(insertion id, payload blob)` for every leaf whose box satisfies
+    /// `overlaps`, streaming the payload section in leaf order during the leaf
+    /// pass so the offset table and blobs are read in coalesced runs.
+    fn visit_payloads<O, F>(&self, overlaps: O, mut emit: F) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        F: FnMut(usize, &[u8]),
+    {
+        let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
+        let mut off_buf = Vec::new();
+        let mut blob_buf = Vec::new();
+        self.traverse(overlaps, |survivors, indices| {
+            self.gather_payloads(
+                section,
+                survivors,
+                indices,
+                &mut off_buf,
+                &mut blob_buf,
+                &mut emit,
+            )
+        })
+    }
+
+    /// Stream the blobs for `leaf_positions` (sorted leaf ranks) and their
+    /// `indices` (insertion ids, same order), coalescing the leaf-ordered offset
+    /// table and blob region into runs. Emits `(id, blob)` per leaf.
+    fn gather_payloads<F>(
+        &self,
+        section: &PayloadSection,
+        leaf_positions: &[usize],
+        indices: &[u8],
+        off_buf: &mut Vec<u8>,
+        blob_buf: &mut Vec<u8>,
+        emit: &mut F,
+    ) -> Result<(), StreamError>
+    where
+        F: FnMut(usize, &[u8]),
+    {
+        let mut j = 0;
+        while j < leaf_positions.len() {
+            // Coalesce leaf positions whose offset-table gap is within budget.
+            let mut k = j;
+            while k + 1 < leaf_positions.len() {
+                let gap = (leaf_positions[k + 1] - leaf_positions[k]) as u64 * 8;
+                if gap > COALESCE_GAP_BYTES {
+                    break;
+                }
+                k += 1;
+            }
+            let lo = leaf_positions[j];
+            let hi = leaf_positions[k];
+
+            // Read offset entries [lo ..= hi+1] (one extra for the last blob end).
+            let entries = hi + 2 - lo;
+            off_buf.clear();
+            off_buf.resize(entries * 8, 0);
+            self.reader
+                .read_exact_at(section.offsets_start + (lo * 8) as u64, off_buf)?;
+
+            let blob_lo = read_u64_le_unchecked(off_buf, 0);
+            let blob_hi = read_u64_le_unchecked(off_buf, (hi + 1 - lo) * 8);
+            if blob_hi < blob_lo || blob_hi > section.blob_total {
+                return Err(StreamError::Format(LoadError::InvalidTree));
+            }
+            blob_buf.clear();
+            blob_buf.resize((blob_hi - blob_lo) as usize, 0);
+            if !blob_buf.is_empty() {
+                self.reader
+                    .read_exact_at(section.blobs_start + blob_lo, blob_buf)?;
+            }
+
+            for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
+                let i = j + offset;
+                let o0 = read_u64_le_unchecked(off_buf, (p - lo) * 8);
+                let o1 = read_u64_le_unchecked(off_buf, (p + 1 - lo) * 8);
+                if o1 < o0 || o1 > blob_hi {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                let id = read_index(indices, i)?;
+                if id >= self.num_items {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                emit(
+                    id,
+                    &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
+                );
+            }
+            j = k + 1;
+        }
+        Ok(())
     }
 }
 
@@ -719,7 +798,7 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// in tree-traversal order, which is not part of the API.
     pub fn visit<F: FnMut(usize)>(&self, query: Box2D, visitor: F) -> Result<(), StreamError> {
         self.core
-            .visit_overlapping(|record| parse_box2d(record).overlaps(query), visitor)
+            .visit_ids(|record| parse_box2d(record).overlaps(query), visitor)
     }
 
     /// Stream the indices of every item whose box intersects `query`.
@@ -741,13 +820,28 @@ impl<R: RangeReader> StreamIndex2D<R> {
         self.core.has_payload()
     }
 
-    /// Stream the payload blob for item `id` (an index returned by a search).
+    /// Visit `(item index, payload blob)` for every item intersecting `query`.
     ///
-    /// Reads just the item's offset pair and its blob, so it scales to a remote
-    /// file. Returns [`StreamError::NoPayload`] if the index has no payload
-    /// section or `id` is out of range.
-    pub fn payload(&self, id: usize) -> Result<Vec<u8>, StreamError> {
-        self.core.payload(id)
+    /// The payload section is stored in leaf order, so a spatial query fetches
+    /// its blobs (and their offset table) in coalesced reads — a handful of
+    /// round trips even over a remote source, instead of one per item. The blob
+    /// slice is valid only for the duration of each call. Returns
+    /// [`StreamError::NoPayload`] if the index has no payload section.
+    pub fn visit_payloads<F: FnMut(usize, &[u8])>(
+        &self,
+        query: Box2D,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payloads(|record| parse_box2d(record).overlaps(query), visitor)
+    }
+
+    /// Collect `(item index, payload blob)` for every item intersecting `query`.
+    /// The owning counterpart of [`visit_payloads`](Self::visit_payloads).
+    pub fn search_payloads(&self, query: Box2D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        Ok(out)
     }
 }
 
@@ -808,7 +902,7 @@ impl<R: RangeReader> StreamIndex3D<R> {
     /// each to `visitor`. Fallible; see [`StreamIndex2D::visit`].
     pub fn visit<F: FnMut(usize)>(&self, query: Box3D, visitor: F) -> Result<(), StreamError> {
         self.core
-            .visit_overlapping(|record| parse_box3d(record).overlaps(query), visitor)
+            .visit_ids(|record| parse_box3d(record).overlaps(query), visitor)
     }
 
     /// Stream the indices of every item whose box intersects `query`.
@@ -829,9 +923,22 @@ impl<R: RangeReader> StreamIndex3D<R> {
         self.core.has_payload()
     }
 
-    /// Stream the payload blob for item `id`. See [`StreamIndex2D::payload`].
-    pub fn payload(&self, id: usize) -> Result<Vec<u8>, StreamError> {
-        self.core.payload(id)
+    /// Visit `(item index, payload blob)` for every item intersecting `query`.
+    /// See [`StreamIndex2D::visit_payloads`].
+    pub fn visit_payloads<F: FnMut(usize, &[u8])>(
+        &self,
+        query: Box3D,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payloads(|record| parse_box3d(record).overlaps(query), visitor)
+    }
+
+    /// Collect `(item index, payload blob)` for every item intersecting `query`.
+    pub fn search_payloads(&self, query: Box3D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        Ok(out)
     }
 }
 
@@ -1351,70 +1458,96 @@ mod tests {
     }
 
     #[test]
-    fn streamed_payload_round_trips_with_search() {
-        // 20k items so leaves stream; the payload section is queried by id.
+    fn streamed_payloads_round_trip_with_search() {
+        // 20k items so leaves stream; payloads come back paired with ids.
         let (owned, payloads, bytes) = random_with_payloads(20_000, 0x9EED);
         let stream = open_slice(bytes);
         assert!(stream.has_payload());
 
-        // Index queries still work on a payload file.
         let query = Box2D::new(400.0, 400.0, 460.0, 460.0);
-        let mut a = stream.search(query).unwrap();
-        let mut b = owned.search(query);
-        a.sort_unstable();
-        b.sort_unstable();
-        assert_eq!(a, b);
+        let pairs = stream.search_payloads(query).unwrap();
 
-        // Every hit's payload streams back exactly.
-        for &id in &a {
-            assert_eq!(stream.payload(id).unwrap(), payloads[id]);
+        // The id set equals a plain search, and each blob matches the original.
+        let mut got_ids: Vec<usize> = pairs.iter().map(|(id, _)| *id).collect();
+        let mut want_ids = owned.search(query);
+        got_ids.sort_unstable();
+        want_ids.sort_unstable();
+        assert_eq!(got_ids, want_ids);
+        for (id, blob) in &pairs {
+            assert_eq!(blob, &payloads[*id]);
         }
-        // And arbitrary ids, including the ends.
-        for id in [0usize, 1, 9999, 19_999] {
-            assert_eq!(stream.payload(id).unwrap(), payloads[id]);
+
+        // Full-extent: every payload streams back.
+        let all = stream
+            .search_payloads(Box2D::new(-1.0, -1.0, 2000.0, 2000.0))
+            .unwrap();
+        assert_eq!(all.len(), 20_000);
+        for (id, blob) in &all {
+            assert_eq!(blob, &payloads[*id]);
         }
     }
 
     #[test]
-    fn payload_absent_and_out_of_range() {
-        // Index-only file: no payload.
+    fn search_payloads_absent_is_nopayload() {
         let (_, bytes) = random_owned(100, 0x1);
         let stream = open_slice(bytes);
         assert!(!stream.has_payload());
-        assert!(matches!(stream.payload(0), Err(StreamError::NoPayload)));
-
-        // Payload file: out-of-range id rejected.
-        let (_, _, pbytes) = random_with_payloads(100, 0x2);
-        let pstream = open_slice(pbytes);
-        assert!(pstream.has_payload());
-        assert!(matches!(pstream.payload(100), Err(StreamError::NoPayload)));
+        assert!(matches!(
+            stream.search_payloads(Box2D::new(0.0, 0.0, 1000.0, 1000.0)),
+            Err(StreamError::NoPayload)
+        ));
     }
 
     #[test]
-    fn payload_via_file_and_unknown_length_readers() {
+    fn search_payloads_via_file_and_unknown_length_readers() {
         let (_, payloads, bytes) = random_with_payloads(5_000, 0x3);
+        let query = Box2D::new(0.0, 0.0, 1000.0, 1000.0);
+        let check = |stream: &dyn Fn() -> Vec<(usize, Vec<u8>)>| {
+            for (id, blob) in stream() {
+                assert_eq!(blob, payloads[id]);
+            }
+        };
 
-        // FileReader round trip.
         let path = std::env::temp_dir().join(format!("psi_payload_{}.psindex", std::process::id()));
         std::fs::write(&path, &bytes).unwrap();
         let fstream = StreamIndex2D::open(FileReader::open(&path).unwrap()).unwrap();
-        assert_eq!(fstream.payload(42).unwrap(), payloads[42]);
+        check(&|| fstream.search_payloads(query).unwrap());
         std::fs::remove_file(&path).ok();
 
-        // Unknown-length (HTTP-like) reader: open reads the last offset to size
-        // the file, payloads still stream.
         let nstream = StreamIndex2D::open(NoLenReader(SliceReader::new(bytes))).unwrap();
-        assert_eq!(nstream.payload(42).unwrap(), payloads[42]);
+        check(&|| nstream.search_payloads(query).unwrap());
     }
 
     #[test]
     fn empty_payload_blobs_round_trip() {
-        // Zero-length payloads are valid (e.g. a presence-only store).
         let (owned, _) = random_owned(50, 0x4);
         let payloads: Vec<Vec<u8>> = vec![Vec::new(); 50];
         let bytes = owned.to_bytes_with_payloads(&payloads).unwrap();
         let stream = open_slice(bytes);
-        assert!(stream.payload(10).unwrap().is_empty());
+        let all = stream
+            .search_payloads(Box2D::new(-1.0, -1.0, 2000.0, 2000.0))
+            .unwrap();
+        assert!(!all.is_empty());
+        assert!(all.iter().all(|(_, blob)| blob.is_empty()));
+    }
+
+    #[test]
+    fn search_payloads_streams_few_reads() {
+        // A tight query over a payload index should fetch payloads in a handful
+        // of coalesced reads, not one per hit.
+        let (_, _, bytes) = random_with_payloads(50_000, 0x55);
+        let stream = StreamIndex2D::open(CountingReader::new(SliceReader::new(bytes))).unwrap();
+        let reads_before = *stream.core.reader.reads.borrow();
+        let pairs = stream
+            .search_payloads(Box2D::new(500.0, 500.0, 540.0, 540.0))
+            .unwrap();
+        let query_reads = *stream.core.reader.reads.borrow() - reads_before;
+        assert!(!pairs.is_empty());
+        assert!(
+            query_reads <= 16,
+            "search_payloads issued {query_reads} reads for {} hits",
+            pairs.len()
+        );
     }
 
     #[test]
@@ -1451,13 +1584,14 @@ mod tests {
         assert!(stream.has_payload());
 
         let query = Box3D::new(400.0, 400.0, 400.0, 460.0, 460.0, 460.0);
-        let mut hits = stream.search(query).unwrap();
-        let mut owned_hits = owned.search(query);
-        hits.sort_unstable();
-        owned_hits.sort_unstable();
-        assert_eq!(hits, owned_hits);
-        for &id in &hits {
-            assert_eq!(stream.payload(id).unwrap(), payloads[id]);
+        let pairs = stream.search_payloads(query).unwrap();
+        let mut got: Vec<usize> = pairs.iter().map(|(id, _)| *id).collect();
+        let mut want = owned.search(query);
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want);
+        for (id, blob) in &pairs {
+            assert_eq!(blob, &payloads[*id]);
         }
     }
 }

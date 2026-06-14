@@ -29,8 +29,8 @@ use crate::neighbors::{
 };
 use crate::persistence::{
     ByteWriter, FORMAT_FLAG_PAYLOAD, FORMAT_FLAGS_2D, LoadError, ParsedPayload, PayloadError,
-    parse_index_and_payload, payload_layout, payload_slice, read_f64_le_unchecked,
-    read_u64_le_unchecked, serialized_len,
+    build_id_to_leaf, parse_index_and_payload, payload_layout, payload_slice,
+    read_f64_le_unchecked, read_u64_le_unchecked, serialized_len,
 };
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
@@ -160,12 +160,13 @@ impl Index2D {
     /// indexes.
     ///
     /// `payloads` is in item order: `payloads[i]` is the blob for the item added
-    /// `i`-th (the index that queries return). The payload section is appended
-    /// after the index, so the index data is unchanged — only a header flag bit
-    /// marks the payload's presence; readers that do not understand payloads
-    /// reject the file rather than misread it. Read the
-    /// blobs back by item index with a `StreamIndex2D` (the `stream` feature) or
-    /// [`Index2DView`].
+    /// `i`-th (the index that queries return). The blobs are stored in leaf
+    /// (Hilbert) order so a spatial query fetches them in coalesced reads. The
+    /// index data is unchanged — only a header flag bit marks the payload's
+    /// presence; readers that do not understand payloads reject the file rather
+    /// than misread it. Read the blobs back paired with query results via
+    /// `StreamIndex2D::search_payloads` (the `stream` feature, remote-friendly)
+    /// or [`Index2DView::search_payloads`] / [`Index2DView::payload`].
     ///
     /// Returns [`PayloadError::CountMismatch`] unless `payloads.len()` equals
     /// [`num_items`](Self::num_items).
@@ -233,7 +234,9 @@ impl Index2D {
         bytes.write_usize_slice_as_u64(&self.level_bounds);
         bytes.write_box2d_slice(&self.entries);
         bytes.write_usize_slice_as_u64(&self.indices);
-        bytes.write_payload_offsets_and_blobs(payloads);
+        // Leaf entries `indices[0..num_items]` map leaf rank -> insertion id, so
+        // they are the order in which to lay out payloads (leaf order).
+        bytes.write_payload_offsets_and_blobs(payloads, &self.indices[..self.num_items]);
         bytes.finish();
         Ok(())
     }
@@ -1257,6 +1260,9 @@ pub struct Index2DView<'a> {
     entries: &'a [u8],
     indices: &'a [u8],
     payload: Option<ParsedPayload<'a>>,
+    /// `insertion id -> leaf rank`, built when a (leaf-ordered) payload is
+    /// present, to serve random `payload(id)` lookups.
+    id_to_leaf: Option<Vec<u32>>,
 }
 
 impl<'a> Index2DView<'a> {
@@ -1277,6 +1283,11 @@ impl<'a> Index2DView<'a> {
     /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
         let (parsed, payload) = parse_index_and_payload(bytes, FORMAT_FLAGS_2D, 2, 8)?;
+        // The payload is leaf-ordered; build the id -> leaf-rank map so random
+        // `payload(id)` lookups work. Only allocated when a payload is present.
+        let id_to_leaf = payload
+            .is_some()
+            .then(|| build_id_to_leaf(parsed.indices, parsed.num_items));
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -1286,6 +1297,7 @@ impl<'a> Index2DView<'a> {
             entries: parsed.entries,
             indices: parsed.indices,
             payload,
+            id_to_leaf,
         })
     }
 
@@ -1294,15 +1306,31 @@ impl<'a> Index2DView<'a> {
         self.payload.is_some()
     }
 
-    /// Borrow item `id`'s payload blob, or `None` if the bytes have no payload
-    /// section or `id` is out of range. Zero-copy: the slice borrows the view's
-    /// bytes.
+    /// Borrow item `id`'s payload blob (zero-copy), or `None` if the bytes have
+    /// no payload section or `id` is out of range.
     pub fn payload(&self, id: usize) -> Option<&'a [u8]> {
         let payload = self.payload.as_ref()?;
-        if id >= self.num_items {
-            return None;
+        let id_to_leaf = self.id_to_leaf.as_ref()?;
+        let leaf_rank = *id_to_leaf.get(id)? as usize;
+        Some(payload_slice(payload.offsets, payload.blobs, leaf_rank))
+    }
+
+    /// Return `(item index, payload blob)` for every item intersecting `query`.
+    ///
+    /// The blobs are borrowed zero-copy. This is the local/in-memory counterpart
+    /// of the streaming `search_payloads`; both pair query results with their
+    /// stored data. Returns an empty vec if the view has no payload section.
+    pub fn search_payloads(&self, query: Box2D) -> Vec<(usize, &'a [u8])> {
+        let mut out = Vec::new();
+        if self.payload.is_none() {
+            return out;
         }
-        Some(payload_slice(payload.offsets, payload.blobs, id))
+        for id in self.search(query) {
+            if let Some(blob) = self.payload(id) {
+                out.push((id, blob));
+            }
+        }
+        out
     }
 
     /// Return the number of indexed items.

@@ -317,12 +317,25 @@ pub(crate) fn parse_payload_section(
     })
 }
 
-/// Slice item `id`'s payload out of a validated offset table and blob region.
+/// Slice the payload at leaf rank `r` out of a validated leaf-ordered offset
+/// table and blob region.
 #[inline]
-pub(crate) fn payload_slice<'a>(offsets: &[u8], blobs: &'a [u8], id: usize) -> &'a [u8] {
-    let start = read_u64_le_unchecked(offsets, id * 8) as usize;
-    let end = read_u64_le_unchecked(offsets, (id + 1) * 8) as usize;
+pub(crate) fn payload_slice<'a>(offsets: &[u8], blobs: &'a [u8], r: usize) -> &'a [u8] {
+    let start = read_u64_le_unchecked(offsets, r * 8) as usize;
+    let end = read_u64_le_unchecked(offsets, (r + 1) * 8) as usize;
     &blobs[start..end]
+}
+
+/// Build the `insertion id -> leaf rank` map by inverting the leaf entries of
+/// `indices` (which map leaf rank -> insertion id). The payload section is
+/// leaf-ordered, so a view needs this to serve random `payload(id)` lookups.
+pub(crate) fn build_id_to_leaf(indices: &[u8], num_items: usize) -> Vec<u32> {
+    let mut id_to_leaf = vec![0u32; num_items];
+    for r in 0..num_items {
+        let id = read_u64_le_unchecked(indices, r * 8) as usize;
+        id_to_leaf[id] = r as u32;
+    }
+    id_to_leaf
 }
 
 pub(crate) struct ParsedIndexBytes<'a> {
@@ -816,17 +829,25 @@ impl<'a> ByteWriter<'a> {
         }
     }
 
-    /// Write the optional payload section: a `(num_items + 1)` prefix-offset
-    /// table followed by the concatenated blobs. `payloads` is in item order.
-    pub(crate) fn write_payload_offsets_and_blobs<P: AsRef<[u8]>>(&mut self, payloads: &[P]) {
+    /// Write the optional payload section in **leaf order**: a `(num_items + 1)`
+    /// prefix-offset table plus the concatenated blobs, both ordered by leaf rank
+    /// so a spatial query (which visits leaves in contiguous runs) fetches them
+    /// in coalesced reads. `leaf_order[r]` is the insertion id of the item at
+    /// leaf rank `r` (i.e. the leaf entry of `indices`); `payloads` is indexed by
+    /// insertion id.
+    pub(crate) fn write_payload_offsets_and_blobs<P: AsRef<[u8]>>(
+        &mut self,
+        payloads: &[P],
+        leaf_order: &[usize],
+    ) {
         let mut acc: u64 = 0;
         self.write_u64(0);
-        for payload in payloads {
-            acc += payload.as_ref().len() as u64;
+        for &id in leaf_order {
+            acc += payloads[id].as_ref().len() as u64;
             self.write_u64(acc);
         }
-        for payload in payloads {
-            self.write_bytes(payload.as_ref());
+        for &id in leaf_order {
+            self.write_bytes(payloads[id].as_ref());
         }
     }
 
@@ -936,10 +957,13 @@ mod tests {
             assert!(header.has_payload);
             let layout = section_layout(header.level_count, header.num_nodes, 2, 8).unwrap();
             let parsed = parse_payload_section(&bytes, header.num_items, layout.total_len).unwrap();
-            for (i, want) in payloads.iter().enumerate() {
+            // The payload is leaf-ordered: slot `r` holds the blob of the item at
+            // leaf rank `r`, whose insertion id is `index.indices[r]`.
+            for r in 0..n {
+                let insertion_id = index.indices[r];
                 assert_eq!(
-                    payload_slice(parsed.offsets, parsed.blobs, i),
-                    want.as_slice()
+                    payload_slice(parsed.offsets, parsed.blobs, r),
+                    payloads[insertion_id].as_slice()
                 );
             }
         }
@@ -978,10 +1002,10 @@ mod tests {
         let header = parse_and_validate_header(&bytes, FORMAT_FLAGS_2D, true).unwrap();
         let layout = section_layout(header.level_count, header.num_nodes, 2, 8).unwrap();
         let parsed = parse_payload_section(&bytes, header.num_items, layout.total_len).unwrap();
-        for (i, want) in payloads.iter().enumerate() {
+        for r in 0..20 {
             assert_eq!(
-                payload_slice(parsed.offsets, parsed.blobs, i),
-                want.as_slice()
+                payload_slice(parsed.offsets, parsed.blobs, r),
+                payloads[index.indices[r]].as_slice()
             );
         }
     }

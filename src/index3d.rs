@@ -15,8 +15,8 @@ use crate::{
     },
     persistence::{
         ByteWriter, FORMAT_FLAG_PAYLOAD, FORMAT_FLAGS_3D, LoadError, ParsedPayload, PayloadError,
-        parse_index_and_payload, payload_layout, payload_slice, read_f64_le_unchecked,
-        read_u64_le_unchecked, serialized_len_3d,
+        build_id_to_leaf, parse_index_and_payload, payload_layout, payload_slice,
+        read_f64_le_unchecked, read_u64_le_unchecked, serialized_len_3d,
     },
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
@@ -185,7 +185,8 @@ impl Index3D {
         bytes.write_usize_slice_as_u64(&self.level_bounds);
         bytes.write_box3d_slice(&self.entries);
         bytes.write_usize_slice_as_u64(&self.indices);
-        bytes.write_payload_offsets_and_blobs(payloads);
+        // Lay payloads out in leaf order (indices[0..num_items] = leaf -> id).
+        bytes.write_payload_offsets_and_blobs(payloads, &self.indices[..self.num_items]);
         bytes.finish();
         Ok(())
     }
@@ -1012,6 +1013,9 @@ pub struct Index3DView<'a> {
     entries: &'a [u8],
     indices: &'a [u8],
     payload: Option<ParsedPayload<'a>>,
+    /// `insertion id -> leaf rank` for random `payload(id)` over leaf-ordered
+    /// payloads; built only when a payload is present.
+    id_to_leaf: Option<Vec<u32>>,
 }
 
 impl<'a> Index3DView<'a> {
@@ -1032,6 +1036,9 @@ impl<'a> Index3DView<'a> {
     /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
         let (parsed, payload) = parse_index_and_payload(bytes, FORMAT_FLAGS_3D, 3, 8)?;
+        let id_to_leaf = payload
+            .is_some()
+            .then(|| build_id_to_leaf(parsed.indices, parsed.num_items));
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -1041,6 +1048,7 @@ impl<'a> Index3DView<'a> {
             entries: parsed.entries,
             indices: parsed.indices,
             payload,
+            id_to_leaf,
         })
     }
 
@@ -1049,15 +1057,28 @@ impl<'a> Index3DView<'a> {
         self.payload.is_some()
     }
 
-    /// Borrow item `id`'s payload blob, or `None` if the bytes have no payload
-    /// section or `id` is out of range. Zero-copy. See
-    /// [`Index2DView::payload`](crate::Index2DView::payload).
+    /// Borrow item `id`'s payload blob (zero-copy), or `None` if absent or out of
+    /// range. See [`Index2DView::payload`](crate::Index2DView::payload).
     pub fn payload(&self, id: usize) -> Option<&'a [u8]> {
         let payload = self.payload.as_ref()?;
-        if id >= self.num_items {
-            return None;
+        let id_to_leaf = self.id_to_leaf.as_ref()?;
+        let leaf_rank = *id_to_leaf.get(id)? as usize;
+        Some(payload_slice(payload.offsets, payload.blobs, leaf_rank))
+    }
+
+    /// Return `(item index, payload blob)` for every item intersecting `query`.
+    /// See [`Index2DView::search_payloads`](crate::Index2DView::search_payloads).
+    pub fn search_payloads(&self, query: Box3D) -> Vec<(usize, &'a [u8])> {
+        let mut out = Vec::new();
+        if self.payload.is_none() {
+            return out;
         }
-        Some(payload_slice(payload.offsets, payload.blobs, id))
+        for id in self.search(query) {
+            if let Some(blob) = self.payload(id) {
+                out.push((id, blob));
+            }
+        }
+        out
     }
 
     /// Return the number of indexed items.

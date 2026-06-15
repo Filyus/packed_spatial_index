@@ -99,16 +99,20 @@ assert_eq!(hit, Some((0, 1.0)));
   `contains` / `contains_point` / `from_point`), [`Point2D`][Point2D],
   [`Point3D`][Point3D], [`Ray2D`][Ray2D], [`Ray3D`][Ray3D].
 - **Builders**: [`Index2DBuilder`][Index2DBuilder],
-  [`Index3DBuilder`][Index3DBuilder] — [`finish`][finish] (scalar),
-  [`finish_simd`][finish_simd] (SoA + SIMD),
-  [`finish_simd_f32`][finish_simd_f32] (compact f32 boxes).
-- **Indexes**: [`Index2D`][Index2D] / [`Index3D`][Index3D] (scalar),
-  [`SimdIndex2D`][SimdIndex2D] / [`SimdIndex3D`][SimdIndex3D] (SIMD),
-  [`SimdIndex2DF32`][SimdIndex2DF32] / [`SimdIndex3DF32`][SimdIndex3DF32]
-  (half-memory f32 boxes).
+  [`Index3DBuilder`][Index3DBuilder] — [`finish`][finish] (scalar f64),
+  [`finish_simd`][finish_simd] (SoA + SIMD), [`finish_f32`][finish_f32] (compact
+  scalar f32), [`finish_simd_f32`][finish_simd_f32] (compact f32 + SIMD).
+- **Indexes**: [`Index2D`][Index2D] / [`Index3D`][Index3D] (scalar f64),
+  [`SimdIndex2D`][SimdIndex2D] / [`SimdIndex3D`][SimdIndex3D] (SIMD f64),
+  [`Index2DF32`][Index2DF32] / [`Index3DF32`][Index3DF32] (half-memory scalar
+  f32), [`SimdIndex2DF32`][SimdIndex2DF32] / [`SimdIndex3DF32`][SimdIndex3DF32]
+  (half-memory f32 + SIMD).
 - **Views**: zero-copy [`Index2DView`][Index2DView] /
   [`Index3DView`][Index3DView] (and SIMD / f32 view variants) over serialized
   bytes.
+- **Streaming**: [`StreamIndex2D`][StreamIndex2D] / [`StreamIndex3D`][StreamIndex3D]
+  (and compact `StreamIndex2DF32` / `StreamIndex3DF32`) query a serialized index
+  over a `RangeReader` without loading it whole (`stream` feature).
 - **Workspaces**: [`SearchWorkspace`][SearchWorkspace] /
   [`NeighborWorkspace`][NeighborWorkspace] reuse buffers in loops.
 - **Sorting / errors**: [`SortKey2D`][SortKey2D] / [`SortKey3D`][SortKey3D]
@@ -150,13 +154,19 @@ bounding box (`Index3D::from_triangles`) is a streamable mesh BVH; `raycast` fin
 candidates and `Ray3D::closest_triangle` does the exact hit (the `f32` records test
 8 at a time with `simd`). See the [`raycast_mesh`](examples/raycast_mesh.rs) example.
 
+For half the box bytes in memory and on the wire, build the same thing on the
+compact `f32` index: `Index3DF32::from_triangles(..).serialize().triangles(..)`
+then stream it with `StreamIndex3DF32` — `f32-storage` alone, no `simd` needed.
+The stored f32 boxes are rounded outward, so range and ray results are a
+conservative superset; `search_exact` refines them against your `f64` boxes.
+
 ## Features
 
 | Feature | Pulls in | Adds |
 | --- | --- | --- |
 | `parallel` *(default)* | `rayon` | adaptive parallel index builds |
 | `simd` *(default)* | `wide` | SoA indexes + SIMD search / raycast (AVX2 / AVX-512) |
-| `f32-storage` | *(implies `simd`)* | compact f32-storage SIMD indexes |
+| `f32-storage` | — | compact f32-box indexes (scalar `Index2DF32` / `Index3DF32`; the `SimdIndex*F32` variants also need `simd`) |
 | `stream` | — | query a serialized index over a `RangeReader` (local file or remote object) without loading it whole |
 | `async` | `futures-util` *(implies `stream`)* | query over an `AsyncRangeReader` (browser / edge worker, HTTP range or object storage) |
 | `bench-internals` | — | hidden support API for this crate's benchmarks |
@@ -266,6 +276,10 @@ Licensed under the Apache License, Version 2.0.
 [SimdIndex3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex3D.html
 [SimdIndex2DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html
 [SimdIndex3DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex3DF32.html
+[Index2DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DF32.html
+[Index3DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DF32.html
+[StreamIndex2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.StreamIndex2D.html
+[StreamIndex3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.StreamIndex3D.html
 [Index2DView]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DView.html
 [Index3DView]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DView.html
 [SearchWorkspace]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SearchWorkspace.html
@@ -273,6 +287,7 @@ Licensed under the Apache License, Version 2.0.
 [finish]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish
 [finish_simd]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish_simd
 [finish_simd_f32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish_simd_f32
+[finish_f32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish_f32
 [SortKey2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.SortKey2D.html
 [SortKey3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.SortKey3D.html
 [BoundsError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BoundsError.html

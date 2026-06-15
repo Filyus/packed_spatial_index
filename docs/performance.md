@@ -208,6 +208,16 @@ Quick selector:
 - `SimdIndex2DF32::*_exact`: 16-byte f32 index plus source f64 boxes. Use when
   exact range queries return few hits and compact storage matters. Exact KNN is
   available, but f64 is faster in these runs.
+- `Index2DF32` / `Index3DF32`: the same 16/24-byte f32 boxes, scalar (no `simd`).
+  Same conservative range/ray results and `search_exact`; pick it for the half
+  memory without the SIMD dependency, or to stream a compact file with
+  `StreamIndex2DF32` / `StreamIndex3DF32` (half the box bytes over the wire).
+  Scalar f32 trades speed for memory: a 1M-box spot check ran range queries
+  about 30% slower than `Index3D` (each node widens f32 to f64 on read, plus a
+  few more conservative candidates), `search_exact` slower still from the refine
+  pass, and the build about 1.7x slower from outward rounding. Reach for it when
+  you want half the memory without a SIMD dependency, not for raw query speed
+  (use `SimdIndex2DF32` for that).
 
 | Range query | Items | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: | ---: |

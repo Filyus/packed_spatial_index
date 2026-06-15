@@ -32,8 +32,13 @@ loading a SIMD index scatters the canonical box records into SoA columns, while
 `SimdIndex2DView` / `SimdIndex3DView` borrow the same bytes for zero-copy
 SIMD-over-AoS queries.
 
-The `f32` indexes persist to their own `f32` box layout (distinct format flags),
-with matching `from_bytes` loaders and zero-copy views.
+The compact `f32` indexes persist to their own `f32` box layout (`coord_bytes =
+4`), halving the box bytes. With `f32-storage` the scalar `Index2DF32` /
+`Index3DF32` build, query, `serialize()` (boxes plus an optional payload and
+metadata), and `from_bytes` without `simd`; the SIMD `SimdIndex*F32` frontends
+add the vectorized queries. The stored f32 boxes are rounded outward, so range
+and ray results are a conservative superset — use `search_exact` (refining
+against your `f64` boxes) when you need exact hits.
 
 ## Large / on-disk indexes (mmap)
 
@@ -80,7 +85,7 @@ return item indices like the in-memory `search`. Child pointers are validated as
 they are followed, so the reader is safe on untrusted data.
 
 ```rust,ignore
-// Cargo.toml: packed_spatial_index = { version = "0.6", features = ["stream"] }
+// Cargo.toml: packed_spatial_index = { version = "0.7", features = ["stream"] }
 use packed_spatial_index::{Box2D, FileReader, StreamIndex2D};
 
 let reader = FileReader::open("planet.psindex")?;
@@ -131,6 +136,15 @@ per-query cost limits (`open_with_limits` + `StreamLimits` — bound reads, byte
 and items so a broad query cannot run unbounded). For a remote-tuned layout,
 `to_bytes_interleaved` stores each node's box and child pointer together so the
 descent fetches them in one read per level instead of two.
+
+**Compact `f32` streaming:** `StreamIndex2DF32` / `StreamIndex3DF32` stream a
+compact `f32`-box file for half the box bytes over the wire, with the same
+`search` / `search_payloads` / async API. The stored boxes are rounded outward,
+so results are a conservative superset (filter against your own `f64` boxes for
+exact). Write the file with the scalar `Index3DF32` or the SIMD `SimdIndex3DF32`;
+`.interleaved()` on its `serialize()` builder enables the one-read-per-level
+layout, and a triangle payload makes it a compact streamable mesh BVH — all
+without the `simd` feature.
 
 **What does not stream:** nearest-neighbor and raycast queries are in-memory only.
 Their best-first traversal jumps around the tree, so adjacent reads do not

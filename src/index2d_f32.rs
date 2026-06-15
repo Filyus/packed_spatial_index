@@ -109,7 +109,7 @@ struct Box2DF32 {
 }
 
 impl Box2DF32 {
-    /// Superset of `b` with bounds rounded outward.
+    /// Superset of `b` with bounds rounded outward (min down, max up).
     #[inline]
     fn from_box2d_outward(b: Box2D) -> Self {
         Self {
@@ -119,11 +119,33 @@ impl Box2DF32 {
             max_y: round_up(b.max_y),
         }
     }
-}
 
-// Overlap/containment tests are used only by the SIMD query frontend.
-#[cfg(feature = "simd")]
-impl Box2DF32 {
+    /// `b` rounded *inward* (min up, max down) onto the f32 grid. Testing a stored
+    /// f32 box against this with [`overlaps`](Self::overlaps) is bit-identical to
+    /// widening that stored box to f64 and testing it against `b` -- so a scalar
+    /// f32 query compares f32-vs-f32 with no per-node widen yet returns exactly the
+    /// same hits as the f64 comparison.
+    #[inline]
+    fn from_box2d_inward(b: Box2D) -> Self {
+        Self {
+            min_x: round_up(b.min_x),
+            min_y: round_up(b.min_y),
+            max_x: round_down(b.max_x),
+            max_y: round_down(b.max_y),
+        }
+    }
+
+    /// Widen losslessly to an f64 box.
+    #[inline]
+    fn widen(self) -> Box2D {
+        Box2D::new(
+            self.min_x as f64,
+            self.min_y as f64,
+            self.max_x as f64,
+            self.max_y as f64,
+        )
+    }
+
     #[inline]
     fn overlaps(self, other: Self) -> bool {
         self.min_x <= other.max_x
@@ -132,6 +154,18 @@ impl Box2DF32 {
             && self.max_y >= other.min_y
     }
 
+    #[inline]
+    fn definitely_overlaps_exact(self, query: Box2D) -> bool {
+        (self.min_x.next_up() as f64 <= query.max_x)
+            && (self.max_x.next_down() as f64 >= query.min_x)
+            && (self.min_y.next_up() as f64 <= query.max_y)
+            && (self.max_y.next_down() as f64 >= query.min_y)
+    }
+}
+
+/// Containment test is used only by the SIMD query frontend.
+#[cfg(feature = "simd")]
+impl Box2DF32 {
     /// True when `self` fully contains `other` (both already rounded). Used only on
     /// the conservative (non-refined) path, where the leaf MBR property guarantees a
     /// contained node's whole subtree overlaps the rounded query.
@@ -141,14 +175,6 @@ impl Box2DF32 {
             && other.max_x <= self.max_x
             && self.min_y <= other.min_y
             && other.max_y <= self.max_y
-    }
-
-    #[inline]
-    fn definitely_overlaps_exact(self, query: Box2D) -> bool {
-        (self.min_x.next_up() as f64 <= query.max_x)
-            && (self.max_x.next_down() as f64 >= query.min_x)
-            && (self.min_y.next_up() as f64 <= query.max_y)
-            && (self.max_y.next_down() as f64 >= query.min_y)
     }
 }
 
@@ -2396,13 +2422,24 @@ impl Index2DF32 {
         )
     }
 
+    #[inline]
+    fn box_f32_at(&self, pos: usize) -> Box2DF32 {
+        Box2DF32 {
+            min_x: self.min_xs[pos],
+            min_y: self.min_ys[pos],
+            max_x: self.max_xs[pos],
+            max_y: self.max_ys[pos],
+        }
+    }
+
     /// Items whose (outward-rounded) box overlaps `query`. A conservative superset
     /// of [`Index2D::search`](crate::Index2D::search).
     pub fn search(&self, query: Box2D) -> Vec<usize> {
+        let q = Box2DF32::from_box2d_inward(query);
         let mut out = Vec::new();
         let _ = self.visit_hits(
-            |b| b.overlaps(query),
-            |i| {
+            |b| b.overlaps(q),
+            |i, _| {
                 out.push(i);
                 ControlFlow::<()>::Continue(())
             },
@@ -2415,8 +2452,8 @@ impl Index2DF32 {
     pub fn raycast(&self, ray: Ray2D) -> Vec<usize> {
         let mut out = Vec::new();
         let _ = self.visit_hits(
-            |b| ray.intersects_box(b),
-            |i| {
+            |b| ray.intersects_box(b.widen()),
+            |i, _| {
                 out.push(i);
                 ControlFlow::<()>::Continue(())
             },
@@ -2429,9 +2466,10 @@ impl Index2DF32 {
     pub fn visit<B>(
         &self,
         query: Box2D,
-        visitor: impl FnMut(usize) -> ControlFlow<B>,
+        mut visitor: impl FnMut(usize) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
-        self.visit_hits(|b| b.overlaps(query), visitor)
+        let q = Box2DF32::from_box2d_inward(query);
+        self.visit_hits(|b| b.overlaps(q), |i, _| visitor(i))
     }
 
     /// Whether any item's (rounded) box overlaps `query` (early-exit).
@@ -2499,10 +2537,11 @@ impl Index2DF32 {
         BF: FnMut(usize) -> Box2D,
         VF: FnMut(usize) -> ControlFlow<B>,
     {
+        let q = Box2DF32::from_box2d_inward(query);
         self.visit_hits(
-            |b| b.overlaps(query),
-            |id| {
-                if box_at(id).overlaps(query) {
+            |b| b.overlaps(q),
+            |id, stored| {
+                if stored.definitely_overlaps_exact(query) || box_at(id).overlaps(query) {
                     visitor(id)
                 } else {
                     ControlFlow::Continue(())
@@ -2511,10 +2550,13 @@ impl Index2DF32 {
         )
     }
 
+    /// Shared stack descent: call `visitor` for each leaf item whose stored f32 box
+    /// passes `hit`, recursing into internal nodes that pass. Stops early when
+    /// `visitor` returns [`ControlFlow::Break`].
     fn visit_hits<B>(
         &self,
-        hit: impl Fn(Box2D) -> bool,
-        mut visitor: impl FnMut(usize) -> ControlFlow<B>,
+        hit: impl Fn(Box2DF32) -> bool,
+        mut visitor: impl FnMut(usize, Box2DF32) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
         if self.indices.is_empty() {
             return ControlFlow::Continue(());
@@ -2526,12 +2568,13 @@ impl Index2DF32 {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             for pos in node_index..end {
-                if !hit(self.box_at(pos)) {
+                let b = self.box_f32_at(pos);
+                if !hit(b) {
                     continue;
                 }
                 let index = self.indices[pos];
                 if is_leaf {
-                    visitor(index)?;
+                    visitor(index, b)?;
                 } else {
                     stack.push(index);
                     stack.push(level - 1);

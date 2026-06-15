@@ -57,6 +57,54 @@ fn search_is_a_conservative_superset() {
 }
 
 #[test]
+fn search_exact_matches_f64_exactly() {
+    // The inward-rounded f32 query compares f32-vs-f32 yet, with box_at returning
+    // the true f64 boxes, exact search has no false positives -> identical to the
+    // f64 index's search.
+    let mut rng = StdRng::seed_from_u64(0x2E7A);
+    let bs: Vec<Box2D> = (0..20_000)
+        .map(|_| {
+            let (x, y) = (
+                rng.random_range(0.0..1000.0f64),
+                rng.random_range(0.0..1000.0),
+            );
+            Box2D::new(
+                x,
+                y,
+                x + rng.random_range(0.1..8.0),
+                y + rng.random_range(0.1..8.0),
+            )
+        })
+        .collect();
+    let mut b1 = Index2DBuilder::new(bs.len()).node_size(16);
+    let mut b2 = Index2DBuilder::new(bs.len()).node_size(16);
+    for &b in &bs {
+        b1.add(b);
+        b2.add(b);
+    }
+    let f64_index = b1.finish().unwrap();
+    let compact = b2.finish_f32().unwrap();
+
+    let mut rng = StdRng::seed_from_u64(0x9B9B);
+    for _ in 0..200 {
+        let x = rng.random_range(0.0..1000.0);
+        let y = rng.random_range(0.0..1000.0);
+        let q = Box2D::new(x, y, x + 40.0, y + 40.0);
+        let mut exact = compact.search_exact(q, |id| bs[id]);
+        let mut f64_hits = f64_index.search(q);
+        exact.sort_unstable();
+        f64_hits.sort_unstable();
+        assert_eq!(exact, f64_hits);
+        let conservative: HashSet<usize> = compact.search(q).into_iter().collect();
+        assert!(exact.iter().all(|id| conservative.contains(id)));
+        assert_eq!(compact.any_exact(q, |id| bs[id]), !exact.is_empty());
+        if let Some(f) = compact.first_exact(q, |id| bs[id]) {
+            assert!(exact.contains(&f));
+        }
+    }
+}
+
+#[test]
 fn from_triangles_builds_a_queryable_index() {
     let tris: Vec<Triangle2D> = (0..300)
         .map(|i| {

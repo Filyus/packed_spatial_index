@@ -213,11 +213,13 @@ Quick selector:
   memory without the SIMD dependency, or to stream a compact file with
   `StreamIndex2DF32` / `StreamIndex3DF32` (half the box bytes over the wire).
   Scalar f32 trades speed for memory: a 1M-box spot check ran range queries
-  about 30% slower than `Index3D` (each node widens f32 to f64 on read, plus a
-  few more conservative candidates), `search_exact` slower still from the refine
-  pass, and the build about 1.7x slower from outward rounding. Reach for it when
-  you want half the memory without a SIMD dependency, not for raw query speed
-  (use `SimdIndex2DF32` for that).
+  about 30% slower than `Index3D` and `search_exact` about 45% slower. The query
+  is rounded once onto the f32 grid so each node compares f32-vs-f32 with no
+  per-node widen (and bit-identical hits to the f64 test); the residual gap is
+  the few extra conservative candidates from the outward-rounded boxes, and a
+  build about 1.7x slower from that rounding. Reach for it when you want half the
+  memory without a SIMD dependency, not for raw query speed (use
+  `SimdIndex2DF32` for that).
 
 | Range query | Items | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: | ---: |

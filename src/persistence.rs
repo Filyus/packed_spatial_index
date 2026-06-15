@@ -330,6 +330,50 @@ impl<'a> ByteWriter<'a> {
         }
     }
 
+    /// Interleaved `f32` 2D nodes from SoA columns: each node's `[min_x, min_y,
+    /// max_x, max_y]` f32 box immediately followed by its `u64` index.
+    #[cfg(all(feature = "f32-storage", feature = "stream"))]
+    pub(crate) fn write_interleaved_f32_2d(
+        &mut self,
+        min_xs: &[f32],
+        min_ys: &[f32],
+        max_xs: &[f32],
+        max_ys: &[f32],
+        indices: &[usize],
+    ) {
+        for i in 0..indices.len() {
+            self.write_f32(min_xs[i]);
+            self.write_f32(min_ys[i]);
+            self.write_f32(max_xs[i]);
+            self.write_f32(max_ys[i]);
+            self.write_u64(indices[i] as u64);
+        }
+    }
+
+    /// Interleaved `f32` 3D nodes from SoA columns (24-byte box + `u64` index).
+    #[cfg(all(feature = "f32-storage", feature = "stream"))]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_interleaved_f32_3d(
+        &mut self,
+        min_xs: &[f32],
+        min_ys: &[f32],
+        min_zs: &[f32],
+        max_xs: &[f32],
+        max_ys: &[f32],
+        max_zs: &[f32],
+        indices: &[usize],
+    ) {
+        for i in 0..indices.len() {
+            self.write_f32(min_xs[i]);
+            self.write_f32(min_ys[i]);
+            self.write_f32(min_zs[i]);
+            self.write_f32(max_xs[i]);
+            self.write_f32(max_ys[i]);
+            self.write_f32(max_zs[i]);
+            self.write_u64(indices[i] as u64);
+        }
+    }
+
     /// Write 2D box records from structure-of-arrays columns (one `[min_x, min_y,
     /// max_x, max_y]` record per node). Produces the same bytes as
     /// [`write_box2d_slice`](Self::write_box2d_slice) on an equivalent AoS slice.
@@ -487,7 +531,7 @@ pub(crate) fn read_f64_le_unchecked(bytes: &[u8], offset: usize) -> f64 {
 }
 
 #[inline]
-#[cfg(feature = "f32-storage")]
+#[cfg(any(feature = "f32-storage", feature = "stream"))]
 pub(crate) fn read_f32_le_unchecked(bytes: &[u8], offset: usize) -> f32 {
     debug_assert!(offset + 4 <= bytes.len());
     let mut value = 0u32;

@@ -27,8 +27,8 @@ use crate::geometry::{Box2D, Box3D};
 use crate::persistence::{
     CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PYLD_DESC_LEN,
     PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PYLD, TAG_TREE, TREE_DESC_LEN, derive_level_bounds,
-    expected_tree_shape, parse_pyld_chunk, parse_tree_chunk, read_f64_le_unchecked, read_u32_at,
-    read_u64_at, read_u64_le_unchecked,
+    expected_tree_shape, parse_pyld_chunk, parse_tree_chunk, read_f32_le_unchecked,
+    read_f64_le_unchecked, read_u32_at, read_u64_at, read_u64_le_unchecked,
 };
 
 /// Upper bound on how many nodes the open-time "directory" prefetch caches.
@@ -1358,6 +1358,206 @@ fn parse_box3d(bytes: &[u8]) -> Box3D {
     )
 }
 
+/// Parse one 2D `f32` box record (16 bytes), widening to `f64`. The stored f32
+/// bounds were rounded outward, so the widened box is a superset and search stays
+/// conservative (no misses, a few near-boundary false positives).
+fn parse_box2d_f32(bytes: &[u8]) -> Box2D {
+    Box2D::new(
+        read_f32_le_unchecked(bytes, 0) as f64,
+        read_f32_le_unchecked(bytes, 4) as f64,
+        read_f32_le_unchecked(bytes, 8) as f64,
+        read_f32_le_unchecked(bytes, 12) as f64,
+    )
+}
+
+/// Parse one 3D `f32` box record (24 bytes), widening to `f64` (see
+/// [`parse_box2d_f32`]).
+fn parse_box3d_f32(bytes: &[u8]) -> Box3D {
+    Box3D::new(
+        read_f32_le_unchecked(bytes, 0) as f64,
+        read_f32_le_unchecked(bytes, 4) as f64,
+        read_f32_le_unchecked(bytes, 8) as f64,
+        read_f32_le_unchecked(bytes, 12) as f64,
+        read_f32_le_unchecked(bytes, 16) as f64,
+        read_f32_le_unchecked(bytes, 20) as f64,
+    )
+}
+
+/// Streaming reader for a compact `f32` 2D index — the bytes of
+/// [`SimdIndex2DF32`](crate::SimdIndex2DF32) / [`Index2DF32`](crate::Index2DF32).
+/// Half the box bytes on the wire of [`StreamIndex2D`]; results are a
+/// conservative superset (the stored f32 boxes are rounded outward). Behind the
+/// `stream` feature.
+pub struct StreamIndex2DF32<R> {
+    core: StreamCore<R>,
+}
+
+impl<R: RangeReader> StreamIndex2DF32<R> {
+    /// Open and validate a 2D `f32` index from `reader`.
+    pub fn open(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits(reader, StreamLimits::default())
+    }
+
+    /// Open with per-query cost [`StreamLimits`]. See
+    /// [`StreamIndex2D::open_with_limits`].
+    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open(reader, 2, 4, limits)?,
+        })
+    }
+
+    /// Number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.core.num_items
+    }
+
+    /// Whether the index has no items.
+    pub fn is_empty(&self) -> bool {
+        self.core.num_items == 0
+    }
+
+    /// Packed node size of the index.
+    pub fn node_size(&self) -> usize {
+        self.core.node_size
+    }
+
+    /// Total extent of all indexed items (widened f32 root box), or `None` when
+    /// empty. Costs no I/O.
+    pub fn extent(&self) -> Option<Box2D> {
+        if self.core.num_items == 0 {
+            return None;
+        }
+        let root = self.core.num_nodes - 1;
+        Some(parse_box2d_f32(self.core.cached_box_bytes(root)?))
+    }
+
+    /// Stream the indices of every item whose (rounded) box intersects `query`.
+    pub fn visit<F: FnMut(usize)>(&self, query: Box2D, visitor: F) -> Result<(), StreamError> {
+        self.core
+            .visit_ids(|r| parse_box2d_f32(r).overlaps(query), visitor)
+    }
+
+    /// Stream the indices of every item whose (rounded) box intersects `query`.
+    pub fn search(&self, query: Box2D) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.search_into(query, &mut out)?;
+        Ok(out)
+    }
+
+    /// Like [`search`](Self::search), into a reused buffer (cleared first).
+    pub fn search_into(&self, query: Box2D, out: &mut Vec<usize>) -> Result<(), StreamError> {
+        out.clear();
+        self.visit(query, |index| out.push(index))
+    }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.core.has_payload()
+    }
+
+    /// Visit `(item index, payload blob)` for every item intersecting `query`.
+    pub fn visit_payloads<F: FnMut(usize, &[u8])>(
+        &self,
+        query: Box2D,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payloads(|r| parse_box2d_f32(r).overlaps(query), visitor)
+    }
+
+    /// Collect `(item index, payload blob)` for every item intersecting `query`.
+    pub fn search_payloads(&self, query: Box2D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        Ok(out)
+    }
+}
+
+/// Streaming reader for a compact `f32` 3D index. The 3D counterpart of
+/// [`StreamIndex2DF32`] (24-byte box record). Behind the `stream` feature.
+pub struct StreamIndex3DF32<R> {
+    core: StreamCore<R>,
+}
+
+impl<R: RangeReader> StreamIndex3DF32<R> {
+    /// Open and validate a 3D `f32` index from `reader`.
+    pub fn open(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits(reader, StreamLimits::default())
+    }
+
+    /// Open with per-query cost [`StreamLimits`].
+    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open(reader, 3, 4, limits)?,
+        })
+    }
+
+    /// Number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.core.num_items
+    }
+
+    /// Whether the index has no items.
+    pub fn is_empty(&self) -> bool {
+        self.core.num_items == 0
+    }
+
+    /// Packed node size of the index.
+    pub fn node_size(&self) -> usize {
+        self.core.node_size
+    }
+
+    /// Total extent (widened f32 root box), or `None` when empty. Costs no I/O.
+    pub fn extent(&self) -> Option<Box3D> {
+        if self.core.num_items == 0 {
+            return None;
+        }
+        let root = self.core.num_nodes - 1;
+        Some(parse_box3d_f32(self.core.cached_box_bytes(root)?))
+    }
+
+    /// Stream the indices of every item whose (rounded) box intersects `query`.
+    pub fn visit<F: FnMut(usize)>(&self, query: Box3D, visitor: F) -> Result<(), StreamError> {
+        self.core
+            .visit_ids(|r| parse_box3d_f32(r).overlaps(query), visitor)
+    }
+
+    /// Stream the indices of every item whose (rounded) box intersects `query`.
+    pub fn search(&self, query: Box3D) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.search_into(query, &mut out)?;
+        Ok(out)
+    }
+
+    /// Like [`search`](Self::search), into a reused buffer (cleared first).
+    pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) -> Result<(), StreamError> {
+        out.clear();
+        self.visit(query, |index| out.push(index))
+    }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.core.has_payload()
+    }
+
+    /// Visit `(item index, payload blob)` for every item intersecting `query`.
+    pub fn visit_payloads<F: FnMut(usize, &[u8])>(
+        &self,
+        query: Box3D,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payloads(|r| parse_box3d_f32(r).overlaps(query), visitor)
+    }
+
+    /// Collect `(item index, payload blob)` for every item intersecting `query`.
+    pub fn search_payloads(&self, query: Box3D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        Ok(out)
+    }
+}
+
 // ---- Async streaming (behind the `async` feature) ----
 //
 // Mirror of the synchronous traversal for sources whose reads are async (browser
@@ -1962,6 +2162,119 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
             )
             .await?;
         Ok(out)
+    }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload_async(&self) -> bool {
+        self.core.has_payload()
+    }
+}
+
+/// Async streaming reader for a compact `f32` 2D index. Mirrors
+/// [`StreamIndex2DF32`]'s sync methods over async I/O. Behind the `async` feature.
+#[cfg(feature = "async")]
+impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
+    /// Open and validate a 2D `f32` index from an async `reader`.
+    pub async fn open_async(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits_async(reader, StreamLimits::default()).await
+    }
+
+    /// Open from an async `reader` with per-query [`StreamLimits`].
+    pub async fn open_with_limits_async(
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open_async(reader, 2, 4, limits).await?,
+        })
+    }
+
+    /// Stream the indices of every item whose (rounded) box intersects `query`.
+    pub async fn search_async(&self, query: Box2D) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.core
+            .traverse_async(
+                |r| parse_box2d_f32(r).overlaps(query),
+                Want::Ids,
+                |id, _| out.push(id),
+            )
+            .await?;
+        Ok(out)
+    }
+
+    /// Stream `(item index, payload blob)` for every item intersecting `query`.
+    pub async fn search_payloads_async(
+        &self,
+        query: Box2D,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.core
+            .traverse_async(
+                |r| parse_box2d_f32(r).overlaps(query),
+                Want::Payloads,
+                |id, blob| out.push((id, blob.to_vec())),
+            )
+            .await?;
+        Ok(out)
+    }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload_async(&self) -> bool {
+        self.core.has_payload()
+    }
+}
+
+/// Async streaming reader for a compact `f32` 3D index. See
+/// [`StreamIndex2DF32`]'s async methods. Behind the `async` feature.
+#[cfg(feature = "async")]
+impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
+    /// Open and validate a 3D `f32` index from an async `reader`.
+    pub async fn open_async(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits_async(reader, StreamLimits::default()).await
+    }
+
+    /// Open from an async `reader` with per-query [`StreamLimits`].
+    pub async fn open_with_limits_async(
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open_async(reader, 3, 4, limits).await?,
+        })
+    }
+
+    /// Stream the indices of every item whose (rounded) box intersects `query`.
+    pub async fn search_async(&self, query: Box3D) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.core
+            .traverse_async(
+                |r| parse_box3d_f32(r).overlaps(query),
+                Want::Ids,
+                |id, _| out.push(id),
+            )
+            .await?;
+        Ok(out)
+    }
+
+    /// Stream `(item index, payload blob)` for every item intersecting `query`.
+    pub async fn search_payloads_async(
+        &self,
+        query: Box3D,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.core
+            .traverse_async(
+                |r| parse_box3d_f32(r).overlaps(query),
+                Want::Payloads,
+                |id, blob| out.push((id, blob.to_vec())),
+            )
+            .await?;
+        Ok(out)
+    }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload_async(&self) -> bool {
+        self.core.has_payload()
     }
 }
 

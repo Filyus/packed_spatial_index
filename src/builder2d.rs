@@ -41,7 +41,7 @@ pub struct Index2DBuilder {
 }
 
 #[derive(Clone, Copy)]
-#[cfg(feature = "simd")]
+#[cfg(any(feature = "simd", feature = "f32-storage"))]
 pub(crate) struct BuildConfig {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
@@ -187,8 +187,16 @@ impl Index2DBuilder {
     /// let index = builder.finish_simd_f32().unwrap();
     /// assert!(index.search(Box2D::new(0.5, 0.5, 0.5, 0.5)).contains(&0));
     /// ```
-    #[cfg(feature = "f32-storage")]
+    #[cfg(all(feature = "f32-storage", feature = "simd"))]
     pub fn finish_simd_f32(self) -> Result<crate::SimdIndex2DF32, BuildError> {
+        self.finish_f32().map(crate::SimdIndex2DF32::from_scalar)
+    }
+
+    /// Pack the tree into the compact **scalar** f32-storage 2D index
+    /// ([`Index2DF32`](crate::Index2DF32)): half the box memory of [`Index2D`],
+    /// queried without SIMD. Built natively in `f32` (no transient `f64` tree).
+    #[cfg(feature = "f32-storage")]
+    pub fn finish_f32(self) -> Result<crate::Index2DF32, BuildError> {
         check_2d_item_capacity(self.num_items)?;
         if self.items.len() != self.num_items {
             return Err(BuildError::ItemCount {
@@ -196,10 +204,10 @@ impl Index2DBuilder {
                 expected: self.num_items,
             });
         }
-        crate::index2d_f32::build_simd_index_f32(self.config(), self.items)
+        crate::index2d_f32::build_f32_2(self.config(), self.items)
     }
 
-    #[cfg(feature = "simd")]
+    #[cfg(any(feature = "simd", feature = "f32-storage"))]
     fn config(&self) -> BuildConfig {
         BuildConfig {
             node_size: self.node_size,

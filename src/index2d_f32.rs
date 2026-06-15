@@ -10,25 +10,34 @@
 //! Exact methods trade some speed for compact storage. Prefer f64 indexes for
 //! exact range queries with many hits and fastest exact KNN.
 
-use std::{collections::BinaryHeap, ops::ControlFlow};
-
 use crate::{
     build::BuildError,
     builder2d::BuildConfig,
+    geometry::Box2D,
+    persistence::{
+        LoadError, MetaFields, ParsedTree, PayloadError, parse_index, read_f32_le_unchecked,
+        read_u64_le_unchecked, write_index_container,
+    },
+    ray::Ray2D,
+    sort2d::{SortKeyContext, encode_sort_by_key},
+    tree::{TreeLayout, try_compute_tree_layout},
+    triangle::{Triangle2, records_as_bytes},
+};
+
+// Imports used only by the SIMD query frontend (SimdIndex2DF32 + its view).
+#[cfg(feature = "simd")]
+use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Box2D, Point2D},
+    geometry::Point2D,
     neighbors::{
         ExactNeighborState, NeighborNodeState, NeighborState, NeighborWorkspace,
         max_distance_squared,
     },
-    persistence::{
-        ByteWriter, CHUNK_ENTRY_LEN, LoadError, SUPERBLOCK_LEN, TAG_TREE, TREE_DESC_LEN,
-        parse_index, plan_container, read_f32_le_unchecked, read_u64_le_unchecked,
-    },
-    sort2d::{SortKeyContext, encode_sort_by_key},
     traversal::{SearchWorkspace, upper_bound_level},
-    tree::{TreeLayout, try_compute_tree_layout},
 };
+#[cfg(feature = "simd")]
+use std::collections::BinaryHeap;
+use std::ops::ControlFlow;
 
 /// Round `x` down to the nearest `f32` that is `<= x`.
 #[inline]
@@ -44,11 +53,43 @@ fn round_up(x: f64) -> f32 {
     if (r as f64) < x { r.next_up() } else { r }
 }
 
+/// Materialize the SoA f32 columns of a parsed `f32`-box tree into the canonical
+/// [`Index2DF32`] storage. Shared by the scalar and SIMD `from_bytes` loaders.
+fn f32_columns_from_parsed_2(parsed: &ParsedTree) -> Index2DF32 {
+    let num_nodes = parsed.num_nodes;
+    let mut min_xs = Vec::with_capacity(num_nodes);
+    let mut min_ys = Vec::with_capacity(num_nodes);
+    let mut max_xs = Vec::with_capacity(num_nodes);
+    let mut max_ys = Vec::with_capacity(num_nodes);
+    let mut indices = Vec::with_capacity(num_nodes);
+    for i in 0..num_nodes {
+        let off = i * 16; // four f32 per 2D box record
+        min_xs.push(read_f32_le_unchecked(parsed.entries, off));
+        min_ys.push(read_f32_le_unchecked(parsed.entries, off + 4));
+        max_xs.push(read_f32_le_unchecked(parsed.entries, off + 8));
+        max_ys.push(read_f32_le_unchecked(parsed.entries, off + 12));
+        indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
+    }
+    Index2DF32 {
+        node_size: parsed.node_size,
+        num_items: parsed.num_items,
+        level_bounds: parsed.level_bounds.clone(),
+        min_xs,
+        min_ys,
+        max_xs,
+        max_ys,
+        indices,
+    }
+}
+
 /// High bit of the stacked level word, set when the query fully contains a node so
 /// its whole subtree can be collected without further overlap tests.
+#[cfg(feature = "simd")]
 const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+#[cfg(feature = "simd")]
 const LEVEL_MASK: usize = !CONTAINED_FLAG;
 
+#[cfg(feature = "simd")]
 #[inline]
 fn encode_level(level: usize, contained: bool) -> usize {
     if contained {
@@ -78,7 +119,11 @@ impl Box2DF32 {
             max_y: round_up(b.max_y),
         }
     }
+}
 
+// Overlap/containment tests are used only by the SIMD query frontend.
+#[cfg(feature = "simd")]
+impl Box2DF32 {
     #[inline]
     fn overlaps(self, other: Self) -> bool {
         self.min_x <= other.max_x
@@ -107,10 +152,13 @@ impl Box2DF32 {
     }
 }
 
-pub(crate) fn build_simd_index_f32(
+/// Build the native `f32` SoA tree directly from f64 input (no transient f64
+/// tree). Returns the neutral [`Index2DF32`] storage; `SimdIndex2DF32` is built
+/// by moving its columns.
+pub(crate) fn build_f32_2(
     config: BuildConfig,
     items: Vec<Box2D>,
-) -> Result<SimdIndex2DF32, BuildError> {
+) -> Result<Index2DF32, BuildError> {
     let node_size = config.node_size;
     let num_items = config.num_items;
     let TreeLayout {
@@ -119,7 +167,7 @@ pub(crate) fn build_simd_index_f32(
     } = try_compute_tree_layout(num_items, node_size)?;
 
     if num_items == 0 {
-        return Ok(SimdIndex2DF32 {
+        return Ok(Index2DF32 {
             node_size,
             num_items,
             level_bounds,
@@ -206,7 +254,7 @@ pub(crate) fn build_simd_index_f32(
         }
     }
 
-    Ok(SimdIndex2DF32 {
+    Ok(Index2DF32 {
         node_size,
         num_items,
         level_bounds,
@@ -223,7 +271,7 @@ fn build_single_node_soa_f32(
     num_items: usize,
     level_bounds: Vec<usize>,
     items: Vec<Box2D>,
-) -> SimdIndex2DF32 {
+) -> Index2DF32 {
     let mut min_xs = Vec::with_capacity(num_items + 1);
     let mut min_ys = Vec::with_capacity(num_items + 1);
     let mut max_xs = Vec::with_capacity(num_items + 1);
@@ -252,7 +300,7 @@ fn build_single_node_soa_f32(
     max_ys.push(rmxy);
     indices.push(0);
 
-    SimdIndex2DF32 {
+    Index2DF32 {
         node_size,
         num_items,
         level_bounds,
@@ -282,6 +330,7 @@ fn build_single_node_soa_f32(
 /// let index = builder.finish_simd_f32().unwrap();
 /// assert!(index.search(Box2D::new(0.5, 0.5, 0.5, 0.5)).contains(&0));
 /// ```
+#[cfg(feature = "simd")]
 pub struct SimdIndex2DF32 {
     node_size: usize,
     num_items: usize,
@@ -293,7 +342,22 @@ pub struct SimdIndex2DF32 {
     indices: Vec<usize>,
 }
 
+#[cfg(feature = "simd")]
 impl SimdIndex2DF32 {
+    /// Build the SIMD frontend by moving the columns out of the native f32 build.
+    pub(crate) fn from_scalar(s: Index2DF32) -> Self {
+        Self {
+            node_size: s.node_size,
+            num_items: s.num_items,
+            level_bounds: s.level_bounds,
+            min_xs: s.min_xs,
+            min_ys: s.min_ys,
+            max_xs: s.max_xs,
+            max_ys: s.max_ys,
+            indices: s.indices,
+        }
+    }
+
     /// Number of indexed items.
     pub fn num_items(&self) -> usize {
         self.num_items
@@ -334,54 +398,39 @@ impl SimdIndex2DF32 {
 
     /// Serialize into a caller-provided buffer, reusing its allocation.
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
-        let num_nodes = self.min_xs.len();
-        // 2D f32 record = 16 bytes.
-        let tree_len = TREE_DESC_LEN + num_nodes * 16 + num_nodes * 8;
-        let (total, off) = plan_container(&[tree_len]).expect("serialized index too large");
-        let mut bytes = ByteWriter::new(out, total);
-        bytes.write_superblock(1);
-        bytes.write_chunk_entry(&TAG_TREE, true, off[0], tree_len);
-        bytes.write_zeros(off[0] - (SUPERBLOCK_LEN + CHUNK_ENTRY_LEN));
-        bytes.write_tree_desc(2, 4, false, self.num_items, self.node_size);
-        bytes.write_soa_boxes_f32_2d(&self.min_xs, &self.min_ys, &self.max_xs, &self.max_ys);
-        bytes.write_usize_slice_as_u64(&self.indices);
-        bytes.write_zeros(total - (off[0] + tree_len));
-        bytes.finish();
+        write_index_container(
+            out,
+            2,
+            4,
+            false,
+            self.num_items,
+            self.min_xs.len(),
+            self.node_size,
+            |bytes| {
+                bytes.write_soa_boxes_f32_2d(
+                    &self.min_xs,
+                    &self.min_ys,
+                    &self.max_xs,
+                    &self.max_ys,
+                );
+                bytes.write_usize_slice_as_u64(&self.indices);
+            },
+            None,
+            None,
+            &self.indices[..self.num_items],
+            &MetaFields::default(),
+        )
+        .expect("index-only serialization cannot fail");
     }
 
-    /// Load from bytes produced by [`to_bytes`](Self::to_bytes).
+    /// Load from bytes produced by [`to_bytes`](Self::to_bytes). A payload section
+    /// is rejected (this SIMD index carries boxes only).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
         let (parsed, payload) = parse_index(bytes, 2, 4)?;
         if payload.is_some() {
             return Err(LoadError::UnsupportedVersion);
         }
-        let num_nodes = parsed.num_nodes;
-        let level_bounds = parsed.level_bounds;
-
-        let mut min_xs = Vec::with_capacity(num_nodes);
-        let mut min_ys = Vec::with_capacity(num_nodes);
-        let mut max_xs = Vec::with_capacity(num_nodes);
-        let mut max_ys = Vec::with_capacity(num_nodes);
-        let mut indices = Vec::with_capacity(num_nodes);
-        for i in 0..num_nodes {
-            let off = i * 16; // four f32 per 2D box record
-            min_xs.push(read_f32_le_unchecked(parsed.entries, off));
-            min_ys.push(read_f32_le_unchecked(parsed.entries, off + 4));
-            max_xs.push(read_f32_le_unchecked(parsed.entries, off + 8));
-            max_ys.push(read_f32_le_unchecked(parsed.entries, off + 12));
-            indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
-        }
-
-        Ok(Self {
-            node_size: parsed.node_size,
-            num_items: parsed.num_items,
-            level_bounds,
-            min_xs,
-            min_ys,
-            max_xs,
-            max_ys,
-            indices,
-        })
+        Ok(Self::from_scalar(f32_columns_from_parsed_2(&parsed)))
     }
 
     /// Item indices whose rounded f32 box intersects `query`.
@@ -1476,6 +1525,7 @@ impl SimdIndex2DF32 {
     }
 }
 
+#[cfg(feature = "simd")]
 #[inline]
 fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
     if point < min {
@@ -1487,6 +1537,7 @@ fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
     }
 }
 
+#[cfg(feature = "simd")]
 #[inline]
 fn distance_squared_to_box(point: Point2D, b: Box2D) -> f64 {
     let dx = axis_distance(point.x, b.min_x, b.max_x);
@@ -1494,6 +1545,7 @@ fn distance_squared_to_box(point: Point2D, b: Box2D) -> f64 {
     dx * dx + dy * dy
 }
 
+#[cfg(feature = "simd")]
 #[inline]
 fn push_exact_neighbor(
     best: &mut BinaryHeap<ExactNeighborState>,
@@ -1509,6 +1561,7 @@ fn push_exact_neighbor(
     }
 }
 
+#[cfg(feature = "simd")]
 fn write_exact_results(results: &mut Vec<usize>, best: &mut BinaryHeap<ExactNeighborState>) {
     let mut ordered: Vec<_> = best.drain().collect();
     ordered.sort_by(|a, b| {
@@ -1525,6 +1578,7 @@ fn write_exact_results(results: &mut Vec<usize>, best: &mut BinaryHeap<ExactNeig
 /// returns every exact hit, and may also include extra near-boundary hits. Use
 /// `search_exact` for exact range hits when the original f64 boxes are
 /// available.
+#[cfg(feature = "simd")]
 pub struct SimdIndex2DF32View<'a> {
     node_size: usize,
     num_items: usize,
@@ -1536,6 +1590,7 @@ pub struct SimdIndex2DF32View<'a> {
     indices: &'a [u8],
 }
 
+#[cfg(feature = "simd")]
 impl<'a> SimdIndex2DF32View<'a> {
     /// Borrow a zero-copy view over f32-format `PSINDEX` bytes.
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
@@ -2252,7 +2307,366 @@ impl<'a> SimdIndex2DF32View<'a> {
     }
 }
 
-#[cfg(test)]
+/// Compact **scalar** f32-storage 2D index: the same outward-rounded `f32` boxes
+/// as [`SimdIndex2DF32`] (half the box memory of [`Index2D`](crate::Index2D)),
+/// queried without SIMD. Built natively in `f32` (no transient `f64` tree).
+/// Range and ray results are a conservative **superset** of the f64 index (every
+/// exact hit, plus a few near-boundary false positives from outward rounding).
+pub struct Index2DF32 {
+    node_size: usize,
+    num_items: usize,
+    level_bounds: Vec<usize>,
+    min_xs: Vec<f32>,
+    min_ys: Vec<f32>,
+    max_xs: Vec<f32>,
+    max_ys: Vec<f32>,
+    indices: Vec<usize>,
+}
+
+impl Index2DF32 {
+    /// Build a compact index over each triangle's bounding box.
+    pub fn from_triangles<T: Triangle2>(triangles: &[T]) -> Result<Self, BuildError> {
+        let mut builder = crate::Index2DBuilder::new(triangles.len());
+        for t in triangles {
+            builder.add(t.aabb());
+        }
+        builder.finish_f32()
+    }
+
+    /// Serialize the index (f32 box records) into a new buffer. To attach a
+    /// payload (e.g. triangles), use [`serialize`](Self::serialize).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.serialize()
+            .to_bytes_into(&mut out)
+            .expect("index-only serialization cannot fail");
+        out
+    }
+
+    /// Start a serialization builder: attach a per-item payload (opaque blobs,
+    /// fixed-width [`records`](Serializer2DF32::records), or
+    /// [`triangles`](Serializer2DF32::triangles)) and descriptive metadata. The
+    /// f32-box counterpart of [`Index2D::serialize`](crate::Index2D::serialize);
+    /// the bytes stream through [`StreamIndex2DF32`](crate::StreamIndex2DF32).
+    pub fn serialize(&self) -> Serializer2DF32<'_> {
+        Serializer2DF32::new(self)
+    }
+
+    /// Load a compact f32 index from bytes produced by [`to_bytes`](Self::to_bytes)
+    /// or [`serialize`](Self::serialize). Any payload section is ignored (the
+    /// index loads box-only); stream the payload with
+    /// [`StreamIndex2DF32`](crate::StreamIndex2DF32).
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
+        let (parsed, _payload) = parse_index(bytes, 2, 4)?;
+        Ok(f32_columns_from_parsed_2(&parsed))
+    }
+
+    /// Number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.num_items
+    }
+
+    /// Whether the index has no items.
+    pub fn is_empty(&self) -> bool {
+        self.num_items == 0
+    }
+
+    /// Packed node size of the index.
+    pub fn node_size(&self) -> usize {
+        self.node_size
+    }
+
+    /// Total extent of all indexed items (widened f32 root box), or `None` when
+    /// empty.
+    pub fn extent(&self) -> Option<Box2D> {
+        if self.num_items == 0 {
+            None
+        } else {
+            Some(self.box_at(self.indices.len() - 1))
+        }
+    }
+
+    #[inline]
+    fn box_at(&self, pos: usize) -> Box2D {
+        Box2D::new(
+            self.min_xs[pos] as f64,
+            self.min_ys[pos] as f64,
+            self.max_xs[pos] as f64,
+            self.max_ys[pos] as f64,
+        )
+    }
+
+    /// Items whose (outward-rounded) box overlaps `query`. A conservative superset
+    /// of [`Index2D::search`](crate::Index2D::search).
+    pub fn search(&self, query: Box2D) -> Vec<usize> {
+        let mut out = Vec::new();
+        let _ = self.visit_hits(
+            |b| b.overlaps(query),
+            |i| {
+                out.push(i);
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        out
+    }
+
+    /// Items whose (outward-rounded) box the ray segment crosses. A conservative
+    /// superset of [`Index2D::raycast`](crate::Index2D::raycast).
+    pub fn raycast(&self, ray: Ray2D) -> Vec<usize> {
+        let mut out = Vec::new();
+        let _ = self.visit_hits(
+            |b| ray.intersects_box(b),
+            |i| {
+                out.push(i);
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        out
+    }
+
+    /// Visit each item whose (rounded) box overlaps `query`; return
+    /// [`ControlFlow::Break`] from `visitor` to stop early.
+    pub fn visit<B>(
+        &self,
+        query: Box2D,
+        visitor: impl FnMut(usize) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        self.visit_hits(|b| b.overlaps(query), visitor)
+    }
+
+    /// Whether any item's (rounded) box overlaps `query` (early-exit).
+    pub fn any(&self, query: Box2D) -> bool {
+        self.visit(query, |_| ControlFlow::Break(())).is_break()
+    }
+
+    /// Some item whose (rounded) box overlaps `query`, or `None`. Traversal order
+    /// is unspecified.
+    pub fn first(&self, query: Box2D) -> Option<usize> {
+        match self.visit(query, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// **Exact** item indices whose caller-owned `f64` box (from `box_at`)
+    /// intersects `query`: the conservative f32 boxes prune the tree, then each
+    /// candidate is refined against its true box (no near-boundary false
+    /// positives, unlike [`search`](Self::search)).
+    pub fn search_exact<F: FnMut(usize) -> Box2D>(&self, query: Box2D, box_at: F) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_exact_into(query, box_at, &mut out);
+        out
+    }
+
+    /// Exact search into a reused buffer (cleared first).
+    pub fn search_exact_into<F: FnMut(usize) -> Box2D>(
+        &self,
+        query: Box2D,
+        box_at: F,
+        out: &mut Vec<usize>,
+    ) {
+        out.clear();
+        let _ = self.visit_exact(query, box_at, |id| {
+            out.push(id);
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
+    /// Whether any caller-owned `f64` box intersects `query` (exact, early-exit).
+    pub fn any_exact<F: FnMut(usize) -> Box2D>(&self, query: Box2D, box_at: F) -> bool {
+        self.visit_exact(query, box_at, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Some item whose caller-owned `f64` box intersects `query` (exact), or `None`.
+    pub fn first_exact<F: FnMut(usize) -> Box2D>(&self, query: Box2D, box_at: F) -> Option<usize> {
+        match self.visit_exact(query, box_at, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// Visit each item whose caller-owned `f64` box (from `box_at`) intersects
+    /// `query` (exact); the f32 boxes prune the descent, `box_at` refines each
+    /// candidate. Return [`ControlFlow::Break`] from `visitor` to stop early.
+    pub fn visit_exact<B, BF, VF>(
+        &self,
+        query: Box2D,
+        mut box_at: BF,
+        mut visitor: VF,
+    ) -> ControlFlow<B>
+    where
+        BF: FnMut(usize) -> Box2D,
+        VF: FnMut(usize) -> ControlFlow<B>,
+    {
+        self.visit_hits(
+            |b| b.overlaps(query),
+            |id| {
+                if box_at(id).overlaps(query) {
+                    visitor(id)
+                } else {
+                    ControlFlow::Continue(())
+                }
+            },
+        )
+    }
+
+    fn visit_hits<B>(
+        &self,
+        hit: impl Fn(Box2D) -> bool,
+        mut visitor: impl FnMut(usize) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        if self.indices.is_empty() {
+            return ControlFlow::Continue(());
+        }
+        let mut stack: Vec<usize> = Vec::new();
+        let mut node_index = self.indices.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            for pos in node_index..end {
+                if !hit(self.box_at(pos)) {
+                    continue;
+                }
+                let index = self.indices[pos];
+                if is_leaf {
+                    visitor(index)?;
+                } else {
+                    stack.push(index);
+                    stack.push(level - 1);
+                }
+            }
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+}
+
+/// Serialization builder for [`Index2DF32`], created by
+/// [`Index2DF32::serialize`]. Writes f32 box records plus an optional per-item
+/// payload and descriptive metadata; the f32-box counterpart of
+/// [`Serializer2D`](crate::Serializer2D).
+pub struct Serializer2DF32<'a> {
+    index: &'a Index2DF32,
+    payloads: Option<Vec<&'a [u8]>>,
+    record_stride: Option<u32>,
+    interleaved: bool,
+    meta: MetaFields<'a>,
+}
+
+impl<'a> Serializer2DF32<'a> {
+    fn new(index: &'a Index2DF32) -> Self {
+        Self {
+            index,
+            payloads: None,
+            record_stride: None,
+            interleaved: false,
+            meta: MetaFields::default(),
+        }
+    }
+
+    /// Attach one opaque payload blob per item, in item order.
+    pub fn payloads<P: AsRef<[u8]>>(mut self, payloads: &'a [P]) -> Self {
+        self.payloads = Some(payloads.iter().map(|p| p.as_ref()).collect());
+        self
+    }
+
+    /// Use the streaming-tuned interleaved node layout, so
+    /// [`StreamIndex2DF32`](crate::StreamIndex2DF32) fetches each level in one
+    /// coalesced read instead of two. Same file size.
+    #[cfg(feature = "stream")]
+    pub fn interleaved(mut self) -> Self {
+        self.interleaved = true;
+        self
+    }
+
+    /// Attach a fixed-width payload: `flat` is `num_items * stride` bytes (one
+    /// `stride`-byte record per item). See
+    /// [`Serializer2D::records`](crate::Serializer2D::records).
+    pub fn records(mut self, stride: usize, flat: &'a [u8]) -> Self {
+        self.record_stride = Some(stride as u32);
+        self.payloads = Some(if stride == 0 {
+            Vec::new()
+        } else {
+            flat.chunks_exact(stride).collect()
+        });
+        self
+    }
+
+    /// Attach a fixed-width triangle payload, one per item. A compact mesh that
+    /// streams through [`StreamIndex2DF32`](crate::StreamIndex2DF32).
+    pub fn triangles<T: Triangle2>(self, triangles: &'a [T]) -> Self {
+        let bytes = records_as_bytes(triangles);
+        self.records(T::STRIDE, bytes)
+    }
+
+    /// Set the coordinate reference system identifier (opaque, e.g. `"EPSG:4326"`).
+    pub fn crs(mut self, crs: &'a str) -> Self {
+        self.meta.crs = Some(crs);
+        self
+    }
+
+    /// Set the payload content type / media type.
+    pub fn content_type(mut self, content_type: &'a str) -> Self {
+        self.meta.content_type = Some(content_type);
+        self
+    }
+
+    /// Set an attribution / license string.
+    pub fn attribution(mut self, attribution: &'a str) -> Self {
+        self.meta.attribution = Some(attribution);
+        self
+    }
+
+    /// Serialize into a new buffer.
+    pub fn to_bytes(self) -> Result<Vec<u8>, PayloadError> {
+        let mut out = Vec::new();
+        self.to_bytes_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// Serialize into a reused buffer (cleared first).
+    pub fn to_bytes_into(self, out: &mut Vec<u8>) -> Result<(), PayloadError> {
+        let idx = self.index;
+        let record_stride = self.record_stride;
+        let interleaved = self.interleaved;
+        write_index_container(
+            out,
+            2,
+            4,
+            interleaved,
+            idx.num_items,
+            idx.min_xs.len(),
+            idx.node_size,
+            |bytes| {
+                #[cfg(feature = "stream")]
+                if interleaved {
+                    bytes.write_interleaved_f32_2d(
+                        &idx.min_xs,
+                        &idx.min_ys,
+                        &idx.max_xs,
+                        &idx.max_ys,
+                        &idx.indices,
+                    );
+                    return;
+                }
+                bytes.write_soa_boxes_f32_2d(&idx.min_xs, &idx.min_ys, &idx.max_xs, &idx.max_ys);
+                bytes.write_usize_slice_as_u64(&idx.indices);
+            },
+            self.payloads.as_deref(),
+            record_stride,
+            &idx.indices[..idx.num_items],
+            &self.meta,
+        )
+    }
+}
+
+#[cfg(all(test, feature = "simd"))]
 mod tests {
     use std::ops::ControlFlow;
 

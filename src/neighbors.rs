@@ -59,7 +59,7 @@ pub struct NeighborWorkspace {
     pub(crate) results: Vec<usize>,
     pub(crate) queue: BinaryHeap<NeighborState>,
     pub(crate) node_queue: BinaryHeap<NeighborNodeState>,
-    #[cfg(feature = "f32-storage")]
+    #[cfg(all(feature = "f32-storage", feature = "simd"))]
     pub(crate) exact_queue: BinaryHeap<ExactNeighborState>,
 }
 
@@ -75,7 +75,7 @@ impl NeighborWorkspace {
             results: Vec::with_capacity(results),
             queue: BinaryHeap::with_capacity(queue),
             node_queue: BinaryHeap::with_capacity(queue),
-            #[cfg(feature = "f32-storage")]
+            #[cfg(all(feature = "f32-storage", feature = "simd"))]
             exact_queue: BinaryHeap::with_capacity(results),
         }
     }
@@ -156,14 +156,14 @@ impl PartialOrd for NeighborNodeState {
     }
 }
 
-#[cfg(feature = "f32-storage")]
+#[cfg(all(feature = "f32-storage", feature = "simd"))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ExactNeighborState {
     pub(crate) index: usize,
     pub(crate) dist: f64,
 }
 
-#[cfg(feature = "f32-storage")]
+#[cfg(all(feature = "f32-storage", feature = "simd"))]
 impl ExactNeighborState {
     #[inline]
     pub(crate) fn new(index: usize, dist: f64) -> Self {
@@ -171,10 +171,10 @@ impl ExactNeighborState {
     }
 }
 
-#[cfg(feature = "f32-storage")]
+#[cfg(all(feature = "f32-storage", feature = "simd"))]
 impl Eq for ExactNeighborState {}
 
-#[cfg(feature = "f32-storage")]
+#[cfg(all(feature = "f32-storage", feature = "simd"))]
 impl Ord for ExactNeighborState {
     #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -184,7 +184,7 @@ impl Ord for ExactNeighborState {
     }
 }
 
-#[cfg(feature = "f32-storage")]
+#[cfg(all(feature = "f32-storage", feature = "simd"))]
 impl PartialOrd for ExactNeighborState {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {

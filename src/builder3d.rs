@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Build parameters passed to the SoA/SIMD 3D builder.
-#[cfg(feature = "simd")]
+#[cfg(any(feature = "simd", feature = "f32-storage"))]
 pub(crate) struct BuildConfig3D {
     pub(crate) node_size: usize,
     pub(crate) num_items: usize,
@@ -189,8 +189,16 @@ impl Index3DBuilder {
     /// let index = builder.finish_simd_f32().unwrap();
     /// assert!(index.search(Box3D::new(0.5, 0.5, 0.5, 0.5, 0.5, 0.5)).contains(&0));
     /// ```
-    #[cfg(feature = "f32-storage")]
+    #[cfg(all(feature = "f32-storage", feature = "simd"))]
     pub fn finish_simd_f32(self) -> Result<crate::SimdIndex3DF32, BuildError> {
+        self.finish_f32().map(crate::SimdIndex3DF32::from_scalar)
+    }
+
+    /// Pack the tree into the compact **scalar** f32-storage 3D index
+    /// ([`Index3DF32`](crate::Index3DF32)): half the box memory of [`Index3D`],
+    /// queried without SIMD. Built natively in `f32` (no transient `f64` tree).
+    #[cfg(feature = "f32-storage")]
+    pub fn finish_f32(self) -> Result<crate::Index3DF32, BuildError> {
         if self.items.len() != self.num_items {
             return Err(BuildError::ItemCount {
                 added: self.items.len(),
@@ -198,10 +206,10 @@ impl Index3DBuilder {
             });
         }
         let config = self.config();
-        crate::index3d_f32::build_simd_index_3d_f32(config, self.items)
+        crate::index3d_f32::build_f32_3(config, self.items)
     }
 
-    #[cfg(feature = "simd")]
+    #[cfg(any(feature = "simd", feature = "f32-storage"))]
     fn config(&self) -> BuildConfig3D {
         BuildConfig3D {
             node_size: self.node_size,

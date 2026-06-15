@@ -102,11 +102,15 @@ pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use geometry::{BoundsError, Box2D, Box3D, Point2D, Point3D};
 pub use index2d::{Index2D, Index2DView, Search2DIter, Serializer2D};
 #[cfg(feature = "f32-storage")]
+pub use index2d_f32::{Index2DF32, Serializer2DF32};
+#[cfg(all(feature = "f32-storage", feature = "simd"))]
 pub use index2d_f32::{SimdIndex2DF32, SimdIndex2DF32View};
 #[cfg(feature = "simd")]
 pub use index2d_soa::{SimdIndex2D, SimdIndex2DView};
 pub use index3d::{Index3D, Index3DView, Search3DIter, Serializer3D};
 #[cfg(feature = "f32-storage")]
+pub use index3d_f32::{Index3DF32, Serializer3DF32};
+#[cfg(all(feature = "f32-storage", feature = "simd"))]
 pub use index3d_f32::{SimdIndex3DF32, SimdIndex3DF32View};
 #[cfg(feature = "simd")]
 pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
@@ -121,7 +125,8 @@ pub use stream::AsyncRangeReader;
 pub use stream::FileReader;
 #[cfg(feature = "stream")]
 pub use stream::{
-    RangeReader, SliceReader, StreamError, StreamIndex2D, StreamIndex3D, StreamLimits,
+    RangeReader, SliceReader, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D,
+    StreamIndex3DF32, StreamLimits,
 };
 pub use traversal::SearchWorkspace;
 pub use triangle::{

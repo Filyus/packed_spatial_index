@@ -36,8 +36,9 @@ default = ["parallel", "simd"]
 parallel = ["dep:rayon"]
 # SoA index with SIMD queries (`SimdIndex2D`, AVX2 `wide::f64x4` + AVX-512 intrinsics).
 simd = ["dep:wide"]
-# Compact f32-storage SIMD indexes (`SimdIndex2DF32`, `SimdIndex3DF32`).
-f32-storage = ["simd"]
+# Compact f32-storage indexes. Scalar `Index2DF32` / `Index3DF32` work on their
+# own; the `SimdIndex*F32` SIMD frontends additionally require `simd`.
+f32-storage = []
 # Streaming reader: query a serialized index over a `RangeReader` (local file or
 # remote object) without loading the whole file. No extra dependencies.
 stream = []
@@ -106,7 +107,7 @@ required-features = ["parallel", "simd", "bench-internals"]
 [[bench]]
 name = "coord_precision"
 harness = false
-required-features = ["f32-storage"]
+required-features = ["f32-storage", "simd"]
 
 # Closest-hit raycast vs the `bvh` crate (build + ordered traversal).
 [[bench]]
@@ -122,7 +123,7 @@ required-features = ["simd"]
 
 [[example]]
 name = "f32_exact_2d"
-required-features = ["f32-storage"]
+required-features = ["f32-storage", "simd"]
 
 [[example]]
 name = "stream_query"

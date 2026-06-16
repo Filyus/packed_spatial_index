@@ -22,6 +22,7 @@
 //! for implementing a remote (e.g. HTTP range) source.
 
 use std::io;
+use std::sync::Arc;
 
 use crate::geometry::{Box2D, Box3D};
 use crate::persistence::{
@@ -222,6 +223,13 @@ pub struct StreamLimits {
     pub max_read_bytes: Option<u64>,
     /// Maximum number of items a single query may return.
     pub max_items: Option<usize>,
+    /// Open-time only: how many bytes the cached upper-level directory may use.
+    /// `None` keeps the small built-in default; raising it caches more (or all)
+    /// internal levels, so descent costs fewer round-trips per query — trade
+    /// memory for latency where memory is plentiful (e.g. a serverless isolate).
+    /// Read once at `open`; ignored by `from_directory` and by per-query cost
+    /// checks.
+    pub directory_budget_bytes: Option<u64>,
 }
 
 /// Running per-query cost counters checked against [`StreamLimits`].
@@ -342,11 +350,13 @@ pub(crate) struct StreamCore<R> {
     /// First node position covered by the cached directory.
     dir_node_start: usize,
     /// Cached box (or node, when interleaved) bytes for positions
-    /// `[dir_node_start, num_nodes)`, strided by `box_stride`.
-    dir_boxes: Vec<u8>,
+    /// `[dir_node_start, num_nodes)`, strided by `box_stride`. `Arc` so a
+    /// directory split off with `into_parts` reattaches by a refcount bump, not
+    /// a copy (cheap reuse across queries; no growth of sticky wasm memory).
+    dir_boxes: Arc<[u8]>,
     /// Cached index bytes for the same positions (SoA layout only; empty when
     /// interleaved, where indices live inside `dir_boxes`).
-    dir_indices: Vec<u8>,
+    dir_indices: Arc<[u8]>,
     /// Optional payload section. `None` when the index carries no payload.
     payload: Option<PayloadSection>,
     /// Per-query cost limits applied to every query (default: unbounded).
@@ -391,8 +401,8 @@ pub(crate) struct StreamCoreParts {
     box0: u64,
     idx0: u64,
     dir_node_start: usize,
-    dir_boxes: Vec<u8>,
-    dir_indices: Vec<u8>,
+    dir_boxes: Arc<[u8]>,
+    dir_indices: Arc<[u8]>,
     payload: Option<PayloadSection>,
 }
 
@@ -588,8 +598,9 @@ impl<R: RangeReader> StreamCore<R> {
         };
 
         // Directory: cache the upper levels (a contiguous suffix of the node
-        // section) up to the node budget.
-        let dir_node_start = directory_start(&level_bounds, level_count, DIRECTORY_NODE_BUDGET);
+        // section) up to the byte budget.
+        let budget = directory_node_budget(&limits, box_stride, td.interleaved);
+        let dir_node_start = directory_start(&level_bounds, level_count, budget);
         let cached_nodes = num_nodes - dir_node_start;
 
         let mut dir_boxes = vec![0u8; cached_nodes * box_stride];
@@ -608,6 +619,8 @@ impl<R: RangeReader> StreamCore<R> {
             let offset = idx0 + (dir_node_start * 8) as u64;
             reader.read_exact_at(offset, &mut dir_indices)?;
         }
+        let dir_boxes: Arc<[u8]> = dir_boxes.into();
+        let dir_indices: Arc<[u8]> = dir_indices.into();
 
         Ok(StreamCore {
             reader,
@@ -1143,6 +1156,19 @@ fn emit_run_payloads_fixed<F: FnMut(usize, &[u8])>(
         emit(id, &blob_buf[within..within + stride]);
     }
     Ok(())
+}
+
+/// Node count the directory may cache: the caller's byte budget divided by the
+/// per-node cache cost, or the small built-in default when unset. Per-node cost
+/// is the box record plus 8 bytes for the separate SoA index (0 interleaved).
+fn directory_node_budget(limits: &StreamLimits, box_stride: usize, interleaved: bool) -> usize {
+    match limits.directory_budget_bytes {
+        Some(bytes) => {
+            let per_node = (box_stride + if interleaved { 0 } else { 8 }).max(1) as u64;
+            (bytes / per_node).min(usize::MAX as u64) as usize
+        }
+        None => DIRECTORY_NODE_BUDGET,
+    }
 }
 
 /// Choose the first node position to cache in the directory: walk levels from
@@ -1951,7 +1977,8 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         };
 
         // Directory prefetch (mirror of the sync `open` epilogue).
-        let dir_node_start = directory_start(&level_bounds, level_count, DIRECTORY_NODE_BUDGET);
+        let budget = directory_node_budget(&limits, box_stride, td.interleaved);
+        let dir_node_start = directory_start(&level_bounds, level_count, budget);
         let cached_nodes = num_nodes - dir_node_start;
         let mut dir_boxes = vec![0u8; cached_nodes * box_stride];
         if !dir_boxes.is_empty() {
@@ -1967,6 +1994,8 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             let offset = idx0 + (dir_node_start * 8) as u64;
             reader.read_exact_at(offset, &mut dir_indices).await?;
         }
+        let dir_boxes: Arc<[u8]> = dir_boxes.into();
+        let dir_indices: Arc<[u8]> = dir_indices.into();
         Ok(StreamCore {
             reader,
             node_size: td.node_size,
@@ -2603,6 +2632,44 @@ mod tests {
             "reattached query ({query_only_reads}) should read less than open+query ({open_plus_query_reads})"
         );
         assert_eq!(dir.num_items(), 50_000);
+    }
+
+    #[test]
+    fn larger_directory_budget_cuts_per_query_reads() {
+        let bytes = build_bytes(50_000, 16);
+        let q = Box2D::new(100.0, 100.0, 140.0, 140.0);
+
+        // Per-query reads (excluding the one-time open) and the hit set, for a
+        // given directory budget.
+        let query_cost = |budget: Option<u64>| -> (usize, Vec<usize>) {
+            let limits = StreamLimits {
+                directory_budget_bytes: budget,
+                ..Default::default()
+            };
+            let idx = StreamIndex2D::open_with_limits(
+                CountingReader::new(SliceReader::new(bytes.clone())),
+                limits,
+            )
+            .unwrap();
+            let after_open = *idx.core.reader.reads.borrow();
+            let hits = idx.search(q).unwrap();
+            let after_query = *idx.core.reader.reads.borrow();
+            (after_query - after_open, hits)
+        };
+
+        let (default_reads, default_hits) = query_cost(None);
+        // A budget large enough to cache the whole tree: the query reads nothing.
+        let (big_reads, big_hits) = query_cost(Some(64 * 1024 * 1024));
+
+        assert_eq!(default_hits, big_hits, "budget must not change results");
+        assert!(
+            default_reads > 0,
+            "default budget should still stream leaves"
+        );
+        assert!(
+            big_reads < default_reads,
+            "bigger directory ({big_reads}) should read less per query than default ({default_reads})"
+        );
     }
 
     #[test]

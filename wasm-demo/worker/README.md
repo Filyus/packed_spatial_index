@@ -21,6 +21,11 @@ signal: how cheap a spatial query over a remote object actually is.
 - `src/lib.rs` wraps that callback as an [`AsyncRangeReader`], opens
   `StreamIndex2D` over it, and runs `search_payloads_async`. The crate's async
   futures are `!Send` — a perfect fit for the single-threaded isolate.
+- The parsed directory is cached across requests via the crate's
+  `StreamDirectory` (`into_directory` / `from_directory`): the first request
+  opens the index, later ones reattach a fresh R2 reader with no directory I/O,
+  so the directory round-trips (the bulk of per-query latency) are paid once per
+  warm isolate. Live: a point query drops 13 -> 8 R2 reads and ~halves latency.
 - The index is **interleaved + fixed-width records** (the layout the local
   simulator showed issues the fewest reads/bytes).
 

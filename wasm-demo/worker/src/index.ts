@@ -13,22 +13,6 @@ export interface Env {
 const KEY = "index.psi";
 let ready = false;
 
-// Range cache that survives across requests within a warm isolate. The
-// directory (upper tree levels) is read with identical (offset,length) on every
-// request, so after the first query those sequential rounds are served from
-// memory with zero R2 round-trips — the lever the live numbers pointed at
-// (latency is bound by sequential rounds, and `open`/directory is ~5 of them).
-const MAX_CACHE_BYTES = 8 * 1024 * 1024;
-const rangeCache: Map<string, Uint8Array> =
-  ((globalThis as Record<string, unknown>).__psiCache as Map<string, Uint8Array>) ??
-  ((globalThis as Record<string, unknown>).__psiCache = new Map());
-
-function cacheBytesTotal(): number {
-  let total = 0;
-  for (const v of rangeCache.values()) total += v.length;
-  return total;
-}
-
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     if (!ready) {
@@ -52,33 +36,20 @@ export default {
       });
     }
 
+    // The wasm module caches the parsed directory across requests (crate's
+    // StreamDirectory), so on a warm isolate these reads cover only the query's
+    // own leaves/payload — the directory rounds are not re-issued.
     let reads = 0; // R2 round-trips actually issued
     let bytes = 0; // bytes fetched from R2
-    let cacheHits = 0; // ranges served from the warm-isolate cache
     const readRange = async (
       offset: number,
       length: number,
     ): Promise<Uint8Array> => {
-      const key = `${offset}:${length}`;
-      const cached = rangeCache.get(key);
-      if (cached) {
-        cacheHits++;
-        return cached;
-      }
       reads++;
       bytes += length;
       const obj = await env.BUCKET.get(KEY, { range: { offset, length } });
       if (!obj) throw new Error("R2 range get returned null");
-      const buf = new Uint8Array(await obj.arrayBuffer());
-      // wasm copies out of `buf`, never mutates it, so caching it is safe.
-      if (length <= MAX_CACHE_BYTES) {
-        rangeCache.set(key, buf);
-        while (cacheBytesTotal() > MAX_CACHE_BYTES && rangeCache.size > 1) {
-          const oldest = rangeCache.keys().next().value as string;
-          rangeCache.delete(oldest);
-        }
-      }
-      return buf;
+      return new Uint8Array(await obj.arrayBuffer());
     };
 
     const t0 = Date.now();
@@ -99,11 +70,10 @@ export default {
     const ms = Date.now() - t0;
 
     return Response.json(
-      { ...result, reads, cacheHits, bytes, ms, query: { minx, miny, maxx, maxy } },
+      { ...result, reads, bytes, ms, query: { minx, miny, maxx, maxy } },
       {
         headers: {
           "X-PSI-Reads": String(reads),
-          "X-PSI-Cache-Hits": String(cacheHits),
           "X-PSI-Bytes": String(bytes),
         },
       },

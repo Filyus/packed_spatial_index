@@ -6,12 +6,21 @@
 //! reads the traversal needs. Reads/bytes are counted on the JS side (it wraps
 //! the callback), so this module just returns the hits.
 
+use std::cell::RefCell;
 use std::io;
 
 use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
-use packed_spatial_index::{AsyncRangeReader, Box2D, StreamIndex2D, StreamLimits};
+use packed_spatial_index::{AsyncRangeReader, Box2D, StreamDirectory, StreamIndex2D, StreamLimits};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+
+thread_local! {
+    // The parsed directory, cached for the life of the warm isolate. After the
+    // first request opens the index, every later request reattaches a fresh R2
+    // reader to this directory with zero directory I/O — the round-trips that
+    // otherwise dominate per-query latency are paid once, not per request.
+    static DIRECTORY: RefCell<Option<StreamDirectory>> = const { RefCell::new(None) };
+}
 
 /// Bridges the Worker's R2 range `get` into the crate's async reader.
 struct R2Reader {
@@ -95,9 +104,22 @@ pub async fn query(
         ..Default::default()
     };
 
-    let stream = StreamIndex2D::open_with_limits_async(reader, limits)
-        .await
-        .map_err(stream_err)?;
+    // Reattach the cached directory if this warm isolate already has one (no
+    // directory reads); otherwise open once and cache it for later requests.
+    let cached = DIRECTORY.with(|d| d.borrow().clone());
+    let stream = match cached {
+        Some(dir) => {
+            StreamIndex2D::from_directory_with_limits(&dir, reader, limits).map_err(stream_err)?
+        }
+        None => {
+            let opened = StreamIndex2D::open_with_limits_async(reader, limits)
+                .await
+                .map_err(stream_err)?;
+            let (dir, reader) = opened.into_directory();
+            DIRECTORY.with(|d| *d.borrow_mut() = Some(dir.clone()));
+            StreamIndex2D::from_directory_with_limits(&dir, reader, limits).map_err(stream_err)?
+        }
+    };
     let hits = stream
         .search_payloads_async(Box2D::new(min_x, min_y, max_x, max_y))
         .await

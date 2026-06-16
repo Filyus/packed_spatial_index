@@ -354,6 +354,7 @@ pub(crate) struct StreamCore<R> {
 }
 
 /// Byte locations of a streamed index's payload section.
+#[derive(Clone)]
 struct PayloadSection {
     /// Byte offset of the `(num_items + 1)` u64 prefix-offset table. Unused (and
     /// `0`) for a fixed-width payload, which has no table.
@@ -368,11 +369,81 @@ struct PayloadSection {
     stride: u64,
 }
 
+/// The reader-independent half of a [`StreamCore`]: validated header counts,
+/// section offsets, parsed level bounds, and the cached upper-level directory.
+///
+/// Splitting this out lets a caller open an index once (paying the directory
+/// reads) and then run many queries, each with a *fresh* reader, without
+/// re-reading the directory. In a serverless setting (one R2/HTTP reader per
+/// request) this removes the directory round-trips — the dominant per-query
+/// latency — from every request after the first. Cloning is a cheap in-memory
+/// copy of the cached directory bytes; no I/O.
+#[derive(Clone)]
+pub(crate) struct StreamCoreParts {
+    node_size: usize,
+    num_items: usize,
+    num_nodes: usize,
+    level_count: usize,
+    level_bounds: Vec<usize>,
+    record: usize,
+    box_stride: usize,
+    interleaved: bool,
+    box0: u64,
+    idx0: u64,
+    dir_node_start: usize,
+    dir_boxes: Vec<u8>,
+    dir_indices: Vec<u8>,
+    payload: Option<PayloadSection>,
+}
+
 impl<R> StreamCore<R> {
     /// Whether the index carries a payload section. No I/O, so available for
     /// both sync and async readers.
     fn has_payload(&self) -> bool {
         self.payload.is_some()
+    }
+
+    /// Split off the reader, keeping the reusable directory. No I/O.
+    fn into_parts(self) -> (StreamCoreParts, R) {
+        let parts = StreamCoreParts {
+            node_size: self.node_size,
+            num_items: self.num_items,
+            num_nodes: self.num_nodes,
+            level_count: self.level_count,
+            level_bounds: self.level_bounds,
+            record: self.record,
+            box_stride: self.box_stride,
+            interleaved: self.interleaved,
+            box0: self.box0,
+            idx0: self.idx0,
+            dir_node_start: self.dir_node_start,
+            dir_boxes: self.dir_boxes,
+            dir_indices: self.dir_indices,
+            payload: self.payload,
+        };
+        (parts, self.reader)
+    }
+
+    /// Reattach a reader to a previously split directory. No I/O.
+    fn from_parts(parts: StreamCoreParts, reader: R, limits: StreamLimits) -> Self {
+        StreamCore {
+            reader,
+            node_size: parts.node_size,
+            num_items: parts.num_items,
+            num_nodes: parts.num_nodes,
+            level_count: parts.level_count,
+            level_bounds: parts.level_bounds,
+            record: parts.record,
+            box_stride: parts.box_stride,
+            interleaved: parts.interleaved,
+            box0: parts.box0,
+            idx0: parts.idx0,
+            dir_node_start: parts.dir_node_start,
+            dir_boxes: parts.dir_boxes,
+            dir_indices: parts.dir_indices,
+            payload: parts.payload,
+            limits,
+        }
     }
 }
 
@@ -1140,6 +1211,82 @@ pub struct StreamIndex2D<R> {
     core: StreamCore<R>,
 }
 
+/// A reusable, reader-independent streaming directory.
+///
+/// Split one off any opened stream index with `into_directory`, then rebuild a
+/// fresh index from it with `from_directory` and a new reader — no I/O, so the
+/// directory round-trips are paid once, not per query. The typical use is a
+/// serverless handler that opens the index once, caches the directory, and
+/// serves each request with a per-request reader (R2 / HTTP range), eliminating
+/// the directory reads that otherwise dominate per-query latency.
+///
+/// A directory carries its dimension and precision, so reattaching it to a
+/// mismatched index type (e.g. a 2D directory to [`StreamIndex3D`]) returns
+/// [`StreamError::Format`] rather than misreading.
+#[derive(Clone)]
+pub struct StreamDirectory {
+    parts: StreamCoreParts,
+}
+
+impl StreamDirectory {
+    /// Number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.parts.num_items
+    }
+
+    /// Whether the index has no items.
+    pub fn is_empty(&self) -> bool {
+        self.parts.num_items == 0
+    }
+
+    /// Packed node size of the index.
+    pub fn node_size(&self) -> usize {
+        self.parts.node_size
+    }
+
+    /// Whether the index carries a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.parts.payload.is_some()
+    }
+
+    fn reattach<R>(
+        &self,
+        reader: R,
+        limits: StreamLimits,
+        expected_record: usize,
+    ) -> Result<StreamCore<R>, StreamError> {
+        if self.parts.record != expected_record {
+            return Err(StreamError::Format(LoadError::UnsupportedVersion));
+        }
+        Ok(StreamCore::from_parts(self.parts.clone(), reader, limits))
+    }
+}
+
+impl<R> StreamIndex2D<R> {
+    /// Split off the reader, keeping the reusable [`StreamDirectory`]. No I/O.
+    pub fn into_directory(self) -> (StreamDirectory, R) {
+        let (parts, reader) = self.core.into_parts();
+        (StreamDirectory { parts }, reader)
+    }
+
+    /// Rebuild a 2D `f64` index from a cached directory and a fresh reader. No
+    /// I/O: the directory reads were paid when it was first opened.
+    pub fn from_directory(dir: &StreamDirectory, reader: R) -> Result<Self, StreamError> {
+        Self::from_directory_with_limits(dir, reader, StreamLimits::default())
+    }
+
+    /// [`from_directory`](Self::from_directory) with per-query [`StreamLimits`].
+    pub fn from_directory_with_limits(
+        dir: &StreamDirectory,
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: dir.reattach(reader, limits, 2 * 2 * 8)?,
+        })
+    }
+}
+
 impl<R: RangeReader> StreamIndex2D<R> {
     /// Open and validate a 2D `f64` index from `reader`.
     ///
@@ -1260,6 +1407,30 @@ fn parse_box2d(bytes: &[u8]) -> Box2D {
 /// box record. See [`StreamIndex2D`] for the streaming model.
 pub struct StreamIndex3D<R> {
     core: StreamCore<R>,
+}
+
+impl<R> StreamIndex3D<R> {
+    /// Split off the reader, keeping the reusable [`StreamDirectory`]. No I/O.
+    pub fn into_directory(self) -> (StreamDirectory, R) {
+        let (parts, reader) = self.core.into_parts();
+        (StreamDirectory { parts }, reader)
+    }
+
+    /// Rebuild a 3D `f64` index from a cached directory and a fresh reader. No I/O.
+    pub fn from_directory(dir: &StreamDirectory, reader: R) -> Result<Self, StreamError> {
+        Self::from_directory_with_limits(dir, reader, StreamLimits::default())
+    }
+
+    /// [`from_directory`](Self::from_directory) with per-query [`StreamLimits`].
+    pub fn from_directory_with_limits(
+        dir: &StreamDirectory,
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: dir.reattach(reader, limits, 3 * 2 * 8)?,
+        })
+    }
 }
 
 impl<R: RangeReader> StreamIndex3D<R> {
@@ -1392,6 +1563,30 @@ pub struct StreamIndex2DF32<R> {
     core: StreamCore<R>,
 }
 
+impl<R> StreamIndex2DF32<R> {
+    /// Split off the reader, keeping the reusable [`StreamDirectory`]. No I/O.
+    pub fn into_directory(self) -> (StreamDirectory, R) {
+        let (parts, reader) = self.core.into_parts();
+        (StreamDirectory { parts }, reader)
+    }
+
+    /// Rebuild a 2D `f32` index from a cached directory and a fresh reader. No I/O.
+    pub fn from_directory(dir: &StreamDirectory, reader: R) -> Result<Self, StreamError> {
+        Self::from_directory_with_limits(dir, reader, StreamLimits::default())
+    }
+
+    /// [`from_directory`](Self::from_directory) with per-query [`StreamLimits`].
+    pub fn from_directory_with_limits(
+        dir: &StreamDirectory,
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: dir.reattach(reader, limits, 2 * 2 * 4)?,
+        })
+    }
+}
+
 impl<R: RangeReader> StreamIndex2DF32<R> {
     /// Open and validate a 2D `f32` index from `reader`.
     pub fn open(reader: R) -> Result<Self, StreamError> {
@@ -1477,6 +1672,30 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
 /// [`StreamIndex2DF32`] (24-byte box record). Behind the `stream` feature.
 pub struct StreamIndex3DF32<R> {
     core: StreamCore<R>,
+}
+
+impl<R> StreamIndex3DF32<R> {
+    /// Split off the reader, keeping the reusable [`StreamDirectory`]. No I/O.
+    pub fn into_directory(self) -> (StreamDirectory, R) {
+        let (parts, reader) = self.core.into_parts();
+        (StreamDirectory { parts }, reader)
+    }
+
+    /// Rebuild a 3D `f32` index from a cached directory and a fresh reader. No I/O.
+    pub fn from_directory(dir: &StreamDirectory, reader: R) -> Result<Self, StreamError> {
+        Self::from_directory_with_limits(dir, reader, StreamLimits::default())
+    }
+
+    /// [`from_directory`](Self::from_directory) with per-query [`StreamLimits`].
+    pub fn from_directory_with_limits(
+        dir: &StreamDirectory,
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: dir.reattach(reader, limits, 3 * 2 * 4)?,
+        })
+    }
 }
 
 impl<R: RangeReader> StreamIndex3DF32<R> {
@@ -2343,6 +2562,64 @@ mod tests {
             assert_eq!(stream.node_size(), owned.node_size(), "n={n}");
             assert_eq!(stream.is_empty(), n == 0, "n={n}");
             assert_eq!(stream.extent(), owned.extent(), "n={n}");
+        }
+    }
+
+    #[test]
+    fn from_directory_reuses_directory_without_io() {
+        // Large enough that the leaf level exceeds the directory budget, so a
+        // query genuinely streams leaves (and the reattach saving is visible).
+        let bytes = build_bytes(50_000, 16);
+        let q = Box2D::new(100.0, 100.0, 140.0, 140.0);
+
+        // Open once over a counting reader: this pays the directory reads.
+        let idx =
+            StreamIndex2D::open(CountingReader::new(SliceReader::new(bytes.clone()))).unwrap();
+        let expected = idx.search(q).unwrap();
+        let (dir, reader) = idx.into_directory();
+        let open_plus_query_reads = *reader.reads.borrow();
+        assert!(open_plus_query_reads > 0);
+
+        // Reattach a FRESH reader from the cached directory: zero I/O until a query.
+        let idx2 = StreamIndex2D::from_directory(
+            &dir,
+            CountingReader::new(SliceReader::new(bytes.clone())),
+        )
+        .unwrap();
+        assert_eq!(
+            *idx2.core.reader.reads.borrow(),
+            0,
+            "from_directory must not read"
+        );
+
+        // The query returns the identical result and reads only its own descent,
+        // never re-reading the directory.
+        let got = idx2.search(q).unwrap();
+        assert_eq!(got, expected);
+        let query_only_reads = *idx2.core.reader.reads.borrow();
+        assert!(query_only_reads > 0);
+        assert!(
+            query_only_reads < open_plus_query_reads,
+            "reattached query ({query_only_reads}) should read less than open+query ({open_plus_query_reads})"
+        );
+        assert_eq!(dir.num_items(), 50_000);
+    }
+
+    #[test]
+    fn from_directory_rejects_dimension_mismatch() {
+        // A 3D directory reattached as a 2D index must be refused, not misread.
+        let mut b = crate::Index3DBuilder::new(64);
+        for i in 0..64 {
+            let v = i as f64;
+            b.add(crate::Box3D::new(v, v, v, v + 1.0, v + 1.0, v + 1.0));
+        }
+        let bytes = b.finish().unwrap().to_bytes();
+        let idx3d = StreamIndex3D::open(SliceReader::new(bytes)).unwrap();
+        let (dir3d, _reader) = idx3d.into_directory();
+        match StreamIndex2D::from_directory(&dir3d, SliceReader::new(Vec::new())) {
+            Err(StreamError::Format(LoadError::UnsupportedVersion)) => {}
+            Err(other) => panic!("expected dimension-mismatch rejection, got {other:?}"),
+            Ok(_) => panic!("a 3D directory must not reattach as a 2D index"),
         }
     }
 

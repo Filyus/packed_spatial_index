@@ -125,8 +125,8 @@ pub use stream::AsyncRangeReader;
 pub use stream::FileReader;
 #[cfg(feature = "stream")]
 pub use stream::{
-    RangeReader, SliceReader, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D,
-    StreamIndex3DF32, StreamLimits,
+    RangeReader, SliceReader, StreamDirectory, StreamError, StreamIndex2D, StreamIndex2DF32,
+    StreamIndex3D, StreamIndex3DF32, StreamLimits,
 };
 pub use traversal::SearchWorkspace;
 pub use triangle::{

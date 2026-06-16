@@ -203,14 +203,17 @@ Quick selector:
 
 - `SimdIndex2D`: 32-byte f64 boxes. Use for exact range queries with many hits
   and fastest exact KNN.
-- `SimdIndex2DF32::search`: 16-byte rounded f32 boxes. Use for compact
-  first-pass filtering, or when near-boundary false positives are OK.
+- `SimdIndex2DF32::search`: 16-byte rounded f32 boxes, SIMD-batched. Use for
+  compact first-pass filtering, or when the near-boundary false positives from
+  the outward-rounded boxes are OK. Returns the same hits as the scalar
+  `Index2DF32` (both round the query inward onto the f32 grid).
 - `SimdIndex2DF32::*_exact`: 16-byte f32 index plus source f64 boxes. Use when
   exact range queries return few hits and compact storage matters. Exact KNN is
   available, but f64 is faster in these runs.
 - `Index2DF32` / `Index3DF32`: the same 16/24-byte f32 boxes, scalar (no `simd`).
-  Same conservative range/ray results and `search_exact`; pick it for the half
-  memory without the SIMD dependency, or to stream a compact file with
+  Identical range hits to `SimdIndex2DF32` (a conservative superset from the
+  outward-rounded boxes) plus `search_exact`; pick it for the half memory
+  without the SIMD dependency, or to stream a compact file with
   `StreamIndex2DF32` / `StreamIndex3DF32` (half the box bytes over the wire).
   Scalar f32 trades speed for memory: a 1M-box spot check ran range queries
   about 30% slower than `Index3D` and `search_exact` about 45% slower. The query

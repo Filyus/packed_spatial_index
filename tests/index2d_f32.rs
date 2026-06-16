@@ -56,6 +56,47 @@ fn search_is_a_conservative_superset() {
     );
 }
 
+#[cfg(feature = "simd")]
+#[test]
+fn simd_f32_search_matches_scalar_f32_exactly() {
+    // Both round the query inward, so the SIMD and scalar f32 indexes return the
+    // identical tight superset (not just each a superset of f64).
+    let mut rng = StdRng::seed_from_u64(0x51D2);
+    let bs: Vec<Box2D> = (0..20_000)
+        .map(|_| {
+            let (x, y) = (
+                rng.random_range(0.0..1000.0f64),
+                rng.random_range(0.0..1000.0),
+            );
+            Box2D::new(
+                x,
+                y,
+                x + rng.random_range(0.1..8.0),
+                y + rng.random_range(0.1..8.0),
+            )
+        })
+        .collect();
+    let mut b_scalar = Index2DBuilder::new(bs.len()).node_size(16);
+    let mut b_simd = Index2DBuilder::new(bs.len()).node_size(16);
+    for &b in &bs {
+        b_scalar.add(b);
+        b_simd.add(b);
+    }
+    let scalar = b_scalar.finish_f32().unwrap();
+    let simd = b_simd.finish_simd_f32().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x6061);
+    for _ in 0..200 {
+        let x = rng.random_range(0.0..1000.0);
+        let y = rng.random_range(0.0..1000.0);
+        let q = Box2D::new(x, y, x + 40.0, y + 40.0);
+        let mut a = scalar.search(q);
+        let mut b = simd.search(q);
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b);
+    }
+}
+
 #[test]
 fn search_exact_matches_f64_exactly() {
     // The inward-rounded f32 query compares f32-vs-f32 yet, with box_at returning

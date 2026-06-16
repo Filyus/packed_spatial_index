@@ -778,7 +778,7 @@ impl SimdIndex2DF32 {
     }
 
     fn search_into_stack(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        let q = Box2DF32::from_box2d_outward(query);
+        let q = Box2DF32::from_box2d_inward(query);
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx512f") {
@@ -799,7 +799,7 @@ impl SimdIndex2DF32 {
     ) where
         F: FnMut(usize) -> Box2D,
     {
-        let q = Box2DF32::from_box2d_outward(query);
+        let q = Box2DF32::from_box2d_inward(query);
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx512f") {
@@ -1255,7 +1255,7 @@ impl SimdIndex2DF32 {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        let q = Box2DF32::from_box2d_outward(query);
+        let q = Box2DF32::from_box2d_inward(query);
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
         loop {
@@ -1298,7 +1298,7 @@ impl SimdIndex2DF32 {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        let q = Box2DF32::from_box2d_outward(query);
+        let q = Box2DF32::from_box2d_inward(query);
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
         loop {
@@ -1863,7 +1863,7 @@ impl<'a> SimdIndex2DF32View<'a> {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        let query = Box2DF32::from_box2d_outward(query);
+        let query = Box2DF32::from_box2d_inward(query);
         if query.contains(self.box_f32_at(self.num_nodes - 1)) {
             for pos in 0..self.num_items {
                 visitor(self.index_at(pos))?;
@@ -1924,7 +1924,7 @@ impl<'a> SimdIndex2DF32View<'a> {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        let rounded_query = Box2DF32::from_box2d_outward(query);
+        let rounded_query = Box2DF32::from_box2d_inward(query);
         let mut node_index = self.num_nodes - 1;
         let mut level = self.level_count - 1;
         loop {

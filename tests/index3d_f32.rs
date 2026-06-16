@@ -182,6 +182,34 @@ fn metadata_round_trips_on_f32_file() {
     assert_eq!(md.content_type.as_deref(), Some("application/x-mesh"));
 }
 
+#[cfg(feature = "simd")]
+#[test]
+fn simd_f32_search_matches_scalar_f32_exactly() {
+    // Both round the query inward, so the SIMD and scalar f32 indexes return the
+    // identical tight superset (not just each a superset of f64).
+    let bs = boxes(0x51D3, 20_000);
+    let mut b_scalar = Index3DBuilder::new(bs.len()).node_size(16);
+    let mut b_simd = Index3DBuilder::new(bs.len()).node_size(16);
+    for &b in &bs {
+        b_scalar.add(b);
+        b_simd.add(b);
+    }
+    let scalar = b_scalar.finish_f32().unwrap();
+    let simd = b_simd.finish_simd_f32().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x6060);
+    for _ in 0..200 {
+        let x = rng.random_range(0.0..1000.0);
+        let y = rng.random_range(0.0..1000.0);
+        let z = rng.random_range(0.0..1000.0);
+        let q = Box3D::new(x, y, z, x + 40.0, y + 40.0, z + 40.0);
+        let mut a = scalar.search(q);
+        let mut b = simd.search(q);
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b);
+    }
+}
+
 #[test]
 fn search_exact_matches_f64_exactly() {
     // With box_at returning the true f64 boxes, the f32 index's exact search has

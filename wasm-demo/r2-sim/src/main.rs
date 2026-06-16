@@ -123,11 +123,9 @@ fn main() {
     println!("n = {n} items, payload stride = {PAYLOAD_STRIDE} B");
 
     let index = build_index(n);
-    let blobs: Vec<Vec<u8>> = (0..n).map(|i| vec![(i & 0xff) as u8; PAYLOAD_STRIDE]).collect();
-    let flat: Vec<u8> = blobs.iter().flatten().copied().collect();
-
-    let soa_var = index.serialize().payloads(&blobs).to_bytes().unwrap();
-    let il_var = index.serialize().interleaved().payloads(&blobs).to_bytes().unwrap();
+    let flat: Vec<u8> = (0..n)
+        .flat_map(|i| std::iter::repeat_n((i & 0xff) as u8, PAYLOAD_STRIDE))
+        .collect();
     let il_fixed = index
         .serialize()
         .interleaved()
@@ -135,13 +133,18 @@ fn main() {
         .to_bytes()
         .unwrap();
 
+    // Write-only fast path: emit the deployable file and skip the matrix measure
+    // (used to seed R2 for large N, where the full measure would be slow).
+    if let Some(path) = std::env::args().nth(2) {
+        std::fs::write(&path, &il_fixed).expect("write index file");
+        println!("wrote deployable index ({} KB) -> {path}", il_fixed.len() / 1024);
+        return;
+    }
+
+    let blobs: Vec<Vec<u8>> = (0..n).map(|i| vec![(i & 0xff) as u8; PAYLOAD_STRIDE]).collect();
+    let soa_var = index.serialize().payloads(&blobs).to_bytes().unwrap();
+    let il_var = index.serialize().interleaved().payloads(&blobs).to_bytes().unwrap();
     measure("SoA + variable payload", &soa_var);
     measure("interleaved + variable payload", &il_var);
     measure("interleaved + fixed-width records", &il_fixed);
-
-    // Optional: emit the headline (interleaved + fixed-width) file for R2 upload.
-    if let Some(path) = std::env::args().nth(2) {
-        std::fs::write(&path, &il_fixed).expect("write index file");
-        println!("\nwrote deployable index ({} KB) -> {path}", il_fixed.len() / 1024);
-    }
 }

@@ -1,0 +1,12 @@
+name = "psi-r2-demo"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# Module workers import `.wasm` as a compiled WebAssembly.Module automatically;
+# no extra build rule needed. `initSync(wasmModule)` instantiates it on first use.
+
+# Bind an R2 bucket holding the serialized index at key "index.psi".
+# Create it with: wrangler r2 bucket create psi-demo
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "psi-demo"

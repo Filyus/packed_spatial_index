@@ -1,0 +1,18 @@
+{
+  "name": "psi-r2-demo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloudflare Worker + R2 streaming demo for packed_spatial_index",
+  "scripts": {
+    "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
+    "seed": "cargo run --release --manifest-path ../r2-sim/Cargo.toml -- 200000 index.psi",
+    "upload": "wrangler r2 object put psi-demo/index.psi --file index.psi",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4"
+  }
+}

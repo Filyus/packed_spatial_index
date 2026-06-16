@@ -1,0 +1,19 @@
+# Local reads/bytes simulator for the CF Worker + R2 demo. Counts the range
+# reads and bytes a streaming query issues against a serialized index, with no
+# cloud involved — the coalescing/traversal counts are identical to what the
+# R2-backed reader would produce, so this is the headline signal locally.
+#
+# Standalone (own Cargo.lock), excluded from the published crate via the root
+# `exclude = ["/wasm-demo/"]`.
+[package]
+name = "psi_r2_sim"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+packed_spatial_index = { path = "../..", default-features = false, features = ["stream"] }
+rand = "0.10.1"
+
+[profile.release]
+opt-level = 3

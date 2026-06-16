@@ -1,0 +1,30 @@
+# WASM module for the Cloudflare Worker + R2 streaming demo.
+#
+# The Worker passes in a JS `read_range(offset, length) -> Promise<Uint8Array>`
+# callback backed by an R2 range `get`; this module wraps it as an
+# `AsyncRangeReader` and runs `search_payloads_async` over the serialized index.
+# Single-threaded isolate, so the crate's `!Send` async futures fit natively.
+#
+# Standalone, excluded from the published crate via root `exclude=["/wasm-demo/"]`.
+[package]
+name = "psi_worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2.122"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3.99"
+# `async` implies `stream`; no parallel/simd (single-threaded isolate, read-only).
+packed_spatial_index = { path = "../..", default-features = false, features = ["async"] }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[profile.release]
+opt-level = "s"
+lto = true

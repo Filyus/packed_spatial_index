@@ -5,6 +5,24 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.9.0](https://github.com/Filyus/packed_spatial_index/compare/v0.8.0...v0.9.0) - 2026-06-17
+
+### Persistence
+- Add `StreamDirectory` and `into_directory` / `from_directory`
+  (`from_directory_with_limits`) on every streaming index (`StreamIndex2D` /
+  `StreamIndex3D` and the compact `StreamIndex2DF32` / `StreamIndex3DF32`). Open
+  an index once, split off the reader-independent directory, then rebuild a fresh
+  index from it with a new reader and no I/O. A handler that uses one reader per
+  request (e.g. an edge worker over object storage) caches the directory and pays
+  the upper-level reads once instead of on every query. A directory rejects a
+  reattach to a mismatched dimension or precision instead of misreading.
+- Add `StreamLimits::directory_budget_bytes`: cache more (or all) of the internal
+  tree levels at open, so a query descends through fewer round-trips. Trade a
+  little memory for latency where memory is plentiful. The cached directory bytes
+  are reference-counted, so reattaching across queries is a refcount bump, not a
+  copy. **Breaking:** `StreamLimits` gained a field, so a struct literal that set
+  every field without `..StreamLimits::default()` now needs it.
+
 ## [0.8.0](https://github.com/Filyus/packed_spatial_index/compare/v0.7.0...v0.8.0) - 2026-06-16
 
 ### Geometry

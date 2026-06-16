@@ -5,6 +5,48 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.8.0](https://github.com/Filyus/packed_spatial_index/compare/v0.7.0...v0.8.0) - 2026-06-16
+
+### Geometry
+- Add triangle primitives: `Triangle2D` / `Triangle3D` (f64) and
+  `Triangle2DF32` / `Triangle3DF32` (f32), the sealed `Triangle2` / `Triangle3`
+  traits, and `TriangleHit`. Build an index straight from a mesh with
+  `Index2D` / `Index3D::from_triangles(..)` (and the new f32 indexes).
+- Add `Ray3D::closest_triangle(&[T])` for the nearest ray-triangle hit (f64
+  scalar, f32 through a wide SIMD kernel) for mesh-BVH closest-hit queries.
+
+### Indexes
+- Add scalar `Index2DF32` / `Index3DF32`: half-memory f32-box indexes (16 / 24
+  byte boxes) built with `Index*Builder::finish_f32()` or `from_triangles(..)`.
+  They cover `search` / `raycast` / `visit` / `any` / `first`, the
+  exact-refining `search_exact` / `any_exact` / `first_exact` / `visit_exact`
+  family (filter the conservative f32 hits against your own f64 boxes for no
+  false positives), and `serialize()` / `to_bytes()` / `from_bytes()`. No `simd`
+  dependency.
+- **Breaking:** `f32-storage` no longer enables `simd`. The scalar `Index*F32`
+  types build under `f32-storage` alone; the `SimdIndex*F32` frontends now need
+  both `f32-storage` and `simd`.
+
+### Persistence
+- Add a fixed-width (table-less) payload layout: `serialize().records(stride,
+  flat)` and `.triangles(&[T])`, read back zero-copy with `triangles::<T>()` /
+  `triangle::<T>(id)`. Files are smaller than the variable-payload table when
+  every record is the same size. The variable-payload bytes are byte-identical
+  to 0.7.0.
+- Add `Serializer2DF32` / `Serializer3DF32` (via `Index*F32::serialize()`) that
+  write f32 boxes plus an optional payload, fixed-width records or triangles,
+  metadata, and the interleaved node layout.
+- Add `StreamIndex2DF32` / `StreamIndex3DF32` (sync and async) to range-query
+  and stream payloads from a serialized f32 index at half the box bytes over the
+  wire.
+
+### Performance
+- Scalar and SIMD f32 range queries round the query once onto the f32 grid (min
+  up, max down) and compare f32-vs-f32 with no per-node widen. `Index*F32::search`
+  and `SimdIndex*F32::search` now return the identical conservative superset, and
+  scalar f32 `search` / `search_exact` are faster. `SimdIndex*F32::search`
+  returns slightly fewer near-boundary false positives than 0.7.0.
+
 ## [0.7.0](https://github.com/Filyus/packed_spatial_index/compare/v0.6.0...v0.7.0) - 2026-06-14
 
 ### API

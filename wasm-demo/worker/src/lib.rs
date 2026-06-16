@@ -95,13 +95,19 @@ pub async fn query(
             None
         },
     };
+    // Fixed, conservative budget (no concurrency tracking — Cloudflare schedules
+    // isolates; we just answer fast). Cache all internal levels for the fewest
+    // round-trips, and cap result memory well under the isolate's 128 MB so a
+    // broad query can't OOM and evict the warm directory. Peak ~32 MB.
     let limits = StreamLimits {
         max_reads: if max_reads > 0.0 {
             Some(max_reads as usize)
         } else {
             None
         },
-        ..Default::default()
+        max_read_bytes: Some(16 * 1024 * 1024),
+        max_items: Some(1_000_000),
+        directory_budget_bytes: Some(16 * 1024 * 1024),
     };
 
     // Reattach the cached directory if this warm isolate already has one (no

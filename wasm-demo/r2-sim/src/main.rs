@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use packed_spatial_index::{Box2D, Index2D, Index2DBuilder};
-use packed_spatial_index::{RangeReader, SliceReader, StreamIndex2D};
+use packed_spatial_index::{RangeReader, SliceReader, StreamIndex2D, StreamLimits};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -73,11 +73,17 @@ fn build_index(n: usize) -> Index2D {
 fn measure(label: &str, bytes: &[u8]) {
     let counters = Counters::default();
     let reader = CountingReader { inner: SliceReader::new(bytes), counters: counters.clone() };
-    let stream = StreamIndex2D::open(reader).expect("open");
+    // Cache all internal levels (serverless: trade a little memory for fewer
+    // per-query round-trips). `None` would keep the small built-in default.
+    let limits = StreamLimits {
+        directory_budget_bytes: Some(64 * 1024 * 1024),
+        ..Default::default()
+    };
+    let stream = StreamIndex2D::open_with_limits(reader, limits).expect("open");
     let (open_reads, open_bytes) = counters.get();
 
     println!(
-        "\n=== {label}  (file {} KB, open {} reads / {} B) ===",
+        "\n=== {label}  (file {} KB, open {} reads / {} B, all-internal directory) ===",
         bytes.len() / 1024,
         open_reads,
         open_bytes,

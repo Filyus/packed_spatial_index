@@ -25,7 +25,13 @@ signal: how cheap a spatial query over a remote object actually is.
   `StreamDirectory` (`into_directory` / `from_directory`): the first request
   opens the index, later ones reattach a fresh R2 reader with no directory I/O,
   so the directory round-trips (the bulk of per-query latency) are paid once per
-  warm isolate. Live: a point query drops 13 -> 8 R2 reads and ~halves latency.
+  warm isolate.
+- The directory budget is raised (`StreamLimits::directory_budget_bytes`) to
+  cache all internal tree levels, so a warm query streams little more than its
+  own payload. Live: a warm point query is ~1-2 R2 reads (down from ~13 cold).
+  Result memory is capped (`max_read_bytes` / `max_items`) well under the
+  isolate's 128 MB so a broad query can't OOM and evict the warm directory;
+  peak ~32 MB. No concurrency tracking — Cloudflare schedules isolates.
 - The index is **interleaved + fixed-width records** (the layout the local
   simulator showed issues the fewest reads/bytes).
 

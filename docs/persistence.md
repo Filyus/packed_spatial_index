@@ -137,6 +137,23 @@ and items so a broad query cannot run unbounded). For a remote-tuned layout,
 `to_bytes_interleaved` stores each node's box and child pointer together so the
 descent fetches them in one read per level instead of two.
 
+**Cost in practice.** A query streams only the byte ranges its traversal
+touches. Cost scales with the result rather than the file size, and the read
+count is deterministic (machine-independent). The upper tree levels (the
+"directory") are read once at `open`. With `into_directory` / `from_directory`
+you reuse that parsed directory across queries and supply a fresh reader each
+time, so its reads are never repaid. That is the pattern for one reader per
+request. With the internal levels cached a small window over a 1M-item (about 100
+MB) file streams roughly 6 ranged reads. Caching the whole tree drops a point
+query to 1 or 2 reads, which happens for small files or with a larger
+`StreamLimits::directory_budget_bytes`. The cached directory holds only the
+internal levels (about `num_items / node_size` nodes, roughly 2.7 MB for 1M
+items), so its footprint shrinks per item as the file grows. A runnable
+Cloudflare Worker and R2 example lives in
+[`wasm-demo/worker`](../wasm-demo/worker). It serves a 100 MB index straight from
+object storage at about 6 range reads per query and uses roughly 10 MB of the
+Worker's 128 MB isolate.
+
 **Compact `f32` streaming:** `StreamIndex2DF32` / `StreamIndex3DF32` stream a
 compact `f32`-box file for half the box bytes over the wire, with the same
 `search` / `search_payloads` / async API. The stored boxes are rounded outward,

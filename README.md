@@ -112,7 +112,9 @@ assert_eq!(hit, Some((0, 1.0)));
   bytes.
 - **Streaming**: [`StreamIndex2D`][StreamIndex2D] / [`StreamIndex3D`][StreamIndex3D]
   (and compact `StreamIndex2DF32` / `StreamIndex3DF32`) query a serialized index
-  over a `RangeReader` without loading it whole (`stream` feature).
+  over a `RangeReader` without loading it whole (`stream` feature). A windowed
+  query over a 100 MB index served from object storage costs only a handful of
+  range reads. See the [Cloudflare Worker + R2 example](wasm-demo/worker).
 - **Workspaces**: [`SearchWorkspace`][SearchWorkspace] /
   [`NeighborWorkspace`][NeighborWorkspace] reuse buffers in loops.
 - **Sorting / errors**: [`SortKey2D`][SortKey2D] / [`SortKey3D`][SortKey3D]

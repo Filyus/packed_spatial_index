@@ -68,7 +68,11 @@ Every in-memory **f64** query (range, kNN, raycast, join) exists on `Index2D` /
 `Index3D`, the `simd`-feature `SimdIndex2D` / `SimdIndex3D`, and the zero-copy
 views. The compact `f32` indexes and the streaming reader cover a subset (see
 the [coverage matrix](#coverage-matrix)). Range/ray results are item indices in
-insertion order; result order is unspecified. See
+insertion order; result order is unspecified. For a boolean "any overlap?" reach
+for `any` (no allocation, stops at the first hit) rather than
+`search(..).is_empty()`; `search` returns an owned `Vec`, so in hot loops reuse a
+buffer (`search_into` / `search_with`) or fold with `visit`. See the
+[guide](docs/guide.md#choosing-a-query-method) and
 [docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
 
 | Query | Methods |

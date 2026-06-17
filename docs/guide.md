@@ -5,15 +5,25 @@ Practical recipes and configuration. For the per-method API reference, see
 
 ## Choosing a query method
 
-- Use `search` for simple one-off range queries.
-- Use `search_with` / `neighbors_with` inside tight loops (reuses buffers).
-- Use `any`, `first`, `visit`, `visit_neighbors`, or `visit_raycast` when you can
-  stop early.
+- "Is there any overlap?" use `any`. It returns a `bool`, stops at the first hit,
+  and allocates nothing. Prefer it to `search(..).is_empty()`, which builds the
+  whole result `Vec` first. Use `first` for one hit, `visit` to fold over hits
+  without collecting.
+- `search` returns an owned `Vec`. In a hot loop reuse a buffer with `search_into`
+  (a caller `Vec`) or `search_with` / `neighbors_with` (a reusable `SearchWorkspace`
+  / `NeighborWorkspace`), or skip the `Vec` entirely with `visit` / `any` / `first`.
+- `search_iter` (owned `f64` indexes) is a lazy iterator: it descends on demand,
+  so `.next()` / `.take(k)` / `.find(..)` stop the traversal early with no result
+  `Vec`.
 - Use `Index2DView` / `Index3DView` to query persisted bytes without allocating
   an owned index.
 - Use `search_exact` / `neighbors_exact` on the `f32` indexes for exact results
   from compact storage; prefer the `f64` indexes for exact queries with many
   hits.
+- `SimdIndex*` pays off on larger inputs and broad queries (it tests several
+  boxes per node). For a few boxes, or tiny repeated boolean checks, the scalar
+  `Index*` or even a plain linear scan over your own boxes can win: building and
+  querying an index has fixed overhead that only amortizes at scale.
 
 ## Find boxes that contain a point
 

@@ -212,11 +212,12 @@ mod f32_knn {
     use std::collections::BinaryHeap;
     use std::ops::ControlFlow;
 
-    /// First tree level whose exclusive end is past `node_index` (the level the node
-    /// lives on). `level_bounds` is ascending, so this is a partition point.
+    /// Exclusive node-position end of the level containing `node`, for the
+    /// slice-backed owned indexes. (Byte-backed views supply their own closure
+    /// that reads the level bounds from the file header.)
     #[inline]
-    fn node_level(level_bounds: &[usize], node_index: usize) -> usize {
-        level_bounds.partition_point(|&end| end <= node_index)
+    pub(crate) fn level_end_of(level_bounds: &[usize], node: usize) -> usize {
+        level_bounds[level_bounds.partition_point(|&end| end <= node)]
     }
 
     /// Keep `best` to the `max_results` smallest exact distances (a bounded max-heap).
@@ -256,8 +257,8 @@ mod f32_knn {
         num_nodes: usize,
         num_items: usize,
         node_size: usize,
-        level_bounds: &[usize],
-        indices: &[usize],
+        level_end: impl Fn(usize) -> usize,
+        index_at: impl Fn(usize) -> usize,
         max_results: usize,
         max_distance: f64,
         dist: impl Fn(usize) -> f64,
@@ -273,15 +274,14 @@ mod f32_knn {
         }
         let mut node_index = num_nodes - 1;
         loop {
-            let end =
-                (node_index + node_size).min(level_bounds[node_level(level_bounds, node_index)]);
+            let end = (node_index + node_size).min(level_end(node_index));
             let is_leaf = node_index < num_items;
             for pos in node_index..end {
                 let d = dist(pos);
                 if d > max_dist_sq {
                     continue;
                 }
-                queue.push(NeighborState::new(indices[pos], is_leaf, d));
+                queue.push(NeighborState::new(index_at(pos), is_leaf, d));
             }
             let mut continue_search = false;
             while let Some(state) = queue.pop() {
@@ -312,8 +312,8 @@ mod f32_knn {
         num_nodes: usize,
         num_items: usize,
         node_size: usize,
-        level_bounds: &[usize],
-        indices: &[usize],
+        level_end: impl Fn(usize) -> usize,
+        index_at: impl Fn(usize) -> usize,
         max_distance: f64,
         dist: impl Fn(usize) -> f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
@@ -326,8 +326,7 @@ mod f32_knn {
         let mut best_index = None;
         let mut node_index = num_nodes - 1;
         loop {
-            let end =
-                (node_index + node_size).min(level_bounds[node_level(level_bounds, node_index)]);
+            let end = (node_index + node_size).min(level_end(node_index));
             let is_leaf = node_index < num_items;
             for pos in node_index..end {
                 let d = dist(pos);
@@ -336,12 +335,12 @@ mod f32_knn {
                 }
                 if is_leaf {
                     if d == 0.0 {
-                        return Some(indices[pos]);
+                        return Some(index_at(pos));
                     }
                     best_dist = d;
-                    best_index = Some(indices[pos]);
+                    best_index = Some(index_at(pos));
                 } else {
-                    queue.push(NeighborNodeState::new(indices[pos], d));
+                    queue.push(NeighborNodeState::new(index_at(pos), d));
                 }
             }
             match queue.pop() {
@@ -358,8 +357,8 @@ mod f32_knn {
         num_nodes: usize,
         num_items: usize,
         node_size: usize,
-        level_bounds: &[usize],
-        indices: &[usize],
+        level_end: impl Fn(usize) -> usize,
+        index_at: impl Fn(usize) -> usize,
         max_results: usize,
         max_distance: f64,
         dist: impl Fn(usize) -> f64,
@@ -398,13 +397,12 @@ mod f32_knn {
                 }
                 continue;
             }
-            let end =
-                (state.index + node_size).min(level_bounds[node_level(level_bounds, state.index)]);
+            let end = (state.index + node_size).min(level_end(state.index));
             let is_leaf = state.index < num_items;
             for pos in state.index..end {
                 let d = dist(pos);
                 if d <= cutoff {
-                    frontier.push(NeighborState::new(indices[pos], is_leaf, d));
+                    frontier.push(NeighborState::new(index_at(pos), is_leaf, d));
                 }
             }
         }
@@ -417,8 +415,8 @@ mod f32_knn {
         num_nodes: usize,
         num_items: usize,
         node_size: usize,
-        level_bounds: &[usize],
-        indices: &[usize],
+        level_end: impl Fn(usize) -> usize,
+        index_at: impl Fn(usize) -> usize,
         max_distance: f64,
         dist: impl Fn(usize) -> f64,
         queue: &mut BinaryHeap<NeighborState>,
@@ -433,15 +431,14 @@ mod f32_knn {
         }
         let mut node_index = num_nodes - 1;
         loop {
-            let end =
-                (node_index + node_size).min(level_bounds[node_level(level_bounds, node_index)]);
+            let end = (node_index + node_size).min(level_end(node_index));
             let is_leaf = node_index < num_items;
             for pos in node_index..end {
                 let d = dist(pos);
                 if d > max_dist_sq {
                     continue;
                 }
-                queue.push(NeighborState::new(indices[pos], is_leaf, d));
+                queue.push(NeighborState::new(index_at(pos), is_leaf, d));
             }
             let mut continue_search = false;
             while let Some(state) = queue.pop() {

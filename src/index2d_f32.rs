@@ -35,10 +35,7 @@ use std::collections::BinaryHeap;
 
 // Imports used only by the SIMD query frontend (SimdIndex2DF32 + its view).
 #[cfg(feature = "simd")]
-use crate::{
-    config::DEFAULT_SEARCH_STACK_CAPACITY, neighbors::max_distance_squared,
-    traversal::SearchWorkspace,
-};
+use crate::{config::DEFAULT_SEARCH_STACK_CAPACITY, traversal::SearchWorkspace};
 use std::ops::ControlFlow;
 
 /// Round `x` down to the nearest `f32` that is `<= x`.
@@ -576,8 +573,8 @@ impl Index2DF32 {
             self.min_xs.len(),
             self.num_items,
             self.node_size,
-            &self.level_bounds,
-            &self.indices,
+            |n| crate::neighbors::level_end_of(&self.level_bounds, n),
+            |p| self.indices[p],
             max_results,
             max_distance,
             |pos| self.distance_squared_to(pos, point),
@@ -603,8 +600,8 @@ impl Index2DF32 {
             self.min_xs.len(),
             self.num_items,
             self.node_size,
-            &self.level_bounds,
-            &self.indices,
+            |n| crate::neighbors::level_end_of(&self.level_bounds, n),
+            |p| self.indices[p],
             max_results,
             max_distance,
             |pos| self.distance_squared_to(pos, point),
@@ -625,8 +622,8 @@ impl Index2DF32 {
             self.min_xs.len(),
             self.num_items,
             self.node_size,
-            &self.level_bounds,
-            &self.indices,
+            |n| crate::neighbors::level_end_of(&self.level_bounds, n),
+            |p| self.indices[p],
             max_distance,
             |pos| self.distance_squared_to(pos, point),
             queue,
@@ -647,8 +644,8 @@ impl Index2DF32 {
             self.min_xs.len(),
             self.num_items,
             self.node_size,
-            &self.level_bounds,
-            &self.indices,
+            |n| crate::neighbors::level_end_of(&self.level_bounds, n),
+            |p| self.indices[p],
             max_distance,
             |pos| self.distance_squared_to(pos, point),
             queue,
@@ -849,8 +846,8 @@ impl SimdIndex2DF32 {
             self.min_xs.len(),
             self.num_items,
             self.node_size,
-            &self.level_bounds,
-            &self.indices,
+            |n| crate::neighbors::level_end_of(&self.level_bounds, n),
+            |p| self.indices[p],
             max_results,
             max_distance,
             |pos| self.distance_squared_to(pos, point),
@@ -876,8 +873,8 @@ impl SimdIndex2DF32 {
             self.min_xs.len(),
             self.num_items,
             self.node_size,
-            &self.level_bounds,
-            &self.indices,
+            |n| crate::neighbors::level_end_of(&self.level_bounds, n),
+            |p| self.indices[p],
             max_results,
             max_distance,
             |pos| self.distance_squared_to(pos, point),
@@ -898,8 +895,8 @@ impl SimdIndex2DF32 {
             self.min_xs.len(),
             self.num_items,
             self.node_size,
-            &self.level_bounds,
-            &self.indices,
+            |n| crate::neighbors::level_end_of(&self.level_bounds, n),
+            |p| self.indices[p],
             max_distance,
             |pos| self.distance_squared_to(pos, point),
             queue,
@@ -920,8 +917,8 @@ impl SimdIndex2DF32 {
             self.min_xs.len(),
             self.num_items,
             self.node_size,
-            &self.level_bounds,
-            &self.indices,
+            |n| crate::neighbors::level_end_of(&self.level_bounds, n),
+            |p| self.indices[p],
             max_distance,
             |pos| self.distance_squared_to(pos, point),
             queue,
@@ -2269,48 +2266,18 @@ impl<'a> SimdIndex2DF32View<'a> {
         results: &mut Vec<usize>,
         queue: &mut BinaryHeap<NeighborState>,
     ) {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return;
-        };
-        if self.num_items == 0 {
-            return;
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper = self.upper_bound_level(node_index);
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.index_at(pos), is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return;
-                }
-                if state.is_leaf {
-                    results.push(state.index);
-                    if results.len() == max_results {
-                        return;
-                    }
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-            if !continue_search {
-                return;
-            }
-        }
+        crate::neighbors::collect_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |p| self.index_at(p),
+            max_results,
+            max_distance,
+            |pos| self.distance_squared_to(pos, point),
+            results,
+            queue,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2326,56 +2293,20 @@ impl<'a> SimdIndex2DF32View<'a> {
     ) where
         F: FnMut(usize) -> Box2D,
     {
-        results.clear();
-        frontier.clear();
-        best.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return;
-        };
-        if self.num_items == 0 || max_results == 0 {
-            return;
-        }
-
-        let root = self.num_nodes - 1;
-        let root_dist = self.distance_squared_to(root, point);
-        if root_dist > max_dist_sq {
-            return;
-        }
-        frontier.push(NeighborState::new(root, false, root_dist));
-
-        let mut cutoff = max_dist_sq;
-        while let Some(state) = frontier.pop() {
-            if state.dist > cutoff {
-                break;
-            }
-            if state.is_leaf {
-                let exact_dist = distance_squared_to_box(point, box_at(state.index));
-                if exact_dist <= max_dist_sq {
-                    crate::neighbors::push_exact_neighbor(
-                        best,
-                        max_results,
-                        state.index,
-                        exact_dist,
-                    );
-                    if best.len() == max_results {
-                        cutoff = best.peek().map_or(max_dist_sq, |worst| worst.dist);
-                    }
-                }
-                continue;
-            }
-
-            let upper = self.upper_bound_level(state.index);
-            let end = (state.index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = state.index < self.num_items;
-            for pos in state.index..end {
-                let dist = self.distance_squared_to(pos, point);
-                if dist <= cutoff {
-                    frontier.push(NeighborState::new(self.index_at(pos), is_leaf, dist));
-                }
-            }
-        }
-
-        crate::neighbors::write_exact_results(results, best);
+        crate::neighbors::collect_neighbors_refined(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |p| self.index_at(p),
+            max_results,
+            max_distance,
+            |pos| self.distance_squared_to(pos, point),
+            |index| distance_squared_to_box(point, box_at(index)),
+            results,
+            frontier,
+            best,
+        );
     }
 
     fn nearest_one_with_queue(
@@ -2384,40 +2315,16 @@ impl<'a> SimdIndex2DF32View<'a> {
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
-        queue.clear();
-        let mut best_dist = max_distance_squared(max_distance)?;
-        if self.num_items == 0 {
-            return None;
-        }
-
-        let mut best_index = None;
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper = self.upper_bound_level(node_index);
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
-                if dist > best_dist {
-                    continue;
-                }
-                if is_leaf {
-                    if dist == 0.0 {
-                        return Some(self.index_at(pos));
-                    }
-                    best_dist = dist;
-                    best_index = Some(self.index_at(pos));
-                } else {
-                    queue.push(NeighborNodeState::new(self.index_at(pos), dist));
-                }
-            }
-
-            match queue.pop() {
-                Some(state) if state.dist <= best_dist => node_index = state.index,
-                _ => return best_index,
-            }
-        }
+        crate::neighbors::nearest_one(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |p| self.index_at(p),
+            max_distance,
+            |pos| self.distance_squared_to(pos, point),
+            queue,
+        )
     }
 
     fn visit_neighbors_with_queue<B, F>(
@@ -2430,45 +2337,17 @@ impl<'a> SimdIndex2DF32View<'a> {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return ControlFlow::Continue(());
-        };
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper = self.upper_bound_level(node_index);
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.index_at(pos), is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return ControlFlow::Continue(());
-                }
-                if state.is_leaf {
-                    visitor(state.index, state.dist)?;
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-            if !continue_search {
-                return ControlFlow::Continue(());
-            }
-        }
+        crate::neighbors::visit_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |p| self.index_at(p),
+            max_distance,
+            |pos| self.distance_squared_to(pos, point),
+            queue,
+            visitor,
+        )
     }
 }
 

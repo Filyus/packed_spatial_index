@@ -154,6 +154,15 @@ Cloudflare Worker and R2 example lives in
 object storage at about 6 range reads per query and uses roughly 10 MB of the
 Worker's 128 MB isolate.
 
+The second knob is `StreamLimits::coalesce_gap_bytes`: records (tree nodes or
+payload blobs) within this many bytes of each other are fetched in one read. The
+default is small (a few KB). Raising it to ~128-256 KB over-reads the gaps to
+collapse round-trips, which is a strong win on a remote source and waste on a
+local one, so set it for the source you have. It is bounded by `max_read_bytes`,
+so a broad query still aborts rather than over-reading without limit. On a 1M
+file a wide window drops from tens of reads to a handful with both this and a
+roomy directory budget.
+
 **Compact `f32` streaming:** `StreamIndex2DF32` / `StreamIndex3DF32` stream a
 compact `f32`-box file for half the box bytes over the wire, with the same
 `search` / `search_payloads` / async API. The stored boxes are rounded outward,

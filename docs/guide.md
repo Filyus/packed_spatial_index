@@ -29,21 +29,19 @@ Practical recipes and configuration. For the per-method API reference, see
 
 Which query each index type answers. `✓` available, `✗` not, `*` a conservative
 superset over outward-rounded `f32` boxes (refine with the `*_exact` family).
+"Payload" is attaching (`write`) or returning (`read`) a per-item blob;
+"Streaming" is answering queries over a `RangeReader` without loading the whole
+file; `search_iter` is the lazy iterator form of range search.
 
-| Index type | Range | kNN | Raycast | Join | Payload | Streaming |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|
-| `Index2D` / `Index3D` | ✓ | ✓ | ✓ | ✓ | write | ✗ |
-| `Index2DView` / `Index3DView` | ✓ | ✓ | ✓ | ✓ | read | ✗ |
-| `SimdIndex2D` / `SimdIndex3D` | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
-| SIMD views | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
-| `Index2DF32` / `Index3DF32` | ✓* | ✓* | ✓* | ✗ | write | ✗ |
-| `SimdIndex2DF32` / `SimdIndex3DF32` | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ |
-| `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | read | ✓ |
-
-`kNN` is point nearest-neighbor; box-to-box nearest (`neighbors_of_box`) is f64
-only. `search_iter` (a lazy iterator) is owned f64 only. `Payload` is attaching
-(`write`) or returning (`read`) a per-item blob. `Streaming` is answering queries
-over a `RangeReader` without loading the whole file.
+| Index type | Range | Point kNN | Box kNN | Raycast | Join | Payload | `search_iter` | Streaming |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `Index2D` / `Index3D` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | write | ✓ | ✗ |
+| `Index2DView` / `Index3DView` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | read | ✗ | ✗ |
+| `SimdIndex2D` / `SimdIndex3D` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
+| SIMD views (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
+| `Index2DF32` / `Index3DF32` (f32) | ✓* | ✓* | ✗ | ✓* | ✗ | write | ✗ | ✗ |
+| `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
 
 The empty cells are intentional, not gaps to fill:
 

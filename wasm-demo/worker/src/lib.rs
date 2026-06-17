@@ -108,6 +108,9 @@ pub async fn query(
         max_read_bytes: Some(16 * 1024 * 1024),
         max_items: Some(1_000_000),
         directory_budget_bytes: Some(16 * 1024 * 1024),
+        // Over-read up to 256 KB to collapse round-trips: a strong win on R2
+        // (high latency), bounded by max_read_bytes above.
+        coalesce_gap_bytes: Some(256 * 1024),
     };
 
     // Reattach the cached directory if this warm isolate already has one (no

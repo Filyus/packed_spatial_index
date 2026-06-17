@@ -67,7 +67,7 @@ where it doesn't.
 Every in-memory **f64** query (range, kNN, raycast, join) exists on `Index2D` /
 `Index3D`, the `simd`-feature `SimdIndex2D` / `SimdIndex3D`, and the zero-copy
 views. The compact `f32` indexes and the streaming reader cover a subset (see
-the [coverage matrix](#coverage-matrix)). Range/ray results are item indices in
+the [coverage matrix](docs/guide.md#coverage-matrix)). Range/ray results are item indices in
 insertion order; result order is unspecified. For a boolean "any overlap?" reach
 for `any` (no allocation, stops at the first hit) rather than
 `search(..).is_empty()`; `search` returns an owned `Vec`, so in hot loops reuse a
@@ -127,44 +127,8 @@ assert_eq!(hit, Some((0, 1.0)));
   (default `Hilbert`), [`BoundsError`][BoundsError], [`BuildError`][BuildError],
   [`LoadError`][LoadError].
 
-## Coverage matrix
-
-Which query each index type answers. `✓` available, `✗` not, `*` conservative
-superset over outward-rounded `f32` boxes (pair with the `*_exact` family for
-exact results). "Streaming" means answering queries over a `RangeReader` without
-loading the whole file; "Payload" is attaching (`write`) or returning (`read`)
-a per-item blob.
-
-| Index type | Range | Point kNN | Box kNN | Raycast | Join | Payload | `search_iter` | Streaming |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `Index2D` / `Index3D` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | write | ✓ | ✗ |
-| `Index2DView` / `Index3DView` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | read | ✗ | ✗ |
-| `SimdIndex2D` / `SimdIndex3D` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
-| SIMD views (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
-| `Index2DF32` / `Index3DF32` (f32) | ✓* | ✓* | ✗ | ✓* | ✗ | write | ✗ | ✗ |
-| `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
-
-Empty cells are intentional contracts, not gaps to fill:
-
-- **Streaming covers only range search** (with payloads). kNN and raycast use a
-  best-first traversal that jumps around the tree, so adjacent reads do not
-  coalesce and streaming them would be one read per node. Load those with a view
-  or an in-memory index. (The in-memory and `f32` indexes serialize the files
-  `StreamIndex*` reads; see Serialization.)
-- **`f32` indexes** answer range, point-kNN, and (scalar only) raycast as a
-  conservative superset; refine with the `*_exact` family against your own `f64`
-  boxes. They have no box-kNN or join. The SIMD `f32` frontend carries no payload
-  and no raycast; the compact mesh-BVH story uses the scalar `Index3DF32`
-  (AABBs from `from_triangles`, triangles as the payload).
-- **Payload read** lives on the byte views and `StreamIndex*`, not the owned or
-  SIMD indexes. An owned index returns ids into your own data; attach a per-item
-  blob at serialize time and read it back zero-copy through a view or streamed.
-  To query with SIMD and still get payloads, open the same bytes as a SIMD view
-  for the ids and as a plain view (or stream) for the blobs.
-- **`search_iter`** (a lazy DFS iterator) is owned `f64` only. The SIMD,
-  byte-view, and streaming paths are batch-oriented, where a lazy per-item pull
-  iterator is an anti-pattern.
+A full **coverage matrix** (which index type answers which query, and why some
+cells are empty by design) is in the [guide](docs/guide.md#coverage-matrix).
 
 ## Serialization & metadata
 

@@ -25,6 +25,42 @@ Practical recipes and configuration. For the per-method API reference, see
   `Index*` or even a plain linear scan over your own boxes can win: building and
   querying an index has fixed overhead that only amortizes at scale.
 
+## Coverage matrix
+
+Which query each index type answers. `✓` available, `✗` not, `*` a conservative
+superset over outward-rounded `f32` boxes (refine with the `*_exact` family).
+
+| Index type | Range | kNN | Raycast | Join | Payload | Streaming |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| `Index2D` / `Index3D` | ✓ | ✓ | ✓ | ✓ | write | ✗ |
+| `Index2DView` / `Index3DView` | ✓ | ✓ | ✓ | ✓ | read | ✗ |
+| `SimdIndex2D` / `SimdIndex3D` | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
+| SIMD views | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
+| `Index2DF32` / `Index3DF32` | ✓* | ✓* | ✓* | ✗ | write | ✗ |
+| `SimdIndex2DF32` / `SimdIndex3DF32` | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ |
+| `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | read | ✓ |
+
+`kNN` is point nearest-neighbor; box-to-box nearest (`neighbors_of_box`) is f64
+only. `search_iter` (a lazy iterator) is owned f64 only. `Payload` is attaching
+(`write`) or returning (`read`) a per-item blob. `Streaming` is answering queries
+over a `RangeReader` without loading the whole file.
+
+The empty cells are intentional, not gaps to fill:
+
+- Streaming covers only range search (with payloads). kNN and raycast use a
+  best-first traversal that jumps around the tree, so adjacent reads do not
+  coalesce; streaming them would be one read per node. Load those with a view or
+  an in-memory index. (The in-memory and `f32` indexes serialize the files that
+  `StreamIndex*` reads.)
+- The `f32` indexes answer range, point-kNN, and (scalar only) raycast as a
+  conservative superset; refine with the `*_exact` family against your own `f64`
+  boxes. The SIMD `f32` frontend carries no payload and no raycast; the compact
+  mesh-BVH story uses the scalar `Index3DF32` (AABBs from `from_triangles`,
+  triangles as the payload).
+- Payload read lives on the byte views and `StreamIndex*`, not the owned or SIMD
+  indexes: an owned index returns ids into your own data, so attach a per-item
+  blob at serialize time and read it back through a view or streamed.
+
 ## Find boxes that contain a point
 
 Search with a zero-size query box at the point. Box overlap is inclusive, so

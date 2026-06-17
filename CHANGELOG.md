@@ -5,6 +5,32 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.10.0](https://github.com/Filyus/packed_spatial_index/compare/v0.9.0...v0.10.0) - 2026-06-18
+
+### Nearest Neighbors
+- Add point nearest-neighbor queries to the scalar `Index2DF32` / `Index3DF32`:
+  `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with`, the
+  exact-refining `neighbors_exact*` (refined against your own f64 boxes), and
+  `visit_neighbors`. Previously only the SIMD `SimdIndex*F32` carried them, so the
+  no-`simd` compact path can now answer nearest-neighbor as well as range and
+  raycast.
+
+### Persistence
+- Add `StreamLimits::coalesce_gap_bytes` to tune read coalescing. Records (tree
+  nodes or payload blobs) within this many bytes of each other are fetched in one
+  read; raising it to ~128-256 KB over-reads the gaps to collapse round-trips, a
+  strong win on a remote source and waste on a local one, bounded by
+  `max_read_bytes`. **Breaking:** `StreamLimits` gained a field, so a struct
+  literal that set every field without `..StreamLimits::default()` now needs it.
+
+### Documentation
+- Add an API coverage matrix (which index type answers which query) to the README,
+  and make method guidance explicit: a boolean overlap check is `any` (no
+  allocation, stops early) rather than `search(..).is_empty()`, `search` returns
+  an owned `Vec` so hot loops should reuse a buffer (`search_into` / `search_with`)
+  or fold with `visit`, and for a few boxes a scalar index or a plain linear scan
+  can beat the SIMD one.
+
 ## [0.9.0](https://github.com/Filyus/packed_spatial_index/compare/v0.8.0...v0.9.0) - 2026-06-17
 
 ### Persistence

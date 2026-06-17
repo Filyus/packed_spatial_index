@@ -1,6 +1,6 @@
 [package]
 name = "packed_spatial_index"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Packed static spatial index (Hilbert R-tree) for 2D/3D AABBs — SIMD range, kNN, raycast, and spatial-join queries, with zero-copy and streaming serialization."

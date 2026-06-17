@@ -23,19 +23,21 @@ use crate::{
     triangle::{Triangle3, records_as_bytes},
 };
 
+// Point kNN over the owned f32 indexes (scalar `Index3DF32` + SIMD
+// `SimdIndex3DF32`) needs these whenever `f32-storage` is enabled.
+use crate::{
+    config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
+    geometry::Point3D,
+    neighbors::{ExactNeighborState, NeighborNodeState, NeighborState, NeighborWorkspace},
+};
+use std::collections::BinaryHeap;
+
 // Imports used only by the SIMD query frontend (SimdIndex3DF32 + its view).
 #[cfg(feature = "simd")]
 use crate::{
-    config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::Point3D,
-    neighbors::{
-        ExactNeighborState, NeighborNodeState, NeighborState, NeighborWorkspace,
-        max_distance_squared,
-    },
-    traversal::{SearchWorkspace, upper_bound_level},
+    config::DEFAULT_SEARCH_STACK_CAPACITY, neighbors::max_distance_squared,
+    traversal::SearchWorkspace,
 };
-#[cfg(feature = "simd")]
-use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
 #[inline]
@@ -404,6 +406,303 @@ pub struct SimdIndex3DF32 {
     indices: Vec<usize>,
 }
 
+/// Point nearest-neighbor query methods for the two field-identical owned f32
+/// indexes (`Index3DF32` and `SimdIndex3DF32`). kNN is a scalar priority-queue
+/// descent (not SIMD), so both share it; the heavy traversal lives in
+/// [`crate::neighbors`], this is the thin per-type adapter.
+macro_rules! impl_index3d_f32_point_knn {
+    ($ty:ty) => {
+        impl $ty {
+            /// Up to `max_results` item indices nearest to `point` by rounded f32 boxes.
+            ///
+            /// Distances use the outward-rounded f32 boxes (lower bounds of the exact
+            /// f64 distances). Use [`neighbors_exact`](Self::neighbors_exact) when
+            /// you need exact nearest neighbors over your original f64 boxes.
+            pub fn neighbors(&self, point: Point3D, max_results: usize) -> Vec<usize> {
+                self.neighbors_within(point, max_results, f64::INFINITY)
+            }
+
+            /// Up to `max_results` rounded-box nearest items within `max_distance`.
+            pub fn neighbors_within(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                max_distance: f64,
+            ) -> Vec<usize> {
+                let mut results = Vec::new();
+                self.neighbors_into(point, max_results, max_distance, &mut results);
+                results
+            }
+
+            /// Rounded-box nearest-neighbor search with a reusable result buffer.
+            pub fn neighbors_into(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                max_distance: f64,
+                results: &mut Vec<usize>,
+            ) {
+                results.clear();
+                if max_results == 0 {
+                    return;
+                }
+                if max_results == 1 {
+                    let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+                    if let Some(index) =
+                        self.nearest_one_with_queue(point, max_distance, &mut queue)
+                    {
+                        results.push(index);
+                    }
+                    return;
+                }
+
+                let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+                self.collect_neighbors_with_queue(
+                    point,
+                    max_results,
+                    max_distance,
+                    results,
+                    &mut queue,
+                );
+            }
+
+            /// Rounded-box nearest-neighbor search with reusable result and queue buffers.
+            pub fn neighbors_with<'a>(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                max_distance: f64,
+                workspace: &'a mut NeighborWorkspace,
+            ) -> &'a [usize] {
+                workspace.results.clear();
+                if max_results == 0 {
+                    workspace.queue.clear();
+                    workspace.node_queue.clear();
+                    return &workspace.results;
+                }
+                if max_results == 1 {
+                    workspace.queue.clear();
+                    if let Some(index) =
+                        self.nearest_one_with_queue(point, max_distance, &mut workspace.node_queue)
+                    {
+                        workspace.results.push(index);
+                    }
+                    return &workspace.results;
+                }
+
+                workspace.node_queue.clear();
+                self.collect_neighbors_with_queue(
+                    point,
+                    max_results,
+                    max_distance,
+                    &mut workspace.results,
+                    &mut workspace.queue,
+                );
+                &workspace.results
+            }
+
+            /// Exact nearest neighbors over caller-owned f64 boxes.
+            ///
+            /// The f32 tree is used as a lower-bound traversal index. `box_at` must
+            /// return the original box for the item index passed to it. Prefer f64
+            /// indexes for fastest exact KNN.
+            pub fn neighbors_exact<F>(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                box_at: F,
+            ) -> Vec<usize>
+            where
+                F: FnMut(usize) -> Box3D,
+            {
+                self.neighbors_exact_within(point, max_results, f64::INFINITY, box_at)
+            }
+
+            /// Exact nearest neighbors within `max_distance` over caller-owned f64 boxes.
+            pub fn neighbors_exact_within<F>(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                max_distance: f64,
+                box_at: F,
+            ) -> Vec<usize>
+            where
+                F: FnMut(usize) -> Box3D,
+            {
+                let mut results = Vec::new();
+                self.neighbors_exact_into(point, max_results, max_distance, box_at, &mut results);
+                results
+            }
+
+            /// Exact nearest-neighbor search with a reusable result buffer.
+            pub fn neighbors_exact_into<F>(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                max_distance: f64,
+                box_at: F,
+                results: &mut Vec<usize>,
+            ) where
+                F: FnMut(usize) -> Box3D,
+            {
+                let mut frontier = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+                let mut best = BinaryHeap::with_capacity(max_results);
+                self.collect_neighbors_refined_with_queue(
+                    point,
+                    max_results,
+                    max_distance,
+                    box_at,
+                    results,
+                    &mut frontier,
+                    &mut best,
+                );
+            }
+
+            /// Exact nearest-neighbor search with reusable result and queue buffers.
+            pub fn neighbors_exact_with<'a, F>(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                max_distance: f64,
+                box_at: F,
+                workspace: &'a mut NeighborWorkspace,
+            ) -> &'a [usize]
+            where
+                F: FnMut(usize) -> Box3D,
+            {
+                self.collect_neighbors_refined_with_queue(
+                    point,
+                    max_results,
+                    max_distance,
+                    box_at,
+                    &mut workspace.results,
+                    &mut workspace.queue,
+                    &mut workspace.exact_queue,
+                );
+                &workspace.results
+            }
+
+            /// Visit rounded-box nearest items in nondecreasing squared-distance order.
+            pub fn visit_neighbors<B, F>(
+                &self,
+                point: Point3D,
+                max_distance: f64,
+                mut visitor: F,
+            ) -> ControlFlow<B>
+            where
+                F: FnMut(usize, f64) -> ControlFlow<B>,
+            {
+                let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+                self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
+            }
+
+            fn collect_neighbors_with_queue(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                max_distance: f64,
+                results: &mut Vec<usize>,
+                queue: &mut BinaryHeap<NeighborState>,
+            ) {
+                crate::neighbors::collect_neighbors(
+                    self.min_xs.len(),
+                    self.num_items,
+                    self.node_size,
+                    &self.level_bounds,
+                    &self.indices,
+                    max_results,
+                    max_distance,
+                    |pos| self.distance_squared_to(pos, point),
+                    results,
+                    queue,
+                );
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            fn collect_neighbors_refined_with_queue<F>(
+                &self,
+                point: Point3D,
+                max_results: usize,
+                max_distance: f64,
+                mut box_at: F,
+                results: &mut Vec<usize>,
+                frontier: &mut BinaryHeap<NeighborState>,
+                best: &mut BinaryHeap<ExactNeighborState>,
+            ) where
+                F: FnMut(usize) -> Box3D,
+            {
+                crate::neighbors::collect_neighbors_refined(
+                    self.min_xs.len(),
+                    self.num_items,
+                    self.node_size,
+                    &self.level_bounds,
+                    &self.indices,
+                    max_results,
+                    max_distance,
+                    |pos| self.distance_squared_to(pos, point),
+                    |index| distance_squared_to_box(point, box_at(index)),
+                    results,
+                    frontier,
+                    best,
+                );
+            }
+
+            fn nearest_one_with_queue(
+                &self,
+                point: Point3D,
+                max_distance: f64,
+                queue: &mut BinaryHeap<NeighborNodeState>,
+            ) -> Option<usize> {
+                crate::neighbors::nearest_one(
+                    self.min_xs.len(),
+                    self.num_items,
+                    self.node_size,
+                    &self.level_bounds,
+                    &self.indices,
+                    max_distance,
+                    |pos| self.distance_squared_to(pos, point),
+                    queue,
+                )
+            }
+
+            fn visit_neighbors_with_queue<B, F>(
+                &self,
+                point: Point3D,
+                max_distance: f64,
+                queue: &mut BinaryHeap<NeighborState>,
+                visitor: &mut F,
+            ) -> ControlFlow<B>
+            where
+                F: FnMut(usize, f64) -> ControlFlow<B>,
+            {
+                crate::neighbors::visit_neighbors(
+                    self.min_xs.len(),
+                    self.num_items,
+                    self.node_size,
+                    &self.level_bounds,
+                    &self.indices,
+                    max_distance,
+                    |pos| self.distance_squared_to(pos, point),
+                    queue,
+                    visitor,
+                )
+            }
+
+            #[inline]
+            fn distance_squared_to(&self, pos: usize, point: Point3D) -> f64 {
+                let dx = axis_distance(point.x, self.min_xs[pos] as f64, self.max_xs[pos] as f64);
+                let dy = axis_distance(point.y, self.min_ys[pos] as f64, self.max_ys[pos] as f64);
+                let dz = axis_distance(point.z, self.min_zs[pos] as f64, self.max_zs[pos] as f64);
+                dx * dx + dy * dy + dz * dz
+            }
+        }
+    };
+}
+
+impl_index3d_f32_point_knn!(Index3DF32);
+#[cfg(feature = "simd")]
+impl_index3d_f32_point_knn!(SimdIndex3DF32);
+
 #[cfg(feature = "simd")]
 impl SimdIndex3DF32 {
     /// Build the SIMD frontend by moving the columns out of the native f32 build.
@@ -584,176 +883,6 @@ impl SimdIndex3DF32 {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
-    }
-
-    /// Up to `max_results` item indices nearest to `point` by rounded f32 boxes.
-    ///
-    /// Distances use the outward-rounded f32 boxes (lower bounds of the exact
-    /// f64 distances). Use [`neighbors_exact`](Self::neighbors_exact) when
-    /// you need exact nearest neighbors over your original f64 boxes.
-    pub fn neighbors(&self, point: Point3D, max_results: usize) -> Vec<usize> {
-        self.neighbors_within(point, max_results, f64::INFINITY)
-    }
-
-    /// Up to `max_results` rounded-box nearest items within `max_distance`.
-    pub fn neighbors_within(
-        &self,
-        point: Point3D,
-        max_results: usize,
-        max_distance: f64,
-    ) -> Vec<usize> {
-        let mut results = Vec::new();
-        self.neighbors_into(point, max_results, max_distance, &mut results);
-        results
-    }
-
-    /// Rounded-box nearest-neighbor search with a reusable result buffer.
-    pub fn neighbors_into(
-        &self,
-        point: Point3D,
-        max_results: usize,
-        max_distance: f64,
-        results: &mut Vec<usize>,
-    ) {
-        results.clear();
-        if max_results == 0 {
-            return;
-        }
-        if max_results == 1 {
-            let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-            if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
-                results.push(index);
-            }
-            return;
-        }
-
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(point, max_results, max_distance, results, &mut queue);
-    }
-
-    /// Rounded-box nearest-neighbor search with reusable result and queue buffers.
-    pub fn neighbors_with<'a>(
-        &self,
-        point: Point3D,
-        max_results: usize,
-        max_distance: f64,
-        workspace: &'a mut NeighborWorkspace,
-    ) -> &'a [usize] {
-        workspace.results.clear();
-        if max_results == 0 {
-            workspace.queue.clear();
-            workspace.node_queue.clear();
-            return &workspace.results;
-        }
-        if max_results == 1 {
-            workspace.queue.clear();
-            if let Some(index) =
-                self.nearest_one_with_queue(point, max_distance, &mut workspace.node_queue)
-            {
-                workspace.results.push(index);
-            }
-            return &workspace.results;
-        }
-
-        workspace.node_queue.clear();
-        self.collect_neighbors_with_queue(
-            point,
-            max_results,
-            max_distance,
-            &mut workspace.results,
-            &mut workspace.queue,
-        );
-        &workspace.results
-    }
-
-    /// Exact nearest neighbors over caller-owned f64 boxes.
-    ///
-    /// The f32 tree is used as a lower-bound traversal index. `box_at` must
-    /// return the original box for the item index passed to it. Prefer f64
-    /// indexes for fastest exact KNN.
-    pub fn neighbors_exact<F>(&self, point: Point3D, max_results: usize, box_at: F) -> Vec<usize>
-    where
-        F: FnMut(usize) -> Box3D,
-    {
-        self.neighbors_exact_within(point, max_results, f64::INFINITY, box_at)
-    }
-
-    /// Exact nearest neighbors within `max_distance` over caller-owned f64 boxes.
-    pub fn neighbors_exact_within<F>(
-        &self,
-        point: Point3D,
-        max_results: usize,
-        max_distance: f64,
-        box_at: F,
-    ) -> Vec<usize>
-    where
-        F: FnMut(usize) -> Box3D,
-    {
-        let mut results = Vec::new();
-        self.neighbors_exact_into(point, max_results, max_distance, box_at, &mut results);
-        results
-    }
-
-    /// Exact nearest-neighbor search with a reusable result buffer.
-    pub fn neighbors_exact_into<F>(
-        &self,
-        point: Point3D,
-        max_results: usize,
-        max_distance: f64,
-        box_at: F,
-        results: &mut Vec<usize>,
-    ) where
-        F: FnMut(usize) -> Box3D,
-    {
-        let mut frontier = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        let mut best = BinaryHeap::with_capacity(max_results);
-        self.collect_neighbors_refined_with_queue(
-            point,
-            max_results,
-            max_distance,
-            box_at,
-            results,
-            &mut frontier,
-            &mut best,
-        );
-    }
-
-    /// Exact nearest-neighbor search with reusable result and queue buffers.
-    pub fn neighbors_exact_with<'a, F>(
-        &self,
-        point: Point3D,
-        max_results: usize,
-        max_distance: f64,
-        box_at: F,
-        workspace: &'a mut NeighborWorkspace,
-    ) -> &'a [usize]
-    where
-        F: FnMut(usize) -> Box3D,
-    {
-        self.collect_neighbors_refined_with_queue(
-            point,
-            max_results,
-            max_distance,
-            box_at,
-            &mut workspace.results,
-            &mut workspace.queue,
-            &mut workspace.exact_queue,
-        );
-        &workspace.results
-    }
-
-    /// Visit rounded-box nearest items in nondecreasing squared-distance order.
-    pub fn visit_neighbors<B, F>(
-        &self,
-        point: Point3D,
-        max_distance: f64,
-        mut visitor: F,
-    ) -> ControlFlow<B>
-    where
-        F: FnMut(usize, f64) -> ControlFlow<B>,
-    {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(point, max_distance, &mut queue, &mut visitor)
     }
 
     /// Visit rounded-box hits without collecting a result `Vec`.
@@ -1355,226 +1484,8 @@ impl SimdIndex3DF32 {
             }
         }
     }
-
-    fn collect_neighbors_with_queue(
-        &self,
-        point: Point3D,
-        max_results: usize,
-        max_distance: f64,
-        results: &mut Vec<usize>,
-        queue: &mut BinaryHeap<NeighborState>,
-    ) {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return;
-        };
-        if self.num_items == 0 {
-            return;
-        }
-
-        let mut node_index = self.min_xs.len() - 1;
-        loop {
-            let upper = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return;
-                }
-                if state.is_leaf {
-                    results.push(state.index);
-                    if results.len() == max_results {
-                        return;
-                    }
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-
-            if !continue_search {
-                return;
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn collect_neighbors_refined_with_queue<F>(
-        &self,
-        point: Point3D,
-        max_results: usize,
-        max_distance: f64,
-        mut box_at: F,
-        results: &mut Vec<usize>,
-        frontier: &mut BinaryHeap<NeighborState>,
-        best: &mut BinaryHeap<ExactNeighborState>,
-    ) where
-        F: FnMut(usize) -> Box3D,
-    {
-        results.clear();
-        frontier.clear();
-        best.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return;
-        };
-        if self.num_items == 0 || max_results == 0 {
-            return;
-        }
-
-        let root = self.min_xs.len() - 1;
-        let root_dist = self.distance_squared_to(root, point);
-        if root_dist > max_dist_sq {
-            return;
-        }
-        frontier.push(NeighborState::new(root, false, root_dist));
-
-        let mut cutoff = max_dist_sq;
-        while let Some(state) = frontier.pop() {
-            if state.dist > cutoff {
-                break;
-            }
-            if state.is_leaf {
-                let exact_dist = distance_squared_to_box(point, box_at(state.index));
-                if exact_dist <= max_dist_sq {
-                    push_exact_neighbor(best, max_results, state.index, exact_dist);
-                    if best.len() == max_results {
-                        cutoff = best.peek().map_or(max_dist_sq, |worst| worst.dist);
-                    }
-                }
-                continue;
-            }
-
-            let upper = upper_bound_level(&self.level_bounds, state.index);
-            let end = (state.index + self.node_size).min(self.level_bounds[upper]);
-            let is_leaf = state.index < self.num_items;
-            for pos in state.index..end {
-                let dist = self.distance_squared_to(pos, point);
-                if dist <= cutoff {
-                    frontier.push(NeighborState::new(self.indices[pos], is_leaf, dist));
-                }
-            }
-        }
-
-        write_exact_results(results, best);
-    }
-
-    fn nearest_one_with_queue(
-        &self,
-        point: Point3D,
-        max_distance: f64,
-        queue: &mut BinaryHeap<NeighborNodeState>,
-    ) -> Option<usize> {
-        queue.clear();
-        let mut best_dist = max_distance_squared(max_distance)?;
-        if self.num_items == 0 {
-            return None;
-        }
-
-        let mut best_index = None;
-        let mut node_index = self.min_xs.len() - 1;
-        loop {
-            let upper = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
-                if dist > best_dist {
-                    continue;
-                }
-                if is_leaf {
-                    if dist == 0.0 {
-                        return Some(self.indices[pos]);
-                    }
-                    best_dist = dist;
-                    best_index = Some(self.indices[pos]);
-                } else {
-                    queue.push(NeighborNodeState::new(self.indices[pos], dist));
-                }
-            }
-
-            match queue.pop() {
-                Some(state) if state.dist <= best_dist => node_index = state.index,
-                _ => return best_index,
-            }
-        }
-    }
-
-    fn visit_neighbors_with_queue<B, F>(
-        &self,
-        point: Point3D,
-        max_distance: f64,
-        queue: &mut BinaryHeap<NeighborState>,
-        visitor: &mut F,
-    ) -> ControlFlow<B>
-    where
-        F: FnMut(usize, f64) -> ControlFlow<B>,
-    {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return ControlFlow::Continue(());
-        };
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.min_xs.len() - 1;
-        loop {
-            let upper = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = self.distance_squared_to(pos, point);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return ControlFlow::Continue(());
-                }
-                if state.is_leaf {
-                    visitor(state.index, state.dist)?;
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-
-            if !continue_search {
-                return ControlFlow::Continue(());
-            }
-        }
-    }
-
-    #[inline]
-    fn distance_squared_to(&self, pos: usize, point: Point3D) -> f64 {
-        let dx = axis_distance(point.x, self.min_xs[pos] as f64, self.max_xs[pos] as f64);
-        let dy = axis_distance(point.y, self.min_ys[pos] as f64, self.max_ys[pos] as f64);
-        let dz = axis_distance(point.z, self.min_zs[pos] as f64, self.max_zs[pos] as f64);
-        dx * dx + dy * dy + dz * dz
-    }
 }
 
-#[cfg(feature = "simd")]
 #[inline]
 fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
     if point < min {
@@ -1586,40 +1497,12 @@ fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
     }
 }
 
-#[cfg(feature = "simd")]
 #[inline]
 fn distance_squared_to_box(point: Point3D, b: Box3D) -> f64 {
     let dx = axis_distance(point.x, b.min_x, b.max_x);
     let dy = axis_distance(point.y, b.min_y, b.max_y);
     let dz = axis_distance(point.z, b.min_z, b.max_z);
     dx * dx + dy * dy + dz * dz
-}
-
-#[cfg(feature = "simd")]
-#[inline]
-fn push_exact_neighbor(
-    best: &mut BinaryHeap<ExactNeighborState>,
-    max_results: usize,
-    index: usize,
-    dist: f64,
-) {
-    let state = ExactNeighborState::new(index, dist);
-    if best.len() < max_results {
-        best.push(state);
-    } else if best.peek().is_some_and(|worst| state < *worst) {
-        *best.peek_mut().unwrap() = state;
-    }
-}
-
-#[cfg(feature = "simd")]
-fn write_exact_results(results: &mut Vec<usize>, best: &mut BinaryHeap<ExactNeighborState>) {
-    let mut ordered: Vec<_> = best.drain().collect();
-    ordered.sort_by(|a, b| {
-        a.dist
-            .total_cmp(&b.dist)
-            .then_with(|| a.index.cmp(&b.index))
-    });
-    results.extend(ordered.into_iter().map(|state| state.index));
 }
 
 /// Zero-copy read-only view over bytes produced by [`SimdIndex3DF32::to_bytes`].
@@ -2244,7 +2127,12 @@ impl<'a> SimdIndex3DF32View<'a> {
             if state.is_leaf {
                 let exact_dist = distance_squared_to_box(point, box_at(state.index));
                 if exact_dist <= max_dist_sq {
-                    push_exact_neighbor(best, max_results, state.index, exact_dist);
+                    crate::neighbors::push_exact_neighbor(
+                        best,
+                        max_results,
+                        state.index,
+                        exact_dist,
+                    );
                     if best.len() == max_results {
                         cutoff = best.peek().map_or(max_dist_sq, |worst| worst.dist);
                     }
@@ -2263,7 +2151,7 @@ impl<'a> SimdIndex3DF32View<'a> {
             }
         }
 
-        write_exact_results(results, best);
+        crate::neighbors::write_exact_results(results, best);
     }
 
     fn nearest_one_with_queue(

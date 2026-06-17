@@ -46,6 +46,48 @@ fn build_both(
 }
 
 #[test]
+fn scalar_f32_neighbors_exact_matches_f64_and_simd() {
+    let bs = boxes(0x77AB, 5_000);
+    let mut b1 = Index3DBuilder::new(bs.len()).node_size(16);
+    let mut b2 = Index3DBuilder::new(bs.len()).node_size(16);
+    for &b in &bs {
+        b1.add(b);
+        b2.add(b);
+    }
+    let f64_index = b1.finish().unwrap();
+    let scalar: Index3DF32 = b2.finish_f32().unwrap();
+    #[cfg(feature = "simd")]
+    let simd = {
+        let mut bsim = Index3DBuilder::new(bs.len()).node_size(16);
+        for &b in &bs {
+            bsim.add(b);
+        }
+        bsim.finish_simd_f32().unwrap()
+    };
+
+    let mut q = StdRng::seed_from_u64(0x9191);
+    for _ in 0..150 {
+        let p = Point3D::new(
+            q.random_range(0.0..1000.0),
+            q.random_range(0.0..1000.0),
+            q.random_range(0.0..1000.0),
+        );
+        let exact: HashSet<usize> = scalar
+            .neighbors_exact(p, 5, |i| bs[i])
+            .into_iter()
+            .collect();
+        let f64n: HashSet<usize> = f64_index.neighbors(p, 5).into_iter().collect();
+        assert_eq!(
+            exact, f64n,
+            "scalar f32 exact kNN must match f64 kNN at {p:?}"
+        );
+        assert_eq!(scalar.neighbors(p, 5).len(), 5);
+        #[cfg(feature = "simd")]
+        assert_eq!(scalar.neighbors(p, 5), simd.neighbors(p, 5));
+    }
+}
+
+#[test]
 fn search_is_a_conservative_superset() {
     let (f64_index, f32_index) = build_both(0xF32A, 20_000);
     assert_eq!(f32_index.num_items(), 20_000);

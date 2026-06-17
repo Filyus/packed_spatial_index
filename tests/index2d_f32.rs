@@ -35,6 +35,60 @@ fn build_both(
 }
 
 #[test]
+fn scalar_f32_neighbors_exact_matches_f64_and_simd() {
+    use packed_spatial_index::{Index2DF32, Point2D};
+    let mut rng = StdRng::seed_from_u64(0x77AA);
+    let n = 5_000;
+    let mut boxes = Vec::with_capacity(n);
+    let mut b1 = Index2DBuilder::new(n).node_size(16);
+    let mut b2 = Index2DBuilder::new(n).node_size(16);
+    for _ in 0..n {
+        let x = rng.random_range(0.0..1000.0f64);
+        let y = rng.random_range(0.0..1000.0);
+        let bx = Box2D::new(
+            x,
+            y,
+            x + rng.random_range(0.1..8.0),
+            y + rng.random_range(0.1..8.0),
+        );
+        boxes.push(bx);
+        b1.add(bx);
+        b2.add(bx);
+    }
+    let f64_index = b1.finish().unwrap();
+    let scalar: Index2DF32 = b2.finish_f32().unwrap();
+    #[cfg(feature = "simd")]
+    let simd = {
+        let mut bs = Index2DBuilder::new(n).node_size(16);
+        for &bx in &boxes {
+            bs.add(bx);
+        }
+        bs.finish_simd_f32().unwrap()
+    };
+
+    let mut q = StdRng::seed_from_u64(0x9090);
+    for _ in 0..150 {
+        let p = Point2D::new(q.random_range(0.0..1000.0), q.random_range(0.0..1000.0));
+        // Exact f32-refined kNN equals the f64 index's kNN (set-equal; ties are
+        // vanishingly rare with random float gap distances).
+        let exact: HashSet<usize> = scalar
+            .neighbors_exact(p, 5, |i| boxes[i])
+            .into_iter()
+            .collect();
+        let f64n: HashSet<usize> = f64_index.neighbors(p, 5).into_iter().collect();
+        assert_eq!(
+            exact, f64n,
+            "scalar f32 exact kNN must match f64 kNN at {p:?}"
+        );
+        // Conservative kNN returns k results.
+        assert_eq!(scalar.neighbors(p, 5).len(), 5);
+        // The scalar and SIMD f32 indexes are field-identical, so kNN is identical.
+        #[cfg(feature = "simd")]
+        assert_eq!(scalar.neighbors(p, 5), simd.neighbors(p, 5));
+    }
+}
+
+#[test]
 fn search_is_a_conservative_superset() {
     let (f64_index, f32_index) = build_both(0x2F32, 20_000);
     assert_eq!(f32_index.num_items(), 20_000);

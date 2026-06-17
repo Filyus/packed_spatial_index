@@ -42,9 +42,10 @@ use crate::persistence::{
 /// above the leaves for indexes into the millions of items.
 const DIRECTORY_NODE_BUDGET: usize = 8192;
 
-/// When streaming a level, node records whose byte gap is no larger than this
-/// are fetched in a single read. Coalescing trades a little re-read for far
-/// fewer round trips, which dominates on high-latency (e.g. HTTP) sources.
+/// Default for [`StreamLimits::coalesce_gap_bytes`]: records whose byte gap is no
+/// larger than this are fetched in a single read. Coalescing trades a little
+/// re-read for far fewer round trips, which dominates on high-latency (e.g. HTTP)
+/// sources. A caller on a remote source can raise the limit to collapse more.
 const COALESCE_GAP_BYTES: u64 = 4096;
 
 /// A source of bytes addressable by absolute offset.
@@ -230,6 +231,13 @@ pub struct StreamLimits {
     /// Read once at `open`; ignored by `from_directory` and by per-query cost
     /// checks.
     pub directory_budget_bytes: Option<u64>,
+    /// Max byte gap between two records (tree nodes or payload blobs) still
+    /// fetched in one read. `None` keeps the small built-in default. Raising it
+    /// over-reads the gaps to collapse round-trips, which dominates latency on a
+    /// remote source: a wider window is a strong win there and pure waste on a
+    /// local file. Bounded by `max_read_bytes`, so a broad query still aborts
+    /// rather than over-reading unbounded.
+    pub coalesce_gap_bytes: Option<u64>,
 }
 
 /// Running per-query cost counters checked against [`StreamLimits`].
@@ -411,6 +419,12 @@ impl<R> StreamCore<R> {
     /// both sync and async readers.
     fn has_payload(&self) -> bool {
         self.payload.is_some()
+    }
+
+    /// Byte gap below which records coalesce into one read (the caller's
+    /// [`StreamLimits::coalesce_gap_bytes`] or the built-in default).
+    fn coalesce_gap(&self) -> u64 {
+        self.limits.coalesce_gap_bytes.unwrap_or(COALESCE_GAP_BYTES)
     }
 
     /// Split off the reader, keeping the reusable directory. No I/O.
@@ -668,7 +682,15 @@ impl<R: RangeReader> StreamCore<R> {
         scratch: &mut Vec<u8>,
         budget: &mut Budget,
     ) -> Result<(), StreamError> {
-        let runs = plan_gather(positions, section0, stride, self.dir_node_start, cache, out);
+        let runs = plan_gather(
+            positions,
+            section0,
+            stride,
+            self.dir_node_start,
+            cache,
+            out,
+            self.coalesce_gap(),
+        );
         for run in &runs {
             budget.charge_read(run.len)?;
             scratch.clear();
@@ -835,7 +857,7 @@ impl<R: RangeReader> StreamCore<R> {
     {
         let mut j = 0;
         while j < leaf_positions.len() {
-            let k = payload_run_end(leaf_positions, j);
+            let k = payload_run_end(leaf_positions, j, self.coalesce_gap());
             let lo = leaf_positions[j];
             let hi = leaf_positions[k];
 
@@ -891,7 +913,7 @@ impl<R: RangeReader> StreamCore<R> {
         let stride = section.stride as usize;
         let mut j = 0;
         while j < leaf_positions.len() {
-            let k = payload_run_end_fixed(leaf_positions, j, stride);
+            let k = payload_run_end_fixed(leaf_positions, j, stride, self.coalesce_gap());
             let lo = leaf_positions[j];
             let hi = leaf_positions[k];
             let span = (hi + 1 - lo) * stride;
@@ -949,6 +971,7 @@ fn plan_gather(
     dir_node_start: usize,
     cache: &[u8],
     out: &mut Vec<u8>,
+    max_gap: u64,
 ) -> Vec<GatherRun> {
     // The coalescing below (and the unchecked record reads its callers do into
     // `out`) assume positions are strictly ascending: `expand_frontier` sorts and
@@ -979,7 +1002,7 @@ fn plan_gather(
         while k + 1 < streamed.len() {
             let next_pos = streamed[k + 1].1;
             let gap = (next_pos - end_pos) as u64 * stride as u64;
-            if gap > COALESCE_GAP_BYTES {
+            if gap > max_gap {
                 break;
             }
             k += 1;
@@ -1043,11 +1066,11 @@ fn expand_frontier(
 
 /// Index of the last leaf position coalesced into the run starting at `j` (leaf
 /// positions whose offset-table byte gap is within budget read together).
-fn payload_run_end(leaf_positions: &[usize], j: usize) -> usize {
+fn payload_run_end(leaf_positions: &[usize], j: usize, max_gap: u64) -> usize {
     let mut k = j;
     while k + 1 < leaf_positions.len() {
         let gap = (leaf_positions[k + 1] - leaf_positions[k]) as u64 * 8;
-        if gap > COALESCE_GAP_BYTES {
+        if gap > max_gap {
             break;
         }
         k += 1;
@@ -1114,11 +1137,11 @@ fn emit_run_payloads<F: FnMut(usize, &[u8])>(
 
 /// Last leaf position coalesced into a fixed-width run starting at `j`: leaf
 /// positions whose blob byte gap (`gap * stride`) is within budget read together.
-fn payload_run_end_fixed(leaf_positions: &[usize], j: usize, stride: usize) -> usize {
+fn payload_run_end_fixed(leaf_positions: &[usize], j: usize, stride: usize, max_gap: u64) -> usize {
     let mut k = j;
     while k + 1 < leaf_positions.len() {
         let gap = (leaf_positions[k + 1] - leaf_positions[k]) as u64 * stride as u64;
-        if gap > COALESCE_GAP_BYTES {
+        if gap > max_gap {
             break;
         }
         k += 1;
@@ -2029,7 +2052,15 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         out: &mut Vec<u8>,
         budget: &mut Budget,
     ) -> Result<(), StreamError> {
-        let runs = plan_gather(positions, section0, stride, self.dir_node_start, cache, out);
+        let runs = plan_gather(
+            positions,
+            section0,
+            stride,
+            self.dir_node_start,
+            cache,
+            out,
+            self.coalesce_gap(),
+        );
         for run in &runs {
             budget.charge_read(run.len)?;
         }
@@ -2064,7 +2095,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         let mut runs: Vec<(usize, usize)> = Vec::new();
         let mut j = 0;
         while j < leaf_positions.len() {
-            let k = payload_run_end(leaf_positions, j);
+            let k = payload_run_end(leaf_positions, j, self.coalesce_gap());
             runs.push((j, k));
             j = k + 1;
         }
@@ -2154,7 +2185,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         let mut runs: Vec<(usize, usize)> = Vec::new();
         let mut j = 0;
         while j < leaf_positions.len() {
-            let k = payload_run_end_fixed(leaf_positions, j, stride);
+            let k = payload_run_end_fixed(leaf_positions, j, stride, self.coalesce_gap());
             runs.push((j, k));
             j = k + 1;
         }
@@ -2669,6 +2700,53 @@ mod tests {
         assert!(
             big_reads < default_reads,
             "bigger directory ({big_reads}) should read less per query than default ({default_reads})"
+        );
+    }
+
+    /// Boxes scattered across the extent (multiplicative hash), so a window
+    /// query's hits land on non-contiguous leaf runs — what makes a wider
+    /// coalesce gap merge reads. The diagonal `build_bytes` keeps hits
+    /// contiguous, which already coalesce into one run.
+    fn build_scattered_bytes(n: usize) -> Vec<u8> {
+        let mut b = Index2DBuilder::new(n).node_size(16);
+        for i in 0..n {
+            let x = (i.wrapping_mul(2_654_435_761) % 1000) as f64;
+            let y = (i.wrapping_mul(40_503) % 1000) as f64;
+            b.add(Box2D::new(x, y, x + 2.0, y + 2.0));
+        }
+        b.finish().unwrap().to_bytes()
+    }
+
+    #[test]
+    fn larger_coalesce_gap_cuts_per_query_reads() {
+        let bytes = build_scattered_bytes(50_000);
+        let q = Box2D::new(0.0, 0.0, 200.0, 200.0);
+
+        let query_cost = |gap: Option<u64>| -> (usize, Vec<usize>) {
+            let limits = StreamLimits {
+                coalesce_gap_bytes: gap,
+                ..Default::default()
+            };
+            let idx = StreamIndex2D::open_with_limits(
+                CountingReader::new(SliceReader::new(bytes.clone())),
+                limits,
+            )
+            .unwrap();
+            let after_open = *idx.core.reader.reads.borrow();
+            let mut hits = idx.search(q).unwrap();
+            hits.sort_unstable();
+            let after_query = *idx.core.reader.reads.borrow();
+            (after_query - after_open, hits)
+        };
+
+        let (default_reads, default_hits) = query_cost(None);
+        let (wide_reads, wide_hits) = query_cost(Some(256 * 1024));
+
+        assert_eq!(default_hits, wide_hits, "gap must not change results");
+        assert!(default_reads > 0, "leaves should stream at this size");
+        assert!(
+            wide_reads < default_reads,
+            "wider gap ({wide_reads}) should read less than default ({default_reads})"
         );
     }
 

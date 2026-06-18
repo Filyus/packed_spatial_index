@@ -5,6 +5,18 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.14.0](https://github.com/Filyus/packed_spatial_index/compare/v0.13.0...v0.14.0) - 2026-06-19
+
+### 2D
+- Add the 2D region queries to the zero-copy `Index2DView`: `search_triangle` /
+  `search_polygon` (plus `_into` / `any_*` / `visit_*`), so triangle and
+  convex-polygon culling run straight over serialized bytes without an owned
+  index.
+
+### 3D
+- Add `search_frustum` (plus `_into` / `any_frustum` / `visit_frustum`) to the
+  zero-copy `Index3DView`, for frustum culling directly over serialized bytes.
+
 ## [0.13.0](https://github.com/Filyus/packed_spatial_index/compare/v0.12.0...v0.13.0) - 2026-06-18
 
 ### 2D

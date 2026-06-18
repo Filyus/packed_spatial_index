@@ -5,6 +5,21 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.12.0](https://github.com/Filyus/packed_spatial_index/compare/v0.11.0...v0.12.0) - 2026-06-18
+
+### 3D
+- Add 3D frustum culling queries to `Index3D`: `search_frustum` /
+  `search_frustum_into` (collect), `any_frustum` (boolean, short-circuits), and
+  `visit_frustum` (fold without collecting). Build a `Frustum3D` from six
+  inward-pointing planes (`from_planes`) or from a row-major view-projection
+  matrix (`from_view_projection`, Gribb-Hartmann). The query is conservative: it
+  returns every box overlapping the frustum and may include a few just past an
+  edge or corner, but never drops a visible box. Far tighter than `search` over
+  the frustum's bounding box — roughly 2x-4x fewer boxes and 3x-14x faster in a
+  200k-box scene, since the slanted sides prune internal nodes and subtrees fully
+  inside the frustum are accepted whole. The predicates are public on `Frustum3D`:
+  `overlaps_box` and `contains_box`.
+
 ## [0.11.0](https://github.com/Filyus/packed_spatial_index/compare/v0.10.0...v0.11.0) - 2026-06-18
 
 ### 2D

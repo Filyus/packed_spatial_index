@@ -286,6 +286,25 @@ Benchmark coverage:
 - `raytriangle3d_bench` compares `closest_triangle` over `f64` vs compact `f32`
   triangle records.
 
+## Build flags
+
+The default `x86-64` target compiles SIMD at SSE2 width (128-bit). To get AVX2 /
+AVX-512 codegen, build with one of:
+
+```bash
+RUSTFLAGS="-C target-cpu=native"     # best for a binary you run on the build machine
+RUSTFLAGS="-C target-cpu=x86-64-v3"  # portable AVX2 baseline (all v3 CPUs)
+```
+
+`native` enables every feature of the building CPU but produces a **non-portable**
+binary (an older CPU can fault on a missing instruction); use the `x86-64-v3`
+microarchitecture level for binaries you distribute. Either widens the `wide`
+SIMD fallback and the scalar autovectorized loops by roughly **1.1–1.3×** on box
+queries. The explicit AVX-512 search / raycast kernels are already selected at
+runtime (`is_x86_feature_detected!`), so they fire regardless of this flag — the
+gain here is mainly for the non-AVX-512 SIMD path and the scalar index. (The WASM
+demo already passes `-Ctarget-feature=+simd128` for the same reason.)
+
 ## Reproducing
 
 ```bash

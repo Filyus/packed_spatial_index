@@ -63,7 +63,8 @@ Built for throughput on static geometry: fast builds, SIMD range / kNN / raycast
 (AVX2 / AVX-512), and reusable query buffers for tight loops. The
 [Performance](docs/performance.md) page has the full benchmarks against
 `static_aabb2d_index`, FlatGeobuf and the `bvh` crate, showing where it leads and
-where it doesn't.
+where it doesn't — plus [build flags](docs/performance.md#build-flags) for AVX2 /
+AVX-512 codegen (`-C target-cpu=native`).
 
 ## Queries at a glance
 

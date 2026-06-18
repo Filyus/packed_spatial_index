@@ -43,6 +43,11 @@ file; `search_iter` is the lazy iterator form of range search.
 | `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
 
+Region / culling queries are not a column above: 2D triangle and convex-polygon
+(`Index2D` / `Index2DView`) and 3D frustum (`Index3D` / `Index3DView`) are
+covered in their own sections below. They are f64-only and not on the SIMD, f32,
+or streaming frontends.
+
 The empty cells are intentional, not gaps to fill:
 
 - Streaming covers only range search (with payloads). kNN and raycast use a

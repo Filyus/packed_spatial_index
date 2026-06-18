@@ -2318,6 +2318,193 @@ impl<'a> Index2DView<'a> {
         }
     }
 
+    /// Item indices whose box overlaps the 2D triangle `tri`. The zero-copy view
+    /// counterpart of [`Index2D::search_triangle`].
+    pub fn search_triangle(&self, tri: Triangle2D) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_triangle_into(tri, &mut out);
+        out
+    }
+
+    /// [`search_triangle`](Self::search_triangle) into a reused buffer (cleared first).
+    pub fn search_triangle_into(&self, tri: Triangle2D, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_region_with_stack(
+            &mut stack,
+            |b| tri.overlaps_box(b),
+            |b| tri.contains_box(b),
+            |i| {
+                out.push(i);
+                ControlFlow::<()>::Continue(())
+            },
+        );
+    }
+
+    /// Whether any item's box overlaps `tri`, short-circuiting on the first hit.
+    pub fn any_triangle(&self, tri: Triangle2D) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_region_with_stack(
+            &mut stack,
+            |b| tri.overlaps_box(b),
+            |b| tri.contains_box(b),
+            |_| ControlFlow::Break(()),
+        )
+        .is_break()
+    }
+
+    /// Visit each item whose box overlaps `tri`; return [`ControlFlow::Break`] to stop early.
+    pub fn visit_triangle<B, F>(&self, tri: Triangle2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_region_with_stack(
+            &mut stack,
+            |b| tri.overlaps_box(b),
+            |b| tri.contains_box(b),
+            visitor,
+        )
+    }
+
+    /// Item indices whose box overlaps the convex polygon `poly`. The zero-copy
+    /// view counterpart of [`Index2D::search_polygon`].
+    pub fn search_polygon(&self, poly: &ConvexPolygon2D) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_polygon_into(poly, &mut out);
+        out
+    }
+
+    /// [`search_polygon`](Self::search_polygon) into a reused buffer (cleared first).
+    pub fn search_polygon_into(&self, poly: &ConvexPolygon2D, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_region_with_stack(
+            &mut stack,
+            |b| poly.overlaps_box(b),
+            |b| poly.contains_box(b),
+            |i| {
+                out.push(i);
+                ControlFlow::<()>::Continue(())
+            },
+        );
+    }
+
+    /// Whether any item's box overlaps `poly`, short-circuiting on the first hit.
+    pub fn any_polygon(&self, poly: &ConvexPolygon2D) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_region_with_stack(
+            &mut stack,
+            |b| poly.overlaps_box(b),
+            |b| poly.contains_box(b),
+            |_| ControlFlow::Break(()),
+        )
+        .is_break()
+    }
+
+    /// Visit each item whose box overlaps `poly`; return [`ControlFlow::Break`] to stop early.
+    pub fn visit_polygon<B, F>(&self, poly: &ConvexPolygon2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_region_with_stack(
+            &mut stack,
+            |b| poly.overlaps_box(b),
+            |b| poly.contains_box(b),
+            visitor,
+        )
+    }
+
+    /// Shared region traversal over the byte-backed tree, with the contained
+    /// fast path: `overlaps` prunes/leaf-tests, `contains` accepts whole subtrees.
+    fn visit_region_with_stack<B>(
+        &self,
+        stack: &mut Vec<usize>,
+        overlaps: impl Fn(Box2D) -> bool,
+        contains: impl Fn(Box2D) -> bool,
+        mut visitor: impl FnMut(usize) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+        const LEVEL_MASK: usize = !CONTAINED_FLAG;
+
+        let root = self.entry_at_unchecked(self.num_nodes - 1);
+        if contains(root) {
+            for pos in 0..self.num_items {
+                visitor(self.index_at_unchecked(pos))?;
+            }
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.num_nodes - 1;
+        let mut level = self.level_count - 1;
+        let mut contained = false;
+
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
+            let is_leaf = node_index < self.num_items;
+
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let leaf_end = if end < self.level_bound_unchecked(level) {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                for pos in start..leaf_end {
+                    visitor(self.index_at_unchecked(pos))?;
+                }
+            } else if is_leaf {
+                for pos in node_index..end {
+                    let b = self.entry_at_unchecked(pos);
+                    if !overlaps(b) {
+                        continue;
+                    }
+                    visitor(self.index_at_unchecked(pos))?;
+                }
+            } else {
+                let child_level = level - 1;
+                for pos in (node_index..end).rev() {
+                    let b = self.entry_at_unchecked(pos);
+                    if !overlaps(b) {
+                        continue;
+                    }
+                    stack.push(self.index_at_unchecked(pos));
+                    let encoded_level = if contains(b) {
+                        child_level | CONTAINED_FLAG
+                    } else {
+                        child_level
+                    };
+                    stack.push(encoded_level);
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded_level = stack.pop().unwrap();
+                level = encoded_level & LEVEL_MASK;
+                contained = (encoded_level & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    /// Leaf-section start of the subtree rooted at entry `index` on `level`.
+    #[inline]
+    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
+        while level > 0 {
+            index = self.index_at_unchecked(index);
+            level -= 1;
+        }
+        index
+    }
+
     fn visit_neighbors_with_queue<B, F>(
         &self,
         query: NeighborQuery2D,

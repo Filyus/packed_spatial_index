@@ -1872,6 +1872,145 @@ impl<'a> Index3DView<'a> {
         }
     }
 
+    /// Item indices whose box overlaps the view frustum `frustum`. The zero-copy
+    /// view counterpart of [`Index3D::search_frustum`] (conservative culling).
+    pub fn search_frustum(&self, frustum: Frustum3D) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_frustum_into(frustum, &mut out);
+        out
+    }
+
+    /// [`search_frustum`](Self::search_frustum) into a reused buffer (cleared first).
+    pub fn search_frustum_into(&self, frustum: Frustum3D, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_region_with_stack(
+            &mut stack,
+            |b| frustum.overlaps_box(b),
+            |b| frustum.contains_box(b),
+            |i| {
+                out.push(i);
+                ControlFlow::<()>::Continue(())
+            },
+        );
+    }
+
+    /// Whether any item's box overlaps `frustum`, short-circuiting (conservative).
+    pub fn any_frustum(&self, frustum: Frustum3D) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_region_with_stack(
+            &mut stack,
+            |b| frustum.overlaps_box(b),
+            |b| frustum.contains_box(b),
+            |_| ControlFlow::Break(()),
+        )
+        .is_break()
+    }
+
+    /// Visit each item whose box overlaps `frustum`; return [`ControlFlow::Break`]
+    /// to stop early (conservative).
+    pub fn visit_frustum<B, F>(&self, frustum: Frustum3D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_region_with_stack(
+            &mut stack,
+            |b| frustum.overlaps_box(b),
+            |b| frustum.contains_box(b),
+            visitor,
+        )
+    }
+
+    /// Shared region traversal over the byte-backed tree, with the contained
+    /// fast path: `overlaps` prunes/leaf-tests, `contains` accepts whole subtrees.
+    fn visit_region_with_stack<B>(
+        &self,
+        stack: &mut Vec<usize>,
+        overlaps: impl Fn(Box3D) -> bool,
+        contains: impl Fn(Box3D) -> bool,
+        mut visitor: impl FnMut(usize) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+        const LEVEL_MASK: usize = !CONTAINED_FLAG;
+
+        let root = self.entry_at_unchecked(self.num_nodes - 1);
+        if contains(root) {
+            for pos in 0..self.num_items {
+                visitor(self.index_at_unchecked(pos))?;
+            }
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.num_nodes - 1;
+        let mut level = self.level_count - 1;
+        let mut contained = false;
+
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
+            let is_leaf = node_index < self.num_items;
+
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let leaf_end = if end < self.level_bound_unchecked(level) {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                for pos in start..leaf_end {
+                    visitor(self.index_at_unchecked(pos))?;
+                }
+            } else if is_leaf {
+                for pos in node_index..end {
+                    let b = self.entry_at_unchecked(pos);
+                    if !overlaps(b) {
+                        continue;
+                    }
+                    visitor(self.index_at_unchecked(pos))?;
+                }
+            } else {
+                let child_level = level - 1;
+                for pos in (node_index..end).rev() {
+                    let b = self.entry_at_unchecked(pos);
+                    if !overlaps(b) {
+                        continue;
+                    }
+                    stack.push(self.index_at_unchecked(pos));
+                    let encoded_level = if contains(b) {
+                        child_level | CONTAINED_FLAG
+                    } else {
+                        child_level
+                    };
+                    stack.push(encoded_level);
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded_level = stack.pop().unwrap();
+                level = encoded_level & LEVEL_MASK;
+                contained = (encoded_level & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    /// Leaf-section start of the subtree rooted at entry `index` on `level`.
+    #[inline]
+    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
+        while level > 0 {
+            index = self.index_at_unchecked(index);
+            level -= 1;
+        }
+        index
+    }
+
     fn visit_neighbors_with_queue<B, F>(
         &self,
         query: NeighborQuery3D,

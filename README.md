@@ -85,7 +85,7 @@ buffer (`search_into` / `search_with`) or fold with `visit`. See the
 | Nearest neighbors (box) | [`neighbors_of_box`][neighbors_of_box], [`neighbors_of_box_within`][neighbors_of_box_within], [`neighbors_of_box_into`][neighbors_of_box_into], [`neighbors_of_box_with`][neighbors_of_box_with], [`visit_neighbors_of_box`][visit_neighbors_of_box] |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
 | Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
-| Region / culling | 2D on `Index2D`: triangle [`search_triangle`][search_triangle] / [`any_triangle`][any_triangle] / [`visit_triangle`][visit_triangle], convex polygon [`search_polygon`][search_polygon] / [`any_polygon`][any_polygon] / [`visit_polygon`][visit_polygon] (+`_into`). 3D frustum on `Index3D`: [`search_frustum`][search_frustum] / [`any_frustum`][any_frustum] / [`visit_frustum`][visit_frustum] (+`_into`) |
+| Region / culling | 2D on `Index2D` / `Index2DView`: triangle [`search_triangle`][search_triangle] / [`any_triangle`][any_triangle] / [`visit_triangle`][visit_triangle], convex polygon [`search_polygon`][search_polygon] / [`any_polygon`][any_polygon] / [`visit_polygon`][visit_polygon] (+`_into`). 3D frustum on `Index3D` / `Index3DView`: [`search_frustum`][search_frustum] / [`any_frustum`][any_frustum] / [`visit_frustum`][visit_frustum] (+`_into`) |
 | Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
 
 ```rust

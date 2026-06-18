@@ -84,7 +84,8 @@ of the bounding-box hits, and runs ~2.5×–5× faster than collect-then-filter 
 internal nodes are pruned with a cheap box-vs-bbox test, subtrees fully inside
 the triangle are accepted whole without per-item tests, and the full
 triangle-AABB separating-axis test runs only at boundary leaves. `any_triangle`
-is the exact-culling analogue of `any`.
+is the exact-culling analogue of `any`. The same methods are on the zero-copy
+`Index2DView`, so you can run triangle queries straight over serialized bytes.
 
 ## Query by a convex polygon (2D)
 
@@ -124,6 +125,7 @@ measured in a 200k-box field:
 
 For a triangle, `Triangle2D` + `search_triangle` is ~1.4x faster than a
 three-vertex polygon (fixed vertices, no per-edge loop) and returns the same set.
+`search_polygon` and friends are also on the zero-copy `Index2DView`.
 
 ## Frustum culling (3D)
 
@@ -157,7 +159,8 @@ Prefer it to `search` over the frustum's bounding box: in a 200k-box scene it
 returns ~2x-4x fewer boxes and runs ~3x-14x faster (the slanted sides prune
 internal nodes, and subtrees fully inside the frustum are accepted whole). It is
 also *more* correct than a hand-rolled bounding-box-plus-filter, which can miss
-boxes the conservative test accepts just outside the frustum's tight bbox.
+boxes the conservative test accepts just outside the frustum's tight bbox. The
+same methods are on the zero-copy `Index3DView`.
 
 ## Find boxes that contain a point
 

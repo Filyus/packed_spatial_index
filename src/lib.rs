@@ -34,7 +34,8 @@
 //!   2D triangle [`search_triangle`](Index2D::search_triangle) and convex polygon
 //!   [`search_polygon`](Index2D::search_polygon) on [`Index2D`], 3D view frustum
 //!   [`search_frustum`](Index3D::search_frustum) on [`Index3D`] (each with
-//!   `any_*` / `visit_*` / `_into`).
+//!   `any_*` / `visit_*` / `_into`, and on the zero-copy [`Index2DView`] /
+//!   [`Index3DView`]).
 //!
 //! # Quick Start
 //! ```

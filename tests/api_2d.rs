@@ -93,7 +93,7 @@ fn default_builder_uses_exported_node_size() {
 #[cfg(feature = "parallel")]
 #[test]
 fn default_parallel_threshold_is_exported() {
-    assert_eq!(DEFAULT_PARALLEL_MIN_ITEMS, 50_000);
+    assert_eq!(DEFAULT_PARALLEL_MIN_ITEMS, 32_000);
 }
 
 #[test]

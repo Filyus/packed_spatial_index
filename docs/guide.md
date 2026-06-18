@@ -22,10 +22,10 @@ Practical recipes and configuration. For the per-method API reference, see
   hits.
 - Scan, scalar index, or SIMD index? Measured crossovers (uniform 2D boxes, one
   machine — treat as orders of magnitude, not exact):
-  - **Below ~200 boxes**, a plain linear scan over your own `Box2D`s beats an
+  - **Below ~100–130 boxes**, a plain linear scan over your own `Box2D`s beats an
     index *per query* — the traversal's fixed overhead doesn't pay off yet.
   - **Building an index amortizes after ~50–120 queries** over the same box set
-    (for a few hundred boxes and up); for fewer queries than that, or under ~200
+    (for a few hundred boxes and up); for fewer queries than that, or under ~100
     boxes, just scan. Above the crossover the index pulls away fast — at 1M boxes
     it answers a window query ~30–50× faster than a scan.
   - **`SimdIndex*` over the scalar `Index*` is a modest ~1.2–1.3×** for range

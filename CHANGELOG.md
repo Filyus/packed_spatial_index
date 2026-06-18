@@ -5,6 +5,24 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.11.0](https://github.com/Filyus/packed_spatial_index/compare/v0.10.0...v0.11.0) - 2026-06-18
+
+### 2D
+- Add 2D triangle region queries to `Index2D`: `search_triangle` /
+  `search_triangle_into` (collect), `any_triangle` (boolean, short-circuits), and
+  `visit_triangle` (fold without collecting). They return the items whose box
+  overlaps the triangle's filled area — tighter than `search(tri.aabb())`, which
+  over-reports the bounding-box corners the triangle misses. The traversal prunes
+  internal nodes with a cheap box-vs-bbox test and accepts whole subtrees that lie
+  inside the triangle without per-item tests, so it is also *faster* than
+  collecting the bounding-box hits and filtering them by hand (roughly 2x-5x in a
+  200k-box field, with 2x-7x fewer false positives). The predicates are public on
+  `Triangle2D`: `overlaps_box` (separating-axis test) and `contains_box`.
+
+### Documentation
+- Move the API coverage matrix into the guide (`docs/guide.md`), where the full
+  width renders, and leave a pointer from the README.
+
 ## [0.10.0](https://github.com/Filyus/packed_spatial_index/compare/v0.9.0...v0.10.0) - 2026-06-18
 
 ### Nearest Neighbors

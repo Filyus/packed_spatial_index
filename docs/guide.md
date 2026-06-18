@@ -86,6 +86,40 @@ the triangle are accepted whole without per-item tests, and the full
 triangle-AABB separating-axis test runs only at boundary leaves. `any_triangle`
 is the exact-culling analogue of `any`.
 
+## Frustum culling (3D)
+
+`Index3D` answers a view-frustum query directly: `search_frustum` /
+`search_frustum_into` (collect), `any_frustum` (boolean, short-circuits), and
+`visit_frustum` (fold without collecting). Build a [`Frustum3D`] from six
+inward-pointing planes, or from a row-major view-projection matrix via
+`Frustum3D::from_view_projection` (column-major engines pass the transpose).
+
+```rust
+# use packed_spatial_index::{Index3DBuilder, Box3D, Frustum3D};
+# let mut b = Index3DBuilder::new(1);
+# b.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+# let index = b.finish()?;
+let identity = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+let frustum = Frustum3D::from_view_projection(identity); // the clip cube [-1,1]^3
+assert_eq!(index.search_frustum(frustum), vec![0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+The query is **conservative**: it returns every box inside or crossing the
+frustum and may include a few that lie just past an edge or corner (the standard
+p-vertex test), but never drops a visible box. That is what culling wants — an
+extra box is cheap to reject downstream; a missing one is a hole in the frame.
+Prefer it to `search` over the frustum's bounding box: in a 200k-box scene it
+returns ~2x-4x fewer boxes and runs ~3x-14x faster (the slanted sides prune
+internal nodes, and subtrees fully inside the frustum are accepted whole). It is
+also *more* correct than a hand-rolled bounding-box-plus-filter, which can miss
+boxes the conservative test accepts just outside the frustum's tight bbox.
+
 ## Find boxes that contain a point
 
 Search with a zero-size query box at the point. Box overlap is inclusive, so

@@ -1334,6 +1334,12 @@ impl SimdIndex3D {
                 self.extend_contained_leaf_indices(node_index, end, level, out);
             } else {
                 let child_level = if is_leaf { 0 } else { level - 1 };
+                // Reserve the whole node's worth of results up front so the
+                // compress-store below writes through a stable base pointer (no
+                // reallocation mid-node).
+                if is_leaf {
+                    out.reserve(end - node_index);
+                }
                 let mut pos = node_index;
                 while pos + 8 <= end {
                     // SAFETY: `pos + 8 <= end`, and `end` is bounded by the array length.
@@ -1355,10 +1361,17 @@ impl SimdIndex3D {
                     let m6 = _mm512_cmp_pd_mask::<_CMP_GE_OQ>(mxz, qmnz_v);
                     let mut bits: u8 = m1 & m2 & m3 & m4 & m5 & m6;
                     if is_leaf {
-                        while bits != 0 {
-                            let k = bits.trailing_zeros() as usize;
-                            out.push(self.indices[pos + k]);
-                            bits &= bits - 1;
+                        // VPCOMPRESSQ: pack the matching index lanes contiguously
+                        // into `out` in one instruction (capacity reserved above).
+                        // SAFETY: `pos + 8 <= end <= indices.len()`; `out` has at
+                        // least `end - node_index` slack reserved, so the store of
+                        // up to 8 elements past `len` stays in bounds.
+                        unsafe {
+                            let dst = out.as_mut_ptr().add(out.len()) as *mut i64;
+                            let vidx =
+                                _mm512_loadu_epi64(self.indices.as_ptr().add(pos) as *const i64);
+                            _mm512_mask_compressstoreu_epi64(dst, bits, vidx);
+                            out.set_len(out.len() + bits.count_ones() as usize);
                         }
                     } else {
                         // query contains child: qmin <= cmin && cmax <= qmax on all axes.

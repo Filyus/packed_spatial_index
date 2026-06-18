@@ -5,6 +5,25 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.13.0](https://github.com/Filyus/packed_spatial_index/compare/v0.12.0...v0.13.0) - 2026-06-18
+
+### 2D
+- Add 2D convex-polygon region queries to `Index2D`: `search_polygon` /
+  `search_polygon_into` (collect), `any_polygon` (boolean, short-circuits), and
+  `visit_polygon` (fold without collecting). Build a `ConvexPolygon2D` from
+  vertices in boundary order; a four-vertex polygon is a 2D view frustum / FOV
+  trapezoid, and any convex shape works. The N-gon generalization of the triangle
+  query, using the same exact separating-axis test (the box's two axes and the
+  polygon's edge normals), so the result is precisely the boxes the polygon's
+  filled area overlaps. Tighter than `search` over the polygon's bounding box —
+  roughly 1.5x fewer hits for a near-round polygon, up to ~4.6x for a narrow
+  trapezoid — and faster anyway (~2x for a round octagon, up to ~13x for a wide
+  trapezoid), since internal nodes are pruned and subtrees fully inside are
+  accepted whole instead of materializing the bounding-box result and filtering.
+  For a triangle, `Triangle2D` + `search_triangle` returns the same set and is a
+  touch faster. The predicates are public on `ConvexPolygon2D`: `overlaps_box`
+  and `contains_box`.
+
 ## [0.12.0](https://github.com/Filyus/packed_spatial_index/compare/v0.11.0...v0.12.0) - 2026-06-18
 
 ### 3D

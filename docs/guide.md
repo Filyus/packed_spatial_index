@@ -28,12 +28,13 @@ Practical recipes and configuration. For the per-method API reference, see
     (for a few hundred boxes and up); for fewer queries than that, or under ~100
     boxes, just scan. Above the crossover the index pulls away fast — at 1M boxes
     it answers a window query ~30–50× faster than a scan.
-  - **`SimdIndex*` over the scalar `Index*` is a modest ~1.2–1.3×** for range
-    search, not "bigger is always better": it ties the scalar index at very small
-    sizes and can even trail it at very large sizes with large result sets (the
-    SoA result collection costs more than the per-node SIMD test saves). Reach for
-    it when you want the SoA layout or are already on that path; don't expect a
-    large range-search win from SIMD alone.
+  - **`SimdIndex*` over the scalar `Index*`**: on an **AVX-512** CPU the search
+    runs ~**1.6–1.9×** faster on range queries across 100k–1M boxes (it collects
+    results with a masked compress-store, so the win holds even on broad,
+    high-result queries). On CPUs without AVX-512 the SIMD path uses a narrower
+    kernel and the gain is more modest (~1.2–1.3×); at very small sizes it ties
+    the scalar index. Build with `-C target-cpu=native` (see
+    [performance.md](performance.md#build-flags)) to enable the widest kernel.
 
 ## Coverage matrix
 

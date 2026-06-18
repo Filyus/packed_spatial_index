@@ -15,6 +15,9 @@ boxes into a Hilbert R-tree once, then run many queries over it with SIMD:
 - **nearest neighbors** (kNN) from a point or a box
 - **ray casts** (all hits or the closest)
 - **spatial joins** between two indexes
+- **region / culling** — 2D triangle and 3D view-frustum queries that prune to the
+  true shape: **~2–7× fewer hits and up to ~14× faster** than the bounding-box
+  workaround (synthetic 200k-box bench)
 
 Builds and SIMD searches run **faster** than comparable Rust indexes
 ([benchmarks](docs/performance.md)), and the same bytes load back as
@@ -82,6 +85,7 @@ buffer (`search_into` / `search_with`) or fold with `visit`. See the
 | Nearest neighbors (box) | [`neighbors_of_box`][neighbors_of_box], [`neighbors_of_box_within`][neighbors_of_box_within], [`neighbors_of_box_into`][neighbors_of_box_into], [`neighbors_of_box_with`][neighbors_of_box_with], [`visit_neighbors_of_box`][visit_neighbors_of_box] |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
 | Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
+| Region / culling | 2D triangle on `Index2D`: [`search_triangle`][search_triangle], [`search_triangle_into`][search_triangle_into], [`any_triangle`][any_triangle], [`visit_triangle`][visit_triangle]. 3D frustum on `Index3D`: [`search_frustum`][search_frustum], [`search_frustum_into`][search_frustum_into], [`any_frustum`][any_frustum], [`visit_frustum`][visit_frustum] |
 | Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
 
 ```rust
@@ -103,7 +107,9 @@ assert_eq!(hit, Some((0, 1.0)));
 
 - **Geometry**: [`Box2D`][Box2D], [`Box3D`][Box3D] (inclusive `overlaps` /
   `contains` / `contains_point` / `from_point`), [`Point2D`][Point2D],
-  [`Point3D`][Point3D], [`Ray2D`][Ray2D], [`Ray3D`][Ray3D].
+  [`Point3D`][Point3D], [`Ray2D`][Ray2D], [`Ray3D`][Ray3D],
+  [`Triangle2D`][Triangle2D] (2D region queries),
+  [`Frustum3D`][Frustum3D] (3D culling).
 - **Builders**: [`Index2DBuilder`][Index2DBuilder],
   [`Index3DBuilder`][Index3DBuilder] — [`finish`][finish] (scalar f64),
   [`finish_simd`][finish_simd] (SoA + SIMD), [`finish_f32`][finish_f32] (compact
@@ -279,6 +285,16 @@ Licensed under the Apache License, Version 2.0.
 [Point3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Point3D.html
 [Ray2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Ray2D.html
 [Ray3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Ray3D.html
+[Triangle2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Triangle2D.html
+[Frustum3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Frustum3D.html
+[search_triangle]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_triangle
+[search_triangle_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_triangle_into
+[any_triangle]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any_triangle
+[visit_triangle]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_triangle
+[search_frustum]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html#method.search_frustum
+[search_frustum_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html#method.search_frustum_into
+[any_frustum]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html#method.any_frustum
+[visit_frustum]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html#method.visit_frustum
 [Index2DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html
 [Index3DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DBuilder.html
 [Index2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html

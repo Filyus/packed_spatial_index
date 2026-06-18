@@ -30,6 +30,11 @@
 //!   [`join_with`](Index2D::join_with) between two indexes,
 //!   [`self_join`](Index2D::self_join) /
 //!   [`self_join_with`](Index2D::self_join_with) within one.
+//! * **Region / culling** — prune to a non-box shape instead of its bounding box:
+//!   2D triangle [`search_triangle`](Index2D::search_triangle) and convex polygon
+//!   [`search_polygon`](Index2D::search_polygon) on [`Index2D`], 3D view frustum
+//!   [`search_frustum`](Index3D::search_frustum) on [`Index3D`] (each with
+//!   `any_*` / `visit_*` / `_into`).
 //!
 //! # Quick Start
 //! ```
@@ -85,6 +90,7 @@ mod index3d_soa;
 mod join;
 mod neighbors;
 mod persistence;
+mod polygon;
 mod ray;
 mod sort2d;
 mod sort3d;
@@ -118,6 +124,7 @@ pub use index3d_f32::{SimdIndex3DF32, SimdIndex3DF32View};
 pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
 pub use neighbors::NeighborWorkspace;
 pub use persistence::{FileMetadata, LoadError, PayloadError, read_metadata};
+pub use polygon::ConvexPolygon2D;
 pub use ray::{Ray2D, Ray3D};
 pub use sort2d::SortKey2D;
 pub use sort3d::SortKey3D;

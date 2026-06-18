@@ -31,6 +31,7 @@ use crate::persistence::{
     LoadError, MetaFields, ParsedPayload, PayloadError, build_id_to_leaf, parse_index,
     payload_slice, read_f64_le_unchecked, read_u64_le_unchecked, write_index_container,
 };
+use crate::polygon::ConvexPolygon2D;
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 use crate::triangle::{Triangle2, Triangle2D, blobs_as_records, records_as_bytes};
@@ -814,6 +815,203 @@ impl Index2D {
                     } else {
                         stack.push(self.indices[pos]);
                         if tri.contains_box(b) {
+                            contained_subtrees += 1;
+                            stack.push((level - 1) | CONTAINED_FLAG);
+                        } else {
+                            stack.push(level - 1);
+                        }
+                    }
+                }
+            }
+            if stack.len() > 1 {
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return (results, visited, sat, contained_subtrees);
+            }
+        }
+    }
+
+    /// Item indices whose box overlaps the convex polygon `poly`.
+    ///
+    /// The N-gon generalization of [`search_triangle`](Self::search_triangle):
+    /// the exact box-vs-convex-polygon test rejects, during the traversal, the
+    /// bounding-box area the polygon misses. A four-vertex polygon is a 2D view
+    /// frustum / FOV trapezoid; any convex shape works. Subtrees fully inside the
+    /// polygon are accepted without per-item tests, so it stays faster than
+    /// collecting `search(poly_bbox)` and filtering by hand. For a triangle,
+    /// [`search_triangle`](Self::search_triangle) is a touch faster (fixed three
+    /// vertices, no per-edge loop).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Box2D, ConvexPolygon2D};
+    ///
+    /// let mut b = Index2DBuilder::new(2);
+    /// b.add(Box2D::new(1.0, 1.0, 2.0, 2.0));   // inside the trapezoid
+    /// b.add(Box2D::new(0.0, 5.0, 0.5, 5.5));   // in the bbox, past the narrow end
+    /// let index = b.finish()?;
+    ///
+    /// // A trapezoid (a 2D frustum): narrow near edge, wide far edge.
+    /// let trapezoid = ConvexPolygon2D::new(vec![
+    ///     [0.0, 0.0], [10.0, -4.0], [10.0, 8.0], [0.0, 3.0],
+    /// ]);
+    /// assert_eq!(index.search_polygon(&trapezoid), vec![0]);
+    /// # Ok::<(), packed_spatial_index::BuildError>(())
+    /// ```
+    pub fn search_polygon(&self, poly: &ConvexPolygon2D) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_polygon_into(poly, &mut out);
+        out
+    }
+
+    /// [`search_polygon`](Self::search_polygon) into a reused buffer (cleared first).
+    pub fn search_polygon_into(&self, poly: &ConvexPolygon2D, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_polygon_with_stack(poly, &mut stack, |i| {
+            out.push(i);
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
+    /// Whether any item's box overlaps `poly`, short-circuiting on the first hit.
+    pub fn any_polygon(&self, poly: &ConvexPolygon2D) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_polygon_with_stack(poly, &mut stack, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Visit each item whose box overlaps `poly`; return [`ControlFlow::Break`]
+    /// from `visitor` to stop early.
+    pub fn visit_polygon<B, F>(&self, poly: &ConvexPolygon2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_polygon_with_stack(poly, &mut stack, visitor)
+    }
+
+    fn visit_polygon_with_stack<B, F>(
+        &self,
+        poly: &ConvexPolygon2D,
+        stack: &mut Vec<usize>,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+        const LEVEL_MASK: usize = !CONTAINED_FLAG;
+
+        let root = self.entries[self.entries.len() - 1];
+        if poly.contains_box(root) {
+            for &index in &self.indices[..self.num_items] {
+                visitor(index)?;
+            }
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let node_entries = &self.entries[node_index..end];
+            let node_indices = &self.indices[node_index..end];
+
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let leaf_end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                for &index in &self.indices[start..leaf_end] {
+                    visitor(index)?;
+                }
+            } else if is_leaf {
+                for (b, &index) in node_entries.iter().zip(node_indices) {
+                    if !poly.overlaps_box(*b) {
+                        continue;
+                    }
+                    visitor(index)?;
+                }
+            } else {
+                let child_level = level - 1;
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !poly.overlaps_box(*b) {
+                        continue;
+                    }
+                    stack.push(index);
+                    let encoded_level = if poly.contains_box(*b) {
+                        child_level | CONTAINED_FLAG
+                    } else {
+                        child_level
+                    };
+                    stack.push(encoded_level);
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded_level = stack.pop().unwrap();
+                level = encoded_level & LEVEL_MASK;
+                contained = (encoded_level & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    /// Diagnostics for the polygon query: `(results, nodes_visited, sat_tests,
+    /// contained_subtrees)`.
+    #[doc(hidden)]
+    pub fn search_polygon_visited(&self, poly: &ConvexPolygon2D) -> (usize, usize, usize, usize) {
+        let (mut results, mut visited, mut sat, mut contained_subtrees) = (0, 0, 0, 0);
+        if self.num_items == 0 {
+            return (0, 0, 0, 0);
+        }
+        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+        const LEVEL_MASK: usize = !CONTAINED_FLAG;
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let leaf_end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                results += leaf_end - start;
+            } else {
+                for pos in node_index..end {
+                    visited += 1;
+                    sat += 1;
+                    let b = self.entries[pos];
+                    if !poly.overlaps_box(b) {
+                        continue;
+                    }
+                    if is_leaf {
+                        results += 1;
+                    } else {
+                        stack.push(self.indices[pos]);
+                        if poly.contains_box(b) {
                             contained_subtrees += 1;
                             stack.push((level - 1) | CONTAINED_FLAG);
                         } else {

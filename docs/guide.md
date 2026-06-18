@@ -86,6 +86,45 @@ the triangle are accepted whole without per-item tests, and the full
 triangle-AABB separating-axis test runs only at boundary leaves. `any_triangle`
 is the exact-culling analogue of `any`.
 
+## Query by a convex polygon (2D)
+
+`Index2D` also answers an arbitrary **convex polygon** region query — the N-gon
+generalization of the triangle query: `search_polygon` / `search_polygon_into`
+(collect), `any_polygon` (boolean, short-circuits), and `visit_polygon` (fold).
+A four-vertex polygon is a 2D view frustum / FOV trapezoid; any convex shape
+works.
+
+```rust
+# use packed_spatial_index::{Index2DBuilder, Box2D, ConvexPolygon2D};
+# let mut b = Index2DBuilder::new(2);
+# b.add(Box2D::new(1.0, 1.0, 2.0, 2.0));
+# b.add(Box2D::new(0.0, 5.0, 0.5, 5.5));
+# let index = b.finish()?;
+// A trapezoid: a 2D camera frustum seen from above.
+let trapezoid = ConvexPolygon2D::new(vec![
+    [0.0, 0.0], [10.0, -4.0], [10.0, 8.0], [0.0, 3.0],
+]);
+assert_eq!(index.search_polygon(&trapezoid), vec![0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+The test is exact (a separating-axis test over the box's two axes and the
+polygon's edge normals), so the result is precisely the boxes the polygon's
+filled area overlaps. Two wins over `search` on the polygon's bounding box,
+measured in a 200k-box field:
+
+- **Tighter:** ~1.5x fewer hits for a near-round polygon (hexagon/octagon), up to
+  ~4.6x for a narrow trapezoid — the win tracks how much slimmer the shape is
+  than its bounding box.
+- **Faster anyway:** `search_polygon` beats collecting `search(bbox)` and
+  filtering by hand by **~2.2x even for the round octagon** (its weakest
+  selectivity case) and up to **~13x for a wide trapezoid** — internal nodes are
+  pruned with the polygon test and subtrees fully inside are accepted whole,
+  instead of materializing the whole bounding-box result and filtering every box.
+
+For a triangle, `Triangle2D` + `search_triangle` is ~1.4x faster than a
+three-vertex polygon (fixed vertices, no per-edge loop) and returns the same set.
+
 ## Frustum culling (3D)
 
 `Index3D` answers a view-frustum query directly: `search_frustum` /

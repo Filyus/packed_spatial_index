@@ -110,6 +110,88 @@ macro_rules! tri2 {
 tri2!(Triangle2D, f64, 48);
 tri2!(Triangle2DF32, f32, 24);
 
+impl Triangle2D {
+    /// Whether this triangle's filled area overlaps the axis-aligned box `bx`.
+    ///
+    /// The 2D separating-axis test: the box's two axes plus the triangle's three
+    /// edge normals. This is the predicate behind `Index2D::search_triangle` /
+    /// `any_triangle` / `visit_triangle`.
+    #[inline]
+    pub fn overlaps_box(&self, bx: Box2D) -> bool {
+        let v = [self.a, self.b, self.c];
+        // Box axes.
+        let lo = v[0][0].min(v[1][0]).min(v[2][0]);
+        let hi = v[0][0].max(v[1][0]).max(v[2][0]);
+        if hi < bx.min_x || lo > bx.max_x {
+            return false;
+        }
+        let lo = v[0][1].min(v[1][1]).min(v[2][1]);
+        let hi = v[0][1].max(v[1][1]).max(v[2][1]);
+        if hi < bx.min_y || lo > bx.max_y {
+            return false;
+        }
+        // Triangle edge normals.
+        let corners = [
+            [bx.min_x, bx.min_y],
+            [bx.max_x, bx.min_y],
+            [bx.min_x, bx.max_y],
+            [bx.max_x, bx.max_y],
+        ];
+        for e in 0..3 {
+            let p = v[e];
+            let q = v[(e + 1) % 3];
+            let (ax, ay) = (-(q[1] - p[1]), q[0] - p[0]);
+            let mut tlo = f64::INFINITY;
+            let mut thi = f64::NEG_INFINITY;
+            for w in &v {
+                let d = w[0] * ax + w[1] * ay;
+                tlo = tlo.min(d);
+                thi = thi.max(d);
+            }
+            let mut blo = f64::INFINITY;
+            let mut bhi = f64::NEG_INFINITY;
+            for c in &corners {
+                let d = c[0] * ax + c[1] * ay;
+                blo = blo.min(d);
+                bhi = bhi.max(d);
+            }
+            if thi < blo || tlo > bhi {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Whether the box `bx` lies entirely inside this triangle (all four corners
+    /// inside the convex region). Used to accept a whole subtree without testing
+    /// its leaves. Always `false` for a degenerate (zero-area) triangle.
+    #[inline]
+    pub fn contains_box(&self, bx: Box2D) -> bool {
+        let area2 = (self.b[0] - self.a[0]) * (self.c[1] - self.a[1])
+            - (self.c[0] - self.a[0]) * (self.b[1] - self.a[1]);
+        if area2 == 0.0 {
+            return false;
+        }
+        self.contains_point([bx.min_x, bx.min_y])
+            && self.contains_point([bx.max_x, bx.min_y])
+            && self.contains_point([bx.min_x, bx.max_y])
+            && self.contains_point([bx.max_x, bx.max_y])
+    }
+
+    #[inline]
+    fn contains_point(&self, p: [f64; 2]) -> bool {
+        let edge = |a: [f64; 2], b: [f64; 2]| {
+            (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+        };
+        let d1 = edge(self.a, self.b);
+        let d2 = edge(self.b, self.c);
+        let d3 = edge(self.c, self.a);
+        let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+        let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+        !(has_neg && has_pos)
+    }
+}
+
 macro_rules! tri3 {
     ($name:ident, $t:ty, $stride:expr, $closest:path) => {
         /// A 3D triangle: three vertices `[x, y, z]`. `repr(C)`, unpadded, so a

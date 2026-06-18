@@ -33,7 +33,7 @@ use crate::persistence::{
 };
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
-use crate::triangle::{Triangle2, blobs_as_records, records_as_bytes};
+use crate::triangle::{Triangle2, Triangle2D, blobs_as_records, records_as_bytes};
 
 #[inline]
 fn prefetch_aos_node(entries: &[Box2D], indices: &[usize], node_index: usize, node_size: usize) {
@@ -636,6 +636,201 @@ impl Index2D {
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.visit_with_stack(query, &mut stack, visitor)
+    }
+
+    /// Item indices whose box overlaps the 2D triangle `tri`.
+    ///
+    /// A tight region query: like `search(tri.aabb())` but with the bounding-box
+    /// corners that the triangle misses rejected during the traversal, so the
+    /// result is exactly the items the triangle's filled area overlaps. Subtrees
+    /// fully inside the triangle are accepted without per-item tests, so the cost
+    /// stays close to the bounding-box query while the result set is tighter.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Box2D, Triangle2D};
+    ///
+    /// let mut b = Index2DBuilder::new(2);
+    /// b.add(Box2D::new(0.2, 0.2, 0.3, 0.3)); // inside the triangle
+    /// b.add(Box2D::new(9.0, 9.0, 9.5, 9.5)); // in the bbox corner, outside the triangle
+    /// let index = b.finish()?;
+    ///
+    /// let tri = Triangle2D::new([0.0, 0.0], [10.0, 0.0], [0.0, 10.0]);
+    /// assert_eq!(index.search_triangle(tri), vec![0]);
+    /// # Ok::<(), packed_spatial_index::BuildError>(())
+    /// ```
+    pub fn search_triangle(&self, tri: Triangle2D) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_triangle_into(tri, &mut out);
+        out
+    }
+
+    /// [`search_triangle`](Self::search_triangle) into a reused buffer (cleared first).
+    pub fn search_triangle_into(&self, tri: Triangle2D, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_triangle_with_stack(tri, &mut stack, |i| {
+            out.push(i);
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
+    /// Whether any item's box overlaps `tri`, short-circuiting on the first real
+    /// hit. The triangle-tight analogue of `any(tri.aabb())`, which over-reports
+    /// items that only touch the bounding box.
+    pub fn any_triangle(&self, tri: Triangle2D) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_triangle_with_stack(tri, &mut stack, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Visit each item whose box overlaps `tri`; return [`ControlFlow::Break`]
+    /// from `visitor` to stop early.
+    pub fn visit_triangle<B, F>(&self, tri: Triangle2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_triangle_with_stack(tri, &mut stack, visitor)
+    }
+
+    fn visit_triangle_with_stack<B, F>(
+        &self,
+        tri: Triangle2D,
+        stack: &mut Vec<usize>,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+        const LEVEL_MASK: usize = !CONTAINED_FLAG;
+
+        let root = self.entries[self.entries.len() - 1];
+        if tri.contains_box(root) {
+            for &index in &self.indices[..self.num_items] {
+                visitor(index)?;
+            }
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let node_entries = &self.entries[node_index..end];
+            let node_indices = &self.indices[node_index..end];
+
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let leaf_end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                for &index in &self.indices[start..leaf_end] {
+                    visitor(index)?;
+                }
+            } else if is_leaf {
+                for (b, &index) in node_entries.iter().zip(node_indices) {
+                    if !tri.overlaps_box(*b) {
+                        continue;
+                    }
+                    visitor(index)?;
+                }
+            } else {
+                let child_level = level - 1;
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !tri.overlaps_box(*b) {
+                        continue;
+                    }
+                    stack.push(index);
+                    let encoded_level = if tri.contains_box(*b) {
+                        child_level | CONTAINED_FLAG
+                    } else {
+                        child_level
+                    };
+                    stack.push(encoded_level);
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded_level = stack.pop().unwrap();
+                level = encoded_level & LEVEL_MASK;
+                contained = (encoded_level & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+
+    /// Diagnostics for the triangle query: `(results, nodes_visited, sat_tests,
+    /// contained_subtrees)`. `sat_tests` counts `overlaps_box` calls (the cost
+    /// the bounding-box query avoids), `contained_subtrees` the whole subtrees
+    /// accepted without per-item tests.
+    #[doc(hidden)]
+    pub fn search_triangle_visited(&self, tri: Triangle2D) -> (usize, usize, usize, usize) {
+        let (mut results, mut visited, mut sat, mut contained_subtrees) = (0, 0, 0, 0);
+        if self.num_items == 0 {
+            return (0, 0, 0, 0);
+        }
+        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+        const LEVEL_MASK: usize = !CONTAINED_FLAG;
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let leaf_end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                results += leaf_end - start;
+            } else {
+                for pos in node_index..end {
+                    visited += 1;
+                    sat += 1;
+                    let b = self.entries[pos];
+                    if !tri.overlaps_box(b) {
+                        continue;
+                    }
+                    if is_leaf {
+                        results += 1;
+                    } else {
+                        stack.push(self.indices[pos]);
+                        if tri.contains_box(b) {
+                            contained_subtrees += 1;
+                            stack.push((level - 1) | CONTAINED_FLAG);
+                        } else {
+                            stack.push(level - 1);
+                        }
+                    }
+                }
+            }
+            if stack.len() > 1 {
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return (results, visited, sat, contained_subtrees);
+            }
+        }
     }
 
     /// Return a lazy iterator over the items intersecting `query`.

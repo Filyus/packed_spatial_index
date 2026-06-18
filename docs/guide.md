@@ -59,6 +59,33 @@ The empty cells are intentional, not gaps to fill:
   indexes: an owned index returns ids into your own data, so attach a per-item
   blob at serialize time and read it back through a view or streamed.
 
+## Query by a triangle (2D)
+
+`Index2D` answers a triangle region query directly:
+`search_triangle` / `search_triangle_into` (collect), `any_triangle` (boolean,
+short-circuits), and `visit_triangle` (fold without collecting). Each returns the
+items whose box overlaps the triangle's filled area — the bounding-box corners
+the triangle misses are rejected during the traversal.
+
+```rust
+# use packed_spatial_index::{Index2DBuilder, Box2D, Triangle2D};
+# let mut b = Index2DBuilder::new(2);
+# b.add(Box2D::new(0.2, 0.2, 0.3, 0.3));
+# b.add(Box2D::new(9.0, 9.0, 9.5, 9.5));
+# let index = b.finish()?;
+let tri = Triangle2D::new([0.0, 0.0], [10.0, 0.0], [0.0, 10.0]);
+assert_eq!(index.search_triangle(tri), vec![0]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+Prefer this to `search(tri.aabb())` filtered by hand. It is both tighter and
+faster: in a 200k-box field it rejects roughly 2× (fat triangle) to 7× (sliver)
+of the bounding-box hits, and runs ~2.5×–5× faster than collect-then-filter —
+internal nodes are pruned with a cheap box-vs-bbox test, subtrees fully inside
+the triangle are accepted whole without per-item tests, and the full
+triangle-AABB separating-axis test runs only at boundary leaves. `any_triangle`
+is the exact-culling analogue of `any`.
+
 ## Find boxes that contain a point
 
 Search with a zero-size query box at the point. Box overlap is inclusive, so

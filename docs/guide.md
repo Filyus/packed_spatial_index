@@ -20,10 +20,20 @@ Practical recipes and configuration. For the per-method API reference, see
 - Use `search_exact` / `neighbors_exact` on the `f32` indexes for exact results
   from compact storage; prefer the `f64` indexes for exact queries with many
   hits.
-- `SimdIndex*` pays off on larger inputs and broad queries (it tests several
-  boxes per node). For a few boxes, or tiny repeated boolean checks, the scalar
-  `Index*` or even a plain linear scan over your own boxes can win: building and
-  querying an index has fixed overhead that only amortizes at scale.
+- Scan, scalar index, or SIMD index? Measured crossovers (uniform 2D boxes, one
+  machine — treat as orders of magnitude, not exact):
+  - **Below ~200 boxes**, a plain linear scan over your own `Box2D`s beats an
+    index *per query* — the traversal's fixed overhead doesn't pay off yet.
+  - **Building an index amortizes after ~50–120 queries** over the same box set
+    (for a few hundred boxes and up); for fewer queries than that, or under ~200
+    boxes, just scan. Above the crossover the index pulls away fast — at 1M boxes
+    it answers a window query ~30–50× faster than a scan.
+  - **`SimdIndex*` over the scalar `Index*` is a modest ~1.2–1.3×** for range
+    search, not "bigger is always better": it ties the scalar index at very small
+    sizes and can even trail it at very large sizes with large result sets (the
+    SoA result collection costs more than the per-node SIMD test saves). Reach for
+    it when you want the SoA layout or are already on that path; don't expect a
+    large range-search win from SIMD alone.
 
 ## Coverage matrix
 

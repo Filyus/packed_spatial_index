@@ -6,10 +6,12 @@
 [![MSRV](https://img.shields.io/crates/msrv/packed_spatial_index.svg)](https://crates.io/crates/packed_spatial_index)
 [![License](https://img.shields.io/crates/l/packed_spatial_index.svg)](LICENSE)
 
-A packed **static spatial index** for 2D and 3D axis-aligned bounding boxes
+A fast, packed **static spatial index** for 2D and 3D axis-aligned bounding boxes
 (AABBs), in the style of [flatbush](https://github.com/mourner/flatbush) /
 [`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index). Pack the
-boxes into a Hilbert R-tree once, then run many queries over it with SIMD:
+boxes into a Hilbert R-tree once, then run millions of queries over it with
+**runtime-dispatched SIMD** — the widest kernel your CPU offers is chosen at load
+time (`AVX-512 → AVX2 → SSE2`), no special build flags:
 
 - **range / intersection** search
 - **nearest neighbors** (kNN) from a point or a box
@@ -19,11 +21,14 @@ boxes into a Hilbert R-tree once, then run many queries over it with SIMD:
   that prune to the true shape: **~1.5–7× fewer hits and ~2–14× faster** than the
   bounding-box workaround (synthetic 200k-box bench)
 
-Builds and SIMD searches run **faster** than comparable Rust indexes
-([benchmarks](docs/performance.md)), and the same bytes load back as
-**zero-copy**, mmap-friendly views. A file can also carry an optional
-per-item **payload** and file-level **metadata**, and a **streaming reader** can
-query a large or remote index without loading the whole file.
+SIMD range search runs **~1.6–1.9× over the scalar index on AVX-512** and
+**~1.3–1.65× on AVX2** — it [emulates the missing compress instruction](docs/simd.md)
+so the win holds on older CPUs too — and builds beat comparable Rust indexes
+([benchmarks](docs/performance.md)). The same bytes load back as **zero-copy**,
+mmap-friendly views; a file can carry an optional per-item **payload** and
+file-level **metadata**; and a **streaming reader** answers a windowed query over a
+100 MB index on object storage in a handful of range reads, without loading the
+whole file.
 
 [Live WASM demo](https://filyus.github.io/packed_spatial_index/)
 

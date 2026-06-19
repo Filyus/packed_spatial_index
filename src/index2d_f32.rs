@@ -23,16 +23,14 @@ use crate::{
 };
 
 mod serializer;
+#[cfg(feature = "simd")]
+mod simd_serialization;
 pub use serializer::Serializer2DF32;
 
 // Point kNN over the owned f32 indexes (scalar `Index2DF32` + SIMD
 // `SimdIndex2DF32`) needs these whenever `f32-storage` is enabled.
 #[cfg(feature = "simd")]
 use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
-#[cfg(feature = "simd")]
-use crate::f32_storage::{F32ColumnRefs2D, write_columns2d};
-#[cfg(feature = "simd")]
-use crate::persistence::MetaFields;
 #[cfg(feature = "simd")]
 use crate::persistence::read_u64_le_unchecked;
 use crate::{geometry::Point2D, neighbors::NeighborWorkspace};
@@ -661,50 +659,6 @@ impl SimdIndex2DF32 {
     /// Packed node size used by this index.
     pub fn node_size(&self) -> usize {
         self.node_size
-    }
-
-    /// Serialize into the little-endian `PSINDEX` format (f32 box records).
-    ///
-    /// This is a distinct format from [`SimdIndex2D::to_bytes`](crate::SimdIndex2D::to_bytes)
-    /// (half the box bytes) and is loaded back only through
-    /// [`from_bytes`](Self::from_bytes).
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        self.to_bytes_into(&mut out);
-        out
-    }
-
-    /// Serialize into a caller-provided buffer, reusing its allocation.
-    pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
-        write_columns2d(
-            out,
-            F32ColumnRefs2D {
-                node_size: self.node_size,
-                num_items: self.num_items,
-                min_xs: &self.min_xs,
-                min_ys: &self.min_ys,
-                max_xs: &self.max_xs,
-                max_ys: &self.max_ys,
-                indices: &self.indices,
-            },
-            false,
-            None,
-            None,
-            &MetaFields::default(),
-        )
-        .expect("index-only serialization cannot fail");
-    }
-
-    /// Load from bytes produced by [`to_bytes`](Self::to_bytes). A payload section
-    /// is rejected (this SIMD index carries boxes only).
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
-        let (parsed, payload) = parse_index(bytes, 2, 4)?;
-        if payload.is_some() {
-            return Err(LoadError::UnsupportedVersion);
-        }
-        Ok(Self::from_scalar(index2d_from_columns(
-            columns2d_from_parsed(&parsed),
-        )))
     }
 
     /// Item indices whose rounded f32 box intersects `query`.

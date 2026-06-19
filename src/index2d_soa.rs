@@ -15,7 +15,7 @@ use crate::{
     builder2d::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box2D, Point2D},
-    join::{JoinTree, join_core, self_join_core},
+    join::{join_core, self_join_core},
     neighbors::{
         NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, max_distance_squared,
     },
@@ -27,6 +27,7 @@ use crate::{
     sort2d::{SortKeyContext, encode_sort_by_key},
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree::{TreeLayout, try_compute_tree_layout},
+    tree_access::TreeAccess,
 };
 
 type Num = f64;
@@ -2479,31 +2480,31 @@ impl<'a> SimdIndex2DView<'a> {
     }
 }
 
-impl JoinTree for SimdIndex2D {
+impl TreeAccess for SimdIndex2D {
     type Bounds = Box2D;
 
     #[inline]
-    fn join_num_items(&self) -> usize {
+    fn tree_num_items(&self) -> usize {
         self.num_items
     }
     #[inline]
-    fn join_num_nodes(&self) -> usize {
+    fn tree_num_nodes(&self) -> usize {
         self.min_xs.len()
     }
     #[inline]
-    fn join_node_size(&self) -> usize {
+    fn tree_node_size(&self) -> usize {
         self.node_size
     }
     #[inline]
-    fn join_level_count(&self) -> usize {
+    fn tree_level_count(&self) -> usize {
         self.level_bounds.len()
     }
     #[inline]
-    fn join_level_bound(&self, level: usize) -> usize {
+    fn tree_level_bound(&self, level: usize) -> usize {
         self.level_bounds[level]
     }
     #[inline]
-    fn join_bounds(&self, pos: usize) -> Box2D {
+    fn tree_bounds(&self, pos: usize) -> Box2D {
         Box2D::new(
             self.min_xs[pos],
             self.min_ys[pos],
@@ -2512,7 +2513,7 @@ impl JoinTree for SimdIndex2D {
         )
     }
     #[inline]
-    fn join_index(&self, pos: usize) -> usize {
+    fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
     }
     #[inline]
@@ -2525,35 +2526,35 @@ impl JoinTree for SimdIndex2D {
     }
 }
 
-impl JoinTree for SimdIndex2DView<'_> {
+impl TreeAccess for SimdIndex2DView<'_> {
     type Bounds = Box2D;
 
     #[inline]
-    fn join_num_items(&self) -> usize {
+    fn tree_num_items(&self) -> usize {
         self.num_items
     }
     #[inline]
-    fn join_num_nodes(&self) -> usize {
+    fn tree_num_nodes(&self) -> usize {
         self.num_nodes
     }
     #[inline]
-    fn join_node_size(&self) -> usize {
+    fn tree_node_size(&self) -> usize {
         self.node_size
     }
     #[inline]
-    fn join_level_count(&self) -> usize {
+    fn tree_level_count(&self) -> usize {
         self.level_count
     }
     #[inline]
-    fn join_level_bound(&self, level: usize) -> usize {
+    fn tree_level_bound(&self, level: usize) -> usize {
         self.level_bound_unchecked(level)
     }
     #[inline]
-    fn join_bounds(&self, pos: usize) -> Box2D {
+    fn tree_bounds(&self, pos: usize) -> Box2D {
         self.box_at(pos)
     }
     #[inline]
-    fn join_index(&self, pos: usize) -> usize {
+    fn tree_index(&self, pos: usize) -> usize {
         self.index_at(pos)
     }
     #[inline]

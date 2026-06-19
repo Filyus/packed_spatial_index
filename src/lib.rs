@@ -101,6 +101,7 @@ mod sort3d;
 mod stream;
 mod traversal;
 mod tree;
+mod tree_access;
 mod triangle;
 
 pub use build::BuildError;

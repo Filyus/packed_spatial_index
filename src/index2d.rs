@@ -23,7 +23,7 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
 use crate::geometry::{Box2D, Point2D};
-use crate::join::{JoinTree, join_core, self_join_core};
+use crate::join::{join_core, self_join_core};
 use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, max_distance_squared,
     metric_knn,
@@ -35,6 +35,7 @@ use crate::persistence::{
 use crate::polygon::ConvexPolygon2D;
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
+use crate::tree_access::TreeAccess;
 use crate::triangle::{Triangle2, Triangle2D, blobs_as_records, records_as_bytes};
 
 #[inline]
@@ -2765,35 +2766,35 @@ impl<'a> Index2DView<'a> {
     }
 }
 
-impl JoinTree for Index2D {
+impl TreeAccess for Index2D {
     type Bounds = Box2D;
 
     #[inline]
-    fn join_num_items(&self) -> usize {
+    fn tree_num_items(&self) -> usize {
         self.num_items
     }
     #[inline]
-    fn join_num_nodes(&self) -> usize {
+    fn tree_num_nodes(&self) -> usize {
         self.entries.len()
     }
     #[inline]
-    fn join_node_size(&self) -> usize {
+    fn tree_node_size(&self) -> usize {
         self.node_size
     }
     #[inline]
-    fn join_level_count(&self) -> usize {
+    fn tree_level_count(&self) -> usize {
         self.level_bounds.len()
     }
     #[inline]
-    fn join_level_bound(&self, level: usize) -> usize {
+    fn tree_level_bound(&self, level: usize) -> usize {
         self.level_bounds[level]
     }
     #[inline]
-    fn join_bounds(&self, pos: usize) -> Box2D {
+    fn tree_bounds(&self, pos: usize) -> Box2D {
         self.entries[pos]
     }
     #[inline]
-    fn join_index(&self, pos: usize) -> usize {
+    fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
     }
     #[inline]
@@ -2806,35 +2807,35 @@ impl JoinTree for Index2D {
     }
 }
 
-impl JoinTree for Index2DView<'_> {
+impl TreeAccess for Index2DView<'_> {
     type Bounds = Box2D;
 
     #[inline]
-    fn join_num_items(&self) -> usize {
+    fn tree_num_items(&self) -> usize {
         self.num_items
     }
     #[inline]
-    fn join_num_nodes(&self) -> usize {
+    fn tree_num_nodes(&self) -> usize {
         self.num_nodes
     }
     #[inline]
-    fn join_node_size(&self) -> usize {
+    fn tree_node_size(&self) -> usize {
         self.node_size
     }
     #[inline]
-    fn join_level_count(&self) -> usize {
+    fn tree_level_count(&self) -> usize {
         self.level_count
     }
     #[inline]
-    fn join_level_bound(&self, level: usize) -> usize {
+    fn tree_level_bound(&self, level: usize) -> usize {
         self.level_bound_unchecked(level)
     }
     #[inline]
-    fn join_bounds(&self, pos: usize) -> Box2D {
+    fn tree_bounds(&self, pos: usize) -> Box2D {
         self.entry_at_unchecked(pos)
     }
     #[inline]
-    fn join_index(&self, pos: usize) -> usize {
+    fn tree_index(&self, pos: usize) -> usize {
         self.index_at_unchecked(pos)
     }
     #[inline]

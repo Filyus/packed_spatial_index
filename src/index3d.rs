@@ -10,7 +10,7 @@ use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     frustum::Frustum3D,
     geometry::{Box3D, Point3D},
-    join::{JoinTree, join_core, self_join_core},
+    join::{join_core, self_join_core},
     neighbors::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
         metric_knn,
@@ -21,6 +21,7 @@ use crate::{
     },
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
+    tree_access::TreeAccess,
     triangle::{Triangle3, blobs_as_records, records_as_bytes},
 };
 
@@ -2248,35 +2249,35 @@ impl<'a> Index3DView<'a> {
     }
 }
 
-impl JoinTree for Index3D {
+impl TreeAccess for Index3D {
     type Bounds = Box3D;
 
     #[inline]
-    fn join_num_items(&self) -> usize {
+    fn tree_num_items(&self) -> usize {
         self.num_items
     }
     #[inline]
-    fn join_num_nodes(&self) -> usize {
+    fn tree_num_nodes(&self) -> usize {
         self.entries.len()
     }
     #[inline]
-    fn join_node_size(&self) -> usize {
+    fn tree_node_size(&self) -> usize {
         self.node_size
     }
     #[inline]
-    fn join_level_count(&self) -> usize {
+    fn tree_level_count(&self) -> usize {
         self.level_bounds.len()
     }
     #[inline]
-    fn join_level_bound(&self, level: usize) -> usize {
+    fn tree_level_bound(&self, level: usize) -> usize {
         self.level_bounds[level]
     }
     #[inline]
-    fn join_bounds(&self, pos: usize) -> Box3D {
+    fn tree_bounds(&self, pos: usize) -> Box3D {
         self.entries[pos]
     }
     #[inline]
-    fn join_index(&self, pos: usize) -> usize {
+    fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
     }
     #[inline]
@@ -2289,35 +2290,35 @@ impl JoinTree for Index3D {
     }
 }
 
-impl JoinTree for Index3DView<'_> {
+impl TreeAccess for Index3DView<'_> {
     type Bounds = Box3D;
 
     #[inline]
-    fn join_num_items(&self) -> usize {
+    fn tree_num_items(&self) -> usize {
         self.num_items
     }
     #[inline]
-    fn join_num_nodes(&self) -> usize {
+    fn tree_num_nodes(&self) -> usize {
         self.num_nodes
     }
     #[inline]
-    fn join_node_size(&self) -> usize {
+    fn tree_node_size(&self) -> usize {
         self.node_size
     }
     #[inline]
-    fn join_level_count(&self) -> usize {
+    fn tree_level_count(&self) -> usize {
         self.level_count
     }
     #[inline]
-    fn join_level_bound(&self, level: usize) -> usize {
+    fn tree_level_bound(&self, level: usize) -> usize {
         self.level_bound_unchecked(level)
     }
     #[inline]
-    fn join_bounds(&self, pos: usize) -> Box3D {
+    fn tree_bounds(&self, pos: usize) -> Box3D {
         self.entry_at_unchecked(pos)
     }
     #[inline]
-    fn join_index(&self, pos: usize) -> usize {
+    fn tree_index(&self, pos: usize) -> usize {
         self.index_at_unchecked(pos)
     }
     #[inline]

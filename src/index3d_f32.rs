@@ -12,12 +12,9 @@
 use crate::{
     build::BuildError,
     builder3d::BuildConfig3D,
-    f32_storage::{round_down, round_up},
+    f32_storage::{F32Columns3D, columns3d_from_parsed, round_down, round_up},
     geometry::Box3D,
-    persistence::{
-        LoadError, MetaFields, ParsedTree, PayloadError, parse_index, read_f32_le_unchecked,
-        read_u64_le_unchecked, write_index_container,
-    },
+    persistence::{LoadError, MetaFields, PayloadError, parse_index, write_index_container},
     ray::Ray3D,
     sort3d::{SortKey3DContext, encode_sort_by_key_3d},
     tree::{TreeLayout, try_compute_tree_layout},
@@ -28,6 +25,8 @@ use crate::{
 // `SimdIndex3DF32`) needs these whenever `f32-storage` is enabled.
 #[cfg(feature = "simd")]
 use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
+#[cfg(feature = "simd")]
+use crate::persistence::{read_f32_le_unchecked, read_u64_le_unchecked};
 use crate::{
     config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::Point3D,
@@ -42,38 +41,19 @@ use crate::leftpack::leftpack4;
 use crate::{config::DEFAULT_SEARCH_STACK_CAPACITY, traversal::SearchWorkspace};
 use std::ops::ControlFlow;
 
-/// Materialize the SoA f32 columns of a parsed `f32`-box tree into the canonical
-/// [`Index3DF32`] storage. Shared by the scalar and SIMD `from_bytes` loaders.
-fn f32_columns_from_parsed_3(parsed: &ParsedTree) -> Index3DF32 {
-    let num_nodes = parsed.num_nodes;
-    let mut min_xs = Vec::with_capacity(num_nodes);
-    let mut min_ys = Vec::with_capacity(num_nodes);
-    let mut min_zs = Vec::with_capacity(num_nodes);
-    let mut max_xs = Vec::with_capacity(num_nodes);
-    let mut max_ys = Vec::with_capacity(num_nodes);
-    let mut max_zs = Vec::with_capacity(num_nodes);
-    let mut indices = Vec::with_capacity(num_nodes);
-    for i in 0..num_nodes {
-        let off = i * 24; // six f32 per 3D box record
-        min_xs.push(read_f32_le_unchecked(parsed.entries, off));
-        min_ys.push(read_f32_le_unchecked(parsed.entries, off + 4));
-        min_zs.push(read_f32_le_unchecked(parsed.entries, off + 8));
-        max_xs.push(read_f32_le_unchecked(parsed.entries, off + 12));
-        max_ys.push(read_f32_le_unchecked(parsed.entries, off + 16));
-        max_zs.push(read_f32_le_unchecked(parsed.entries, off + 20));
-        indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
-    }
+/// Build the canonical scalar f32 storage from already-decoded SoA columns.
+fn index3d_from_columns(columns: F32Columns3D) -> Index3DF32 {
     Index3DF32 {
-        node_size: parsed.node_size,
-        num_items: parsed.num_items,
-        level_bounds: parsed.level_bounds.clone(),
-        min_xs,
-        min_ys,
-        min_zs,
-        max_xs,
-        max_ys,
-        max_zs,
-        indices,
+        node_size: columns.node_size,
+        num_items: columns.num_items,
+        level_bounds: columns.level_bounds,
+        min_xs: columns.min_xs,
+        min_ys: columns.min_ys,
+        min_zs: columns.min_zs,
+        max_xs: columns.max_xs,
+        max_ys: columns.max_ys,
+        max_zs: columns.max_zs,
+        indices: columns.indices,
     }
 }
 
@@ -1018,7 +998,9 @@ impl SimdIndex3DF32 {
         if payload.is_some() {
             return Err(LoadError::UnsupportedVersion);
         }
-        Ok(Self::from_scalar(f32_columns_from_parsed_3(&parsed)))
+        Ok(Self::from_scalar(index3d_from_columns(
+            columns3d_from_parsed(&parsed),
+        )))
     }
 
     /// Item indices whose rounded f32 box intersects `query`.
@@ -2600,7 +2582,7 @@ impl Index3DF32 {
     /// [`StreamIndex3DF32`](crate::StreamIndex3DF32).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
         let (parsed, _payload) = parse_index(bytes, 3, 4)?;
-        Ok(f32_columns_from_parsed_3(&parsed))
+        Ok(index3d_from_columns(columns3d_from_parsed(&parsed)))
     }
 
     /// Number of indexed items.

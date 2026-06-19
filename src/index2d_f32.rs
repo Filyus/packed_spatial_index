@@ -13,12 +13,9 @@
 use crate::{
     build::BuildError,
     builder2d::BuildConfig,
-    f32_storage::{round_down, round_up},
+    f32_storage::{F32Columns2D, columns2d_from_parsed, round_down, round_up},
     geometry::Box2D,
-    persistence::{
-        LoadError, MetaFields, ParsedTree, PayloadError, parse_index, read_f32_le_unchecked,
-        read_u64_le_unchecked, write_index_container,
-    },
+    persistence::{LoadError, MetaFields, PayloadError, parse_index, write_index_container},
     ray::Ray2D,
     sort2d::{SortKeyContext, encode_sort_by_key},
     tree::{TreeLayout, try_compute_tree_layout},
@@ -29,6 +26,8 @@ use crate::{
 // `SimdIndex2DF32`) needs these whenever `f32-storage` is enabled.
 #[cfg(feature = "simd")]
 use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
+#[cfg(feature = "simd")]
+use crate::persistence::{read_f32_le_unchecked, read_u64_le_unchecked};
 use crate::{
     config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::Point2D,
@@ -43,32 +42,17 @@ use crate::leftpack::leftpack4;
 use crate::{config::DEFAULT_SEARCH_STACK_CAPACITY, traversal::SearchWorkspace};
 use std::ops::ControlFlow;
 
-/// Materialize the SoA f32 columns of a parsed `f32`-box tree into the canonical
-/// [`Index2DF32`] storage. Shared by the scalar and SIMD `from_bytes` loaders.
-fn f32_columns_from_parsed_2(parsed: &ParsedTree) -> Index2DF32 {
-    let num_nodes = parsed.num_nodes;
-    let mut min_xs = Vec::with_capacity(num_nodes);
-    let mut min_ys = Vec::with_capacity(num_nodes);
-    let mut max_xs = Vec::with_capacity(num_nodes);
-    let mut max_ys = Vec::with_capacity(num_nodes);
-    let mut indices = Vec::with_capacity(num_nodes);
-    for i in 0..num_nodes {
-        let off = i * 16; // four f32 per 2D box record
-        min_xs.push(read_f32_le_unchecked(parsed.entries, off));
-        min_ys.push(read_f32_le_unchecked(parsed.entries, off + 4));
-        max_xs.push(read_f32_le_unchecked(parsed.entries, off + 8));
-        max_ys.push(read_f32_le_unchecked(parsed.entries, off + 12));
-        indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
-    }
+/// Build the canonical scalar f32 storage from already-decoded SoA columns.
+fn index2d_from_columns(columns: F32Columns2D) -> Index2DF32 {
     Index2DF32 {
-        node_size: parsed.node_size,
-        num_items: parsed.num_items,
-        level_bounds: parsed.level_bounds.clone(),
-        min_xs,
-        min_ys,
-        max_xs,
-        max_ys,
-        indices,
+        node_size: columns.node_size,
+        num_items: columns.num_items,
+        level_bounds: columns.level_bounds,
+        min_xs: columns.min_xs,
+        min_ys: columns.min_ys,
+        max_xs: columns.max_xs,
+        max_ys: columns.max_ys,
+        indices: columns.indices,
     }
 }
 
@@ -996,7 +980,9 @@ impl SimdIndex2DF32 {
         if payload.is_some() {
             return Err(LoadError::UnsupportedVersion);
         }
-        Ok(Self::from_scalar(f32_columns_from_parsed_2(&parsed)))
+        Ok(Self::from_scalar(index2d_from_columns(
+            columns2d_from_parsed(&parsed),
+        )))
     }
 
     /// Item indices whose rounded f32 box intersects `query`.
@@ -2554,7 +2540,7 @@ impl Index2DF32 {
     /// [`StreamIndex2DF32`](crate::StreamIndex2DF32).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
         let (parsed, _payload) = parse_index(bytes, 2, 4)?;
-        Ok(f32_columns_from_parsed_2(&parsed))
+        Ok(index2d_from_columns(columns2d_from_parsed(&parsed)))
     }
 
     /// Number of indexed items.

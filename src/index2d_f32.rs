@@ -13,9 +13,11 @@
 use crate::{
     build::BuildError,
     builder2d::BuildConfig,
-    f32_storage::{F32Columns2D, columns2d_from_parsed, round_down, round_up},
+    f32_storage::{
+        F32ColumnRefs2D, F32Columns2D, columns2d_from_parsed, round_down, round_up, write_columns2d,
+    },
     geometry::Box2D,
-    persistence::{LoadError, MetaFields, PayloadError, parse_index, write_index_container},
+    persistence::{LoadError, MetaFields, PayloadError, parse_index},
     ray::Ray2D,
     sort2d::{SortKeyContext, encode_sort_by_key},
     tree::{TreeLayout, try_compute_tree_layout},
@@ -948,26 +950,20 @@ impl SimdIndex2DF32 {
 
     /// Serialize into a caller-provided buffer, reusing its allocation.
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
-        write_index_container(
+        write_columns2d(
             out,
-            2,
-            4,
-            false,
-            self.num_items,
-            self.min_xs.len(),
-            self.node_size,
-            |bytes| {
-                bytes.write_soa_boxes_f32_2d(
-                    &self.min_xs,
-                    &self.min_ys,
-                    &self.max_xs,
-                    &self.max_ys,
-                );
-                bytes.write_usize_slice_as_u64(&self.indices);
+            F32ColumnRefs2D {
+                node_size: self.node_size,
+                num_items: self.num_items,
+                min_xs: &self.min_xs,
+                min_ys: &self.min_ys,
+                max_xs: &self.max_xs,
+                max_ys: &self.max_ys,
+                indices: &self.indices,
             },
+            false,
             None,
             None,
-            &self.indices[..self.num_items],
             &MetaFields::default(),
         )
         .expect("index-only serialization cannot fail");
@@ -2834,32 +2830,20 @@ impl<'a> Serializer2DF32<'a> {
         let idx = self.index;
         let record_stride = self.record_stride;
         let interleaved = self.interleaved;
-        write_index_container(
+        write_columns2d(
             out,
-            2,
-            4,
-            interleaved,
-            idx.num_items,
-            idx.min_xs.len(),
-            idx.node_size,
-            |bytes| {
-                #[cfg(feature = "stream")]
-                if interleaved {
-                    bytes.write_interleaved_f32_2d(
-                        &idx.min_xs,
-                        &idx.min_ys,
-                        &idx.max_xs,
-                        &idx.max_ys,
-                        &idx.indices,
-                    );
-                    return;
-                }
-                bytes.write_soa_boxes_f32_2d(&idx.min_xs, &idx.min_ys, &idx.max_xs, &idx.max_ys);
-                bytes.write_usize_slice_as_u64(&idx.indices);
+            F32ColumnRefs2D {
+                node_size: idx.node_size,
+                num_items: idx.num_items,
+                min_xs: &idx.min_xs,
+                min_ys: &idx.min_ys,
+                max_xs: &idx.max_xs,
+                max_ys: &idx.max_ys,
+                indices: &idx.indices,
             },
+            interleaved,
             self.payloads.as_deref(),
             record_stride,
-            &idx.indices[..idx.num_items],
             &self.meta,
         )
     }

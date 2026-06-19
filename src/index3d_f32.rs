@@ -12,9 +12,11 @@
 use crate::{
     build::BuildError,
     builder3d::BuildConfig3D,
-    f32_storage::{F32Columns3D, columns3d_from_parsed, round_down, round_up},
+    f32_storage::{
+        F32ColumnRefs3D, F32Columns3D, columns3d_from_parsed, round_down, round_up, write_columns3d,
+    },
     geometry::Box3D,
-    persistence::{LoadError, MetaFields, PayloadError, parse_index, write_index_container},
+    persistence::{LoadError, MetaFields, PayloadError, parse_index},
     ray::Ray3D,
     sort3d::{SortKey3DContext, encode_sort_by_key_3d},
     tree::{TreeLayout, try_compute_tree_layout},
@@ -964,28 +966,22 @@ impl SimdIndex3DF32 {
 
     /// Serialize into a caller-provided buffer, reusing its allocation.
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
-        write_index_container(
+        write_columns3d(
             out,
-            3,
-            4,
-            false,
-            self.num_items,
-            self.min_xs.len(),
-            self.node_size,
-            |bytes| {
-                bytes.write_soa_boxes_f32_3d(
-                    &self.min_xs,
-                    &self.min_ys,
-                    &self.min_zs,
-                    &self.max_xs,
-                    &self.max_ys,
-                    &self.max_zs,
-                );
-                bytes.write_usize_slice_as_u64(&self.indices);
+            F32ColumnRefs3D {
+                node_size: self.node_size,
+                num_items: self.num_items,
+                min_xs: &self.min_xs,
+                min_ys: &self.min_ys,
+                min_zs: &self.min_zs,
+                max_xs: &self.max_xs,
+                max_ys: &self.max_ys,
+                max_zs: &self.max_zs,
+                indices: &self.indices,
             },
+            false,
             None,
             None,
-            &self.indices[..self.num_items],
             &MetaFields::default(),
         )
         .expect("index-only serialization cannot fail");
@@ -2883,41 +2879,22 @@ impl<'a> Serializer3DF32<'a> {
         let idx = self.index;
         let record_stride = self.record_stride;
         let interleaved = self.interleaved;
-        write_index_container(
+        write_columns3d(
             out,
-            3,
-            4,
-            interleaved,
-            idx.num_items,
-            idx.min_xs.len(),
-            idx.node_size,
-            |bytes| {
-                #[cfg(feature = "stream")]
-                if interleaved {
-                    bytes.write_interleaved_f32_3d(
-                        &idx.min_xs,
-                        &idx.min_ys,
-                        &idx.min_zs,
-                        &idx.max_xs,
-                        &idx.max_ys,
-                        &idx.max_zs,
-                        &idx.indices,
-                    );
-                    return;
-                }
-                bytes.write_soa_boxes_f32_3d(
-                    &idx.min_xs,
-                    &idx.min_ys,
-                    &idx.min_zs,
-                    &idx.max_xs,
-                    &idx.max_ys,
-                    &idx.max_zs,
-                );
-                bytes.write_usize_slice_as_u64(&idx.indices);
+            F32ColumnRefs3D {
+                node_size: idx.node_size,
+                num_items: idx.num_items,
+                min_xs: &idx.min_xs,
+                min_ys: &idx.min_ys,
+                min_zs: &idx.min_zs,
+                max_xs: &idx.max_xs,
+                max_ys: &idx.max_ys,
+                max_zs: &idx.max_zs,
+                indices: &idx.indices,
             },
+            interleaved,
             self.payloads.as_deref(),
             record_stride,
-            &idx.indices[..idx.num_items],
             &self.meta,
         )
     }

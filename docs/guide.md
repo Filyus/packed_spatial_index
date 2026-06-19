@@ -31,10 +31,13 @@ Practical recipes and configuration. For the per-method API reference, see
   - **`SimdIndex*` over the scalar `Index*`**: on an **AVX-512** CPU the search
     runs ~**1.6–1.9×** faster on range queries across 100k–1M boxes (it collects
     results with a masked compress-store, so the win holds even on broad,
-    high-result queries). On CPUs without AVX-512 the SIMD path uses a narrower
-    kernel and the gain is more modest (~1.2–1.3×); at very small sizes it ties
-    the scalar index. Build with `-C target-cpu=native` (see
-    [performance.md](performance.md#build-flags)) to enable the widest kernel.
+    high-result queries). On an **AVX2** CPU (no AVX-512) it runs ~**1.3–1.6×**
+    via a runtime AVX2 tier that emulates the compress with a
+    [left-pack](left-pack.md); on older CPUs it falls back to SSE2 width. At very
+    small sizes it ties the scalar index. The tier is picked automatically
+    (`AVX-512 → AVX2 → SSE2`); `-C target-cpu=native` (see
+    [performance.md](performance.md#build-flags)) additionally widens the scalar
+    autovectorization.
 
 ## Coverage matrix
 

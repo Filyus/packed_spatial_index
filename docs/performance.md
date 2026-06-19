@@ -319,12 +319,16 @@ RUSTFLAGS="-C target-cpu=x86-64-v3"  # portable AVX2 baseline (all v3 CPUs)
 
 `native` enables every feature of the building CPU but produces a **non-portable**
 binary (an older CPU can fault on a missing instruction); use the `x86-64-v3`
-microarchitecture level for binaries you distribute. Either widens the `wide`
-SIMD fallback and the scalar autovectorized loops by roughly **1.1–1.3×** on box
-queries. The explicit AVX-512 search / raycast kernels are already selected at
-runtime (`is_x86_feature_detected!`), so they fire regardless of this flag — the
-gain here is mainly for the non-AVX-512 SIMD path and the scalar index. (The WASM
-demo already passes `-Ctarget-feature=+simd128` for the same reason.)
+microarchitecture level for binaries you distribute.
+
+The explicit SIMD search / visit / raycast kernels are selected at runtime
+(`is_x86_feature_detected!`) and dispatch **AVX-512 → AVX2 → SSE2**: AVX-512 uses
+`VPCOMPRESSQ` result collection (~1.6–1.9× over scalar), the AVX2 tier uses a
+[left-pack](left-pack.md) emulation (~1.3–1.6× over the SSE2 fallback on
+AVX2-only CPUs), and SSE2 is the floor. So these kernels do **not** need
+`target-cpu` to pick the right width. The flag's remaining benefit is widening
+the **scalar** autovectorized loops (~1.1–1.3×). (The WASM demo passes
+`-Ctarget-feature=+simd128` for the same reason.)
 
 ## Reproducing
 

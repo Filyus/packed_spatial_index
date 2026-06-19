@@ -380,8 +380,9 @@ impl SimdIndex3D {
 
     /// Search with a reusable result buffer.
     ///
-    /// This automatically chooses the widest available SIMD implementation: AVX-512
-    /// on supporting x86-64 CPUs, otherwise AVX2/SSE through `wide`.
+    /// This automatically dispatches to the widest available kernel at runtime:
+    /// AVX-512 (`VPCOMPRESSQ` collection), then an explicit AVX2 tier (left-pack
+    /// collection), then the SSE2 `wide` fallback.
     pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         self.search_avx512(query, out, &mut stack);

@@ -50,6 +50,36 @@ impl Box2DF32 {
         }
     }
 
+    /// Read a 2D f32 box from SoA columns.
+    #[inline]
+    pub(crate) fn from_soa(
+        min_xs: &[f32],
+        min_ys: &[f32],
+        max_xs: &[f32],
+        max_ys: &[f32],
+        pos: usize,
+    ) -> Self {
+        Self {
+            min_x: min_xs[pos],
+            min_y: min_ys[pos],
+            max_x: max_xs[pos],
+            max_y: max_ys[pos],
+        }
+    }
+
+    /// Read a 2D f32 box record from TREE bytes.
+    #[inline]
+    #[cfg(feature = "simd")]
+    pub(crate) fn read_tree(entries: &[u8], pos: usize) -> Self {
+        let off = pos * 16;
+        Self {
+            min_x: read_f32_le_unchecked(entries, off),
+            min_y: read_f32_le_unchecked(entries, off + 4),
+            max_x: read_f32_le_unchecked(entries, off + 8),
+            max_y: read_f32_le_unchecked(entries, off + 12),
+        }
+    }
+
     /// Widen losslessly to an f64 box.
     #[inline]
     pub(crate) fn widen(self) -> Box2D {
@@ -123,6 +153,42 @@ impl Box3DF32 {
             max_x: round_down(b.max_x),
             max_y: round_down(b.max_y),
             max_z: round_down(b.max_z),
+        }
+    }
+
+    /// Read a 3D f32 box from SoA columns.
+    #[inline]
+    pub(crate) fn from_soa(
+        min_xs: &[f32],
+        min_ys: &[f32],
+        min_zs: &[f32],
+        max_xs: &[f32],
+        max_ys: &[f32],
+        max_zs: &[f32],
+        pos: usize,
+    ) -> Self {
+        Self {
+            min_x: min_xs[pos],
+            min_y: min_ys[pos],
+            min_z: min_zs[pos],
+            max_x: max_xs[pos],
+            max_y: max_ys[pos],
+            max_z: max_zs[pos],
+        }
+    }
+
+    /// Read a 3D f32 box record from TREE bytes.
+    #[inline]
+    #[cfg(feature = "simd")]
+    pub(crate) fn read_tree(entries: &[u8], pos: usize) -> Self {
+        let off = pos * 24;
+        Self {
+            min_x: read_f32_le_unchecked(entries, off),
+            min_y: read_f32_le_unchecked(entries, off + 4),
+            min_z: read_f32_le_unchecked(entries, off + 8),
+            max_x: read_f32_le_unchecked(entries, off + 12),
+            max_y: read_f32_le_unchecked(entries, off + 16),
+            max_z: read_f32_le_unchecked(entries, off + 20),
         }
     }
 

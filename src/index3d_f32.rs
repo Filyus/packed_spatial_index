@@ -28,7 +28,7 @@ use crate::{
 #[cfg(feature = "simd")]
 use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
 #[cfg(feature = "simd")]
-use crate::persistence::{read_f32_le_unchecked, read_u64_le_unchecked};
+use crate::persistence::read_u64_le_unchecked;
 use crate::{
     config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::Point3D,
@@ -1613,14 +1613,15 @@ impl SimdIndex3DF32 {
 
     #[inline]
     fn box_f32_at(&self, pos: usize) -> Box3DF32 {
-        Box3DF32 {
-            min_x: self.min_xs[pos],
-            min_y: self.min_ys[pos],
-            min_z: self.min_zs[pos],
-            max_x: self.max_xs[pos],
-            max_y: self.max_ys[pos],
-            max_z: self.max_zs[pos],
-        }
+        Box3DF32::from_soa(
+            &self.min_xs,
+            &self.min_ys,
+            &self.min_zs,
+            &self.max_xs,
+            &self.max_ys,
+            &self.max_zs,
+            pos,
+        )
     }
 
     /// True when the rounded query `q` fully contains the stored box at `pos`.
@@ -1675,14 +1676,7 @@ impl SimdIndex3DF32 {
     {
         let index = self.indices[pos];
         if is_leaf {
-            let stored = Box3DF32 {
-                min_x: self.min_xs[pos],
-                min_y: self.min_ys[pos],
-                min_z: self.min_zs[pos],
-                max_x: self.max_xs[pos],
-                max_y: self.max_ys[pos],
-                max_z: self.max_zs[pos],
-            };
+            let stored = self.box_f32_at(pos);
             if stored.definitely_overlaps_exact(query) || box_at(index).overlaps(query) {
                 out.push(index);
             }
@@ -1760,14 +1754,7 @@ impl SimdIndex3DF32 {
                 }
                 let index = self.indices[pos];
                 if is_leaf {
-                    let stored = Box3DF32 {
-                        min_x: self.min_xs[pos],
-                        min_y: self.min_ys[pos],
-                        min_z: self.min_zs[pos],
-                        max_x: self.max_xs[pos],
-                        max_y: self.max_ys[pos],
-                        max_z: self.max_zs[pos],
-                    };
+                    let stored = self.box_f32_at(pos);
                     if stored.definitely_overlaps_exact(query) || box_at(index).overlaps(query) {
                         visitor(index)?;
                     }
@@ -1868,28 +1855,12 @@ impl<'a> SimdIndex3DF32View<'a> {
 
     #[inline]
     fn box_at(&self, pos: usize) -> Box3D {
-        let b = self.box_f32_at(pos);
-        Box3D::new(
-            b.min_x as f64,
-            b.min_y as f64,
-            b.min_z as f64,
-            b.max_x as f64,
-            b.max_y as f64,
-            b.max_z as f64,
-        )
+        self.box_f32_at(pos).widen()
     }
 
     #[inline]
     fn box_f32_at(&self, pos: usize) -> Box3DF32 {
-        let b = pos * 24;
-        Box3DF32 {
-            min_x: read_f32_le_unchecked(self.entries, b),
-            min_y: read_f32_le_unchecked(self.entries, b + 4),
-            min_z: read_f32_le_unchecked(self.entries, b + 8),
-            max_x: read_f32_le_unchecked(self.entries, b + 12),
-            max_y: read_f32_le_unchecked(self.entries, b + 16),
-            max_z: read_f32_le_unchecked(self.entries, b + 20),
-        }
+        Box3DF32::read_tree(self.entries, pos)
     }
 
     #[inline]
@@ -2517,26 +2488,20 @@ impl Index3DF32 {
     /// the true box, since it was rounded outward).
     #[inline]
     fn box_at(&self, pos: usize) -> Box3D {
-        Box3D::new(
-            self.min_xs[pos] as f64,
-            self.min_ys[pos] as f64,
-            self.min_zs[pos] as f64,
-            self.max_xs[pos] as f64,
-            self.max_ys[pos] as f64,
-            self.max_zs[pos] as f64,
-        )
+        self.box_f32_at(pos).widen()
     }
 
     #[inline]
     fn box_f32_at(&self, pos: usize) -> Box3DF32 {
-        Box3DF32 {
-            min_x: self.min_xs[pos],
-            min_y: self.min_ys[pos],
-            min_z: self.min_zs[pos],
-            max_x: self.max_xs[pos],
-            max_y: self.max_ys[pos],
-            max_z: self.max_zs[pos],
-        }
+        Box3DF32::from_soa(
+            &self.min_xs,
+            &self.min_ys,
+            &self.min_zs,
+            &self.max_xs,
+            &self.max_ys,
+            &self.max_zs,
+            pos,
+        )
     }
 
     /// Items whose (outward-rounded) box overlaps `query`. A conservative superset

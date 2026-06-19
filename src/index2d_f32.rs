@@ -29,7 +29,7 @@ use crate::{
 #[cfg(feature = "simd")]
 use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
 #[cfg(feature = "simd")]
-use crate::persistence::{read_f32_le_unchecked, read_u64_le_unchecked};
+use crate::persistence::read_u64_le_unchecked;
 use crate::{
     config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::Point2D,
@@ -1597,12 +1597,7 @@ impl SimdIndex2DF32 {
 
     #[inline]
     fn box_f32_at(&self, pos: usize) -> Box2DF32 {
-        Box2DF32 {
-            min_x: self.min_xs[pos],
-            min_y: self.min_ys[pos],
-            max_x: self.max_xs[pos],
-            max_y: self.max_ys[pos],
-        }
+        Box2DF32::from_soa(&self.min_xs, &self.min_ys, &self.max_xs, &self.max_ys, pos)
     }
 
     /// True when the rounded query `q` fully contains the stored box at `pos`.
@@ -1657,12 +1652,7 @@ impl SimdIndex2DF32 {
     {
         let index = self.indices[pos];
         if is_leaf {
-            let stored = Box2DF32 {
-                min_x: self.min_xs[pos],
-                min_y: self.min_ys[pos],
-                max_x: self.max_xs[pos],
-                max_y: self.max_ys[pos],
-            };
+            let stored = self.box_f32_at(pos);
             if stored.definitely_overlaps_exact(query) || box_at(index).overlaps(query) {
                 out.push(index);
             }
@@ -1741,12 +1731,7 @@ impl SimdIndex2DF32 {
                 }
                 let index = self.indices[pos];
                 if is_leaf {
-                    let stored = Box2DF32 {
-                        min_x: self.min_xs[pos],
-                        min_y: self.min_ys[pos],
-                        max_x: self.max_xs[pos],
-                        max_y: self.max_ys[pos],
-                    };
+                    let stored = self.box_f32_at(pos);
                     if stored.definitely_overlaps_exact(query) || box_at(index).overlaps(query) {
                         visitor(index)?;
                     }
@@ -1848,24 +1833,12 @@ impl<'a> SimdIndex2DF32View<'a> {
     /// Decode an f32 box record, widened to `f64`.
     #[inline]
     fn box_at(&self, pos: usize) -> Box2D {
-        let b = self.box_f32_at(pos);
-        Box2D::new(
-            b.min_x as f64,
-            b.min_y as f64,
-            b.max_x as f64,
-            b.max_y as f64,
-        )
+        self.box_f32_at(pos).widen()
     }
 
     #[inline]
     fn box_f32_at(&self, pos: usize) -> Box2DF32 {
-        let b = pos * 16;
-        Box2DF32 {
-            min_x: read_f32_le_unchecked(self.entries, b),
-            min_y: read_f32_le_unchecked(self.entries, b + 4),
-            max_x: read_f32_le_unchecked(self.entries, b + 8),
-            max_y: read_f32_le_unchecked(self.entries, b + 12),
-        }
+        Box2DF32::read_tree(self.entries, pos)
     }
 
     #[inline]
@@ -2487,22 +2460,12 @@ impl Index2DF32 {
 
     #[inline]
     fn box_at(&self, pos: usize) -> Box2D {
-        Box2D::new(
-            self.min_xs[pos] as f64,
-            self.min_ys[pos] as f64,
-            self.max_xs[pos] as f64,
-            self.max_ys[pos] as f64,
-        )
+        self.box_f32_at(pos).widen()
     }
 
     #[inline]
     fn box_f32_at(&self, pos: usize) -> Box2DF32 {
-        Box2DF32 {
-            min_x: self.min_xs[pos],
-            min_y: self.min_ys[pos],
-            max_x: self.max_xs[pos],
-            max_y: self.max_ys[pos],
-        }
+        Box2DF32::from_soa(&self.min_xs, &self.min_ys, &self.max_xs, &self.max_ys, pos)
     }
 
     /// Items whose (outward-rounded) box overlaps `query`. A conservative superset

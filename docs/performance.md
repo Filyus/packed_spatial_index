@@ -228,12 +228,16 @@ Quick selector:
 
 | Range query | Items | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: | ---: |
-| small query boxes | 10k | 84 us | 72 us | 73 us |
-| small query boxes | 100k | 115 us | 87 us | 96 us |
-| small query boxes | 1M | 156 us | 125 us | 134 us |
-| large query boxes | 10k | 149 us | 117 us | 292 us |
-| large query boxes | 100k | 1.06 ms | 704 us | 1.79 ms |
-| large query boxes | 1M | 9.61 ms | 6.09 ms | 16.59 ms |
+| small query boxes | 10k | 107 us | 70 us | 78 us |
+| small query boxes | 100k | 125 us | 93 us | 102 us |
+| small query boxes | 1M | 177 us | 137 us | 145 us |
+| large query boxes | 10k | 135 us | 113 us | 304 us |
+| large query boxes | 100k | 594 us | 465 us | 1.86 ms |
+| large query boxes | 1M | 5.01 ms | 3.28 ms | 16.78 ms |
+
+The `f64 exact` and `f32 rounded` columns use the compress-store collection on
+AVX-512, which roughly halves the large-window rows versus the scalar collection;
+`f32 exact` runs the per-item refinement callback (no compress) and is unchanged.
 
 | KNN workload | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: |

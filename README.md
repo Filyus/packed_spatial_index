@@ -12,7 +12,8 @@ A fast, packed **static spatial index** for 2D and 3D axis-aligned bounding boxe
 boxes into a Hilbert R-tree once, then run millions of queries over it:
 
 - **range / intersection** search
-- **nearest neighbors** (kNN) from a point or a box
+- **nearest neighbors** (kNN) from a point or a box, under Euclidean or any custom
+  metric — including **great-circle distance** for lon/lat data
 - **ray casts** (all hits or the closest)
 - **spatial joins** between two indexes
 - **region / culling** — 2D triangle / convex-polygon and 3D view-frustum queries
@@ -89,6 +90,7 @@ buffer (`search_into` / `search_with`) or fold with `visit`. See the
 | Range / intersection | [`search`][search], [`search_iter`][search_iter], [`search_into`][search_into], [`search_with`][search_with], [`any`][any], [`first`][first], [`visit`][visit] |
 | Nearest neighbors (point) | [`neighbors`][neighbors], [`neighbors_within`][neighbors_within], [`neighbors_into`][neighbors_into], [`neighbors_with`][neighbors_with], [`visit_neighbors`][visit_neighbors] |
 | Nearest neighbors (box) | [`neighbors_of_box`][neighbors_of_box], [`neighbors_of_box_within`][neighbors_of_box_within], [`neighbors_of_box_into`][neighbors_of_box_into], [`neighbors_of_box_with`][neighbors_of_box_with], [`visit_neighbors_of_box`][visit_neighbors_of_box] |
+| Geographic / custom-metric kNN | [`neighbors_metric`][neighbors_metric], [`neighbors_metric_into`][neighbors_metric_into], [`visit_neighbors_metric`][visit_neighbors_metric] — pass a `\|box\| -> f64` distance (e.g. [`haversine_distance_2d`][haversine_distance_2d] for lon/lat) |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
 | Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
 | Region / culling | 2D on `Index2D` / `Index2DView`: triangle [`search_triangle`][search_triangle] / [`any_triangle`][any_triangle] / [`visit_triangle`][visit_triangle], convex polygon [`search_polygon`][search_polygon] / [`any_polygon`][any_polygon] / [`visit_polygon`][visit_polygon] (+`_into`). 3D frustum on `Index3D` / `Index3DView`: [`search_frustum`][search_frustum] / [`any_frustum`][any_frustum] / [`visit_frustum`][visit_frustum] (+`_into`) |
@@ -133,6 +135,9 @@ assert_eq!(hit, Some((0, 1.0)));
   over a `RangeReader` without loading it whole (`stream` feature). A windowed
   query over a 100 MB index served from object storage costs only a handful of
   range reads. See the [Cloudflare Worker + R2 example](wasm-demo/worker).
+- **Distance metrics**: [`haversine_distance_2d`][haversine_distance_2d] and the
+  [`EARTH_RADIUS_M`][EARTH_RADIUS_M] constant feed great-circle distances into the
+  custom-metric kNN closures.
 - **Workspaces**: [`SearchWorkspace`][SearchWorkspace] /
   [`NeighborWorkspace`][NeighborWorkspace] reuse buffers in loops.
 - **Sorting / errors**: [`SortKey2D`][SortKey2D] / [`SortKey3D`][SortKey3D]
@@ -267,6 +272,11 @@ Licensed under the Apache License, Version 2.0.
 [neighbors_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_into
 [neighbors_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_with
 [visit_neighbors]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_neighbors
+[neighbors_metric]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_metric
+[neighbors_metric_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_metric_into
+[visit_neighbors_metric]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_neighbors_metric
+[haversine_distance_2d]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/fn.haversine_distance_2d.html
+[EARTH_RADIUS_M]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/constant.EARTH_RADIUS_M.html
 [neighbors_of_box]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box
 [neighbors_of_box_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box_within
 [neighbors_of_box_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box_into

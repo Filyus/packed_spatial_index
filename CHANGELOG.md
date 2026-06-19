@@ -4,16 +4,6 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
-### Added
-- **Custom-metric nearest-neighbor queries.** `neighbors_metric` /
-  `neighbors_metric_into` / `visit_neighbors_metric` on `Index2D`, `Index3D` and
-  their zero-copy views (`Index2DView` / `Index3DView`) take a closure
-  `|box| -> f64` returning the distance from your query to a box, so kNN can run
-  under any admissible metric — e.g. **great-circle distance** for lon/lat data.
-  A `haversine_distance_2d(query, box, earth_radius)` helper and an
-  `EARTH_RADIUS_M` constant are provided for the geographic case. The default
-  squared-Euclidean `neighbors` path is unchanged.
-
 
 ## [0.16.0](https://github.com/Filyus/packed_spatial_index/compare/v0.15.0...v0.16.0) - 2026-06-19
 

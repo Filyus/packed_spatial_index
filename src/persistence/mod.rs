@@ -7,9 +7,9 @@ mod tree_chunk;
 mod writer;
 
 use self::container::{find_chunk, parse_container};
-pub(crate) use container::{
-    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, SUPERBLOCK_LEN, plan_container,
-};
+pub(crate) use container::{CHUNK_ENTRY_LEN, SUPERBLOCK_LEN, plan_container};
+#[cfg(feature = "stream")]
+pub(crate) use container::{CHUNK_FLAG_CRITICAL, FORMAT_VERSION};
 pub use errors::{LoadError, PayloadError};
 pub use metadata::{FileMetadata, read_metadata};
 pub(crate) use metadata::{MetaFields, TAG_META};

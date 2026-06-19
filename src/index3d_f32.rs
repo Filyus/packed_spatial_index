@@ -12,6 +12,7 @@
 use crate::{
     build::BuildError,
     builder3d::BuildConfig3D,
+    f32_storage::{round_down, round_up},
     geometry::Box3D,
     persistence::{
         LoadError, MetaFields, ParsedTree, PayloadError, parse_index, read_f32_le_unchecked,
@@ -25,6 +26,8 @@ use crate::{
 
 // Point kNN over the owned f32 indexes (scalar `Index3DF32` + SIMD
 // `SimdIndex3DF32`) needs these whenever `f32-storage` is enabled.
+#[cfg(feature = "simd")]
+use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
 use crate::{
     config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::Point3D,
@@ -38,18 +41,6 @@ use crate::leftpack::leftpack4;
 #[cfg(feature = "simd")]
 use crate::{config::DEFAULT_SEARCH_STACK_CAPACITY, traversal::SearchWorkspace};
 use std::ops::ControlFlow;
-
-#[inline]
-fn round_down(x: f64) -> f32 {
-    let r = x as f32;
-    if (r as f64) > x { r.next_down() } else { r }
-}
-
-#[inline]
-fn round_up(x: f64) -> f32 {
-    let r = x as f32;
-    if (r as f64) < x { r.next_up() } else { r }
-}
 
 /// Materialize the SoA f32 columns of a parsed `f32`-box tree into the canonical
 /// [`Index3DF32`] storage. Shared by the scalar and SIMD `from_bytes` loaders.
@@ -83,23 +74,6 @@ fn f32_columns_from_parsed_3(parsed: &ParsedTree) -> Index3DF32 {
         max_ys,
         max_zs,
         indices,
-    }
-}
-
-/// High bit of the stacked level word, set when the query fully contains a node so
-/// its whole subtree can be collected without further overlap tests.
-#[cfg(feature = "simd")]
-const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
-#[cfg(feature = "simd")]
-const LEVEL_MASK: usize = !CONTAINED_FLAG;
-
-#[inline]
-#[cfg(feature = "simd")]
-fn encode_level(level: usize, contained: bool) -> usize {
-    if contained {
-        level | CONTAINED_FLAG
-    } else {
-        level
     }
 }
 

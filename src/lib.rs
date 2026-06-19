@@ -75,6 +75,8 @@ mod build;
 mod builder2d;
 mod builder3d;
 mod config;
+#[cfg(feature = "f32-storage")]
+mod f32_storage;
 mod frustum;
 mod geometry;
 mod hilbert2d;

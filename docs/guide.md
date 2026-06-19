@@ -288,6 +288,42 @@ assert_eq!(index.neighbors(Point3D::new(5.5, 5.5, 5.5), 1), vec![1]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
+## Geographic and custom-metric kNN
+
+`neighbors` orders by squared Euclidean distance. When your coordinates are
+longitude/latitude, or you want a different distance entirely, use
+`neighbors_metric` (also `neighbors_metric_into` and `visit_neighbors_metric`,
+and the same trio on `Index2DView` / `Index3DView`). It takes a closure
+`|box| -> f64` returning the distance from your query to a box, and returns the
+nearest items in that metric:
+
+```rust
+use packed_spatial_index::{Box2D, Index2DBuilder, Point2D, haversine_distance_2d, EARTH_RADIUS_M};
+
+let mut b = Index2DBuilder::new(2);
+b.add(Box2D::from_point(Point2D::new(13.405, 52.52)));  // Berlin (lon, lat)
+b.add(Box2D::from_point(Point2D::new(2.3522, 48.8566))); // Paris
+let index = b.finish()?;
+
+let query = (13.0, 52.4);
+let nearest = index.neighbors_metric(
+    |bx| haversine_distance_2d(query, bx, EARTH_RADIUS_M),
+    1,
+    f64::INFINITY, // cutoff is in the metric's units (meters here), not squared
+);
+assert_eq!(nearest, vec![0]); // Berlin
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+The closure must return an **admissible lower bound**: the distance to a box may
+never exceed the distance to any item inside it. Every "distance to the closest
+point of the box" metric satisfies this (a child box sits inside its parent), so
+Euclidean, Manhattan, Chebyshev, weighted axes, and the provided
+`haversine_distance_2d` all work. The haversine helper clamps the query onto the
+box per axis — exact for small boxes, a slight over-estimate for very large or
+near-polar ones. `neighbors_metric` is generic, so the default `neighbors` stays
+the faster path when plain Euclidean is what you want.
+
 ## Runnable examples
 
 ```bash

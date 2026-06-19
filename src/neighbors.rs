@@ -2,6 +2,34 @@ use std::collections::BinaryHeap;
 
 use crate::geometry::{Box2D, Box3D, Point2D, Point3D};
 
+/// Mean Earth radius in meters (IUGG), a reasonable default for
+/// [`haversine_distance_2d`].
+pub const EARTH_RADIUS_M: f64 = 6_371_008.8;
+
+/// Great-circle (haversine) distance in meters from a `(lon, lat)` query point
+/// (degrees) to the closest point of `bounds`, a lon/lat AABB in degrees.
+///
+/// Drop this into a [`neighbors_metric`](crate::Index2D::neighbors_metric)
+/// closure for geographic nearest-neighbor queries (`x` = longitude,
+/// `y` = latitude). `earth_radius_m` is usually [`EARTH_RADIUS_M`].
+///
+/// The closest point is the per-axis clamp of the query onto the box — exact for
+/// the small boxes typical of feature data. For a very large or near-polar box it
+/// is a slight *over*-estimate of the true geodesic minimum, so a marginally
+/// closer item in such a box could be missed; inflate the boxes there if you need
+/// a strict bound.
+pub fn haversine_distance_2d(query_lon_lat: (f64, f64), bounds: Box2D, earth_radius_m: f64) -> f64 {
+    let (lon, lat) = query_lon_lat;
+    let clamped_lon = lon.clamp(bounds.min_x, bounds.max_x);
+    let clamped_lat = lat.clamp(bounds.min_y, bounds.max_y);
+    let lat1 = lat.to_radians();
+    let lat2 = clamped_lat.to_radians();
+    let half_dlat = (clamped_lat - lat).to_radians() * 0.5;
+    let half_dlon = (clamped_lon - lon).to_radians() * 0.5;
+    let a = half_dlat.sin().powi(2) + lat1.cos() * lat2.cos() * half_dlon.sin().powi(2);
+    2.0 * earth_radius_m * a.sqrt().asin()
+}
+
 /// What a 2D nearest-neighbor traversal measures distance from: a point or a
 /// query box (box queries use box-to-box gap distance, `0.0` on overlap).
 #[derive(Clone, Copy)]
@@ -197,6 +225,139 @@ pub(crate) fn max_distance_squared(max_distance: f64) -> Option<f64> {
         None
     } else {
         Some(max_distance * max_distance)
+    }
+}
+
+/// A finite or `+inf` distance cutoff in the metric's own units (no squaring).
+/// `None` (nan or negative) means "match nothing".
+pub(crate) fn valid_max_distance(max_distance: f64) -> Option<f64> {
+    if max_distance.is_nan() || max_distance.is_sign_negative() {
+        None
+    } else {
+        Some(max_distance)
+    }
+}
+
+/// Custom-metric point kNN traversal, shared by the owned `Index2D` / `Index3D`
+/// and their f64 byte views. Layout/dimension-agnostic: callers pass a `dist`
+/// closure that returns the metric distance from the query to the box at a node
+/// position. Distances are in the metric's own units (NOT squared), so the
+/// caller's `max_distance` is compared directly. `dist` must be an admissible
+/// lower bound for internal nodes (the distance to the node's bounding box never
+/// exceeds the distance to any item inside it) — true for any "distance to the
+/// closest point of the box" metric, since a child box is contained in its parent.
+pub(crate) mod metric_knn {
+    #![allow(clippy::needless_range_loop)]
+    use super::{NeighborState, valid_max_distance};
+    use std::collections::BinaryHeap;
+    use std::ops::ControlFlow;
+
+    /// Best-first descent collecting up to `max_results` nearest items in
+    /// nondecreasing metric distance. Single priority queue holding both pending
+    /// nodes and candidate leaves (Hjaltason–Samet).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn collect_neighbors(
+        num_nodes: usize,
+        num_items: usize,
+        node_size: usize,
+        level_end: impl Fn(usize) -> usize,
+        index_at: impl Fn(usize) -> usize,
+        max_results: usize,
+        max_distance: f64,
+        dist: impl Fn(usize) -> f64,
+        results: &mut Vec<usize>,
+        queue: &mut BinaryHeap<NeighborState>,
+    ) {
+        queue.clear();
+        let Some(max_dist) = valid_max_distance(max_distance) else {
+            return;
+        };
+        if num_items == 0 || max_results == 0 {
+            return;
+        }
+        let mut node_index = num_nodes - 1;
+        loop {
+            let end = (node_index + node_size).min(level_end(node_index));
+            let is_leaf = node_index < num_items;
+            for pos in node_index..end {
+                let d = dist(pos);
+                if d > max_dist {
+                    continue;
+                }
+                queue.push(NeighborState::new(index_at(pos), is_leaf, d));
+            }
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist {
+                    queue.clear();
+                    return;
+                }
+                if state.is_leaf {
+                    results.push(state.index);
+                    if results.len() == max_results {
+                        return;
+                    }
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+            if !continue_search {
+                return;
+            }
+        }
+    }
+
+    /// Visit items in nondecreasing metric distance; `visitor` may break early.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn visit_neighbors<B>(
+        num_nodes: usize,
+        num_items: usize,
+        node_size: usize,
+        level_end: impl Fn(usize) -> usize,
+        index_at: impl Fn(usize) -> usize,
+        max_distance: f64,
+        dist: impl Fn(usize) -> f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        queue.clear();
+        let Some(max_dist) = valid_max_distance(max_distance) else {
+            return ControlFlow::Continue(());
+        };
+        if num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+        let mut node_index = num_nodes - 1;
+        loop {
+            let end = (node_index + node_size).min(level_end(node_index));
+            let is_leaf = node_index < num_items;
+            for pos in node_index..end {
+                let d = dist(pos);
+                if d > max_dist {
+                    continue;
+                }
+                queue.push(NeighborState::new(index_at(pos), is_leaf, d));
+            }
+            let mut continue_search = false;
+            while let Some(state) = queue.pop() {
+                if state.dist > max_dist {
+                    queue.clear();
+                    return ControlFlow::Continue(());
+                }
+                if state.is_leaf {
+                    visitor(state.index, state.dist)?;
+                } else {
+                    node_index = state.index;
+                    continue_search = true;
+                    break;
+                }
+            }
+            if !continue_search {
+                return ControlFlow::Continue(());
+            }
+        }
     }
 }
 

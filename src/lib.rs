@@ -125,7 +125,7 @@ pub use index3d_f32::{Index3DF32, Serializer3DF32};
 pub use index3d_f32::{SimdIndex3DF32, SimdIndex3DF32View};
 #[cfg(feature = "simd")]
 pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
-pub use neighbors::NeighborWorkspace;
+pub use neighbors::{EARTH_RADIUS_M, NeighborWorkspace, haversine_distance_2d};
 pub use persistence::{FileMetadata, LoadError, PayloadError, read_metadata};
 pub use polygon::ConvexPolygon2D;
 pub use ray::{Ray2D, Ray3D};

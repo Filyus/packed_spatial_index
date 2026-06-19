@@ -13,6 +13,7 @@ use crate::{
     join::{JoinTree, join_core, self_join_core},
     neighbors::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
+        metric_knn,
     },
     persistence::{
         LoadError, MetaFields, ParsedPayload, PayloadError, build_id_to_leaf, parse_index,
@@ -418,6 +419,78 @@ impl Index3D {
         self.visit_neighbors_with_queue(
             NeighborQuery3D::Point(point),
             max_distance,
+            &mut queue,
+            &mut visitor,
+        )
+    }
+
+    /// Up to `max_results` item indices nearest to your query under a custom
+    /// distance `metric`, nearest first.
+    ///
+    /// `metric(b)` returns the distance from your query to box `b` (the query is
+    /// captured by the closure). It must be an **admissible lower bound** — the
+    /// distance to a box never exceeds the distance to any item inside it, which
+    /// holds for any "distance to the closest point of the box" metric.
+    /// `max_distance` is a cutoff in the metric's own units (not squared);
+    /// `f64::INFINITY` for unbounded. The default [`neighbors`](Self::neighbors)
+    /// (squared Euclidean) is faster; reach for this for another metric.
+    pub fn neighbors_metric<M: Fn(Box3D) -> f64>(
+        &self,
+        metric: M,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_metric_into(metric, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// [`neighbors_metric`](Self::neighbors_metric) into a reused buffer (cleared first).
+    pub fn neighbors_metric_into<M: Fn(Box3D) -> f64>(
+        &self,
+        metric: M,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        results.clear();
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::collect_neighbors(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
+            |pos| self.indices[pos],
+            max_results,
+            max_distance,
+            |pos| metric(self.entries[pos]),
+            results,
+            &mut queue,
+        );
+    }
+
+    /// Visit items in nondecreasing custom-`metric` distance; the visitor receives
+    /// the metric distance and may return [`ControlFlow::Break`] to stop early.
+    /// See [`neighbors_metric`](Self::neighbors_metric) for the metric contract.
+    pub fn visit_neighbors_metric<B, M, F>(
+        &self,
+        metric: M,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        M: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::visit_neighbors(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
+            |pos| self.indices[pos],
+            max_distance,
+            |pos| metric(self.entries[pos]),
             &mut queue,
             &mut visitor,
         )
@@ -1466,6 +1539,73 @@ impl<'a> Index3DView<'a> {
         self.visit_neighbors_with_queue(
             NeighborQuery3D::Point(point),
             max_distance,
+            &mut queue,
+            &mut visitor,
+        )
+    }
+
+    /// Up to `max_results` item indices nearest to your query under a custom
+    /// distance `metric`, nearest first. The zero-copy view counterpart of
+    /// [`Index3D::neighbors_metric`](crate::Index3D::neighbors_metric); see it for
+    /// the metric contract.
+    pub fn neighbors_metric<M: Fn(Box3D) -> f64>(
+        &self,
+        metric: M,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_metric_into(metric, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// [`neighbors_metric`](Self::neighbors_metric) into a reused buffer (cleared first).
+    pub fn neighbors_metric_into<M: Fn(Box3D) -> f64>(
+        &self,
+        metric: M,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        results.clear();
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::collect_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
+            |pos| self.index_at_unchecked(pos),
+            max_results,
+            max_distance,
+            |pos| metric(self.entry_at_unchecked(pos)),
+            results,
+            &mut queue,
+        );
+    }
+
+    /// Visit items in nondecreasing custom-`metric` distance; the visitor receives
+    /// the metric distance and may return [`ControlFlow::Break`] to stop early.
+    /// See [`Index3D::neighbors_metric`](crate::Index3D::neighbors_metric) for the
+    /// metric contract.
+    pub fn visit_neighbors_metric<B, M, F>(
+        &self,
+        metric: M,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        M: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::visit_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
+            |pos| self.index_at_unchecked(pos),
+            max_distance,
+            |pos| metric(self.entry_at_unchecked(pos)),
             &mut queue,
             &mut visitor,
         )

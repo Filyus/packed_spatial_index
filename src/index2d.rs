@@ -26,6 +26,7 @@ use crate::geometry::{Box2D, Point2D};
 use crate::join::{JoinTree, join_core, self_join_core};
 use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, max_distance_squared,
+    metric_knn,
 };
 use crate::persistence::{
     LoadError, MetaFields, ParsedPayload, PayloadError, build_id_to_leaf, parse_index,
@@ -475,6 +476,102 @@ impl Index2D {
         self.visit_neighbors_with_queue(
             NeighborQuery2D::Point(point),
             max_distance,
+            &mut queue,
+            &mut visitor,
+        )
+    }
+
+    /// Up to `max_results` item indices nearest to your query under a custom
+    /// distance `metric`, nearest first.
+    ///
+    /// `metric(b)` returns the distance from your query to box `b`; the query
+    /// point and any parameters are captured by the closure. It must be an
+    /// **admissible lower bound** — the distance to a box never exceeds the
+    /// distance to any item inside it, which holds for any "distance to the
+    /// closest point of the box" metric (a child box is contained in its parent).
+    /// `max_distance` is a cutoff in the metric's own units (not squared);
+    /// `f64::INFINITY` for unbounded. Results are ordered by the metric distance.
+    ///
+    /// The default [`neighbors`](Self::neighbors) (squared Euclidean) is faster;
+    /// reach for this when you need another metric, e.g. great-circle distance via
+    /// [`haversine_distance_2d`](crate::haversine_distance_2d).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Box2D, Point2D, haversine_distance_2d, EARTH_RADIUS_M};
+    ///
+    /// // Two lon/lat points; query near the first.
+    /// let mut b = Index2DBuilder::new(2);
+    /// b.add(Box2D::from_point(Point2D::new(13.40, 52.52))); // Berlin
+    /// b.add(Box2D::from_point(Point2D::new(2.35, 48.86)));  // Paris
+    /// let index = b.finish().unwrap();
+    ///
+    /// let q = (13.0, 52.4);
+    /// let hits = index.neighbors_metric(
+    ///     |bx| haversine_distance_2d(q, bx, EARTH_RADIUS_M),
+    ///     1,
+    ///     f64::INFINITY,
+    /// );
+    /// assert_eq!(hits, vec![0]); // Berlin
+    /// ```
+    pub fn neighbors_metric<M: Fn(Box2D) -> f64>(
+        &self,
+        metric: M,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_metric_into(metric, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// [`neighbors_metric`](Self::neighbors_metric) into a reused buffer (cleared first).
+    pub fn neighbors_metric_into<M: Fn(Box2D) -> f64>(
+        &self,
+        metric: M,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        results.clear();
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::collect_neighbors(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
+            |pos| self.indices[pos],
+            max_results,
+            max_distance,
+            |pos| metric(self.entries[pos]),
+            results,
+            &mut queue,
+        );
+    }
+
+    /// Visit items in nondecreasing custom-`metric` distance; the visitor receives
+    /// the metric distance and may return [`ControlFlow::Break`] to stop early.
+    /// See [`neighbors_metric`](Self::neighbors_metric) for the metric contract.
+    pub fn visit_neighbors_metric<B, M, F>(
+        &self,
+        metric: M,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        M: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::visit_neighbors(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
+            |pos| self.indices[pos],
+            max_distance,
+            |pos| metric(self.entries[pos]),
             &mut queue,
             &mut visitor,
         )
@@ -1908,6 +2005,74 @@ impl<'a> Index2DView<'a> {
         self.visit_neighbors_with_queue(
             NeighborQuery2D::Point(point),
             max_distance,
+            &mut queue,
+            &mut visitor,
+        )
+    }
+
+    /// Up to `max_results` item indices nearest to your query under a custom
+    /// distance `metric`, nearest first. The zero-copy view counterpart of
+    /// [`Index2D::neighbors_metric`](crate::Index2D::neighbors_metric); see it for
+    /// the metric contract and a great-circle example via
+    /// [`haversine_distance_2d`](crate::haversine_distance_2d).
+    pub fn neighbors_metric<M: Fn(Box2D) -> f64>(
+        &self,
+        metric: M,
+        max_results: usize,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        self.neighbors_metric_into(metric, max_results, max_distance, &mut results);
+        results
+    }
+
+    /// [`neighbors_metric`](Self::neighbors_metric) into a reused buffer (cleared first).
+    pub fn neighbors_metric_into<M: Fn(Box2D) -> f64>(
+        &self,
+        metric: M,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        results.clear();
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::collect_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
+            |pos| self.index_at_unchecked(pos),
+            max_results,
+            max_distance,
+            |pos| metric(self.entry_at_unchecked(pos)),
+            results,
+            &mut queue,
+        );
+    }
+
+    /// Visit items in nondecreasing custom-`metric` distance; the visitor receives
+    /// the metric distance and may return [`ControlFlow::Break`] to stop early.
+    /// See [`Index2D::neighbors_metric`](crate::Index2D::neighbors_metric) for the
+    /// metric contract.
+    pub fn visit_neighbors_metric<B, M, F>(
+        &self,
+        metric: M,
+        max_distance: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        M: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::visit_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
+            |pos| self.index_at_unchecked(pos),
+            max_distance,
+            |pos| metric(self.entry_at_unchecked(pos)),
             &mut queue,
             &mut visitor,
         )

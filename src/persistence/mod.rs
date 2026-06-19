@@ -3,6 +3,8 @@ use crate::geometry::{Box2D, Box3D};
 mod container;
 mod errors;
 mod metadata;
+mod payload_chunk;
+mod tree_chunk;
 
 use self::container::{FORMAT_MAGIC, find_chunk, parse_container};
 pub(crate) use container::{
@@ -11,6 +13,8 @@ pub(crate) use container::{
 pub use errors::{LoadError, PayloadError};
 pub use metadata::{FileMetadata, read_metadata};
 pub(crate) use metadata::{MetaFields, TAG_META};
+pub(crate) use payload_chunk::{PYLD_DESC_LEN, PYLD_DESC_LEN_FIXED, TAG_PYLD, parse_pyld_chunk};
+pub(crate) use tree_chunk::{TAG_TREE, TREE_DESC_LEN, parse_tree_chunk};
 
 /// Validated slices of the optional trailing payload section. Borrowed by the
 /// zero-copy views to serve `payload(id)`.
@@ -471,117 +475,6 @@ fn usize_from_u64(value: u64) -> Result<usize, LoadError> {
     usize::try_from(value).map_err(|_| LoadError::IntegerOverflow)
 }
 
-// Tag namespace (see FORMAT.md): an uppercase-first ASCII tag is reserved for
-// this format; lowercase-first tags are free for application-private chunks.
-/// The packed tree (descriptor + raw node data). Critical.
-pub(crate) const TAG_TREE: [u8; 4] = *b"TREE";
-/// The optional payload section (descriptor + offset table + blobs). Optional —
-/// an index-only reader skips it.
-pub(crate) const TAG_PYLD: [u8; 4] = *b"PYLD";
-
-/// Decoded `TREE` descriptor. `num_nodes` / `level_count` are *not* stored; the
-/// caller derives them from `num_items` + `node_size`.
-pub(crate) struct TreeDesc {
-    pub(crate) dimensions: usize,
-    pub(crate) coord_bytes: usize,
-    pub(crate) interleaved: bool,
-    pub(crate) num_items: usize,
-    pub(crate) node_size: usize,
-    /// Byte length of the descriptor (so node data starts at `desc_len`). Only
-    /// the streaming reader consults it; the in-memory parser uses the node-data
-    /// slice this comes paired with.
-    #[cfg_attr(not(feature = "stream"), allow(dead_code))]
-    pub(crate) desc_len: usize,
-}
-
-/// Minimum `TREE` descriptor length this version writes.
-pub(crate) const TREE_DESC_LEN: usize = 24;
-/// Minimum `PYLD` descriptor length an older reader must tolerate (`desc_len`
-/// floor). Readers accept any `desc_len >= PYLD_DESC_LEN` and skip to the body.
-pub(crate) const PYLD_DESC_LEN: usize = 8;
-/// `PYLD` descriptor length this version writes: the 8-byte base plus the
-/// `record_stride` u32. A reader before this field existed reads only the base
-/// and treats the payload as variable-width (`record_stride = 0`).
-pub(crate) const PYLD_DESC_LEN_FIXED: usize = 12;
-
-/// Parse a `TREE` chunk's descriptor; returns it plus the node-data slice that
-/// follows. Validates the fixed fields but not the node data (the dimension
-/// parsers do that against the derived tree shape).
-pub(crate) fn parse_tree_chunk(chunk: &[u8]) -> Result<(TreeDesc, &[u8]), LoadError> {
-    if chunk.len() < TREE_DESC_LEN {
-        return Err(LoadError::Truncated);
-    }
-    let desc_len = read_u32_at(chunk, 0)? as usize;
-    if desc_len < TREE_DESC_LEN || desc_len > chunk.len() {
-        return Err(LoadError::InvalidTree);
-    }
-    let dimensions = chunk[4] as usize;
-    let coord_bytes = chunk[5] as usize;
-    let layout = chunk[6];
-    if (dimensions != 2 && dimensions != 3) || (coord_bytes != 4 && coord_bytes != 8) || layout > 1
-    {
-        return Err(LoadError::UnsupportedVersion);
-    }
-    let num_items = read_u64_at(chunk, 8).and_then(usize_from_u64)?;
-    let node_size = read_u16_at(chunk, 16)? as usize;
-    if !(2..=65535).contains(&node_size) {
-        return Err(LoadError::InvalidNodeSize { node_size });
-    }
-    Ok((
-        TreeDesc {
-            dimensions,
-            coord_bytes,
-            interleaved: layout == 1,
-            num_items,
-            node_size,
-            desc_len,
-        },
-        &chunk[desc_len..],
-    ))
-}
-
-/// Decoded `PYLD` descriptor; returns it plus the slice that follows (offset
-/// table + blobs).
-pub(crate) struct PyldDesc {
-    /// Only the streaming reader consults this (to locate the body); the
-    /// in-memory parser uses the body slice it comes paired with.
-    #[cfg_attr(not(feature = "stream"), allow(dead_code))]
-    pub(crate) desc_len: usize,
-    /// Fixed record stride in bytes, or `0` for a variable-width payload (offset
-    /// table present). Read from the descriptor when `desc_len` covers it.
-    pub(crate) record_stride: usize,
-}
-
-pub(crate) fn parse_pyld_chunk(chunk: &[u8]) -> Result<(PyldDesc, &[u8]), LoadError> {
-    if chunk.len() < PYLD_DESC_LEN {
-        return Err(LoadError::Truncated);
-    }
-    let desc_len = read_u32_at(chunk, 0)? as usize;
-    if desc_len < PYLD_DESC_LEN || desc_len > chunk.len() {
-        return Err(LoadError::InvalidTree);
-    }
-    let ordering = chunk[4];
-    let compression = chunk[5];
-    // Only leaf-rank ordering, uncompressed blobs exist in this version.
-    if ordering != 0 || compression != 0 {
-        return Err(LoadError::UnsupportedVersion);
-    }
-    // `record_stride` was appended after the 8-byte base; an older file without
-    // it has `desc_len == 8` and is read as variable-width (stride 0).
-    let record_stride = if desc_len >= PYLD_DESC_LEN_FIXED {
-        read_u32_at(chunk, 8)? as usize
-    } else {
-        0
-    };
-    Ok((
-        PyldDesc {
-            desc_len,
-            record_stride,
-        },
-        &chunk[desc_len..],
-    ))
-}
-
 /// Frame a `TREE` chunk (+ optional `PYLD` / `META`) into a container in `out`.
 /// The dimension-specific node bytes are written by `write_nodes`, called once
 /// after the `TREE` descriptor; everything else (sizing, directory, alignment,
@@ -695,8 +588,8 @@ pub(crate) fn write_index_container(
     Ok(())
 }
 
-/// Primitive and descriptor writers for chunk bodies. Container framing lives
-/// in `container.rs`; all writers share the same pre-sized append path.
+/// Primitive writers and chunk-body helpers. Container framing and descriptor
+/// writers live next to their format parsers.
 impl ByteWriter<'_> {
     pub(crate) fn write_u32(&mut self, value: u32) {
         self.write_bytes(&value.to_le_bytes());
@@ -721,41 +614,6 @@ impl ByteWriter<'_> {
     pub(crate) fn write_zeros(&mut self, n: usize) {
         for _ in 0..n {
             self.write_bytes(&[0]);
-        }
-    }
-
-    pub(crate) fn write_tree_desc(
-        &mut self,
-        dimensions: u8,
-        coord_bytes: u8,
-        interleaved: bool,
-        num_items: usize,
-        node_size: usize,
-    ) {
-        self.write_u32(TREE_DESC_LEN as u32);
-        self.write_u8(dimensions);
-        self.write_u8(coord_bytes);
-        self.write_u8(if interleaved { 1 } else { 0 });
-        self.write_u8(0);
-        self.write_u64(num_items as u64);
-        self.write_u16(node_size as u16);
-        self.write_zeros(6);
-    }
-
-    /// Write the `PYLD` descriptor. A variable-width payload keeps the original
-    /// 8-byte descriptor (byte-identical to older files); a fixed-width one
-    /// appends the `record_stride` field, growing `desc_len` to 12.
-    pub(crate) fn write_pyld_desc(&mut self, record_stride: Option<u32>) {
-        let desc_len = match record_stride {
-            Some(_) => PYLD_DESC_LEN_FIXED,
-            None => PYLD_DESC_LEN,
-        };
-        self.write_u32(desc_len as u32);
-        self.write_u8(0); // ordering = leaf rank
-        self.write_u8(0); // compression = none
-        self.write_u16(0); // reserved
-        if let Some(stride) = record_stride {
-            self.write_u32(stride);
         }
     }
 }

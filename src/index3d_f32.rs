@@ -13,7 +13,7 @@ use crate::{
     build::BuildError,
     builder3d::BuildConfig3D,
     f32_storage::{
-        F32ColumnRefs3D, F32Columns3D, columns3d_from_parsed, round_down, round_up, write_columns3d,
+        Box3DF32, F32ColumnRefs3D, F32Columns3D, columns3d_from_parsed, write_columns3d,
     },
     geometry::Box3D,
     persistence::{LoadError, MetaFields, PayloadError, parse_index},
@@ -56,99 +56,6 @@ fn index3d_from_columns(columns: F32Columns3D) -> Index3DF32 {
         max_ys: columns.max_ys,
         max_zs: columns.max_zs,
         indices: columns.indices,
-    }
-}
-
-/// 3D box stored as six `f32`.
-#[derive(Clone, Copy)]
-struct Box3DF32 {
-    min_x: f32,
-    min_y: f32,
-    min_z: f32,
-    max_x: f32,
-    max_y: f32,
-    max_z: f32,
-}
-
-impl Box3DF32 {
-    /// Superset of `b` with bounds rounded outward (min down, max up).
-    #[inline]
-    fn from_box3d_outward(b: Box3D) -> Self {
-        Self {
-            min_x: round_down(b.min_x),
-            min_y: round_down(b.min_y),
-            min_z: round_down(b.min_z),
-            max_x: round_up(b.max_x),
-            max_y: round_up(b.max_y),
-            max_z: round_up(b.max_z),
-        }
-    }
-
-    /// `b` rounded *inward* (min up, max down) onto the f32 grid. Testing a stored
-    /// f32 box against this with [`overlaps`](Self::overlaps) is bit-identical to
-    /// widening that stored box to f64 and testing it against `b` -- so a scalar
-    /// f32 query compares f32-vs-f32 with no per-node widen yet returns exactly the
-    /// same hits as the f64 comparison.
-    #[inline]
-    fn from_box3d_inward(b: Box3D) -> Self {
-        Self {
-            min_x: round_up(b.min_x),
-            min_y: round_up(b.min_y),
-            min_z: round_up(b.min_z),
-            max_x: round_down(b.max_x),
-            max_y: round_down(b.max_y),
-            max_z: round_down(b.max_z),
-        }
-    }
-
-    /// Widen losslessly to an f64 box.
-    #[inline]
-    fn widen(self) -> Box3D {
-        Box3D::new(
-            self.min_x as f64,
-            self.min_y as f64,
-            self.min_z as f64,
-            self.max_x as f64,
-            self.max_y as f64,
-            self.max_z as f64,
-        )
-    }
-
-    #[inline]
-    fn overlaps(self, other: Self) -> bool {
-        self.min_x <= other.max_x
-            && self.max_x >= other.min_x
-            && self.min_y <= other.max_y
-            && self.max_y >= other.min_y
-            && self.min_z <= other.max_z
-            && self.max_z >= other.min_z
-    }
-
-    #[inline]
-    fn definitely_overlaps_exact(self, query: Box3D) -> bool {
-        (self.min_x.next_up() as f64 <= query.max_x)
-            && (self.max_x.next_down() as f64 >= query.min_x)
-            && (self.min_y.next_up() as f64 <= query.max_y)
-            && (self.max_y.next_down() as f64 >= query.min_y)
-            && (self.min_z.next_up() as f64 <= query.max_z)
-            && (self.max_z.next_down() as f64 >= query.min_z)
-    }
-}
-
-/// Containment test is used only by the SIMD query frontend.
-#[cfg(feature = "simd")]
-impl Box3DF32 {
-    /// True when `self` fully contains `other` (both already rounded). Used only on
-    /// the conservative (non-refined) path, where the leaf MBR property guarantees a
-    /// contained node's whole subtree overlaps the rounded query.
-    #[inline]
-    fn contains(self, other: Self) -> bool {
-        self.min_x <= other.min_x
-            && other.max_x <= self.max_x
-            && self.min_y <= other.min_y
-            && other.max_y <= self.max_y
-            && self.min_z <= other.min_z
-            && other.max_z <= self.max_z
     }
 }
 

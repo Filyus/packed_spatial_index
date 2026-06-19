@@ -17,9 +17,7 @@ use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box3D, Point3D},
     join::{join_core, self_join_core},
-    neighbors::{
-        NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
-    },
+    neighbors::{NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first},
     persistence::{
         ByteWriter, CHUNK_ENTRY_LEN, LoadError, SUPERBLOCK_LEN, TAG_TREE, TREE_DESC_LEN,
         parse_index, plan_container, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -681,50 +679,18 @@ impl SimdIndex3D {
         results: &mut Vec<usize>,
         queue: &mut BinaryHeap<NeighborState>,
     ) {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return;
-        };
-        if self.num_items == 0 {
-            return;
-        }
-
-        let mut node_index = self.min_xs.len() - 1;
-        loop {
-            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = self.distance_squared_at(pos, query);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return;
-                }
-                if state.is_leaf {
-                    results.push(state.index);
-                    if results.len() == max_results {
-                        return;
-                    }
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-
-            if !continue_search {
-                return;
-            }
-        }
+        best_first::collect_neighbors(
+            self.min_xs.len(),
+            self.num_items,
+            self.node_size,
+            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
+            |p| self.indices[p],
+            max_results,
+            max_distance,
+            |pos| self.distance_squared_at(pos, query),
+            results,
+            queue,
+        );
     }
 
     fn nearest_one_with_queue(
@@ -733,40 +699,16 @@ impl SimdIndex3D {
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
-        queue.clear();
-        let mut best_dist = max_distance_squared(max_distance)?;
-        if self.num_items == 0 {
-            return None;
-        }
-
-        let mut best_index = None;
-        let mut node_index = self.min_xs.len() - 1;
-        loop {
-            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = self.distance_squared_at(pos, query);
-                if dist > best_dist {
-                    continue;
-                }
-                if is_leaf {
-                    if dist == 0.0 {
-                        return Some(self.indices[pos]);
-                    }
-                    best_dist = dist;
-                    best_index = Some(self.indices[pos]);
-                } else {
-                    queue.push(NeighborNodeState::new(self.indices[pos], dist));
-                }
-            }
-
-            match queue.pop() {
-                Some(state) if state.dist <= best_dist => node_index = state.index,
-                _ => return best_index,
-            }
-        }
+        best_first::nearest_one(
+            self.min_xs.len(),
+            self.num_items,
+            self.node_size,
+            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
+            |p| self.indices[p],
+            max_distance,
+            |pos| self.distance_squared_at(pos, query),
+            queue,
+        )
     }
 
     fn visit_neighbors_with_queue<B, F>(
@@ -779,47 +721,17 @@ impl SimdIndex3D {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return ControlFlow::Continue(());
-        };
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.min_xs.len() - 1;
-        loop {
-            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = self.distance_squared_at(pos, query);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return ControlFlow::Continue(());
-                }
-                if state.is_leaf {
-                    visitor(state.index, state.dist)?;
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-
-            if !continue_search {
-                return ControlFlow::Continue(());
-            }
-        }
+        best_first::visit_neighbors(
+            self.min_xs.len(),
+            self.num_items,
+            self.node_size,
+            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
+            |p| self.indices[p],
+            max_distance,
+            |pos| self.distance_squared_at(pos, query),
+            queue,
+            visitor,
+        )
     }
 
     #[inline]
@@ -2378,48 +2290,18 @@ impl<'a> SimdIndex3DView<'a> {
         results: &mut Vec<usize>,
         queue: &mut BinaryHeap<NeighborState>,
     ) {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return;
-        };
-        if self.num_items == 0 {
-            return;
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper = self.upper_bound_level(node_index);
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                let dist = self.distance_squared_at(pos, query);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.index_at(pos), is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return;
-                }
-                if state.is_leaf {
-                    results.push(state.index);
-                    if results.len() == max_results {
-                        return;
-                    }
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-            if !continue_search {
-                return;
-            }
-        }
+        best_first::collect_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |p| self.index_at(p),
+            max_results,
+            max_distance,
+            |pos| self.distance_squared_at(pos, query),
+            results,
+            queue,
+        );
     }
 
     fn visit_neighbors_with_queue<B, F>(
@@ -2432,46 +2314,17 @@ impl<'a> SimdIndex3DView<'a> {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return ControlFlow::Continue(());
-        };
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper = self.upper_bound_level(node_index);
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = self.distance_squared_at(pos, query);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.index_at(pos), is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return ControlFlow::Continue(());
-                }
-                if state.is_leaf {
-                    visitor(state.index, state.dist)?;
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-            if !continue_search {
-                return ControlFlow::Continue(());
-            }
-        }
+        best_first::visit_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |p| self.index_at(p),
+            max_distance,
+            |pos| self.distance_squared_at(pos, query),
+            queue,
+            visitor,
+        )
     }
 
     fn nearest_one_with_queue(
@@ -2480,37 +2333,16 @@ impl<'a> SimdIndex3DView<'a> {
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
-        queue.clear();
-        let mut best_dist = max_distance_squared(max_distance)?;
-        if self.num_items == 0 {
-            return None;
-        }
-        let mut best_index = None;
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper = self.upper_bound_level(node_index);
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                let dist = self.distance_squared_at(pos, query);
-                if dist > best_dist {
-                    continue;
-                }
-                if is_leaf {
-                    if dist == 0.0 {
-                        return Some(self.index_at(pos));
-                    }
-                    best_dist = dist;
-                    best_index = Some(self.index_at(pos));
-                } else {
-                    queue.push(NeighborNodeState::new(self.index_at(pos), dist));
-                }
-            }
-            match queue.pop() {
-                Some(state) if state.dist <= best_dist => node_index = state.index,
-                _ => return best_index,
-            }
-        }
+        best_first::nearest_one(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |p| self.index_at(p),
+            max_distance,
+            |pos| self.distance_squared_at(pos, query),
+            queue,
+        )
     }
 }
 

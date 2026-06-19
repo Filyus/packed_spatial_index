@@ -36,7 +36,7 @@ use crate::polygon::ConvexPolygon2D;
 use crate::range::{collect_overlaps, visit_overlaps, visit_region};
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
-use crate::tree_access::TreeAccess;
+use crate::tree_access::{TreeAccess, leaf_group_range};
 use crate::triangle::{Triangle2, Triangle2D, blobs_as_records, records_as_bytes};
 
 #[inline]
@@ -833,12 +833,7 @@ impl Index2D {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             if contained {
-                let start = self.leaf_start_for_entry(node_index, level);
-                let leaf_end = if end < self.level_bounds[level] {
-                    self.leaf_start_for_entry(end, level)
-                } else {
-                    self.num_items
-                };
+                let (start, leaf_end) = leaf_group_range(self, node_index, end, level);
                 results += leaf_end - start;
             } else {
                 for pos in node_index..end {
@@ -969,12 +964,7 @@ impl Index2D {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             if contained {
-                let start = self.leaf_start_for_entry(node_index, level);
-                let leaf_end = if end < self.level_bounds[level] {
-                    self.leaf_start_for_entry(end, level)
-                } else {
-                    self.num_items
-                };
+                let (start, leaf_end) = leaf_group_range(self, node_index, end, level);
                 results += leaf_end - start;
             } else {
                 for pos in node_index..end {
@@ -1485,22 +1475,8 @@ impl Index2D {
         level: usize,
         results: &mut Vec<usize>,
     ) {
-        let start = self.leaf_start_for_entry(node_index, level);
-        let end = if end < self.level_bounds[level] {
-            self.leaf_start_for_entry(end, level)
-        } else {
-            self.num_items
-        };
+        let (start, end) = leaf_group_range(self, node_index, end, level);
         results.extend_from_slice(&self.indices[start..end]);
-    }
-
-    #[inline]
-    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
-        while level > 0 {
-            index = self.indices[index];
-            level -= 1;
-        }
-        index
     }
 
     fn visit_with_stack_impl<const PREFETCH: bool, B, F>(

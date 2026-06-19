@@ -22,7 +22,7 @@ use crate::{
     range::{collect_overlaps, visit_overlaps, visit_region},
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
-    tree_access::TreeAccess,
+    tree_access::{TreeAccess, leaf_group_range},
     triangle::{Triangle3, blobs_as_records, records_as_bytes},
 };
 
@@ -1004,12 +1004,7 @@ impl Index3D {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             if contained {
-                let start = self.leaf_start_for_entry(node_index, level);
-                let leaf_end = if end < self.level_bounds[level] {
-                    self.leaf_start_for_entry(end, level)
-                } else {
-                    self.num_items
-                };
+                let (start, leaf_end) = leaf_group_range(self, node_index, end, level);
                 results += leaf_end - start;
             } else {
                 for pos in node_index..end {
@@ -1041,15 +1036,6 @@ impl Index3D {
                 return (results, visited, planes, contained_subtrees);
             }
         }
-    }
-
-    #[inline]
-    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
-        while level > 0 {
-            index = self.indices[index];
-            level -= 1;
-        }
-        index
     }
 
     /// Same as [`search`](Index3D::search), but the traversal stack is reused by the caller.

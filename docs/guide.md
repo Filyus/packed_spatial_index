@@ -33,7 +33,7 @@ Practical recipes and configuration. For the per-method API reference, see
     results with a masked compress-store, so the win holds even on broad,
     high-result queries). On an **AVX2** CPU (no AVX-512) it runs ~**1.3–1.6×**
     via a runtime AVX2 tier that emulates the compress with a
-    [left-pack](left-pack.md); on older CPUs it falls back to SSE2 width. At very
+    [left-pack](simd.md); on older CPUs it falls back to SSE2 width. At very
     small sizes it ties the scalar index. The tier is picked automatically
     (`AVX-512 → AVX2 → SSE2`); `-C target-cpu=native` (see
     [performance.md](performance.md#build-flags)) additionally widens the scalar

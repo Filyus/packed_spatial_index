@@ -5,7 +5,7 @@
 //! `VPERMD` control that moves the matching `u64` lanes to the front of the
 //! register, so a single unaligned 256-bit store writes the matches contiguously.
 //! The caller advances its length by `popcount(mask)` and must reserve slack for
-//! the unconditional 4-lane store. See `docs/left-pack.md`.
+//! the unconditional 4-lane store. See `docs/simd.md`.
 
 #![cfg(target_arch = "x86_64")]
 

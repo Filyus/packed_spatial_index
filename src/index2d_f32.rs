@@ -1398,6 +1398,11 @@ impl SimdIndex2DF32 {
                 self.extend_contained_leaf_indices(node_index, end, level, out);
             } else {
                 let child_level = if is_leaf { 0 } else { level - 1 };
+                // Reserve the whole node's worth of results up front so the
+                // compress-store below writes through a stable base pointer.
+                if is_leaf {
+                    out.reserve(end - node_index);
+                }
                 let mut pos = node_index;
                 while pos + 16 <= end {
                     // SAFETY: `pos + 16 <= end`, and `end` is bounded by the array length.
@@ -1415,10 +1420,38 @@ impl SimdIndex2DF32 {
                     let m4 = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(mxy, qmny_v);
                     let mut bits: u16 = m1 & m2 & m3 & m4;
                     if is_leaf {
-                        while bits != 0 {
-                            let k = bits.trailing_zeros() as usize;
-                            out.push(self.indices[pos + k]);
-                            bits &= bits - 1;
+                        // VPCOMPRESSQ over both 8-lane halves of the u16 mask
+                        // (indices are u64), guarded so an empty chunk pays
+                        // nothing — the two-op cost otherwise loses on sparse
+                        // leaves. Capacity reserved above.
+                        if bits != 0 {
+                            // SAFETY: `pos + 16 <= end <= indices.len()`; `out` has
+                            // `end - node_index` slack reserved.
+                            unsafe {
+                                let base = out.as_mut_ptr();
+                                let mut len = out.len();
+                                let lo = bits as u8;
+                                let hi = (bits >> 8) as u8;
+                                let vlo = _mm512_loadu_epi64(
+                                    self.indices.as_ptr().add(pos) as *const i64
+                                );
+                                _mm512_mask_compressstoreu_epi64(
+                                    base.add(len) as *mut i64,
+                                    lo,
+                                    vlo,
+                                );
+                                len += lo.count_ones() as usize;
+                                let vhi = _mm512_loadu_epi64(
+                                    self.indices.as_ptr().add(pos + 8) as *const i64
+                                );
+                                _mm512_mask_compressstoreu_epi64(
+                                    base.add(len) as *mut i64,
+                                    hi,
+                                    vhi,
+                                );
+                                len += hi.count_ones() as usize;
+                                out.set_len(len);
+                            }
                         }
                     } else {
                         // query contains child: qmin <= cmin && cmax <= qmax on both axes.

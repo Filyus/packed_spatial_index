@@ -1,14 +1,31 @@
 //! f32-only point kNN traversal.
 //!
 //! Shared by the owned `Index*F32`, SIMD `SimdIndex*F32`, and f32 views.
-//! Dimension/layout-agnostic: callers pass `dist`/`exact_dist` closures that
-//! read their own box storage.
+//! Dimension/layout-agnostic: frontends implement `PointKnn`, and the traversal
+//! layer still receives plain closures for distances and tree access.
 
 #![allow(clippy::needless_range_loop)]
 
-use super::{ExactNeighborState, NeighborNodeState, NeighborState, max_distance_squared};
+use super::{
+    ExactNeighborState, NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared,
+};
+use crate::config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY;
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
+
+/// Minimal tree access needed by shared f32 point-kNN adapters.
+pub(crate) trait PointKnn {
+    type Point: Copy;
+    type ExactBox;
+
+    fn knn_num_nodes(&self) -> usize;
+    fn knn_num_items(&self) -> usize;
+    fn knn_node_size(&self) -> usize;
+    fn knn_level_end(&self, node: usize) -> usize;
+    fn knn_index_at(&self, pos: usize) -> usize;
+    fn knn_distance_squared_to(&self, pos: usize, point: Self::Point) -> f64;
+    fn exact_distance_squared(point: Self::Point, bbox: Self::ExactBox) -> f64;
+}
 
 /// Exclusive node-position end of the level containing `node`, for the
 /// slice-backed owned indexes. (Byte-backed views supply their own closure that
@@ -45,6 +62,267 @@ pub(crate) fn write_exact_results(
             .then_with(|| a.index.cmp(&b.index))
     });
     results.extend(ordered.into_iter().map(|state| state.index));
+}
+
+pub(crate) fn point_neighbors<T: PointKnn + ?Sized>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+) -> Vec<usize> {
+    point_neighbors_within(tree, point, max_results, f64::INFINITY)
+}
+
+pub(crate) fn point_neighbors_within<T: PointKnn + ?Sized>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    max_distance: f64,
+) -> Vec<usize> {
+    let mut results = Vec::new();
+    point_neighbors_into(tree, point, max_results, max_distance, &mut results);
+    results
+}
+
+pub(crate) fn point_neighbors_into<T: PointKnn + ?Sized>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    max_distance: f64,
+    results: &mut Vec<usize>,
+) {
+    results.clear();
+    if max_results == 0 {
+        return;
+    }
+    if max_results == 1 {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        if let Some(index) = point_nearest_one(tree, point, max_distance, &mut queue) {
+            results.push(index);
+        }
+        return;
+    }
+
+    let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    collect_point_neighbors_with_queue(tree, point, max_results, max_distance, results, &mut queue);
+}
+
+pub(crate) fn point_neighbors_with<'a, T: PointKnn + ?Sized>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    max_distance: f64,
+    workspace: &'a mut NeighborWorkspace,
+) -> &'a [usize] {
+    workspace.results.clear();
+    if max_results == 0 {
+        workspace.queue.clear();
+        workspace.node_queue.clear();
+        return &workspace.results;
+    }
+    if max_results == 1 {
+        workspace.queue.clear();
+        if let Some(index) = point_nearest_one(tree, point, max_distance, &mut workspace.node_queue)
+        {
+            workspace.results.push(index);
+        }
+        return &workspace.results;
+    }
+
+    workspace.node_queue.clear();
+    collect_point_neighbors_with_queue(
+        tree,
+        point,
+        max_results,
+        max_distance,
+        &mut workspace.results,
+        &mut workspace.queue,
+    );
+    &workspace.results
+}
+
+pub(crate) fn point_neighbors_exact<T, F>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    box_at: F,
+) -> Vec<usize>
+where
+    T: PointKnn + ?Sized,
+    F: FnMut(usize) -> T::ExactBox,
+{
+    point_neighbors_exact_within(tree, point, max_results, f64::INFINITY, box_at)
+}
+
+pub(crate) fn point_neighbors_exact_within<T, F>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    max_distance: f64,
+    box_at: F,
+) -> Vec<usize>
+where
+    T: PointKnn + ?Sized,
+    F: FnMut(usize) -> T::ExactBox,
+{
+    let mut results = Vec::new();
+    point_neighbors_exact_into(tree, point, max_results, max_distance, box_at, &mut results);
+    results
+}
+
+pub(crate) fn point_neighbors_exact_into<T, F>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    max_distance: f64,
+    box_at: F,
+    results: &mut Vec<usize>,
+) where
+    T: PointKnn + ?Sized,
+    F: FnMut(usize) -> T::ExactBox,
+{
+    let mut frontier = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    let mut best = BinaryHeap::with_capacity(max_results);
+    collect_point_neighbors_refined_with_queue(
+        tree,
+        point,
+        max_results,
+        max_distance,
+        box_at,
+        results,
+        &mut frontier,
+        &mut best,
+    );
+}
+
+pub(crate) fn point_neighbors_exact_with<'a, T, F>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    max_distance: f64,
+    box_at: F,
+    workspace: &'a mut NeighborWorkspace,
+) -> &'a [usize]
+where
+    T: PointKnn + ?Sized,
+    F: FnMut(usize) -> T::ExactBox,
+{
+    collect_point_neighbors_refined_with_queue(
+        tree,
+        point,
+        max_results,
+        max_distance,
+        box_at,
+        &mut workspace.results,
+        &mut workspace.queue,
+        &mut workspace.exact_queue,
+    );
+    &workspace.results
+}
+
+pub(crate) fn visit_point_neighbors<T, B>(
+    tree: &T,
+    point: T::Point,
+    max_distance: f64,
+    visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
+) -> ControlFlow<B>
+where
+    T: PointKnn + ?Sized,
+{
+    let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    visit_point_neighbors_with_queue(tree, point, max_distance, &mut queue, visitor)
+}
+
+fn collect_point_neighbors_with_queue<T: PointKnn + ?Sized>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    max_distance: f64,
+    results: &mut Vec<usize>,
+    queue: &mut BinaryHeap<NeighborState>,
+) {
+    collect_neighbors(
+        tree.knn_num_nodes(),
+        tree.knn_num_items(),
+        tree.knn_node_size(),
+        |n| tree.knn_level_end(n),
+        |p| tree.knn_index_at(p),
+        max_results,
+        max_distance,
+        |pos| tree.knn_distance_squared_to(pos, point),
+        results,
+        queue,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_point_neighbors_refined_with_queue<T, F>(
+    tree: &T,
+    point: T::Point,
+    max_results: usize,
+    max_distance: f64,
+    mut box_at: F,
+    results: &mut Vec<usize>,
+    frontier: &mut BinaryHeap<NeighborState>,
+    best: &mut BinaryHeap<ExactNeighborState>,
+) where
+    T: PointKnn + ?Sized,
+    F: FnMut(usize) -> T::ExactBox,
+{
+    collect_neighbors_refined(
+        tree.knn_num_nodes(),
+        tree.knn_num_items(),
+        tree.knn_node_size(),
+        |n| tree.knn_level_end(n),
+        |p| tree.knn_index_at(p),
+        max_results,
+        max_distance,
+        |pos| tree.knn_distance_squared_to(pos, point),
+        |index| T::exact_distance_squared(point, box_at(index)),
+        results,
+        frontier,
+        best,
+    );
+}
+
+fn point_nearest_one<T: PointKnn + ?Sized>(
+    tree: &T,
+    point: T::Point,
+    max_distance: f64,
+    queue: &mut BinaryHeap<NeighborNodeState>,
+) -> Option<usize> {
+    nearest_one(
+        tree.knn_num_nodes(),
+        tree.knn_num_items(),
+        tree.knn_node_size(),
+        |n| tree.knn_level_end(n),
+        |p| tree.knn_index_at(p),
+        max_distance,
+        |pos| tree.knn_distance_squared_to(pos, point),
+        queue,
+    )
+}
+
+fn visit_point_neighbors_with_queue<T, B>(
+    tree: &T,
+    point: T::Point,
+    max_distance: f64,
+    queue: &mut BinaryHeap<NeighborState>,
+    visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
+) -> ControlFlow<B>
+where
+    T: PointKnn + ?Sized,
+{
+    visit_neighbors(
+        tree.knn_num_nodes(),
+        tree.knn_num_items(),
+        tree.knn_node_size(),
+        |n| tree.knn_level_end(n),
+        |p| tree.knn_index_at(p),
+        max_distance,
+        |pos| tree.knn_distance_squared_to(pos, point),
+        queue,
+        visitor,
+    )
 }
 
 /// Best-first descent collecting up to `max_results` nearest items. `dist(pos)`

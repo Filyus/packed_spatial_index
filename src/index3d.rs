@@ -19,7 +19,7 @@ use crate::{
         LoadError, MetaFields, ParsedPayload, PayloadError, build_id_to_leaf, parse_index,
         payload_slice, read_f64_le_unchecked, read_u64_le_unchecked, write_index_container,
     },
-    range::{collect_overlaps, visit_overlaps},
+    range::{collect_overlaps, visit_overlaps, visit_region},
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree_access::TreeAccess,
@@ -970,79 +970,18 @@ impl Index3D {
         &self,
         frustum: Frustum3D,
         stack: &mut Vec<usize>,
-        mut visitor: F,
+        visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        stack.clear();
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
-        const LEVEL_MASK: usize = !CONTAINED_FLAG;
-
-        let root = self.entries[self.entries.len() - 1];
-        if frustum.contains_box(root) {
-            for &index in &self.indices[..self.num_items] {
-                visitor(index)?;
-            }
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.entries.len() - 1;
-        let mut level = self.level_bounds.len() - 1;
-        let mut contained = false;
-
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bounds[level]);
-            let is_leaf = node_index < self.num_items;
-            let node_entries = &self.entries[node_index..end];
-            let node_indices = &self.indices[node_index..end];
-
-            if contained {
-                let start = self.leaf_start_for_entry(node_index, level);
-                let leaf_end = if end < self.level_bounds[level] {
-                    self.leaf_start_for_entry(end, level)
-                } else {
-                    self.num_items
-                };
-                for &index in &self.indices[start..leaf_end] {
-                    visitor(index)?;
-                }
-            } else if is_leaf {
-                for (b, &index) in node_entries.iter().zip(node_indices) {
-                    if !frustum.overlaps_box(*b) {
-                        continue;
-                    }
-                    visitor(index)?;
-                }
-            } else {
-                let child_level = level - 1;
-                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
-                    if !frustum.overlaps_box(*b) {
-                        continue;
-                    }
-                    stack.push(index);
-                    let encoded_level = if frustum.contains_box(*b) {
-                        child_level | CONTAINED_FLAG
-                    } else {
-                        child_level
-                    };
-                    stack.push(encoded_level);
-                }
-            }
-
-            if stack.len() > 1 {
-                let encoded_level = stack.pop().unwrap();
-                level = encoded_level & LEVEL_MASK;
-                contained = (encoded_level & CONTAINED_FLAG) != 0;
-                node_index = stack.pop().unwrap();
-            } else {
-                return ControlFlow::Continue(());
-            }
-        }
+        visit_region(
+            self,
+            stack,
+            |b| frustum.overlaps_box(b),
+            |b| frustum.contains_box(b),
+            visitor,
+        )
     }
 
     /// Diagnostics for the frustum query: `(results, nodes_visited, plane_tests,
@@ -1951,86 +1890,9 @@ impl<'a> Index3DView<'a> {
         stack: &mut Vec<usize>,
         overlaps: impl Fn(Box3D) -> bool,
         contains: impl Fn(Box3D) -> bool,
-        mut visitor: impl FnMut(usize) -> ControlFlow<B>,
+        visitor: impl FnMut(usize) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
-        stack.clear();
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
-        const LEVEL_MASK: usize = !CONTAINED_FLAG;
-
-        let root = self.entry_at_unchecked(self.num_nodes - 1);
-        if contains(root) {
-            for pos in 0..self.num_items {
-                visitor(self.index_at_unchecked(pos))?;
-            }
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        let mut level = self.level_count - 1;
-        let mut contained = false;
-
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
-            let is_leaf = node_index < self.num_items;
-
-            if contained {
-                let start = self.leaf_start_for_entry(node_index, level);
-                let leaf_end = if end < self.level_bound_unchecked(level) {
-                    self.leaf_start_for_entry(end, level)
-                } else {
-                    self.num_items
-                };
-                for pos in start..leaf_end {
-                    visitor(self.index_at_unchecked(pos))?;
-                }
-            } else if is_leaf {
-                for pos in node_index..end {
-                    let b = self.entry_at_unchecked(pos);
-                    if !overlaps(b) {
-                        continue;
-                    }
-                    visitor(self.index_at_unchecked(pos))?;
-                }
-            } else {
-                let child_level = level - 1;
-                for pos in (node_index..end).rev() {
-                    let b = self.entry_at_unchecked(pos);
-                    if !overlaps(b) {
-                        continue;
-                    }
-                    stack.push(self.index_at_unchecked(pos));
-                    let encoded_level = if contains(b) {
-                        child_level | CONTAINED_FLAG
-                    } else {
-                        child_level
-                    };
-                    stack.push(encoded_level);
-                }
-            }
-
-            if stack.len() > 1 {
-                let encoded_level = stack.pop().unwrap();
-                level = encoded_level & LEVEL_MASK;
-                contained = (encoded_level & CONTAINED_FLAG) != 0;
-                node_index = stack.pop().unwrap();
-            } else {
-                return ControlFlow::Continue(());
-            }
-        }
-    }
-
-    /// Leaf-section start of the subtree rooted at entry `index` on `level`.
-    #[inline]
-    fn leaf_start_for_entry(&self, mut index: usize, mut level: usize) -> usize {
-        while level > 0 {
-            index = self.index_at_unchecked(index);
-            level -= 1;
-        }
-        index
+        visit_region(self, stack, overlaps, contains, visitor)
     }
 
     fn visit_neighbors_with_queue<B, F>(

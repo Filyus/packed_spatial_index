@@ -107,6 +107,15 @@ impl Box2DF32 {
             && (self.max_y.next_down() as f64 >= query.min_y)
     }
 
+    #[inline]
+    pub(crate) fn overlaps_exact_or_refined(
+        self,
+        query: Box2D,
+        exact_box: impl FnOnce() -> Box2D,
+    ) -> bool {
+        self.definitely_overlaps_exact(query) || exact_box().overlaps(query)
+    }
+
     /// True when `self` fully contains `other` (both already rounded).
     #[inline]
     #[cfg(feature = "simd")]
@@ -223,6 +232,15 @@ impl Box3DF32 {
             && (self.max_y.next_down() as f64 >= query.min_y)
             && (self.min_z.next_up() as f64 <= query.max_z)
             && (self.max_z.next_down() as f64 >= query.min_z)
+    }
+
+    #[inline]
+    pub(crate) fn overlaps_exact_or_refined(
+        self,
+        query: Box3D,
+        exact_box: impl FnOnce() -> Box3D,
+    ) -> bool {
+        self.definitely_overlaps_exact(query) || exact_box().overlaps(query)
     }
 
     /// True when `self` fully contains `other` (both already rounded).

@@ -1653,7 +1653,7 @@ impl SimdIndex2DF32 {
         let index = self.indices[pos];
         if is_leaf {
             let stored = self.box_f32_at(pos);
-            if stored.definitely_overlaps_exact(query) || box_at(index).overlaps(query) {
+            if stored.overlaps_exact_or_refined(query, || box_at(index)) {
                 out.push(index);
             }
         } else {
@@ -1732,7 +1732,7 @@ impl SimdIndex2DF32 {
                 let index = self.indices[pos];
                 if is_leaf {
                     let stored = self.box_f32_at(pos);
-                    if stored.definitely_overlaps_exact(query) || box_at(index).overlaps(query) {
+                    if stored.overlaps_exact_or_refined(query, || box_at(index)) {
                         visitor(index)?;
                     }
                 } else {
@@ -2096,7 +2096,7 @@ impl<'a> SimdIndex2DF32View<'a> {
                 }
                 let index = self.index_at(pos);
                 if is_leaf {
-                    if stored.definitely_overlaps_exact(query) || box_at(index).overlaps(query) {
+                    if stored.overlaps_exact_or_refined(query, || box_at(index)) {
                         visitor(index)?;
                     }
                 } else {
@@ -2577,7 +2577,7 @@ impl Index2DF32 {
         self.visit_hits(
             |b| b.overlaps(q),
             |id, stored| {
-                if stored.definitely_overlaps_exact(query) || box_at(id).overlaps(query) {
+                if stored.overlaps_exact_or_refined(query, || box_at(id)) {
                     visitor(id)
                 } else {
                     ControlFlow::Continue(())

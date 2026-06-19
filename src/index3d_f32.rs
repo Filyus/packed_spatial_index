@@ -33,10 +33,10 @@ use crate::{
 use std::collections::BinaryHeap;
 
 // Imports used only by the SIMD query frontend (SimdIndex3DF32 + its view).
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+use crate::leftpack::leftpack4;
 #[cfg(feature = "simd")]
-use crate::{
-    config::DEFAULT_SEARCH_STACK_CAPACITY, leftpack::leftpack4, traversal::SearchWorkspace,
-};
+use crate::{config::DEFAULT_SEARCH_STACK_CAPACITY, traversal::SearchWorkspace};
 use std::ops::ControlFlow;
 
 #[inline]

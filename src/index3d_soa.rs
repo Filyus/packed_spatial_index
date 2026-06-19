@@ -9,13 +9,14 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use wide::f64x4;
 
+#[cfg(target_arch = "x86_64")]
+use crate::leftpack::leftpack4;
 use crate::{
     build::BuildError,
     builder3d::BuildConfig3D,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box3D, Point3D},
     join::{JoinTree, join_core, self_join_core},
-    leftpack::leftpack4,
     neighbors::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
     },

@@ -94,6 +94,7 @@ mod leftpack;
 mod neighbors;
 mod persistence;
 mod polygon;
+mod range;
 mod ray;
 mod sort2d;
 mod sort3d;

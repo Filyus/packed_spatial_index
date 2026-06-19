@@ -19,6 +19,7 @@ use crate::{
         LoadError, MetaFields, ParsedPayload, PayloadError, build_id_to_leaf, parse_index,
         payload_slice, read_f64_le_unchecked, read_u64_le_unchecked, write_index_container,
     },
+    range::{collect_overlaps, visit_overlaps},
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree_access::TreeAccess,
@@ -893,49 +894,12 @@ impl Index3D {
         &self,
         query: Box3D,
         stack: &mut Vec<usize>,
-        mut visitor: F,
+        visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        stack.clear();
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.entries.len() - 1;
-        let mut level = self.level_bounds.len() - 1;
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bounds[level]);
-            let is_leaf = node_index < self.num_items;
-            let node_entries = &self.entries[node_index..end];
-            let node_indices = &self.indices[node_index..end];
-
-            if is_leaf {
-                for (b, &index) in node_entries.iter().zip(node_indices) {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    visitor(index)?;
-                }
-            } else {
-                let child_level = level - 1;
-                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    stack.push(index);
-                    stack.push(child_level);
-                }
-            }
-
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return ControlFlow::Continue(());
-            }
-        }
+        visit_overlaps(self, query, stack, visitor)
     }
 
     /// Item indices whose box overlaps the view frustum `frustum`.
@@ -1914,53 +1878,7 @@ impl<'a> Index3DView<'a> {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        results.clear();
-        stack.clear();
-        if self.num_items == 0 {
-            return;
-        }
-
-        let root = self.entry_at_unchecked(self.num_nodes - 1);
-        if query.contains(root) {
-            for pos in 0..self.num_items {
-                results.push(self.index_at_unchecked(pos));
-            }
-            return;
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        let mut level = self.level_count - 1;
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
-            let is_leaf = node_index < self.num_items;
-
-            if is_leaf {
-                for pos in node_index..end {
-                    let b = self.entry_at_unchecked(pos);
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    results.push(self.index_at_unchecked(pos));
-                }
-            } else {
-                let child_level = level - 1;
-                for pos in (node_index..end).rev() {
-                    let b = self.entry_at_unchecked(pos);
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    stack.push(self.index_at_unchecked(pos));
-                    stack.push(child_level);
-                }
-            }
-
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return;
-            }
-        }
+        collect_overlaps(self, query, results, stack);
     }
 
     #[doc(hidden)]
@@ -1968,49 +1886,12 @@ impl<'a> Index3DView<'a> {
         &self,
         query: Box3D,
         stack: &mut Vec<usize>,
-        mut visitor: F,
+        visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        stack.clear();
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        let mut level = self.level_count - 1;
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
-            let is_leaf = node_index < self.num_items;
-
-            if is_leaf {
-                for pos in node_index..end {
-                    let b = self.entry_at_unchecked(pos);
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    visitor(self.index_at_unchecked(pos))?;
-                }
-            } else {
-                let child_level = level - 1;
-                for pos in (node_index..end).rev() {
-                    let b = self.entry_at_unchecked(pos);
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    stack.push(self.index_at_unchecked(pos));
-                    stack.push(child_level);
-                }
-            }
-
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return ControlFlow::Continue(());
-            }
-        }
+        visit_overlaps(self, query, stack, visitor)
     }
 
     /// Item indices whose box overlaps the view frustum `frustum`. The zero-copy

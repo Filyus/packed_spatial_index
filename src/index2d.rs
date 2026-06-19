@@ -33,6 +33,7 @@ use crate::persistence::{
     payload_slice, read_f64_le_unchecked, read_u64_le_unchecked, write_index_container,
 };
 use crate::polygon::ConvexPolygon2D;
+use crate::range::{collect_overlaps, visit_overlaps};
 use crate::ray::Ray2D;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 use crate::tree_access::TreeAccess;
@@ -1423,7 +1424,7 @@ impl Index2D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<false, B, F>(query, stack, visitor)
+        visit_overlaps(self, query, stack, visitor)
     }
 
     /// Hidden prefetch variant of [`visit_with_stack`](Index2D::visit_with_stack).
@@ -2381,55 +2382,7 @@ impl<'a> Index2DView<'a> {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        results.clear();
-        stack.clear();
-        if self.num_items == 0 {
-            return;
-        }
-
-        let root = self.entry_at_unchecked(self.num_nodes - 1);
-        if query.contains(root) {
-            for pos in 0..self.num_items {
-                results.push(self.index_at_unchecked(pos));
-            }
-            return;
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        let mut level = self.level_count - 1;
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
-            let is_leaf = node_index < self.num_items;
-
-            if is_leaf {
-                for pos in node_index..end {
-                    let b = self.entry_at_unchecked(pos);
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    let index = self.index_at_unchecked(pos);
-                    results.push(index);
-                }
-            } else {
-                let child_level = level - 1;
-                for pos in (node_index..end).rev() {
-                    let b = self.entry_at_unchecked(pos);
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    let index = self.index_at_unchecked(pos);
-                    stack.push(index);
-                    stack.push(child_level);
-                }
-            }
-
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return;
-            }
-        }
+        collect_overlaps(self, query, results, stack);
     }
 
     #[doc(hidden)]
@@ -2437,51 +2390,12 @@ impl<'a> Index2DView<'a> {
         &self,
         query: Box2D,
         stack: &mut Vec<usize>,
-        mut visitor: F,
+        visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        stack.clear();
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        let mut level = self.level_count - 1;
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
-            let is_leaf = node_index < self.num_items;
-
-            if is_leaf {
-                for pos in node_index..end {
-                    let b = self.entry_at_unchecked(pos);
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    let index = self.index_at_unchecked(pos);
-                    visitor(index)?;
-                }
-            } else {
-                let child_level = level - 1;
-                for pos in (node_index..end).rev() {
-                    let b = self.entry_at_unchecked(pos);
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    let index = self.index_at_unchecked(pos);
-                    stack.push(index);
-                    stack.push(child_level);
-                }
-            }
-
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return ControlFlow::Continue(());
-            }
-        }
+        visit_overlaps(self, query, stack, visitor)
     }
 
     /// Item indices whose box overlaps the 2D triangle `tri`. The zero-copy view

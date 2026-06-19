@@ -23,7 +23,7 @@ Queries run on **runtime-dispatched SIMD** — the widest kernel your CPU offers
 chosen at load time (`AVX-512 → AVX2 → SSE2`), no special build flags. Range
 search runs **~1.6–1.9× over the scalar index on AVX-512** and **~1.3–1.65× on
 AVX2** (it [emulates the missing compress instruction](docs/simd.md) so the win
-holds on older CPUs too), and builds beat comparable Rust indexes
+holds on older CPUs too). Builds beat comparable Rust indexes too
 ([benchmarks](docs/performance.md)). The same bytes load back as **zero-copy**,
 mmap-friendly views; a file can carry an optional per-item **payload** and
 file-level **metadata**; and a **streaming reader** answers a windowed query over a

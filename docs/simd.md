@@ -33,7 +33,7 @@ alone**, because the branches were what blocked auto-vectorization.
 The owned indexes store boxes Array-of-Structs (one `Box2D` per item, the on-disk
 layout). SIMD wants the opposite: `SimdIndex*` keeps **separate columns**
 (`min_xs[]`, `min_ys[]`, `max_xs[]`, `max_ys[]`). Now one SIMD register holds the
-same coordinate of N consecutive boxes, and the overlap test is a handful of
+same coordinate of N consecutive boxes; the overlap test is a handful of
 vector ops per N boxes instead of per box. SoA is what makes everything below
 possible — it is the single most important layout decision.
 
@@ -45,7 +45,7 @@ format, paid for at load time, not query time. See the persistence note in
 ## Orange belt — explicit portable SIMD (`wide`)
 
 The baseline SIMD kernel uses the [`wide`](https://crates.io/crates/wide) crate's
-`f64x4`: load four boxes per column, compare, AND the masks, and read out a
+`f64x4`: load four boxes per column, compare, AND the masks, then read out a
 bitmask of hits. `wide` lowers to whatever width the build's target features
 allow — **SSE2 (128-bit) by default**, AVX2 (256-bit) only with
 `-C target-cpu=native` / `x86-64-v3`. This is the portable floor and the wasm
@@ -90,9 +90,9 @@ out.set_len(out.len() + mask.count_ones() as usize); // advance by popcount
 ```
 
 This removed the large-N inversion: SIMD range search went from trailing the
-scalar index to **~1.6–1.9× faster** across 100k–1M, and a dense all-hits raycast
-dropped from ~29.5 µs to ~17.1 µs at 1M (**1.73×**). It's used for range search,
-and (a later addition) all-hits raycast, on AVX-512.
+scalar index to **~1.6–1.9× faster** across 100k–1M; a dense all-hits raycast
+dropped from ~29.5 µs to ~17.1 µs at 1M (**1.73×**). It's used for AVX-512 range
+search and all-hits raycast (the raycast path a later addition).
 
 ## Brown belt — AVX2 left-pack (emulating the instruction)
 
@@ -101,7 +101,7 @@ a lookup table — the classic "left-pack" trick.
 
 A 4-wide box test gives a 4-bit mask; the four `u64` indices sit in one 256-bit
 register. `_mm256_permutevar8x32_epi32` (`VPERMD`) permutes the eight 32-bit lanes
-by eight indices, and a `u64` is two adjacent 32-bit lanes — so a control vector
+by eight indices. A `u64` is two adjacent 32-bit lanes, so a control vector
 listing the `2k, 2k+1` halves of each set bit moves the matching `u64`s to the
 front. There are only 16 possible 4-bit masks, so the controls are a **16-entry
 table built at compile time** (`const fn`):
@@ -134,7 +134,7 @@ have a full vector of slack past its logical length. The invariant: **reserve
 for the whole node and every store lands within capacity; advance the logical
 length only by `popcount`. Get this wrong and you have a buffer overrun in
 `unsafe` code, so it's pinned by `tests/avx2.rs` (24k+ queries across sizes, node
-sizes, and edge cases, asserted equal to the scalar index).
+sizes and edge cases, asserted equal to the scalar index).
 
 The f32 kernels add a twist: they test **8** boxes per step (`f32` is half the
 width) but indices are still `u64` (two 256-bit registers). The 4-wide left-pack
@@ -191,7 +191,7 @@ hardware and workload. Reproduce with the harnesses described in
 ## Meta-belt — measure-then-commit
 
 The real discipline isn't any one instruction; it's that **every rung was an A/B
-measurement, and the losers were reverted.** AVX2 looked dead (tied at 1M) until
+measurement; the losers were reverted.** AVX2 looked dead (tied at 1M) until
 the left-pack fixed the collection; the f32 left-pack looked like a regression
 until the per-nibble guard; "smaller node size helps closest-hit," "a thin AVX2
 wrapper," and "cluster ordering" all looked plausible and all lost on the bench.

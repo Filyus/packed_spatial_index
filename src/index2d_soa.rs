@@ -14,6 +14,7 @@ use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box2D, Point2D},
     join::{JoinTree, join_core, self_join_core},
+    leftpack::leftpack4,
     neighbors::{
         NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, max_distance_squared,
     },
@@ -1298,6 +1299,11 @@ impl SimdIndex2D {
                 unsafe { self.search_avx512_impl(query, out, stack) };
                 return;
             }
+            if std::is_x86_feature_detected!("avx2") {
+                // SAFETY: selected only after checking avx2 availability.
+                unsafe { self.search_avx2_impl(query, out, stack) };
+                return;
+            }
         }
         self.search_simd(query, out, stack);
     }
@@ -1389,6 +1395,149 @@ impl SimdIndex2D {
                         }
                     }
                     pos += 8;
+                }
+
+                while pos < end {
+                    let hit = (self.min_xs[pos] <= query.max_x)
+                        & (self.max_xs[pos] >= query.min_x)
+                        & (self.min_ys[pos] <= query.max_y)
+                        & (self.max_ys[pos] >= query.min_y);
+                    if hit {
+                        let index = self.indices[pos];
+                        if is_leaf {
+                            out.push(index);
+                        } else {
+                            stack.push(index);
+                            stack.push(encode_level(
+                                child_level,
+                                self.query_contains_node(query, pos),
+                            ));
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return;
+            }
+        }
+    }
+
+    /// AVX2 (256-bit, 4 boxes/chunk) range search — the runtime tier between the
+    /// `wide` fallback and AVX-512. AVX2 has no `VPCOMPRESSQ`, so leaf results are
+    /// collected with an AVX2 **left-pack** (`VPERMD` over a 16-entry shuffle LUT)
+    /// that packs the matching `u64` indices in one permute. Doc-hidden; reached
+    /// through the dispatch on AVX2-but-not-AVX-512 CPUs.
+    #[doc(hidden)]
+    pub fn search_avx2(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx2") {
+                // SAFETY: guarded by the avx2 feature check above.
+                unsafe { self.search_avx2_impl(query, out, stack) };
+                return;
+            }
+        }
+        self.search_simd(query, out, stack);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn search_avx2_impl(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        use std::arch::x86_64::*;
+
+        out.clear();
+        stack.clear();
+        if self.num_items == 0 {
+            return;
+        }
+        if query.contains(self.root_box()) {
+            out.extend_from_slice(&self.indices[..self.num_items]);
+            return;
+        }
+        let qmxx_v = _mm256_set1_pd(query.max_x);
+        let qmnx_v = _mm256_set1_pd(query.min_x);
+        let qmxy_v = _mm256_set1_pd(query.max_y);
+        let qmny_v = _mm256_set1_pd(query.min_y);
+
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+
+            if contained {
+                self.extend_contained_leaf_indices(node_index, end, level, out);
+            } else {
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                // Slack for the unconditional 4-wide left-pack store (writes 4
+                // u64 past `len` regardless of popcount).
+                if is_leaf {
+                    out.reserve(end - node_index + 4);
+                }
+                let mut pos = node_index;
+                while pos + 4 <= end {
+                    // SAFETY: `pos + 4 <= end`, and `end` is bounded by the array length.
+                    let (mnx, mxx, mny, mxy) = unsafe {
+                        (
+                            _mm256_loadu_pd(self.min_xs.as_ptr().add(pos)),
+                            _mm256_loadu_pd(self.max_xs.as_ptr().add(pos)),
+                            _mm256_loadu_pd(self.min_ys.as_ptr().add(pos)),
+                            _mm256_loadu_pd(self.max_ys.as_ptr().add(pos)),
+                        )
+                    };
+                    let overlap = _mm256_and_pd(
+                        _mm256_and_pd(
+                            _mm256_cmp_pd::<_CMP_LE_OQ>(mnx, qmxx_v),
+                            _mm256_cmp_pd::<_CMP_GE_OQ>(mxx, qmnx_v),
+                        ),
+                        _mm256_and_pd(
+                            _mm256_cmp_pd::<_CMP_LE_OQ>(mny, qmxy_v),
+                            _mm256_cmp_pd::<_CMP_GE_OQ>(mxy, qmny_v),
+                        ),
+                    );
+                    let mut bits = _mm256_movemask_pd(overlap) as usize;
+                    if is_leaf {
+                        if bits != 0 {
+                            // AVX2 left-pack the matching index lanes (capacity
+                            // reserved above). SAFETY: `pos + 4 <= end <=
+                            // indices.len()`; `out` has `end - node_index + 4` slack.
+                            unsafe {
+                                let added = leftpack4(
+                                    self.indices.as_ptr().add(pos),
+                                    bits as u32,
+                                    out.as_mut_ptr().add(out.len()),
+                                );
+                                out.set_len(out.len() + added);
+                            }
+                        }
+                    } else {
+                        let contains = _mm256_and_pd(
+                            _mm256_and_pd(
+                                _mm256_cmp_pd::<_CMP_GE_OQ>(mnx, qmnx_v),
+                                _mm256_cmp_pd::<_CMP_LE_OQ>(mxx, qmxx_v),
+                            ),
+                            _mm256_and_pd(
+                                _mm256_cmp_pd::<_CMP_GE_OQ>(mny, qmny_v),
+                                _mm256_cmp_pd::<_CMP_LE_OQ>(mxy, qmxy_v),
+                            ),
+                        );
+                        let cbits = _mm256_movemask_pd(contains) as usize;
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            stack.push(self.indices[pos + k]);
+                            stack.push(encode_level(child_level, cbits & (1 << k) != 0));
+                            bits &= bits - 1;
+                        }
+                    }
+                    pos += 4;
                 }
 
                 while pos < end {

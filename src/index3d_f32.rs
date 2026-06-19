@@ -34,7 +34,9 @@ use std::collections::BinaryHeap;
 
 // Imports used only by the SIMD query frontend (SimdIndex3DF32 + its view).
 #[cfg(feature = "simd")]
-use crate::{config::DEFAULT_SEARCH_STACK_CAPACITY, traversal::SearchWorkspace};
+use crate::{
+    config::DEFAULT_SEARCH_STACK_CAPACITY, leftpack::leftpack4, traversal::SearchWorkspace,
+};
 use std::ops::ControlFlow;
 
 #[inline]
@@ -1162,8 +1164,29 @@ impl SimdIndex3DF32 {
                 unsafe { self.search_avx512(q, out, stack) };
                 return;
             }
+            if std::is_x86_feature_detected!("avx2") {
+                // SAFETY: selected only after checking avx2 availability.
+                unsafe { self.search_avx2(q, out, stack) };
+                return;
+            }
         }
         self.search_wide(q, out, stack);
+    }
+
+    /// Force the AVX2 search path (doc-hidden; for benchmarks/tests).
+    #[doc(hidden)]
+    pub fn search_avx2_into(&self, query: Box3D, out: &mut Vec<usize>) {
+        let q = Box3DF32::from_box3d_inward(query);
+        let mut stack = Vec::new();
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx2") {
+                // SAFETY: guarded by the avx2 feature check.
+                unsafe { self.search_avx2(q, out, &mut stack) };
+                return;
+            }
+        }
+        self.search_wide(q, out, &mut stack);
     }
 
     fn search_refined_into_stack<F>(
@@ -1368,6 +1391,144 @@ impl SimdIndex3DF32 {
 
             if stack.len() > 1 {
                 level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return;
+            }
+        }
+    }
+
+    /// AVX2 path: 8 boxes per step; leaf results via the AVX2 left-pack (per
+    /// 4-lane half of the 8-bit mask), since AVX2 lacks `VPCOMPRESSQ`.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn search_avx2(&self, q: Box3DF32, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        use std::arch::x86_64::*;
+
+        out.clear();
+        stack.clear();
+        if self.num_items == 0 {
+            return;
+        }
+        if q.contains(self.box_f32_at(self.min_xs.len() - 1)) {
+            out.extend_from_slice(&self.indices[..self.num_items]);
+            return;
+        }
+        let qmxx_v = _mm256_set1_ps(q.max_x);
+        let qmnx_v = _mm256_set1_ps(q.min_x);
+        let qmxy_v = _mm256_set1_ps(q.max_y);
+        let qmny_v = _mm256_set1_ps(q.min_y);
+        let qmxz_v = _mm256_set1_ps(q.max_z);
+        let qmnz_v = _mm256_set1_ps(q.min_z);
+
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+
+            if contained {
+                self.extend_contained_leaf_indices(node_index, end, level, out);
+            } else {
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                if is_leaf {
+                    out.reserve(end - node_index + 8);
+                }
+                let mut pos = node_index;
+                while pos + 8 <= end {
+                    // SAFETY: `pos + 8 <= end`, and `end` is bounded by the array length.
+                    let (mnx, mxx, mny, mxy, mnz, mxz) = unsafe {
+                        (
+                            _mm256_loadu_ps(self.min_xs.as_ptr().add(pos)),
+                            _mm256_loadu_ps(self.max_xs.as_ptr().add(pos)),
+                            _mm256_loadu_ps(self.min_ys.as_ptr().add(pos)),
+                            _mm256_loadu_ps(self.max_ys.as_ptr().add(pos)),
+                            _mm256_loadu_ps(self.min_zs.as_ptr().add(pos)),
+                            _mm256_loadu_ps(self.max_zs.as_ptr().add(pos)),
+                        )
+                    };
+                    let overlap = _mm256_and_ps(
+                        _mm256_and_ps(
+                            _mm256_and_ps(
+                                _mm256_cmp_ps::<_CMP_LE_OQ>(mnx, qmxx_v),
+                                _mm256_cmp_ps::<_CMP_GE_OQ>(mxx, qmnx_v),
+                            ),
+                            _mm256_and_ps(
+                                _mm256_cmp_ps::<_CMP_LE_OQ>(mny, qmxy_v),
+                                _mm256_cmp_ps::<_CMP_GE_OQ>(mxy, qmny_v),
+                            ),
+                        ),
+                        _mm256_and_ps(
+                            _mm256_cmp_ps::<_CMP_LE_OQ>(mnz, qmxz_v),
+                            _mm256_cmp_ps::<_CMP_GE_OQ>(mxz, qmnz_v),
+                        ),
+                    );
+                    let mut bits = _mm256_movemask_ps(overlap) as usize;
+                    if is_leaf {
+                        if bits != 0 {
+                            // SAFETY: `pos + 8 <= end <= indices.len()`; `out`
+                            // reserved `end - node_index + 8` slack.
+                            unsafe {
+                                let lo = leftpack4(
+                                    self.indices.as_ptr().add(pos),
+                                    bits as u32,
+                                    out.as_mut_ptr().add(out.len()),
+                                );
+                                out.set_len(out.len() + lo);
+                                let hi = leftpack4(
+                                    self.indices.as_ptr().add(pos + 4),
+                                    (bits >> 4) as u32,
+                                    out.as_mut_ptr().add(out.len()),
+                                );
+                                out.set_len(out.len() + hi);
+                            }
+                        }
+                    } else {
+                        let contains = _mm256_and_ps(
+                            _mm256_and_ps(
+                                _mm256_and_ps(
+                                    _mm256_cmp_ps::<_CMP_GE_OQ>(mnx, qmnx_v),
+                                    _mm256_cmp_ps::<_CMP_LE_OQ>(mxx, qmxx_v),
+                                ),
+                                _mm256_and_ps(
+                                    _mm256_cmp_ps::<_CMP_GE_OQ>(mny, qmny_v),
+                                    _mm256_cmp_ps::<_CMP_LE_OQ>(mxy, qmxy_v),
+                                ),
+                            ),
+                            _mm256_and_ps(
+                                _mm256_cmp_ps::<_CMP_GE_OQ>(mnz, qmnz_v),
+                                _mm256_cmp_ps::<_CMP_LE_OQ>(mxz, qmxz_v),
+                            ),
+                        );
+                        let cbits = _mm256_movemask_ps(contains) as usize;
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            stack.push(self.indices[pos + k]);
+                            stack.push(encode_level(child_level, cbits & (1 << k) != 0));
+                            bits &= bits - 1;
+                        }
+                    }
+                    pos += 8;
+                }
+
+                while pos < end {
+                    if self.scalar_hit(pos, q) {
+                        if is_leaf {
+                            out.push(self.indices[pos]);
+                        } else {
+                            stack.push(self.indices[pos]);
+                            stack.push(encode_level(child_level, self.q_contains_node(q, pos)));
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
                 node_index = stack.pop().unwrap();
             } else {
                 return;

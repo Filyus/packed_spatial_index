@@ -89,6 +89,8 @@ mod index3d_f32;
 #[cfg(feature = "simd")]
 mod index3d_soa;
 mod join;
+#[cfg(feature = "simd")]
+mod leftpack;
 mod neighbors;
 mod persistence;
 mod polygon;

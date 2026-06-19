@@ -5,6 +5,30 @@ All notable changes to this crate are documented here.
 ## [Unreleased]
 
 
+## [0.15.0](https://github.com/Filyus/packed_spatial_index/compare/v0.14.0...v0.15.0) - 2026-06-19
+
+### SIMD
+- Collect AVX-512 range-search results with a masked compress-store
+  (`VPCOMPRESSQ`) instead of a scalar bit-loop, on `SimdIndex2D` / `SimdIndex3D`
+  and the compact `SimdIndex2DF32` / `SimdIndex3DF32`. This removes the
+  large-result collection bottleneck: SIMD range search is now ~1.6–1.9× faster
+  than the scalar index across 100k–1M boxes (it previously trailed the scalar
+  index on full-extent queries), and the rounded `SimdIndex*F32` range search is
+  now ~1.3–1.5× faster than the f64 `SimdIndex*` — a win on speed as well as
+  memory. No API or result change; the win applies on AVX-512 CPUs.
+
+### Configuration
+- Lower `DEFAULT_PARALLEL_MIN_ITEMS` from 50,000 to 32,000, just above the
+  measured serial/parallel build crossover (~30k items), so parallel builds kick
+  in across the 30k–50k range where they are already faster. Override with
+  `Index2DBuilder::parallel_min_items`.
+
+### Documentation
+- Document `RUSTFLAGS="-C target-cpu=native"` (or `x86-64-v3`) to enable AVX2 /
+  AVX-512 codegen for the SIMD fallback and scalar autovectorization, and add
+  measured scan / scalar-index / SIMD-index crossovers to the guide (a linear
+  scan wins below ~100–130 boxes; an index amortizes after ~50–120 queries).
+
 ## [0.14.0](https://github.com/Filyus/packed_spatial_index/compare/v0.13.0...v0.14.0) - 2026-06-19
 
 ### 2D

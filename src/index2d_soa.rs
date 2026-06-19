@@ -3118,6 +3118,9 @@ impl SimdIndex2D {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             let child_level = level.wrapping_sub(1);
+            if is_leaf {
+                results.reserve(end - node_index);
+            }
 
             let mut pos = node_index;
             while pos + 8 <= end {
@@ -3143,14 +3146,21 @@ impl SimdIndex2D {
                     maxd,
                 );
                 let mut bits: u8 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(near, far);
-                while bits != 0 {
-                    let k = bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    let index = self.indices[pos + k];
-                    if is_leaf {
-                        results.push(index);
-                    } else {
-                        stack.push(index);
+                if is_leaf {
+                    // VPCOMPRESSQ pack the hit indices (capacity reserved above).
+                    // SAFETY: `pos + 8 <= end <= indices.len()`; `results` has
+                    // `end - node_index` slack.
+                    unsafe {
+                        let dst = results.as_mut_ptr().add(results.len()) as *mut i64;
+                        let vidx = _mm512_loadu_epi64(self.indices.as_ptr().add(pos) as *const i64);
+                        _mm512_mask_compressstoreu_epi64(dst, bits, vidx);
+                        results.set_len(results.len() + bits.count_ones() as usize);
+                    }
+                } else {
+                    while bits != 0 {
+                        let k = bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        stack.push(self.indices[pos + k]);
                         stack.push(child_level);
                     }
                 }

@@ -862,8 +862,174 @@ impl SimdIndex3D {
                 // SAFETY: this branch is selected only after checking avx512f availability.
                 return unsafe { self.visit_avx512_impl::<B, F>(query, stack, visitor) };
             }
+            if std::is_x86_feature_detected!("avx2") {
+                // SAFETY: selected only after checking avx2 availability.
+                return unsafe { self.visit_avx2_impl::<B, F>(query, stack, visitor) };
+            }
         }
         self.visit_simd(query, stack, visitor)
+    }
+
+    /// Force the AVX2 visit path (doc-hidden; for benchmarks/tests).
+    #[doc(hidden)]
+    pub fn visit_avx2<B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx2") {
+                // SAFETY: guarded by the avx2 feature check.
+                return unsafe { self.visit_avx2_impl::<B, F>(query, stack, visitor) };
+            }
+        }
+        self.visit_simd(query, stack, visitor)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn visit_avx2_impl<B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        use std::arch::x86_64::*;
+
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+        if query.contains(self.root_box()) {
+            for &index in &self.indices[..self.num_items] {
+                visitor(index)?;
+            }
+            return ControlFlow::Continue(());
+        }
+        let qmxx_v = _mm256_set1_pd(query.max_x);
+        let qmnx_v = _mm256_set1_pd(query.min_x);
+        let qmxy_v = _mm256_set1_pd(query.max_y);
+        let qmny_v = _mm256_set1_pd(query.min_y);
+        let qmxz_v = _mm256_set1_pd(query.max_z);
+        let qmnz_v = _mm256_set1_pd(query.min_z);
+
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                for &index in &self.indices[start..end] {
+                    visitor(index)?;
+                }
+            } else {
+                let child_level = if is_leaf { 0 } else { level - 1 };
+                let mut pos = node_index;
+                while pos + 4 <= end {
+                    // SAFETY: `pos + 4 <= end`, and `end` is bounded by the array length.
+                    let (mnx, mxx, mny, mxy, mnz, mxz) = unsafe {
+                        (
+                            _mm256_loadu_pd(self.min_xs.as_ptr().add(pos)),
+                            _mm256_loadu_pd(self.max_xs.as_ptr().add(pos)),
+                            _mm256_loadu_pd(self.min_ys.as_ptr().add(pos)),
+                            _mm256_loadu_pd(self.max_ys.as_ptr().add(pos)),
+                            _mm256_loadu_pd(self.min_zs.as_ptr().add(pos)),
+                            _mm256_loadu_pd(self.max_zs.as_ptr().add(pos)),
+                        )
+                    };
+                    let overlap = _mm256_and_pd(
+                        _mm256_and_pd(
+                            _mm256_and_pd(
+                                _mm256_cmp_pd::<_CMP_LE_OQ>(mnx, qmxx_v),
+                                _mm256_cmp_pd::<_CMP_GE_OQ>(mxx, qmnx_v),
+                            ),
+                            _mm256_and_pd(
+                                _mm256_cmp_pd::<_CMP_LE_OQ>(mny, qmxy_v),
+                                _mm256_cmp_pd::<_CMP_GE_OQ>(mxy, qmny_v),
+                            ),
+                        ),
+                        _mm256_and_pd(
+                            _mm256_cmp_pd::<_CMP_LE_OQ>(mnz, qmxz_v),
+                            _mm256_cmp_pd::<_CMP_GE_OQ>(mxz, qmnz_v),
+                        ),
+                    );
+                    let mut bits = _mm256_movemask_pd(overlap) as usize;
+                    if is_leaf {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            visitor(self.indices[pos + k])?;
+                            bits &= bits - 1;
+                        }
+                    } else {
+                        let contains = _mm256_and_pd(
+                            _mm256_and_pd(
+                                _mm256_and_pd(
+                                    _mm256_cmp_pd::<_CMP_GE_OQ>(mnx, qmnx_v),
+                                    _mm256_cmp_pd::<_CMP_LE_OQ>(mxx, qmxx_v),
+                                ),
+                                _mm256_and_pd(
+                                    _mm256_cmp_pd::<_CMP_GE_OQ>(mny, qmny_v),
+                                    _mm256_cmp_pd::<_CMP_LE_OQ>(mxy, qmxy_v),
+                                ),
+                            ),
+                            _mm256_and_pd(
+                                _mm256_cmp_pd::<_CMP_GE_OQ>(mnz, qmnz_v),
+                                _mm256_cmp_pd::<_CMP_LE_OQ>(mxz, qmxz_v),
+                            ),
+                        );
+                        let cbits = _mm256_movemask_pd(contains) as usize;
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            stack.push(self.indices[pos + k]);
+                            stack.push(encode_level(child_level, cbits & (1 << k) != 0));
+                            bits &= bits - 1;
+                        }
+                    }
+                    pos += 4;
+                }
+
+                while pos < end {
+                    if self.hit_scalar(pos, query) {
+                        let index = self.indices[pos];
+                        if is_leaf {
+                            visitor(index)?;
+                        } else {
+                            stack.push(index);
+                            stack.push(encode_level(
+                                child_level,
+                                self.query_contains_node(query, pos),
+                            ));
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
     }
 
     /// Element-by-element traversal (SoA layout, branchless `overlaps`).

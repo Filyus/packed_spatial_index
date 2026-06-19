@@ -98,6 +98,7 @@ mod persistence;
 mod polygon;
 mod range;
 mod ray;
+mod raycast;
 mod sort2d;
 mod sort3d;
 #[cfg(feature = "stream")]

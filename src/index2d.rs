@@ -35,6 +35,7 @@ use crate::persistence::{
 use crate::polygon::ConvexPolygon2D;
 use crate::range::{collect_overlaps, visit_overlaps, visit_region};
 use crate::ray::Ray2D;
+use crate::raycast;
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 use crate::tree_access::{TreeAccess, leaf_group_range};
 use crate::triangle::{Triangle2, Triangle2D, blobs_as_records, records_as_bytes};
@@ -2577,44 +2578,18 @@ impl Index2D {
     /// Buffer-explicit raycast (mirrors `search_into_stack`).
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        results.clear();
-        stack.clear();
-        if self.num_items == 0 {
-            return;
-        }
-
-        let mut node_index = self.entries.len() - 1;
-        let mut level = self.level_bounds.len() - 1;
-
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bounds[level]);
-            let is_leaf = node_index < self.num_items;
-            let node_entries = &self.entries[node_index..end];
-            let node_indices = &self.indices[node_index..end];
-
-            if is_leaf {
-                for (&bounds, &index) in node_entries.iter().zip(node_indices) {
-                    if ray.intersects_box(bounds) {
-                        results.push(index);
-                    }
-                }
-            } else {
-                let child_level = level - 1;
-                for (&bounds, &index) in node_entries.iter().zip(node_indices).rev() {
-                    if ray.intersects_box(bounds) {
-                        stack.push(index);
-                        stack.push(child_level);
-                    }
-                }
-            }
-
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return;
-            }
-        }
+        raycast::collect_hits(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            self.level_bounds.len(),
+            |level| self.level_bounds[level],
+            |pos| self.indices[pos],
+            |pos| ray.intersects_box(self.entries[pos]),
+            true,
+            results,
+            stack,
+        );
     }
 
     /// Return the nearest item whose box the ray segment enters, as
@@ -2636,43 +2611,16 @@ impl Index2D {
         ray: Ray2D,
         workspace: &mut NeighborWorkspace,
     ) -> Option<(usize, f64)> {
-        let queue = &mut workspace.node_queue;
-        queue.clear();
-        if self.num_items == 0 {
-            return None;
-        }
-        let root = self.entries.len() - 1;
-        let root_t = ray.enter_t(self.entries[root])?;
-        let mut best_t = ray.max_distance;
-        let mut best_index = None;
-        queue.push(NeighborNodeState::new(root, root_t));
-
-        while let Some(node) = queue.pop() {
-            // The heap yields nodes by ascending entry t, and a node's entry t is a
-            // lower bound on every descendant's, so once it reaches the best hit we stop.
-            if node.dist >= best_t {
-                break;
-            }
-            let upper = upper_bound_level(&self.level_bounds, node.index);
-            let end = (node.index + self.node_size).min(self.level_bounds[upper]);
-            let is_leaf = node.index < self.num_items;
-            for pos in node.index..end {
-                let Some(t) = ray.enter_t(self.entries[pos]) else {
-                    continue;
-                };
-                if t >= best_t {
-                    continue;
-                }
-                if is_leaf {
-                    best_t = t;
-                    best_index = Some(self.indices[pos]);
-                } else {
-                    queue.push(NeighborNodeState::new(self.indices[pos], t));
-                }
-            }
-        }
-
-        best_index.map(|index| (index, best_t))
+        raycast::closest_hit(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            ray.max_distance,
+            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
+            |pos| self.indices[pos],
+            |pos| ray.enter_t(self.entries[pos]),
+            &mut workspace.node_queue,
+        )
     }
 }
 
@@ -2687,36 +2635,16 @@ impl Index2D {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.entries.len() - 1;
-        loop {
-            let upper = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                if let Some(t) = ray.enter_t(self.entries[pos]) {
-                    queue.push(NeighborState::new(self.indices[pos], is_leaf, t));
-                }
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.is_leaf {
-                    visitor(state.index, state.dist)?;
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-            if !continue_search {
-                return ControlFlow::Continue(());
-            }
-        }
+        raycast::visit_hits(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
+            |pos| self.indices[pos],
+            |pos| ray.enter_t(self.entries[pos]),
+            &mut queue,
+            &mut visitor,
+        )
     }
 }
 
@@ -2747,36 +2675,18 @@ impl Index2DView<'_> {
     /// Buffer-explicit raycast (mirrors `search_into_stack`).
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        results.clear();
-        stack.clear();
-        if self.num_items == 0 {
-            return;
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        let mut level = self.level_count - 1;
-        loop {
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
-            let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                if !ray.intersects_box(self.entry_at_unchecked(pos)) {
-                    continue;
-                }
-                let index = self.index_at_unchecked(pos);
-                if is_leaf {
-                    results.push(index);
-                } else {
-                    stack.push(index);
-                    stack.push(level - 1);
-                }
-            }
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return;
-            }
-        }
+        raycast::collect_hits(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            self.level_count,
+            |level| self.level_bound_unchecked(level),
+            |pos| self.index_at_unchecked(pos),
+            |pos| ray.intersects_box(self.entry_at_unchecked(pos)),
+            false,
+            results,
+            stack,
+        );
     }
 
     /// Return the nearest item whose box the ray segment enters, as
@@ -2793,44 +2703,16 @@ impl Index2DView<'_> {
         ray: Ray2D,
         workspace: &mut NeighborWorkspace,
     ) -> Option<(usize, f64)> {
-        let queue = &mut workspace.node_queue;
-        queue.clear();
-        if self.num_items == 0 {
-            return None;
-        }
-        let root = self.num_nodes - 1;
-        let root_t = ray.enter_t(self.entry_at_unchecked(root))?;
-        let mut best_t = ray.max_distance;
-        let mut best_index = None;
-        queue.push(NeighborNodeState::new(root, root_t));
-
-        while let Some(node) = queue.pop() {
-            // The heap yields nodes by ascending entry t, and a node's entry t is a
-            // lower bound on every descendant's, so once it reaches the best hit we stop.
-            if node.dist >= best_t {
-                break;
-            }
-            let node_index = node.index;
-            let upper = self.upper_bound_level(node_index);
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                let Some(t) = ray.enter_t(self.entry_at_unchecked(pos)) else {
-                    continue;
-                };
-                if t >= best_t {
-                    continue;
-                }
-                if is_leaf {
-                    best_t = t;
-                    best_index = Some(self.index_at_unchecked(pos));
-                } else {
-                    queue.push(NeighborNodeState::new(self.index_at_unchecked(pos), t));
-                }
-            }
-        }
-
-        best_index.map(|index| (index, best_t))
+        raycast::closest_hit(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            ray.max_distance,
+            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
+            |pos| self.index_at_unchecked(pos),
+            |pos| ray.enter_t(self.entry_at_unchecked(pos)),
+            &mut workspace.node_queue,
+        )
     }
 
     /// Visit items in nondecreasing entry-`t` order along the ray segment.
@@ -2843,36 +2725,16 @@ impl Index2DView<'_> {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper = self.upper_bound_level(node_index);
-            let end = (node_index + self.node_size).min(self.level_bound_unchecked(upper));
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                if let Some(t) = ray.enter_t(self.entry_at_unchecked(pos)) {
-                    queue.push(NeighborState::new(self.index_at_unchecked(pos), is_leaf, t));
-                }
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.is_leaf {
-                    visitor(state.index, state.dist)?;
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-            if !continue_search {
-                return ControlFlow::Continue(());
-            }
-        }
+        raycast::visit_hits(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
+            |pos| self.index_at_unchecked(pos),
+            |pos| ray.enter_t(self.entry_at_unchecked(pos)),
+            &mut queue,
+            &mut visitor,
+        )
     }
 }
 

@@ -2952,13 +2952,42 @@ impl SimdIndex2D {
     pub fn raycast_into_stack(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
         #[cfg(target_arch = "x86_64")]
         {
-            if !ray.has_zero_direction() && std::is_x86_feature_detected!("avx512f") {
-                // SAFETY: reached only after confirming avx512f is available.
-                unsafe { self.raycast_collect_avx512(ray, results, stack) };
-                return;
+            if !ray.has_zero_direction() {
+                if std::is_x86_feature_detected!("avx512f") {
+                    // SAFETY: reached only after confirming avx512f is available.
+                    unsafe { self.raycast_collect_avx512(ray, results, stack) };
+                    return;
+                }
+                if std::is_x86_feature_detected!("avx2") {
+                    // SAFETY: reached only after confirming avx2 is available.
+                    unsafe { self.raycast_collect_avx2(ray, results, stack) };
+                    return;
+                }
             }
         }
         self.raycast_collect_wide(ray, results, stack);
+    }
+
+    /// Force the `wide` all-hits raycast path (doc-hidden; for benchmarks/tests).
+    #[doc(hidden)]
+    pub fn raycast_wide_into(&self, ray: Ray2D, results: &mut Vec<usize>) {
+        let mut stack = Vec::new();
+        self.raycast_collect_wide(ray, results, &mut stack);
+    }
+
+    /// Force the AVX2 all-hits raycast path (doc-hidden; for benchmarks/tests).
+    #[doc(hidden)]
+    pub fn raycast_avx2_into(&self, ray: Ray2D, results: &mut Vec<usize>) {
+        let mut stack = Vec::new();
+        #[cfg(target_arch = "x86_64")]
+        {
+            if !ray.has_zero_direction() && std::is_x86_feature_detected!("avx2") {
+                // SAFETY: guarded by the avx2 feature check.
+                unsafe { self.raycast_collect_avx2(ray, results, &mut stack) };
+                return;
+            }
+        }
+        self.raycast_collect_wide(ray, results, &mut stack);
     }
 
     fn raycast_collect_wide(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
@@ -3125,6 +3154,109 @@ impl SimdIndex2D {
                     }
                 }
                 pos += 8;
+            }
+            while pos < end {
+                if ray.intersects_box(self.box_at_soa(pos)) {
+                    let index = self.indices[pos];
+                    if is_leaf {
+                        results.push(index);
+                    } else {
+                        stack.push(index);
+                        stack.push(child_level);
+                    }
+                }
+                pos += 1;
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return;
+            }
+        }
+    }
+
+    /// AVX2 all-hits raycast (4-wide slab test, AVX2 left-pack leaf collection).
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn raycast_collect_avx2(
+        &self,
+        ray: Ray2D,
+        results: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        use std::arch::x86_64::*;
+
+        results.clear();
+        stack.clear();
+        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
+            return;
+        }
+
+        let ox = _mm256_set1_pd(ray.origin.x);
+        let oy = _mm256_set1_pd(ray.origin.y);
+        let ix = _mm256_set1_pd(ray.inv_dir_x);
+        let iy = _mm256_set1_pd(ray.inv_dir_y);
+        let zero = _mm256_setzero_pd();
+        let maxd = _mm256_set1_pd(ray.max_distance);
+
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let child_level = level.wrapping_sub(1);
+            if is_leaf {
+                results.reserve(end - node_index + 4);
+            }
+
+            let mut pos = node_index;
+            while pos + 4 <= end {
+                // SAFETY: `pos + 4 <= end <= len`, so all four lanes are in bounds.
+                let (mnx, mxx, mny, mxy) = unsafe {
+                    (
+                        _mm256_loadu_pd(self.min_xs.as_ptr().add(pos)),
+                        _mm256_loadu_pd(self.max_xs.as_ptr().add(pos)),
+                        _mm256_loadu_pd(self.min_ys.as_ptr().add(pos)),
+                        _mm256_loadu_pd(self.max_ys.as_ptr().add(pos)),
+                    )
+                };
+                let t1x = _mm256_mul_pd(_mm256_sub_pd(mnx, ox), ix);
+                let t2x = _mm256_mul_pd(_mm256_sub_pd(mxx, ox), ix);
+                let t1y = _mm256_mul_pd(_mm256_sub_pd(mny, oy), iy);
+                let t2y = _mm256_mul_pd(_mm256_sub_pd(mxy, oy), iy);
+                let near = _mm256_max_pd(
+                    _mm256_max_pd(_mm256_min_pd(t1x, t2x), _mm256_min_pd(t1y, t2y)),
+                    zero,
+                );
+                let far = _mm256_min_pd(
+                    _mm256_min_pd(_mm256_max_pd(t1x, t2x), _mm256_max_pd(t1y, t2y)),
+                    maxd,
+                );
+                let mut bits = _mm256_movemask_pd(_mm256_cmp_pd::<_CMP_LE_OQ>(near, far)) as usize;
+                if is_leaf {
+                    if bits != 0 {
+                        // SAFETY: `pos + 4 <= end <= indices.len()`; `results` has
+                        // `end - node_index + 4` slack reserved.
+                        unsafe {
+                            let added = leftpack4(
+                                self.indices.as_ptr().add(pos),
+                                bits as u32,
+                                results.as_mut_ptr().add(results.len()),
+                            );
+                            results.set_len(results.len() + added);
+                        }
+                    }
+                } else {
+                    while bits != 0 {
+                        let k = bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        stack.push(self.indices[pos + k]);
+                        stack.push(child_level);
+                    }
+                }
+                pos += 4;
             }
             while pos < end {
                 if ray.intersects_box(self.box_at_soa(pos)) {

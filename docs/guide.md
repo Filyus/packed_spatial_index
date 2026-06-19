@@ -259,8 +259,14 @@ let simd_index = builder.finish_simd()?;       // SimdIndex2D
 `finish_simd()` is also on `Index3DBuilder` (returns `SimdIndex3D`).
 `finish_simd_f32()` (both builders) returns the `f32`-storage indexes: half the
 box memory, with range results that may include extra near-boundary hits, and
-exact range/KNN available when you pass your source boxes back. Prefer `f64`
-indexes for exact range queries with many hits and fastest exact KNN.
+exact range/KNN available when you pass your source boxes back. On AVX-512 the
+SIMD `f32` *rounded* range query is also **faster** than the f64 `SimdIndex`
+(~1.3–1.5×: half the box bytes plus a wider SIMD batch), so it is a win on speed
+and memory when the extra near-boundary hits are acceptable. Prefer the `f64`
+indexes when you need *exact* results with many hits (the `f32` `*_exact`
+refinement pass is slower on broad queries) and for the fastest exact KNN. Note
+the *scalar* `f32` indexes (no `simd`) trade speed for memory — they run a bit
+slower than scalar `f64`; the speed win is the SIMD `f32` path.
 
 ## 3D
 

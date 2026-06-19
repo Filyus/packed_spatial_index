@@ -205,10 +205,13 @@ Quick selector:
 
 - `SimdIndex2D`: 32-byte f64 boxes. Use for exact range queries with many hits
   and fastest exact KNN.
-- `SimdIndex2DF32::search`: 16-byte rounded f32 boxes, SIMD-batched. Use for
-  compact first-pass filtering, or when the near-boundary false positives from
-  the outward-rounded boxes are OK. Returns the same hits as the scalar
-  `Index2DF32` (both round the query inward onto the f32 grid).
+- `SimdIndex2DF32::search`: 16-byte rounded f32 boxes, SIMD-batched. In the
+  AVX-512 runs above it is also the **fastest** range path — ~1.3–1.5× over the
+  f64 `SimdIndex2D` (half the box bytes plus 16 boxes per SIMD chunk to f64's 8),
+  so it wins on speed *and* memory, not just memory — at the cost of a few
+  near-boundary false positives from the outward-rounded boxes. Returns the same
+  hits as the scalar `Index2DF32` (both round the query inward onto the f32 grid).
+  Use it when those extra hits are OK, or as a compact first-pass filter.
 - `SimdIndex2DF32::*_exact`: 16-byte f32 index plus source f64 boxes. Use when
   exact range queries return few hits and compact storage matters. Exact KNN is
   available, but f64 is faster in these runs.

@@ -169,12 +169,14 @@ impl Index2DBuilder {
 
     /// Pack the tree into the f32-storage SIMD index.
     ///
-    /// Coordinates are stored as `f32` rounded outward, halving box memory.
-    /// [`search`](crate::SimdIndex2DF32::search) returns every exact hit, but
-    /// may also include extra near-boundary hits. Use `search_exact` for exact
-    /// range hits and `neighbors_exact` for exact KNN when the original f64
-    /// boxes are available. Prefer f64 indexes for exact range queries with many
-    /// hits and fastest exact KNN.
+    /// Coordinates are stored as `f32` rounded outward, halving box memory. On
+    /// AVX-512 the rounded [`search`](crate::SimdIndex2DF32::search) is also
+    /// *faster* than the f64 [`SimdIndex2D`](crate::SimdIndex2D) — a wider SIMD
+    /// batch over half the box bytes — so it wins on speed and memory, at the cost
+    /// of a few extra near-boundary hits. Use `search_exact` for exact range hits
+    /// and `neighbors_exact` for exact KNN when the original f64 boxes are
+    /// available. Prefer f64 indexes for exact range queries with many hits (the
+    /// `*_exact` refinement is slower on broad queries) and fastest exact KNN.
     ///
     /// # Example
     ///

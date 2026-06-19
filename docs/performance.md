@@ -70,6 +70,18 @@ canonical byte format for 100,000 boxes.
 | Load owned tree | 740.23 us | - | 607.62 us | 935.51 us |
 | Load zero-copy view | - | - | 37.59 us | n/a |
 
+`SimdIndex2D` searches faster than `Index2D` but **serializes and loads slower**
+(roughly 1.5–2.8× in a clean re-measure) — expected, not noise. The on-disk
+format is AoS (one canonical format shared by both, so the bytes are
+interchangeable). `Index2D` stores AoS too, so `to_bytes` is close to a memcpy
+and `from_bytes` close to zero-copy; `SimdIndex2D` stores SoA (separate min/max
+columns, what makes its queries fast), so it gathers SoA→AoS to serialize and
+scatters AoS→SoA to load. The `reused buffer` row isolates this best:
+`Index2D` 68.78 us (≈memcpy) vs `SimdIndex2D` 140.21 us (the transpose). So
+`SimdIndex2D` pays at serialize/load to win at query time — prefer it when you
+query far more than you persist, and load read-mostly bytes through the zero-copy
+`Index2DView` (37.59 us) rather than rebuilding an owned SoA index.
+
 Scalar `Index2D` search versus `static_aabb2d_index` is dataset-sensitive.
 Two search runs with the same item/query counts but different generated inputs
 showed opposite scalar ordering:

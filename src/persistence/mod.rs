@@ -1,97 +1,14 @@
-use std::{error::Error, fmt};
-
 use crate::geometry::{Box2D, Box3D};
 
-/// Error returned when loading an index from bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LoadError {
-    /// The buffer does not start with the expected `PSINDEX\0` magic marker.
-    BadMagic,
-    /// The buffer uses a newer or otherwise unsupported format version.
-    UnsupportedVersion,
-    /// The buffer ended before a complete header or section could be read.
-    Truncated,
-    /// The buffer length does not match the length declared by the header.
-    LengthMismatch {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        actual: usize,
-    },
-    /// The stored node size is outside the supported range.
-    InvalidNodeSize {
-        /// Stored node size.
-        node_size: usize,
-    },
-    /// A stored integer does not fit this platform or a byte-size calculation overflowed.
-    IntegerOverflow,
-    /// The level bounds or child pointers do not describe a valid packed tree.
-    InvalidTree,
-}
+mod container;
+mod errors;
 
-impl fmt::Display for LoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LoadError::BadMagic => write!(f, "buffer is not a packed_spatial_index index"),
-            LoadError::UnsupportedVersion => write!(f, "unsupported packed_spatial_index format"),
-            LoadError::Truncated => write!(f, "buffer is truncated"),
-            LoadError::LengthMismatch { expected, actual } => write!(
-                f,
-                "buffer length mismatch (expected {expected} bytes, got {actual})"
-            ),
-            LoadError::InvalidNodeSize { node_size } => {
-                write!(f, "invalid node size in buffer ({node_size})")
-            }
-            LoadError::IntegerOverflow => write!(f, "buffer integer value is too large"),
-            LoadError::InvalidTree => write!(f, "buffer does not contain a valid packed tree"),
-        }
-    }
-}
+use self::container::{FORMAT_MAGIC, find_chunk, parse_container};
+pub(crate) use container::{
+    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, SUPERBLOCK_LEN, plan_container,
+};
+pub use errors::{LoadError, PayloadError};
 
-impl Error for LoadError {}
-
-/// Error returned when serializing an index together with item payloads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PayloadError {
-    /// The number of payloads does not equal the index's item count.
-    CountMismatch {
-        /// Expected payload count (the index's `num_items`).
-        expected: usize,
-        /// Number of payloads supplied.
-        got: usize,
-    },
-    /// The combined payload size overflows the serialized-length calculation.
-    TooLarge,
-    /// A fixed-width record's length does not equal the declared stride.
-    RecordSizeMismatch {
-        /// The declared fixed record stride.
-        stride: usize,
-        /// The length of the offending record.
-        got: usize,
-    },
-}
-
-impl fmt::Display for PayloadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PayloadError::CountMismatch { expected, got } => write!(
-                f,
-                "payload count {got} does not match item count {expected}"
-            ),
-            PayloadError::TooLarge => write!(f, "combined payload size is too large to serialize"),
-            PayloadError::RecordSizeMismatch { stride, got } => write!(
-                f,
-                "fixed-width record length {got} does not match stride {stride}"
-            ),
-        }
-    }
-}
-
-impl Error for PayloadError {}
-
-// Packed Spatial Index file signature, at the start of the superblock; the
-// format version follows it as a little-endian u64.
-const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
 /// Validated slices of the optional trailing payload section. Borrowed by the
 /// zero-copy views to serve `payload(id)`.
 pub(crate) struct ParsedPayload<'a> {
@@ -551,26 +468,6 @@ fn usize_from_u64(value: u64) -> Result<usize, LoadError> {
     usize::try_from(value).map_err(|_| LoadError::IntegerOverflow)
 }
 
-// ===========================================================================
-// PSINDEX — chunk container
-//
-// A file is a small superblock, a flat chunk directory (typed, length + offset,
-// with a critical/optional bit), then the chunks. A reader skips an unknown
-// *optional* chunk and rejects an unknown *critical* one, so every future
-// addition is non-breaking. Only non-derivable data is stored: the tree's
-// `num_nodes`, `level_count`, and `level_bounds` are all recomputed from
-// `num_items` + `node_size` at load (no second source of truth to drift).
-// ===========================================================================
-
-/// Stored `version` value. Bumped only on a breaking layout change; a reader
-/// rejects any other value.
-pub(crate) const FORMAT_VERSION: u64 = 2;
-/// Fixed superblock length: magic(8) + version(8) + chunk_count(4) + reserved(12).
-pub(crate) const SUPERBLOCK_LEN: usize = 32;
-/// One chunk-directory entry: tag(4) + flags(4) + offset(8) + length(8).
-pub(crate) const CHUNK_ENTRY_LEN: usize = 24;
-/// `flags` bit marking a chunk a reader must understand (else reject the file).
-pub(crate) const CHUNK_FLAG_CRITICAL: u32 = 1;
 // Tag namespace (see FORMAT.md): an uppercase-first ASCII tag is reserved for
 // this format; lowercase-first tags are free for application-private chunks.
 /// The packed tree (descriptor + raw node data). Critical.
@@ -578,79 +475,6 @@ pub(crate) const TAG_TREE: [u8; 4] = *b"TREE";
 /// The optional payload section (descriptor + offset table + blobs). Optional —
 /// an index-only reader skips it.
 pub(crate) const TAG_PYLD: [u8; 4] = *b"PYLD";
-
-/// A located chunk from the directory. Criticality is enforced during parsing
-/// (an unknown critical chunk is rejected), so it is not retained here.
-#[derive(Debug)]
-pub(crate) struct ChunkRef {
-    pub(crate) tag: [u8; 4],
-    pub(crate) offset: usize,
-    pub(crate) len: usize,
-}
-
-/// Parse and validate the superblock + chunk directory. Every entry's byte range
-/// is checked against the buffer; an unknown **critical** chunk (tag not in
-/// `known_critical`) is rejected. Does not read chunk contents.
-pub(crate) fn parse_container(
-    bytes: &[u8],
-    known_critical: &[[u8; 4]],
-) -> Result<Vec<ChunkRef>, LoadError> {
-    if bytes.len() < SUPERBLOCK_LEN {
-        return Err(LoadError::Truncated);
-    }
-    if &bytes[..FORMAT_MAGIC.len()] != FORMAT_MAGIC {
-        return Err(LoadError::BadMagic);
-    }
-    if read_u64_at(bytes, 8)? != FORMAT_VERSION {
-        return Err(LoadError::UnsupportedVersion);
-    }
-    let chunk_count = read_u32_at(bytes, 16)? as usize;
-
-    let dir_len = chunk_count
-        .checked_mul(CHUNK_ENTRY_LEN)
-        .ok_or(LoadError::IntegerOverflow)?;
-    let dir_end = SUPERBLOCK_LEN
-        .checked_add(dir_len)
-        .ok_or(LoadError::IntegerOverflow)?;
-    if bytes.len() < dir_end {
-        return Err(LoadError::Truncated);
-    }
-
-    let mut chunks = Vec::with_capacity(chunk_count);
-    let mut max_end = dir_end;
-    for i in 0..chunk_count {
-        let base = SUPERBLOCK_LEN + i * CHUNK_ENTRY_LEN;
-        let mut tag = [0u8; 4];
-        tag.copy_from_slice(&bytes[base..base + 4]);
-        let flags = read_u32_at(bytes, base + 4)?;
-        let offset = read_u64_at(bytes, base + 8).and_then(usize_from_u64)?;
-        let len = read_u64_at(bytes, base + 16).and_then(usize_from_u64)?;
-        let end = offset.checked_add(len).ok_or(LoadError::IntegerOverflow)?;
-        if offset < dir_end || end > bytes.len() {
-            return Err(LoadError::InvalidTree);
-        }
-        max_end = max_end.max(end);
-        let critical = flags & CHUNK_FLAG_CRITICAL != 0;
-        if critical && !known_critical.contains(&tag) {
-            return Err(LoadError::UnsupportedVersion);
-        }
-        chunks.push(ChunkRef { tag, offset, len });
-    }
-    // Reject trailing bytes the directory does not account for (beyond the
-    // last chunk's 8-byte alignment pad).
-    if bytes.len() > ((max_end + 7) & !7) {
-        return Err(LoadError::LengthMismatch {
-            expected: max_end,
-            actual: bytes.len(),
-        });
-    }
-    Ok(chunks)
-}
-
-/// Find the first chunk with `tag`.
-pub(crate) fn find_chunk(chunks: &[ChunkRef], tag: [u8; 4]) -> Option<&ChunkRef> {
-    chunks.iter().find(|c| c.tag == tag)
-}
 
 /// Decoded `TREE` descriptor. `num_nodes` / `level_count` are *not* stored; the
 /// caller derives them from `num_items` + `node_size`.
@@ -964,34 +788,8 @@ pub(crate) fn write_index_container(
     Ok(())
 }
 
-/// Round up to the next 8-byte boundary (chunks are 8-aligned).
-fn align8(x: usize) -> Result<usize, LoadError> {
-    x.checked_add(7)
-        .map(|v| v & !7)
-        .ok_or(LoadError::IntegerOverflow)
-}
-
-/// Plan a container from each chunk's content length: returns the total file
-/// length and the absolute byte offset of each chunk's content (8-aligned).
-pub(crate) fn plan_container(content_lens: &[usize]) -> Result<(usize, Vec<usize>), LoadError> {
-    let dir_len = content_lens
-        .len()
-        .checked_mul(CHUNK_ENTRY_LEN)
-        .ok_or(LoadError::IntegerOverflow)?;
-    let mut cur = SUPERBLOCK_LEN
-        .checked_add(dir_len)
-        .ok_or(LoadError::IntegerOverflow)?;
-    let mut offsets = Vec::with_capacity(content_lens.len());
-    for &len in content_lens {
-        cur = align8(cur)?;
-        offsets.push(cur);
-        cur = cur.checked_add(len).ok_or(LoadError::IntegerOverflow)?;
-    }
-    Ok((align8(cur)?, offsets))
-}
-
-/// Container writers. Kept in a separate `impl` block alongside the container
-/// codec; they reuse the pre-sized append path of the main `ByteWriter`.
+/// Primitive and descriptor writers for chunk bodies. Container framing lives
+/// in `container.rs`; all writers share the same pre-sized append path.
 impl ByteWriter<'_> {
     pub(crate) fn write_u32(&mut self, value: u32) {
         self.write_bytes(&value.to_le_bytes());
@@ -1017,26 +815,6 @@ impl ByteWriter<'_> {
         for _ in 0..n {
             self.write_bytes(&[0]);
         }
-    }
-
-    pub(crate) fn write_superblock(&mut self, chunk_count: u32) {
-        self.write_magic();
-        self.write_u64(FORMAT_VERSION);
-        self.write_u32(chunk_count);
-        self.write_zeros(12);
-    }
-
-    pub(crate) fn write_chunk_entry(
-        &mut self,
-        tag: &[u8; 4],
-        critical: bool,
-        offset: usize,
-        len: usize,
-    ) {
-        self.write_bytes(tag);
-        self.write_u32(if critical { CHUNK_FLAG_CRITICAL } else { 0 });
-        self.write_u64(offset as u64);
-        self.write_u64(len as u64);
     }
 
     pub(crate) fn write_tree_desc(

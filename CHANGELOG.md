@@ -4,6 +4,13 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.18.1](https://github.com/Filyus/packed_spatial_index/compare/v0.18.0...v0.18.1) - 2026-06-20
+
+### Raycast
+- All-hits raycast on the scalar `Index2D` / `Index3D` is ~5–12% faster on heavy
+  traversal: it prefetches the next tree node while the current one is hit-tested
+  (a free cache hint, neutral when little is visited). No API change.
+
 ## [0.18.0](https://github.com/Filyus/packed_spatial_index/compare/v0.17.0...v0.18.0) - 2026-06-20
 
 ### Geometry

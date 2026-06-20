@@ -936,7 +936,12 @@ impl Index2D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        visit_overlaps(self, query, stack, visitor)
+        // Local slice-based traversal (not the shared `visit_overlaps`): iterating
+        // `&entries[node..end]` lets LLVM autovectorize the overlap test, which a
+        // per-element `TreeAccess` kernel cannot. Measured ~1.5x faster than the
+        // generic kernel on owned visit, so kept specialized (views, whose byte
+        // storage has no slice to vectorize, keep using `visit_overlaps`).
+        self.visit_with_stack_impl::<false, B, F>(query, stack, visitor)
     }
 
     /// Hidden prefetch variant of [`visit_with_stack`](Index2D::visit_with_stack).
@@ -1906,11 +1911,17 @@ impl TreeAccess for Index2D {
     }
     #[inline]
     fn tree_bounds(&self, pos: usize) -> Box2D {
-        self.entries[pos]
+        // SAFETY: `pos` is always a valid node position from the tree's own
+        // traversal (node ranges bounded by `level_bounds`, child offsets stored
+        // in `indices`). An owned index is built in-process from trusted input,
+        // so `pos < entries.len()`; this matches the view's unchecked reads and
+        // restores the bounds-check-free iteration the shared kernels rely on.
+        unsafe { *self.entries.get_unchecked(pos) }
     }
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
-        self.indices[pos]
+        // SAFETY: see `tree_bounds`; `pos < indices.len()`.
+        unsafe { *self.indices.get_unchecked(pos) }
     }
     #[inline]
     fn bounds_overlap(a: Box2D, b: Box2D) -> bool {

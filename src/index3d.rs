@@ -803,12 +803,54 @@ impl Index3D {
         &self,
         query: Box3D,
         stack: &mut Vec<usize>,
-        visitor: F,
+        mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        visit_overlaps(self, query, stack, visitor)
+        // Local slice-based traversal (not the shared `visit_overlaps`): iterating
+        // `&entries[node..end]` lets LLVM autovectorize the overlap test, which a
+        // per-element `TreeAccess` kernel cannot. Measured ~1.5x faster than the
+        // generic kernel on owned visit (the views, whose byte storage has no
+        // slice to vectorize, keep using `visit_overlaps`).
+        stack.clear();
+        if self.num_items == 0 {
+            return ControlFlow::Continue(());
+        }
+
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let node_entries = &self.entries[node_index..end];
+            let node_indices = &self.indices[node_index..end];
+
+            if is_leaf {
+                for (b, &index) in node_entries.iter().zip(node_indices) {
+                    if !b.overlaps(query) {
+                        continue;
+                    }
+                    visitor(index)?;
+                }
+            } else {
+                let child_level = level - 1;
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !b.overlaps(query) {
+                        continue;
+                    }
+                    stack.push(index);
+                    stack.push(child_level);
+                }
+            }
+
+            if stack.len() > 1 {
+                level = stack.pop().unwrap();
+                node_index = stack.pop().unwrap();
+            } else {
+                return ControlFlow::Continue(());
+            }
+        }
     }
 
     /// Same as [`search`](Index3D::search), but the traversal stack is reused by the caller.
@@ -1604,11 +1646,17 @@ impl TreeAccess for Index3D {
     }
     #[inline]
     fn tree_bounds(&self, pos: usize) -> Box3D {
-        self.entries[pos]
+        // SAFETY: `pos` is always a valid node position from the tree's own
+        // traversal (node ranges bounded by `level_bounds`, child offsets stored
+        // in `indices`). An owned index is built in-process from trusted input,
+        // so `pos < entries.len()`; this matches the view's unchecked reads and
+        // restores the bounds-check-free iteration the shared kernels rely on.
+        unsafe { *self.entries.get_unchecked(pos) }
     }
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
-        self.indices[pos]
+        // SAFETY: see `tree_bounds`; `pos < indices.len()`.
+        unsafe { *self.indices.get_unchecked(pos) }
     }
     #[inline]
     fn bounds_overlap(a: Box3D, b: Box3D) -> bool {

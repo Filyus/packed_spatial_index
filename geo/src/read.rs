@@ -27,6 +27,8 @@ struct GeoInfo {
     crs: Option<String>,
     covering: Option<GeoParquetBboxCovering>,
     is_3d: bool,
+    version: String,
+    bounds: Option<Vec<f64>>,
 }
 
 fn geo_info(meta: &GeoParquetMetadata) -> Result<GeoInfo, GeoError> {
@@ -46,6 +48,8 @@ fn geo_info(meta: &GeoParquetMetadata) -> Result<GeoInfo, GeoError> {
         crs: col.crs.as_ref().map(|v| v.to_string()),
         covering,
         is_3d,
+        version: meta.version.clone(),
+        bounds: col.bbox.clone(),
     })
 }
 
@@ -82,6 +86,8 @@ fn open<R: ChunkReader + 'static>(
 /// A summary of a GeoParquet source's primary geometry column, from [`inspect`].
 #[derive(Debug, Clone)]
 pub struct GeoParquetInfo {
+    /// GeoParquet spec version the file declares, e.g. `"1.1.0"`.
+    pub version: String,
     /// Name of the primary geometry column.
     pub geometry_column: String,
     /// `2` or `3`.
@@ -92,6 +98,10 @@ pub struct GeoParquetInfo {
     pub crs: Option<String>,
     /// Whether a per-row bbox covering column is present.
     pub has_covering: bool,
+    /// The column's overall extent if the file records one: `[xmin, ymin, xmax,
+    /// ymax]` (2D) or `[xmin, ymin, zmin, xmax, ymax, zmax]` (3D). Handy for an
+    /// initial viewport.
+    pub bounds: Option<Vec<f64>>,
     /// Number of rows in the file.
     pub num_rows: u64,
 }
@@ -100,11 +110,13 @@ pub struct GeoParquetInfo {
 pub fn inspect<R: ChunkReader + 'static>(reader: R) -> Result<GeoParquetInfo, GeoError> {
     let (info, total, _builder) = read_meta(reader)?;
     Ok(GeoParquetInfo {
+        version: info.version,
         geometry_column: info.geometry_column,
         dims: if info.is_3d { 3 } else { 2 },
         encoding: info.encoding.to_string(),
         crs: info.crs,
         has_covering: info.covering.is_some(),
+        bounds: info.bounds,
         num_rows: total as u64,
     })
 }

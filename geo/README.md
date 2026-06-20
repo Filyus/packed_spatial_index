@@ -58,6 +58,16 @@ std::fs::write("cities.psindex", &psindex)?;
 Set `ConvertOpts { compact_f32: true, .. }` for a roughly half-size file (queries
 become a conservative superset; re-check exact hits against the payload geometry).
 
+A runnable end-to-end version (inspect → convert → write a `.psindex`) lives in
+[`examples/convert.rs`](examples/convert.rs):
+
+```text
+cargo run --example convert -- path/to/file.parquet
+```
+
+[`inspect`] reports a file's geometry metadata (column, dims, encoding, CRS,
+covering, extent, row count) without reading any rows.
+
 ## Scope
 
 * Boxes come from the **bbox covering** column when present, otherwise from each

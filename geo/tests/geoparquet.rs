@@ -559,12 +559,25 @@ fn inspect_reports_metadata_without_reading_rows() {
     );
 
     let info = inspect(data).unwrap();
+    assert_eq!(info.version, "1.1.0");
     assert_eq!(info.geometry_column, "geometry");
     assert_eq!(info.dims, 2);
     assert_eq!(info.encoding, "WKB");
     assert!(info.has_covering);
     assert_eq!(info.crs.as_deref(), Some(CRS_JSON));
+    assert_eq!(info.bounds, None);
     assert_eq!(info.num_rows, 2);
+
+    // A file that records its overall extent surfaces it via `bounds`.
+    let with_bounds = write_parquet(
+        vec![("geometry", binary_col(&wkbs))],
+        r#"{"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"],"bbox":[0.0,0.0,10.0,10.0]}}}"#
+            .to_string(),
+    );
+    assert_eq!(
+        inspect(with_bounds).unwrap().bounds,
+        Some(vec![0.0, 0.0, 10.0, 10.0])
+    );
 }
 
 #[test]

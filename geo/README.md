@@ -60,10 +60,13 @@ become a conservative superset; re-check exact hits against the payload geometry
 
 ## Scope
 
-* Reads the **`WKB`** geometry encoding. Native geoarrow encodings return
-  `GeoError::UnsupportedEncoding`.
 * Boxes come from the **bbox covering** column when present, otherwise from each
-  geometry's WKB envelope.
+  geometry's **WKB** envelope.
+* The geometry is only decoded when there is no covering column, or when the
+  converter needs the WKB payload. So a native geoarrow encoding *with* a covering
+  column works for the accelerator; decoding a native encoding (no covering, or a
+  payload request) returns `GeoError::UnsupportedEncoding`.
+* Geometry columns may be `Binary`, `LargeBinary`, or `BinaryView`.
 * 2D and 3D (`XYZ` / `XYZM`).
 * Every row must have non-null geometry: item id equals the file row index, which
   leaves no room to skip rows. A null or empty geometry returns

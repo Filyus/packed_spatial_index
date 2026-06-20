@@ -7,7 +7,8 @@
 //! geoarrow encodings return [`GeoError::UnsupportedEncoding`].
 
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, Float32Array, Float64Array, LargeBinaryArray, StructArray,
+    Array, ArrayRef, BinaryArray, BinaryViewArray, Float32Array, Float64Array, LargeBinaryArray,
+    StructArray,
 };
 use arrow::record_batch::RecordBatch;
 use geoarrow_schema::Dimension;
@@ -111,7 +112,11 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
             found: 3,
         });
     }
-    require_wkb(&info)?;
+    // The geometry column is only decoded when we have no covering boxes (WKB
+    // envelope fallback) or when the caller wants the WKB payload. With a covering
+    // column and no payload requested, any encoding is fine.
+    let need_wkb = want_wkb || info.covering.is_none();
+    require_wkb_if(&info, need_wkb)?;
 
     let mut boxes = Vec::with_capacity(total);
     let mut wkb = want_wkb.then(|| Vec::with_capacity(total));
@@ -120,9 +125,14 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
     for batch in batches {
         let batch = batch?;
         let n = batch.num_rows();
-        let geom = binary_column(&batch, &info.geometry_column)?;
+        let geom_bin = need_wkb
+            .then(|| binary_column(&batch, &info.geometry_column))
+            .transpose()?;
 
         if let Some(cov) = &info.covering {
+            let geom = batch
+                .column_by_name(&info.geometry_column)
+                .ok_or(GeoError::NoGeometryColumn)?;
             let xmin = f64_path(&batch, &cov.xmin)?;
             let ymin = f64_path(&batch, &cov.ymin)?;
             let xmax = f64_path(&batch, &cov.xmax)?;
@@ -134,6 +144,7 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
                 boxes.push(Box2D::new(xmin[i], ymin[i], xmax[i], ymax[i]));
             }
         } else {
+            let geom = geom_bin.as_ref().expect("need_wkb when no covering");
             for i in 0..n {
                 if geom.is_null(i) {
                     return Err(GeoError::NullGeometry { row: row_base + i });
@@ -145,6 +156,7 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
         }
 
         if let Some(w) = wkb.as_mut() {
+            let geom = geom_bin.as_ref().expect("want_wkb implies binary column");
             for i in 0..n {
                 w.push(geom.value(i).to_vec());
             }
@@ -170,7 +182,13 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
             found: 2,
         });
     }
-    require_wkb(&info)?;
+    // A 3D covering needs both zmin and zmax; otherwise fall back to WKB.
+    let cov_3d = info
+        .covering
+        .as_ref()
+        .filter(|c| c.zmin.is_some() && c.zmax.is_some());
+    let need_wkb = want_wkb || cov_3d.is_none();
+    require_wkb_if(&info, need_wkb)?;
 
     let mut boxes = Vec::with_capacity(total);
     let mut wkb = want_wkb.then(|| Vec::with_capacity(total));
@@ -179,13 +197,14 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
     for batch in batches {
         let batch = batch?;
         let n = batch.num_rows();
-        let geom = binary_column(&batch, &info.geometry_column)?;
+        let geom_bin = need_wkb
+            .then(|| binary_column(&batch, &info.geometry_column))
+            .transpose()?;
 
-        let cov_z = info
-            .covering
-            .as_ref()
-            .filter(|c| c.zmin.is_some() && c.zmax.is_some());
-        if let Some(cov) = cov_z {
+        if let Some(cov) = cov_3d {
+            let geom = batch
+                .column_by_name(&info.geometry_column)
+                .ok_or(GeoError::NoGeometryColumn)?;
             let xmin = f64_path(&batch, &cov.xmin)?;
             let ymin = f64_path(&batch, &cov.ymin)?;
             let zmin = f64_path(&batch, cov.zmin.as_ref().unwrap())?;
@@ -201,6 +220,7 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
                 ));
             }
         } else {
+            let geom = geom_bin.as_ref().expect("need_wkb when no 3D covering");
             for i in 0..n {
                 if geom.is_null(i) {
                     return Err(GeoError::NullGeometry { row: row_base + i });
@@ -212,6 +232,7 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
         }
 
         if let Some(w) = wkb.as_mut() {
+            let geom = geom_bin.as_ref().expect("want_wkb implies binary column");
             for i in 0..n {
                 w.push(geom.value(i).to_vec());
             }
@@ -226,18 +247,22 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
     })
 }
 
-fn require_wkb(info: &GeoInfo) -> Result<(), GeoError> {
-    if info.encoding == GeoParquetColumnEncoding::WKB {
+/// Require the `WKB` encoding only when the geometry column will actually be
+/// decoded (no covering boxes, or the caller wants the WKB payload).
+fn require_wkb_if(info: &GeoInfo, needed: bool) -> Result<(), GeoError> {
+    if !needed || info.encoding == GeoParquetColumnEncoding::WKB {
         Ok(())
     } else {
         Err(GeoError::UnsupportedEncoding(info.encoding.to_string()))
     }
 }
 
-/// A binary geometry column, either 32-bit (`BinaryArray`) or 64-bit offsets.
+/// A binary geometry column: 32-bit offsets (`BinaryArray`), 64-bit offsets
+/// (`LargeBinaryArray`), or the view layout (`BinaryViewArray`).
 enum WkbCol<'a> {
     Bin(&'a BinaryArray),
     Large(&'a LargeBinaryArray),
+    View(&'a BinaryViewArray),
 }
 
 impl WkbCol<'_> {
@@ -245,12 +270,14 @@ impl WkbCol<'_> {
         match self {
             WkbCol::Bin(a) => a.is_null(i),
             WkbCol::Large(a) => a.is_null(i),
+            WkbCol::View(a) => a.is_null(i),
         }
     }
     fn value(&self, i: usize) -> &[u8] {
         match self {
             WkbCol::Bin(a) => a.value(i),
             WkbCol::Large(a) => a.value(i),
+            WkbCol::View(a) => a.value(i),
         }
     }
 }
@@ -263,6 +290,8 @@ fn binary_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<WkbCol<'a>, G
         Ok(WkbCol::Bin(a))
     } else if let Some(a) = arr.as_any().downcast_ref::<LargeBinaryArray>() {
         Ok(WkbCol::Large(a))
+    } else if let Some(a) = arr.as_any().downcast_ref::<BinaryViewArray>() {
+        Ok(WkbCol::View(a))
     } else {
         Err(GeoError::UnsupportedEncoding(format!(
             "geometry column `{name}` is not binary WKB ({:?})",

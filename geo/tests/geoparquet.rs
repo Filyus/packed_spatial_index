@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, BinaryArray, Float64Array, StructArray};
+use arrow::array::{ArrayRef, BinaryArray, Float32Array, Float64Array, StructArray};
 use arrow::datatypes::{DataType, Field};
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
@@ -43,6 +43,27 @@ fn wkb_point_3d(x: f64, y: f64, z: f64) -> Vec<u8> {
     v.extend_from_slice(&x.to_le_bytes());
     v.extend_from_slice(&y.to_le_bytes());
     v.extend_from_slice(&z.to_le_bytes());
+    v
+}
+
+/// A closed-ring rectangle polygon, so the WKB envelope must track min/max over
+/// several coordinates (not a single point).
+fn wkb_polygon_2d(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(1);
+    v.extend_from_slice(&3u32.to_le_bytes()); // Polygon
+    v.extend_from_slice(&1u32.to_le_bytes()); // 1 ring
+    v.extend_from_slice(&5u32.to_le_bytes()); // 5 points (closed)
+    for (x, y) in [
+        (minx, miny),
+        (maxx, miny),
+        (maxx, maxy),
+        (minx, maxy),
+        (minx, miny),
+    ] {
+        v.extend_from_slice(&x.to_le_bytes());
+        v.extend_from_slice(&y.to_le_bytes());
+    }
     v
 }
 
@@ -115,6 +136,53 @@ fn bbox_struct_3d(boxes: &[[f64; 6]]) -> ArrayRef {
             Arc::new(col(5)) as ArrayRef,
         ),
     ]))
+}
+
+/// Same 2D covering struct but with `Float32` children, to exercise the f32 read
+/// path.
+fn bbox_struct_2d_f32(boxes: &[[f64; 4]]) -> ArrayRef {
+    let col = |k: usize| Float32Array::from(boxes.iter().map(|b| b[k] as f32).collect::<Vec<_>>());
+    Arc::new(StructArray::from(vec![
+        (
+            Arc::new(Field::new("xmin", DataType::Float32, false)),
+            Arc::new(col(0)) as ArrayRef,
+        ),
+        (
+            Arc::new(Field::new("ymin", DataType::Float32, false)),
+            Arc::new(col(1)) as ArrayRef,
+        ),
+        (
+            Arc::new(Field::new("xmax", DataType::Float32, false)),
+            Arc::new(col(2)) as ArrayRef,
+        ),
+        (
+            Arc::new(Field::new("ymax", DataType::Float32, false)),
+            Arc::new(col(3)) as ArrayRef,
+        ),
+    ]))
+}
+
+/// A geoarrow-native point column: `struct { x: f64, y: f64 }`. Not WKB, so the
+/// reader must lean on the covering column for boxes.
+fn native_point_struct(pts: &[(f64, f64)]) -> ArrayRef {
+    let xs = Float64Array::from(pts.iter().map(|p| p.0).collect::<Vec<_>>());
+    let ys = Float64Array::from(pts.iter().map(|p| p.1).collect::<Vec<_>>());
+    Arc::new(StructArray::from(vec![
+        (
+            Arc::new(Field::new("x", DataType::Float64, false)),
+            Arc::new(xs) as ArrayRef,
+        ),
+        (
+            Arc::new(Field::new("y", DataType::Float64, false)),
+            Arc::new(ys) as ArrayRef,
+        ),
+    ]))
+}
+
+/// 2D `geo` metadata with the native `point` encoding and a bbox covering.
+fn geo_meta_2d_native_with_covering() -> String {
+    r#"{"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"point","geometry_types":["Point"],"covering":{"bbox":{"xmin":["bbox","xmin"],"ymin":["bbox","ymin"],"xmax":["bbox","xmax"],"ymax":["bbox","ymax"]}}}}}"#
+        .to_string()
 }
 
 const CRS_JSON: &str = r#"{"id":{"authority":"EPSG","code":4326}}"#;
@@ -356,4 +424,123 @@ fn read_and_build_3d_covering_match_bruteforce() {
     let q = Box3D::new(1.0, 1.0, 1.0, 2.0, 2.0, 2.0);
     assert_eq!(sorted(index.search(q)), brute_3d(&boxes, q));
     assert_eq!(index.search(q), vec![0]);
+}
+
+#[test]
+fn polygon_wkb_envelope_tracks_all_coordinates() {
+    // Envelope of each rectangle must be the rectangle itself, not one corner.
+    let rects = [[0.0, 0.0, 4.0, 2.0], [10.0, 10.0, 12.0, 18.0]];
+    let wkbs: Vec<Option<Vec<u8>>> = rects
+        .iter()
+        .map(|r| Some(wkb_polygon_2d(r[0], r[1], r[2], r[3])))
+        .collect();
+    let data = write_parquet(
+        vec![("geometry", binary_col(&wkbs))],
+        geo_meta_2d(false, false),
+    );
+
+    let boxes = read_bboxes_2d(data.clone()).unwrap();
+    // A query touching only the far corner of the first rectangle must still hit.
+    assert!(boxes[0].overlaps(Box2D::new(3.5, 1.5, 3.9, 1.9)));
+    let index = build_index_2d(data, BuildOpts::default()).unwrap();
+    let q = Box2D::new(3.5, 1.5, 11.0, 11.0);
+    assert_eq!(sorted(index.search(q)), brute_2d(&boxes, q));
+}
+
+#[test]
+fn f32_covering_column_is_read() {
+    let pts = [(5.0, 5.0), (50.0, 50.0)];
+    let wkbs: Vec<Option<Vec<u8>>> = pts.iter().map(|&(x, y)| Some(wkb_point_2d(x, y))).collect();
+    let cov = [[0.0, 0.0, 10.0, 10.0], [40.0, 40.0, 60.0, 60.0]];
+    let data = write_parquet(
+        vec![
+            ("geometry", binary_col(&wkbs)),
+            ("bbox", bbox_struct_2d_f32(&cov)),
+        ],
+        geo_meta_2d(true, false),
+    );
+
+    let boxes = read_bboxes_2d(data.clone()).unwrap();
+    assert!(
+        boxes[0].overlaps(Box2D::new(1.0, 1.0, 2.0, 2.0)),
+        "f32 covering box read"
+    );
+    let index = build_index_2d(data, BuildOpts::default()).unwrap();
+    assert_eq!(index.search(Box2D::new(1.0, 1.0, 2.0, 2.0)), vec![0]);
+}
+
+#[test]
+fn native_encoding_uses_covering_and_rejects_payload() {
+    let pts = [(5.0, 5.0), (50.0, 50.0)];
+    let cov = [[0.0, 0.0, 10.0, 10.0], [40.0, 40.0, 60.0, 60.0]];
+    let make = || {
+        write_parquet(
+            vec![
+                ("geometry", native_point_struct(&pts)),
+                ("bbox", bbox_struct_2d(&cov)),
+            ],
+            geo_meta_2d_native_with_covering(),
+        )
+    };
+
+    // Accelerator works on native encoding: boxes come from the covering column,
+    // geometry is never decoded.
+    let index = build_index_2d(make(), BuildOpts::default()).unwrap();
+    assert_eq!(index.search(Box2D::new(1.0, 1.0, 2.0, 2.0)), vec![0]);
+
+    // The converter needs the WKB payload, which native encoding cannot provide.
+    match convert_2d(make(), ConvertOpts::default()) {
+        Err(GeoError::UnsupportedEncoding(_)) => {}
+        other => panic!("expected UnsupportedEncoding, got {other:?}"),
+    }
+    // ...unless the payload is turned off, in which case it succeeds.
+    let opts = ConvertOpts {
+        include_payload: false,
+        ..Default::default()
+    };
+    assert!(convert_2d(make(), opts).is_ok());
+}
+
+#[test]
+fn multi_batch_row_indices_are_correct() {
+    // > one default record batch (1024 rows) so the cross-batch `row_base`
+    // bookkeeping and per-batch column reads are exercised. Points walk a
+    // diagonal; row i sits at (i, i).
+    const N: usize = 2500;
+    let wkbs: Vec<Option<Vec<u8>>> = (0..N)
+        .map(|i| Some(wkb_point_2d(i as f64, i as f64)))
+        .collect();
+    let cov: Vec<[f64; 4]> = (0..N)
+        .map(|i| [i as f64, i as f64, i as f64, i as f64])
+        .collect();
+
+    // WKB-envelope path across batches.
+    let wkb_data = write_parquet(
+        vec![("geometry", binary_col(&wkbs))],
+        geo_meta_2d(false, false),
+    );
+    let index = build_index_2d(wkb_data.clone(), BuildOpts::default()).unwrap();
+    assert_eq!(read_bboxes_2d(wkb_data).unwrap().len(), N);
+    // A late, narrow query must return exactly that row's index.
+    assert_eq!(
+        index.search(Box2D::new(2000.0, 2000.0, 2000.0, 2000.0)),
+        vec![2000]
+    );
+    let mut hits = index.search(Box2D::new(1500.0, 1500.0, 1502.0, 1502.0));
+    hits.sort_unstable();
+    assert_eq!(hits, vec![1500, 1501, 1502]);
+
+    // Covering path across batches.
+    let cov_data = write_parquet(
+        vec![
+            ("geometry", binary_col(&wkbs)),
+            ("bbox", bbox_struct_2d(&cov)),
+        ],
+        geo_meta_2d(true, false),
+    );
+    let index = build_index_2d(cov_data, BuildOpts::default()).unwrap();
+    assert_eq!(
+        index.search(Box2D::new(2300.0, 2300.0, 2300.0, 2300.0)),
+        vec![2300]
+    );
 }

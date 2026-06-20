@@ -44,6 +44,9 @@ jobs:
       - name: Test simd feature
         run: cargo test --all-targets --no-default-features --features simd
 
+      - name: Doctests (all features)
+        run: cargo test --doc --all-features
+
       - name: Check wasm SIMD build
         run: |
           rustup target add wasm32-unknown-unknown

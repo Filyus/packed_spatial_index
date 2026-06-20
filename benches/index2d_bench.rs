@@ -488,7 +488,11 @@ fn bench_query_windows(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_build, bench_query, bench_query_windows);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = bench_build, bench_query, bench_query_windows
+}
 #[path = "support/pin.rs"]
 mod pin;
 

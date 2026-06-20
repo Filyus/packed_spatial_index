@@ -84,7 +84,11 @@ fn closest_triangle_benches(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, closest_triangle_benches);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = closest_triangle_benches
+}
 #[path = "support/pin.rs"]
 mod pin;
 

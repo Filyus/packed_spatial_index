@@ -67,7 +67,11 @@ fn bench_hilbert(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_hilbert);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = bench_hilbert
+}
 #[path = "support/pin.rs"]
 mod pin;
 

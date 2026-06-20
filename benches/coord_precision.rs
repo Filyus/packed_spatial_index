@@ -222,7 +222,11 @@ fn bench_neighbors(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_search, bench_neighbors);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = bench_search, bench_neighbors
+}
 #[path = "support/pin.rs"]
 mod pin;
 

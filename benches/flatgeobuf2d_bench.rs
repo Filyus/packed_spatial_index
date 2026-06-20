@@ -233,7 +233,11 @@ fn bench_persistence(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_build, bench_search, bench_persistence);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = bench_build, bench_search, bench_persistence
+}
 #[path = "support/pin.rs"]
 mod pin;
 

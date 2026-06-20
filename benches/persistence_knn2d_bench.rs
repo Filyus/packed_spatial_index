@@ -352,7 +352,11 @@ fn bench_knn(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_persistence, bench_loaded_query, bench_knn);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = bench_persistence, bench_loaded_query, bench_knn
+}
 #[path = "support/pin.rs"]
 mod pin;
 

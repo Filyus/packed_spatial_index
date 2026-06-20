@@ -158,7 +158,11 @@ fn bench_build(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_encode, bench_encode_sort, bench_build);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = bench_encode, bench_encode_sort, bench_build
+}
 #[path = "support/pin.rs"]
 mod pin;
 

@@ -9,6 +9,18 @@
 //! once at the top of `main`. It lives in a subdirectory so Cargo does not treat
 //! it as its own benchmark target.
 
+/// A `Criterion` with shorter warm-up/measurement windows than the 3s/5s
+/// defaults. Pinning (see [`pin_from_env`]) cuts run-to-run variance, so fewer
+/// seconds per function still give stable medians while roughly halving a full
+/// suite's wall time. CLI flags (e.g. `--measurement-time`) still override these,
+/// because `criterion_group!` applies `configure_from_args` on top.
+#[allow(dead_code)]
+pub fn criterion() -> criterion::Criterion {
+    criterion::Criterion::default()
+        .warm_up_time(std::time::Duration::from_secs(1))
+        .measurement_time(std::time::Duration::from_secs(2))
+}
+
 /// Pin to the core named by `BENCH_PIN_CORE`, if that variable is set.
 pub fn pin_from_env() {
     let Ok(val) = std::env::var("BENCH_PIN_CORE") else {

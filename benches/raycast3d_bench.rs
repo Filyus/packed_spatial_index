@@ -369,7 +369,11 @@ fn raycast_benches(c: &mut Criterion) {
     bench_dataset(c, "clustered", clustered, &rays);
 }
 
-criterion_group!(benches, raycast_benches);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = raycast_benches
+}
 #[path = "support/pin.rs"]
 mod pin;
 

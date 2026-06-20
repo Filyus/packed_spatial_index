@@ -5,12 +5,16 @@
 //!   * `search` (scalar, view, and SIMD) agrees with a brute-force scan;
 //!   * `neighbors` (kNN) returns the k nearest by distance, tie-safe;
 //!   * `self_join` returns exactly the brute-force set of intersecting pairs;
+//!   * `raycast` / `raycast_closest` and the triangle / convex-polygon region
+//!     queries agree with their public predicate run over every box;
 //!   * `from_bytes` never panics on arbitrary or mutated byte buffers, even
 //!     though it relies on `*_unchecked` accessors after header validation.
 
 #[cfg(feature = "simd")]
 use packed_spatial_index::SimdIndex2D;
-use packed_spatial_index::{Box2D, Index2D, Index2DBuilder, Index2DView, Point2D};
+use packed_spatial_index::{
+    Box2D, ConvexPolygon2D, Index2D, Index2DBuilder, Index2DView, Point2D, Ray2D, Triangle2D,
+};
 use proptest::prelude::*;
 
 /// Generate boxes on a small integer grid so edges collide often. Inclusive-edge
@@ -96,6 +100,46 @@ fn norm(pair: (usize, usize)) -> (usize, usize) {
     } else {
         (pair.1, pair.0)
     }
+}
+
+fn box2d(b: &[f64; 4]) -> Box2D {
+    Box2D::new(b[0], b[1], b[2], b[3])
+}
+
+/// Grid origin, a non-zero integer direction, generous max_t covering the field.
+fn ray_strategy() -> impl Strategy<Value = (f64, f64, f64, f64)> {
+    (0i64..16, 0i64..16, -2i64..=2, -2i64..=2)
+        .prop_filter("non-zero direction", |(_, _, dx, dy)| *dx != 0 || *dy != 0)
+        .prop_map(|(ox, oy, dx, dy)| (ox as f64, oy as f64, dx as f64, dy as f64))
+}
+
+fn triangle_strategy() -> impl Strategy<Value = Triangle2D> {
+    (0i64..16, 0i64..16, 0i64..16, 0i64..16, 0i64..16, 0i64..16).prop_map(
+        |(ax, ay, bx, by, cx, cy)| {
+            Triangle2D::new(
+                [ax as f64, ay as f64],
+                [bx as f64, by as f64],
+                [cx as f64, cy as f64],
+            )
+        },
+    )
+}
+
+/// A regular n-gon at a random center/radius — always convex, as the SAT
+/// predicate requires.
+fn polygon_strategy() -> impl Strategy<Value = ConvexPolygon2D> {
+    (1i64..15, 1i64..15, 2i64..7, 3usize..=6).prop_map(|(cx, cy, r, n)| {
+        let verts: Vec<[f64; 2]> = (0..n)
+            .map(|i| {
+                let a = std::f64::consts::TAU * (i as f64) / (n as f64);
+                [
+                    cx as f64 + (r as f64) * a.cos(),
+                    cy as f64 + (r as f64) * a.sin(),
+                ]
+            })
+            .collect();
+        ConvexPolygon2D::new(verts)
+    })
 }
 
 proptest! {
@@ -185,6 +229,119 @@ proptest! {
             got_s.sort_unstable();
             prop_assert_eq!(&got_s, &expected);
         }
+    }
+
+    /// All-hits raycast returns exactly the boxes the ray segment enters (oracle is
+    /// the public `Ray2D::intersects_box`) — scalar index, view, and SIMD index.
+    #[test]
+    fn raycast_matches_predicate((ox, oy, dx, dy) in ray_strategy(), boxes in boxes_strategy()) {
+        let ray = Ray2D::new(Point2D::new(ox, oy), dx, dy, 64.0);
+        let mut expected: Vec<usize> = boxes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| ray.intersects_box(box2d(b)))
+            .map(|(i, _)| i)
+            .collect();
+        expected.sort_unstable();
+
+        let index = build(&boxes);
+        let mut got = index.raycast(ray);
+        got.sort_unstable();
+        prop_assert_eq!(&got, &expected);
+
+        let bytes = index.to_bytes();
+        let view = Index2DView::from_bytes(&bytes).unwrap();
+        let mut got_v = view.raycast(ray);
+        got_v.sort_unstable();
+        prop_assert_eq!(&got_v, &expected);
+
+        #[cfg(feature = "simd")]
+        {
+            let mut builder = Index2DBuilder::new(boxes.len());
+            for b in &boxes {
+                builder.add(box2d(b));
+            }
+            let simd = builder.finish_simd().unwrap();
+            let mut got_s = simd.raycast(ray);
+            got_s.sort_unstable();
+            prop_assert_eq!(&got_s, &expected);
+        }
+    }
+
+    /// Closest-hit raycast returns the minimum entry `t` (compare the `t`, not the
+    /// id, so ties are safe) — scalar index, view, and SIMD index.
+    #[test]
+    fn raycast_closest_matches_brute_force((ox, oy, dx, dy) in ray_strategy(), boxes in boxes_strategy()) {
+        let ray = Ray2D::new(Point2D::new(ox, oy), dx, dy, 64.0);
+        let expected = boxes
+            .iter()
+            .filter_map(|b| ray.enter_t(box2d(b)))
+            .fold(None, |acc: Option<f64>, t| Some(acc.map_or(t, |a| a.min(t))));
+
+        let index = build(&boxes);
+        prop_assert_eq!(index.raycast_closest(ray).map(|(_, t)| t), expected);
+
+        let bytes = index.to_bytes();
+        let view = Index2DView::from_bytes(&bytes).unwrap();
+        prop_assert_eq!(view.raycast_closest(ray).map(|(_, t)| t), expected);
+
+        #[cfg(feature = "simd")]
+        {
+            let mut builder = Index2DBuilder::new(boxes.len());
+            for b in &boxes {
+                builder.add(box2d(b));
+            }
+            let simd = builder.finish_simd().unwrap();
+            prop_assert_eq!(simd.raycast_closest(ray).map(|(_, t)| t), expected);
+        }
+    }
+
+    /// Triangle region search returns exactly the boxes overlapping the triangle
+    /// (oracle is `Triangle2D::overlaps_box`) — scalar index and view (f64-only).
+    #[test]
+    fn search_triangle_matches_predicate(tri in triangle_strategy(), boxes in boxes_strategy()) {
+        let mut expected: Vec<usize> = boxes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| tri.overlaps_box(box2d(b)))
+            .map(|(i, _)| i)
+            .collect();
+        expected.sort_unstable();
+
+        let index = build(&boxes);
+        let mut got = index.search_triangle(tri);
+        got.sort_unstable();
+        prop_assert_eq!(&got, &expected);
+
+        let bytes = index.to_bytes();
+        let view = Index2DView::from_bytes(&bytes).unwrap();
+        let mut got_v = view.search_triangle(tri);
+        got_v.sort_unstable();
+        prop_assert_eq!(&got_v, &expected);
+    }
+
+    /// Convex-polygon region search returns exactly the boxes overlapping the
+    /// polygon (oracle is `ConvexPolygon2D::overlaps_box`) — scalar index and view.
+    #[test]
+    fn search_polygon_matches_predicate(poly in polygon_strategy(), boxes in boxes_strategy()) {
+        let mut expected: Vec<usize> = boxes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| poly.overlaps_box(box2d(b)))
+            .map(|(i, _)| i)
+            .collect();
+        expected.sort_unstable();
+
+        let index = build(&boxes);
+        let mut got = index.search_polygon(&poly);
+        got.sort_unstable();
+        prop_assert_eq!(&got, &expected);
+
+        let bytes = index.to_bytes();
+        let view = Index2DView::from_bytes(&bytes).unwrap();
+        let mut got_v = view.search_polygon(&poly);
+        got_v.sort_unstable();
+        prop_assert_eq!(&got_v, &expected);
     }
 
     /// Arbitrary bytes must yield `Err`, never a panic or out-of-bounds read.

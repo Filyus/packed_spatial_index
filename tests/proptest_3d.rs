@@ -1,13 +1,16 @@
 //! Property-based correctness and robustness tests for the 3D index.
 //!
 //! Mirrors `proptest_2d.rs`: `search` (scalar, view, SIMD) agrees with a
-//! brute-force scan, `neighbors` (kNN) and `self_join` match brute force, and
+//! brute-force scan; `neighbors` (kNN), `self_join`, `raycast` /
+//! `raycast_closest`, and frustum culling match their brute-force oracle; and
 //! `from_bytes` never panics on arbitrary or mutated byte buffers despite using
 //! `*_unchecked` accessors after header validation.
 
 #[cfg(feature = "simd")]
 use packed_spatial_index::SimdIndex3D;
-use packed_spatial_index::{Box3D, Index3D, Index3DBuilder, Index3DView, Point3D};
+use packed_spatial_index::{
+    Box3D, Frustum3D, Index3D, Index3DBuilder, Index3DView, Point3D, Ray3D,
+};
 use proptest::prelude::*;
 
 /// Boxes on a small integer grid so edges collide on exact boundaries.
@@ -108,6 +111,41 @@ fn norm(pair: (usize, usize)) -> (usize, usize) {
     }
 }
 
+/// Grid origin, a non-zero integer direction, generous max_t covering the field.
+fn ray_strategy() -> impl Strategy<Value = (f64, f64, f64, f64, f64, f64)> {
+    (
+        0i64..12,
+        0i64..12,
+        0i64..12,
+        -2i64..=2,
+        -2i64..=2,
+        -2i64..=2,
+    )
+        .prop_filter("non-zero direction", |(_, _, _, dx, dy, dz)| {
+            *dx != 0 || *dy != 0 || *dz != 0
+        })
+        .prop_map(|(ox, oy, oz, dx, dy, dz)| {
+            (
+                ox as f64, oy as f64, oz as f64, dx as f64, dy as f64, dz as f64,
+            )
+        })
+}
+
+/// An axis-aligned box frustum `[lo, hi]^3` (lo < hi always).
+fn frustum_strategy() -> impl Strategy<Value = Frustum3D> {
+    (0i64..6, 6i64..12).prop_map(|(lo, hi)| {
+        let (lo, hi) = (lo as f64, hi as f64);
+        Frustum3D::from_planes([
+            [1.0, 0.0, 0.0, -lo],
+            [-1.0, 0.0, 0.0, hi],
+            [0.0, 1.0, 0.0, -lo],
+            [0.0, -1.0, 0.0, hi],
+            [0.0, 0.0, 1.0, -lo],
+            [0.0, 0.0, -1.0, hi],
+        ])
+    })
+}
+
 proptest! {
     #[test]
     fn search_matches_brute_force(boxes in boxes_strategy(), q in query_strategy()) {
@@ -194,6 +232,101 @@ proptest! {
             got_s.sort_unstable();
             prop_assert_eq!(&got_s, &expected);
         }
+    }
+
+    /// All-hits raycast returns exactly the boxes the ray segment enters (oracle is
+    /// the public `Ray3D::intersects_box`) — scalar index, view, and SIMD index.
+    #[test]
+    fn raycast_matches_predicate(
+        (ox, oy, oz, dx, dy, dz) in ray_strategy(),
+        boxes in boxes_strategy(),
+    ) {
+        let ray = Ray3D::new(Point3D::new(ox, oy, oz), dx, dy, dz, 48.0);
+        let mut expected: Vec<usize> = boxes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| ray.intersects_box(box3d(b)))
+            .map(|(i, _)| i)
+            .collect();
+        expected.sort_unstable();
+
+        let index = build(&boxes);
+        let mut got = index.raycast(ray);
+        got.sort_unstable();
+        prop_assert_eq!(&got, &expected);
+
+        let bytes = index.to_bytes();
+        let view = Index3DView::from_bytes(&bytes).unwrap();
+        let mut got_v = view.raycast(ray);
+        got_v.sort_unstable();
+        prop_assert_eq!(&got_v, &expected);
+
+        #[cfg(feature = "simd")]
+        {
+            let mut builder = Index3DBuilder::new(boxes.len());
+            for b in &boxes {
+                builder.add(box3d(b));
+            }
+            let simd = builder.finish_simd().unwrap();
+            let mut got_s = simd.raycast(ray);
+            got_s.sort_unstable();
+            prop_assert_eq!(&got_s, &expected);
+        }
+    }
+
+    /// Closest-hit raycast returns the minimum entry `t` (compare the `t`, not the
+    /// id, so ties are safe) — scalar index, view, and SIMD index.
+    #[test]
+    fn raycast_closest_matches_brute_force(
+        (ox, oy, oz, dx, dy, dz) in ray_strategy(),
+        boxes in boxes_strategy(),
+    ) {
+        let ray = Ray3D::new(Point3D::new(ox, oy, oz), dx, dy, dz, 48.0);
+        let expected = boxes
+            .iter()
+            .filter_map(|b| ray.enter_t(box3d(b)))
+            .fold(None, |acc: Option<f64>, t| Some(acc.map_or(t, |a| a.min(t))));
+
+        let index = build(&boxes);
+        prop_assert_eq!(index.raycast_closest(ray).map(|(_, t)| t), expected);
+
+        let bytes = index.to_bytes();
+        let view = Index3DView::from_bytes(&bytes).unwrap();
+        prop_assert_eq!(view.raycast_closest(ray).map(|(_, t)| t), expected);
+
+        #[cfg(feature = "simd")]
+        {
+            let mut builder = Index3DBuilder::new(boxes.len());
+            for b in &boxes {
+                builder.add(box3d(b));
+            }
+            let simd = builder.finish_simd().unwrap();
+            prop_assert_eq!(simd.raycast_closest(ray).map(|(_, t)| t), expected);
+        }
+    }
+
+    /// Frustum culling returns exactly the boxes overlapping the frustum (oracle is
+    /// `Frustum3D::overlaps_box`) — scalar index and view (f64-only).
+    #[test]
+    fn search_frustum_matches_predicate(frustum in frustum_strategy(), boxes in boxes_strategy()) {
+        let mut expected: Vec<usize> = boxes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| frustum.overlaps_box(box3d(b)))
+            .map(|(i, _)| i)
+            .collect();
+        expected.sort_unstable();
+
+        let index = build(&boxes);
+        let mut got = index.search_frustum(frustum);
+        got.sort_unstable();
+        prop_assert_eq!(&got, &expected);
+
+        let bytes = index.to_bytes();
+        let view = Index3DView::from_bytes(&bytes).unwrap();
+        let mut got_v = view.search_frustum(frustum);
+        got_v.sort_unstable();
+        prop_assert_eq!(&got_v, &expected);
     }
 
     #[test]

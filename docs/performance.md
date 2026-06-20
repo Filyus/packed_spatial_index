@@ -4,6 +4,13 @@ Benchmark results and how to reproduce them. See the
 [README](https://github.com/Filyus/packed_spatial_index#readme) for the API
 overview.
 
+Numbers are from one machine and depend on hardware and workload, so treat them as
+relative, not absolute. Single-thread rows are measured with the benchmark thread
+pinned to one performance core (`BENCH_PIN_CORE`, see [Reproducing](#reproducing));
+parallel rows run unpinned so the rayon workers can spread across cores. Some
+baseline crates (`fast_hilbert`, `bvh`) have grown faster across versions since the
+previous numbers, which narrowed a few of the comparisons below.
+
 ## Baselines
 
 The benchmarks below compare against:
@@ -35,18 +42,18 @@ better.
 
 | Encoder | 100k encode | Throughput | vs `fast_hilbert` |
 | --- | ---: | ---: | ---: |
-| `magic_bits` (crate default) | 186 us | 537 Melem/s | 6.9x |
-| reference `static_aabb2d_index::hilbert_xy_to_index` | 180 us | 556 Melem/s | 7.1x |
-| `lut` (4-bit state machine) | 243 us | 412 Melem/s | 5.3x |
-| `loop_rotation` | 1.02 ms | 98 Melem/s | 1.3x |
-| `fast_hilbert::xy2h` (order 16) | 1.28 ms | 78 Melem/s | 1.0x |
+| `magic_bits` (crate default) | 185 us | 541 Melem/s | 3.5x |
+| reference `static_aabb2d_index::hilbert_xy_to_index` | 183 us | 546 Melem/s | 3.5x |
+| `lut` (4-bit state machine) | 241 us | 416 Melem/s | 2.7x |
+| `loop_rotation` | 998 us | 100 Melem/s | 0.65x |
+| `fast_hilbert::xy2h` (order 16) | 644 us | 155 Melem/s | 1.0x |
 | `morton` (Z-order baseline, not Hilbert) | 47 us | 2.1 Gelem/s | n/a |
 
 The crate's default `magic_bits` encoder is branchless bit arithmetic that
 auto-vectorizes, landing within a few percent of the `static_aabb2d_index`
-reference and about 6.9x faster than `fast_hilbert`. `fast_hilbert` is generic
+reference and about 3.5x faster than `fast_hilbert`. `fast_hilbert` is generic
 over coordinate width and curve order; that generality costs it throughput on the
-fixed `u16` path, where it lands near `loop_rotation`. Note the trade-off
+fixed `u16` path, though it still beats the naive `loop_rotation`. Note the trade-off
 direction flips for single-call latency: in a dependent-accumulation loop the
 table-driven `lut` wins because it has no arithmetic dependency chain, while
 `magic_bits` is fastest only when iterations are independent (the build case).
@@ -63,24 +70,24 @@ canonical byte format for 100,000 boxes.
 
 | Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: | ---: |
-| Full build | 70.18 ms | 8.95 ms | 3.18 ms serial / 2.20 ms parallel | - |
-| Search batch | 555.83 us | 341.56 us | 416.15 us | 128.64 us |
-| Serialize built tree (fresh buffer) | - | - | 407.64 us | 689.42 us |
-| Serialize built tree (reused buffer) | 131.93 us | - | 68.78 us | 140.21 us |
-| Load owned tree | 740.23 us | - | 607.62 us | 935.51 us |
-| Load zero-copy view | - | - | 37.59 us | n/a |
+| Full build | 47.57 ms | 6.25 ms | 2.33 ms serial / 2.21 ms parallel | - |
+| Search batch | 576.00 us | 357.49 us | 460.81 us | 131.03 us |
+| Serialize built tree (fresh buffer) | - | - | 421.18 us | 650.84 us |
+| Serialize built tree (reused buffer) | 152.65 us | - | 74.65 us | 181.56 us |
+| Load owned tree | 681.51 us | - | 525.93 us | 861.55 us |
+| Load zero-copy view | - | - | 36.40 us | n/a |
 
 `SimdIndex2D` searches faster than `Index2D` but **serializes and loads slower**
-(roughly 1.5–2.8× in a clean re-measure) — expected, not noise. The on-disk
+(roughly 1.5–2.4× in a clean re-measure) — expected, not noise. The on-disk
 format is AoS (one canonical format shared by both, so the bytes are
 interchangeable). `Index2D` stores AoS too, so `to_bytes` is close to a memcpy
 and `from_bytes` close to zero-copy; `SimdIndex2D` stores SoA (separate min/max
 columns, what makes its queries fast), so it gathers SoA→AoS to serialize and
 scatters AoS→SoA to load. The `reused buffer` row isolates this best:
-`Index2D` 68.78 us (≈memcpy) vs `SimdIndex2D` 140.21 us (the transpose). So
+`Index2D` 74.65 us (≈memcpy) vs `SimdIndex2D` 181.56 us (the transpose). So
 `SimdIndex2D` pays at serialize/load to win at query time — prefer it when you
 query far more than you persist, and load read-mostly bytes through the zero-copy
-`Index2DView` (37.59 us) rather than rebuilding an owned SoA index.
+`Index2DView` (36.40 us) rather than rebuilding an owned SoA index.
 
 Scalar `Index2D` search versus `static_aabb2d_index` is dataset-sensitive.
 Two search runs with the same item/query counts but different generated inputs
@@ -88,8 +95,8 @@ showed opposite scalar ordering:
 
 | Search batch | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: |
-| `flatgeobuf2d_bench`, seed `0xF6B` | 341.56 us | 416.15 us | 128.64 us |
-| `index2d_bench`, seed `0xB0B` | 643.85 us | 311.72 us | 126.21 us |
+| `flatgeobuf2d_bench`, seed `0xF6B` | 357.49 us | 460.81 us | 131.03 us |
+| `index2d_bench`, seed `0xB0B` | 666.90 us | 357.46 us | 130.80 us |
 
 ## 2D vs 3D
 
@@ -99,31 +106,31 @@ with `node_size = 16`; search and KNN use 1,000 query boxes or points.
 
 | Stage | Dataset / mode | `Index2D` | `Index3D` | 3D speed |
 | --- | --- | ---: | ---: | ---: |
-| Hilbert encode | production 2D LUT vs 3D nibble LUT | 739.90 us | 983.42 us | 0.75x |
-| Build | planar XY | 2.7433 ms | 4.5660 ms | 0.60x |
-| Build | uniform XYZ | 3.4270 ms | 5.1252 ms | 0.67x |
-| Search batch | planar XY | 466.41 us | 636.37 us | 0.73x |
-| Search batch | uniform XYZ | 495.82 us | 391.32 us | 1.27x |
+| Hilbert encode | production 2D LUT vs 3D nibble LUT | 753.19 us | 1.0053 ms | 0.75x |
+| Build | planar XY | 2.2526 ms | 3.8785 ms | 0.58x |
+| Build | uniform XYZ | 2.3997 ms | 4.0482 ms | 0.59x |
+| Search batch | planar XY | 550.49 us | 672.92 us | 0.82x |
+| Search batch | uniform XYZ | 544.18 us | 404.77 us | 1.34x |
 
 | KNN batch | Dataset / mode | `Index2D` | `Index3D` | 3D speed |
 | --- | --- | ---: | ---: | ---: |
-| Top-1 | planar XY | 973.85 us | 1.2445 ms | 0.78x |
-| Top-10 | planar XY | 1.9378 ms | 2.5625 ms | 0.76x |
-| Top-1 | uniform XYZ | 1.0028 ms | 1.8530 ms | 0.54x |
-| Top-10 | uniform XYZ | 2.0221 ms | 4.1143 ms | 0.49x |
+| Top-1 | planar XY | 1.0084 ms | 1.2634 ms | 0.80x |
+| Top-10 | planar XY | 1.9223 ms | 2.6466 ms | 0.73x |
+| Top-1 | uniform XYZ | 1.0070 ms | 1.7472 ms | 0.58x |
+| Top-10 | uniform XYZ | 1.9427 ms | 4.1653 ms | 0.47x |
 
 | Persistence | `Index2D` | `Index3D` | 3D speed |
 | --- | ---: | ---: | ---: |
-| Serialize built tree (fresh buffer) | 407.64 us | 562.55 us | 0.72x |
-| Serialize built tree (reused buffer) | 68.78 us | 96.51 us | 0.71x |
-| Load owned tree | 607.62 us | 819.04 us | 0.74x |
-| Load zero-copy view | 37.59 us | 37.66 us | 1.00x |
+| Serialize built tree (fresh buffer) | 422.31 us | 605.64 us | 0.70x |
+| Serialize built tree (reused buffer) | 74.39 us | 110.36 us | 0.67x |
+| Load owned tree | 518.71 us | 750.83 us | 0.69x |
+| Load zero-copy view | 37.53 us | 37.34 us | 1.01x |
 
 | SIMD persistence | `SimdIndex2D` | `SimdIndex3D` | 3D speed |
 | --- | ---: | ---: | ---: |
-| Serialize built tree (fresh buffer) | 689.42 us | 973.17 us | 0.71x |
-| Serialize built tree (reused buffer) | 140.21 us | 240.51 us | 0.58x |
-| Load owned tree | 935.51 us | 1.3083 ms | 0.72x |
+| Serialize built tree (fresh buffer) | 650.84 us | 983.96 us | 0.66x |
+| Serialize built tree (reused buffer) | 181.56 us | 312.28 us | 0.58x |
+| Load owned tree | 861.55 us | 1.2038 ms | 0.72x |
 
 ## 3D SIMD
 
@@ -132,9 +139,9 @@ values above `1.00x` mean the SIMD or parallel path is faster.
 
 | Stage | Dataset / mode | Baseline | SIMD / parallel | Speed |
 | --- | --- | ---: | ---: | ---: |
-| Search batch | uniform XYZ | `Index3D` 432.61 us | `SimdIndex3D` 164.68 us | 2.63x |
-| Search batch | flat Z | `Index3D` 2.01 ms | `SimdIndex3D` 0.85 ms | 2.36x |
-| Build `finish_simd` | uniform XYZ, 200k boxes | serial 9.99 ms | parallel 7.03 ms | 1.42x |
+| Search batch | uniform XYZ | `Index3D` 406.86 us | `SimdIndex3D` 169.39 us | 2.40x |
+| Search batch | flat Z | `Index3D` 1.99 ms | `SimdIndex3D` 846.36 us | 2.35x |
+| Build `finish_simd` | uniform XYZ, 200k boxes | serial 10.03 ms | parallel 6.98 ms | 1.44x |
 
 ## Large-window range search
 
@@ -151,17 +158,17 @@ better.
 
 | Window (2D) | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: |
-| small (10–200) | 362.51 us | 124.87 us |
-| large (2,000–5,000) | 6.51 ms | 4.11 ms |
-| wide sliver | 2.47 ms | 0.87 ms |
-| full extent | 11.99 ms | 11.97 ms |
+| small (10–200) | 357.94 us | 127.84 us |
+| large (2,000–5,000) | 6.52 ms | 3.97 ms |
+| wide sliver | 2.48 ms | 0.87 ms |
+| full extent | 11.19 ms | 11.79 ms |
 
 | Window (3D) | `Index3D` | `SimdIndex3D` |
 | --- | ---: | ---: |
-| small (50–300) | 427.57 us | 166.42 us |
-| large (2,000–5,000) | 10.70 ms | 4.31 ms |
-| thin slab | 3.64 ms | 1.29 ms |
-| full extent | 11.73 ms | 11.21 ms |
+| small (50–300) | 402.71 us | 168.32 us |
+| large (2,000–5,000) | 10.38 ms | 4.12 ms |
+| thin slab | 3.51 ms | 1.27 ms |
+| full extent | 11.65 ms | 11.62 ms |
 
 ## Closest-hit raycast vs the `bvh` crate
 
@@ -172,16 +179,16 @@ SAH tree; for all hits, its broad-phase `traverse_iterator`.
 
 | metric | packed SoA/SIMD | BVH |
 |---|---:|---:|
-| build (uniform) | **5 ms** | 58 ms |
-| closest hit, uniform | **1.2 ms** | 1.8 ms |
-| closest hit, clustered | 111 µs | **54 µs** |
-| all hits, uniform | **0.85 ms** | 3.2 ms |
-| all hits, clustered | **100 µs** | 104 µs |
+| build (uniform) | **4 ms** | 31 ms |
+| closest hit, uniform | **0.72 ms** | 1.6 ms |
+| closest hit, clustered | 58 µs | **27 µs** |
+| all hits, uniform | **0.5 ms** | 1.5 ms |
+| all hits, clustered | 53 µs | **41 µs** |
 
-The packed Hilbert tree builds ~11x faster. All-hits has no early-exit, so the
-SIMD slab test wins on uniform scenes and ties on clustered; for closest hit a
-SAH BVH builds a structurally better tree and wins on heavily clustered scenes.
-Reproduce with `cargo bench --bench raycast3d_bench --features simd`.
+The packed Hilbert tree builds ~7x faster. All-hits has no early-exit, so the
+SIMD slab test wins on uniform scenes but is edged out on heavily clustered ones;
+for closest hit a SAH BVH builds a structurally better tree and wins on clustered
+scenes. Reproduce with `cargo bench --bench raycast3d_bench --features simd`.
 
 ## Ray-triangle closest hit (mesh payload)
 
@@ -197,10 +204,10 @@ narrow-phase test). Lower is better.
 
 | `closest_triangle` | per batch | per ray x triangle |
 | --- | ---: | ---: |
-| `f64` `Triangle3D` (scalar) | 202.8 ms | 12.1 ns |
-| `f32` `Triangle3DF32` (SIMD) | 90.9 ms | 5.4 ns |
+| `f64` `Triangle3D` (scalar) | 121.6 ms | 7.2 ns |
+| `f32` `Triangle3DF32` (SIMD) | 47.8 ms | 2.8 ns |
 
-The `f32` SIMD kernel runs ~2.2x faster than scalar `f64` here. Most of that is
+The `f32` SIMD kernel runs ~2.5x faster than scalar `f64` here. Most of that is
 the kernel: in pure scalar (no `simd` feature) `f32` is only modestly ahead of
 `f64`, since both autovectorize and the win is mainly the 8-wide test. f32's
 other benefit is size — half the payload bytes on disk and over the wire.
@@ -218,7 +225,7 @@ Quick selector:
 - `SimdIndex2D`: 32-byte f64 boxes. Use for exact range queries with many hits
   and fastest exact KNN.
 - `SimdIndex2DF32::search`: 16-byte rounded f32 boxes, SIMD-batched. In the
-  AVX-512 runs above it is also the **fastest** range path — ~1.3–1.5× over the
+  AVX-512 runs above it is also the **fastest** range path — ~1.2–1.45× over the
   f64 `SimdIndex2D` (half the box bytes plus 16 boxes per SIMD chunk to f64's 8),
   so it wins on speed *and* memory, not just memory — at the cost of a few
   near-boundary false positives from the outward-rounded boxes. Returns the same
@@ -243,12 +250,12 @@ Quick selector:
 
 | Range query | Items | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: | ---: |
-| small query boxes | 10k | 107 us | 70 us | 78 us |
-| small query boxes | 100k | 125 us | 93 us | 102 us |
-| small query boxes | 1M | 177 us | 137 us | 145 us |
-| large query boxes | 10k | 135 us | 113 us | 304 us |
-| large query boxes | 100k | 594 us | 465 us | 1.86 ms |
-| large query boxes | 1M | 5.01 ms | 3.28 ms | 16.78 ms |
+| small query boxes | 10k | 89 us | 72 us | 78 us |
+| small query boxes | 100k | 123 us | 92 us | 102 us |
+| small query boxes | 1M | 163 us | 128 us | 146 us |
+| large query boxes | 10k | 131 us | 110 us | 298 us |
+| large query boxes | 100k | 561 us | 456 us | 1.84 ms |
+| large query boxes | 1M | 5.14 ms | 3.52 ms | 17.35 ms |
 
 The `f64 exact` and `f32 rounded` columns use the compress-store collection on
 AVX-512, which roughly halves the large-window rows versus the scalar collection;
@@ -256,8 +263,8 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 
 | KNN workload | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: |
-| 10k items | 243 us | 282 us | 302 us |
-| 100k items | 357 us | 376 us | 410 us |
+| 10k items | 218 us | 233 us | 374 us |
+| 100k items | 337 us | 349 us | 493 us |
 
 ## Summary
 
@@ -344,7 +351,7 @@ cargo bench --bench index3d_bench --no-default-features --features parallel,simd
 cargo bench --bench persistence_knn2d_bench --no-default-features --features simd,bench-internals
 cargo bench --bench persistence_knn3d_bench --no-default-features --features simd,bench-internals
 cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd,bench-internals
-cargo bench --bench coord_precision --no-default-features --features f32-storage
+cargo bench --bench coord_precision --no-default-features --features f32-storage,simd
 cargo bench --bench raycast3d_bench --features simd
 cargo bench --bench raytriangle3d_bench --features simd
 ```

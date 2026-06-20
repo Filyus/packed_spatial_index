@@ -29,13 +29,14 @@ use super::{
 // paths are kept in lockstep by an equivalence test; a future sans-io refactor
 // could share one core.)
 
-/// Async counterpart of [`RangeReader`]: read a byte range, returning a future.
+/// Async counterpart of [`RangeReader`](super::RangeReader): read a byte range,
+/// returning a future.
 ///
 /// Implement this to query an index that lives behind async I/O — an HTTP range
 /// request from WebAssembly, an object-storage `get(range)` in an edge worker.
 /// The returned futures need not be `Send` (edge/browser executors are
-/// single-threaded). See [`RangeReader`] for the sync analogue and an HTTP
-/// implementation sketch.
+/// single-threaded). See [`RangeReader`](super::RangeReader) for the sync
+/// analogue and an HTTP implementation sketch.
 #[cfg(feature = "async")]
 #[allow(async_fn_in_trait, clippy::len_without_is_empty)]
 pub trait AsyncRangeReader {

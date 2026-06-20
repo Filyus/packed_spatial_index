@@ -7,79 +7,115 @@ on:
       - main
   workflow_dispatch:
 
-jobs:
-  rust:
-    name: rust
-    runs-on: ubuntu-latest
+# Cancel an in-progress run when a newer commit lands on the same ref, so two
+# quick pushes don't run two full CIs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: default, flags: "" }
+          - { name: all-features, flags: "--all-features" }
+          - { name: no-default, flags: "--no-default-features" }
+          - { name: parallel, flags: "--no-default-features --features parallel" }
+          - { name: simd, flags: "--no-default-features --features simd" }
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - name: Test
+        run: cargo test --all-targets ${{ matrix.flags }}
+      - name: Doctests
+        if: ${{ matrix.name == 'all-features' }}
+        run: cargo test --doc --all-features
 
+  lint:
+    name: lint & docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Lint all features
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Check docs all features
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Check docs no default features
+        run: cargo doc --no-deps --no-default-features
+        env:
+          RUSTDOCFLAGS: -D warnings
 
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install MSRV Rust (1.89.0)
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
       - name: Check MSRV
-        run: |
-          rustup toolchain install 1.89.0 --profile minimal
-          cargo +1.89.0 check --lib --all-features
+        run: cargo check --lib --all-features
 
-      - name: Test default features
-        run: cargo test --all-targets
-
-      - name: Test all features
-        run: cargo test --all-targets --all-features
-
-      - name: Test no default features
-        run: cargo test --all-targets --no-default-features
-
-      - name: Test parallel feature
-        run: cargo test --all-targets --no-default-features --features parallel
-
-      - name: Test simd feature
-        run: cargo test --all-targets --no-default-features --features simd
-
-      - name: Doctests (all features)
-        run: cargo test --doc --all-features
-
+  wasm:
+    name: wasm demo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
       - name: Check wasm SIMD build
-        run: |
-          rustup target add wasm32-unknown-unknown
-          cargo check --target wasm32-unknown-unknown --no-default-features --features simd
-
+        run: cargo check --target wasm32-unknown-unknown --no-default-features --features simd
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: wasm-demo/package-lock.json
-
       - name: Build WASM demo
         working-directory: wasm-demo
         run: |
           npm ci
           npm run build
 
-      - name: Lint all features
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Check docs all features
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
-
-      - name: Check docs no default features
-        run: cargo doc --no-deps --no-default-features
-        env:
-          RUSTDOCFLAGS: -D warnings
-
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
       - name: List packaged files
         run: cargo package --list
-
       - name: Package crate
         run: cargo package

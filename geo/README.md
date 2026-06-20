@@ -55,6 +55,21 @@ std::fs::write("cities.psindex", &psindex)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+Then query that output — straight from a file or an HTTP range source — getting
+each matching feature's WKB back. The query types are re-exported here, so no
+second dependency is needed:
+
+```rust,no_run
+use packed_spatial_index_geo::{Box2D, SliceReader, StreamIndex2D};
+
+let bytes = std::fs::read("cities.psindex")?;
+let index = StreamIndex2D::open(SliceReader::new(bytes))?;
+for (row, wkb) in index.search_payloads(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    println!("feature {row}: {} WKB bytes", wkb.len());
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 Set `ConvertOpts { compact_f32: true, .. }` for a roughly half-size file (queries
 become a conservative superset; re-check exact hits against the payload geometry).
 

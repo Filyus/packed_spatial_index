@@ -23,7 +23,7 @@ boxes into a Hilbert R-tree once, then run millions of queries over it:
 Queries run on **runtime-dispatched SIMD** — the widest kernel your CPU offers is
 chosen at load time (`AVX-512 → AVX2 → SSE2`), no special build flags. Range
 search runs **~1.6–1.9× over the scalar index on AVX-512** and **~1.3–1.65× on
-AVX2** (it [emulates the missing compress instruction](docs/simd.md) so the win
+AVX2** (it [emulates the missing compress instruction](docs/internals/simd.md) so the win
 holds on older CPUs too). Builds beat comparable Rust indexes too
 ([benchmarks](docs/performance.md)). The same bytes load back as **zero-copy**,
 mmap-friendly views; a file can carry an optional per-item **payload** and
@@ -213,6 +213,7 @@ cargo build --no-default-features --features simd      # SIMD only
 - **[Guide](docs/guide.md)** — recipes, choosing a query method, builder configuration, examples, WASM demo.
 - **[Persistence](docs/persistence.md)** — serialize / load / zero-copy views, querying large or on-disk indexes via mmap, and streaming queries over a `RangeReader` (local file or remote object).
 - **[Performance](docs/performance.md)** — benchmarks vs `static_aabb2d_index`, FlatGeobuf, and the `bvh` crate.
+- **[Internals](docs/internals/)** — technique deep-dives: SIMD kernels, two-queue kNN, traversal prefetch.
 - **[Binary format](FORMAT.md)** — the `PSINDEX` on-disk layout.
 - **API reference** — [docs.rs/packed_spatial_index](https://docs.rs/packed_spatial_index).
 

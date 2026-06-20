@@ -21,7 +21,7 @@ All notable changes to this crate are documented here.
   is ~7–11% faster: the SIMD and f32 frontends now use the same two-queue
   distance-browsing collect the scalar `Index2D` already used, so it is the one
   kNN collect kernel everywhere. No API change. The technique is written up in
-  [docs/knn.md](docs/knn.md).
+  [docs/knn.md](docs/internals/knn.md).
 
 ## [0.17.0](https://github.com/Filyus/packed_spatial_index/compare/v0.16.0...v0.17.0) - 2026-06-19
 
@@ -46,7 +46,7 @@ All notable changes to this crate are documented here.
   runs ~1.3–1.65× and all-hits raycast ~1.3–1.6× over the SSE2 `wide` fallback,
   across `SimdIndex2D` / `SimdIndex3D` and the compact `SimdIndex2DF32` /
   `SimdIndex3DF32`. The kernels now dispatch `AVX-512 → AVX2 → SSE2` at runtime.
-  No API change. See [docs/simd.md](docs/simd.md).
+  No API change. See [docs/simd.md](docs/internals/simd.md).
 - Collect the **AVX-512 all-hits raycast** results with `VPCOMPRESSQ` instead of a
   scalar loop (it was the one collection path still left scalar): a dense 1M-box
   ray drops ~29.5 µs to ~17.1 µs (~1.73×).

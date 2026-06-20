@@ -40,7 +40,7 @@ possible — it is the single most important layout decision.
 (It isn't free: serializing an `SimdIndex` gathers SoA→AoS and loading scatters
 AoS→SoA, so its persistence is ~1.5–2.8× slower than the AoS `Index`. One file
 format, paid for at load time, not query time. See the persistence note in
-[performance.md](performance.md).)
+[performance.md](../performance.md).)
 
 ## Orange belt — explicit portable SIMD (`wide`)
 
@@ -185,7 +185,7 @@ Measured and deliberately skipped:
 
 Numbers are from a Zen 5 (Ryzen AI 7 350), f64 2D, 100k–1M boxes; they depend on
 hardware and workload. Reproduce with the harnesses described in
-[performance.md](performance.md). Correctness for every tier is in
+[performance.md](../performance.md). Correctness for every tier is in
 `tests/avx2.rs`.
 
 ## Meta-belt — measure-then-commit

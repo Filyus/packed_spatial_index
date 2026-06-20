@@ -2,8 +2,8 @@
 
 How `neighbors` finds the *k* nearest boxes to a query point (or box) over the
 packed Hilbert R-tree — and why it uses two priority queues, not one. The
-technique is Hjaltason & Samet's *distance browsing* (1999); this is how it maps
-onto a static packed tree, what the alternatives cost, plus the measured win.
+technique is Hjaltason & Samet's *distance browsing* (1999). This is how it maps
+onto a static packed tree, what the alternatives cost, and the measured win.
 
 The running example: `index.neighbors(point, k)` returns the `k` item boxes whose
 distance to `point` is smallest, nearest first.
@@ -77,7 +77,7 @@ tree is fully opened.
 Measured, switching the collect from one queue to two was ~5% faster for scalar
 f64 `neighbors` and ~6–11% for the f32 / SIMD frontends (k=10, 200k boxes, on a
 quiet pinned core); it never regressed, so it is the one collect kernel for every
-index type. See [performance.md](performance.md) for how to reproduce.
+index type. See [performance.md](../performance.md) for how to reproduce.
 
 ## The k = 1 fast path
 
@@ -105,11 +105,11 @@ global minimum, so it returns immediately. That is
 The kernel is generic over a `dist(pos)` closure that reads the caller's own box
 storage, so every frontend reuses it:
 
-- **Custom metrics.** [`neighbors_metric`](../README.md) passes a closure that
+- **Custom metrics.** [`neighbors_metric`](../../README.md) passes a closure that
   returns any admissible lower-bound distance — Euclidean, Manhattan, weighted, or
   great-circle via `haversine_distance_2d`. The same browse drives geographic kNN;
   the only rule is that the closure must never over-estimate (see
-  [guide.md](guide.md)).
+  [guide.md](../guide.md)).
 - **Compact f32.** The f32 indexes browse on the rounded f32 box distance, then
   refine the candidates against the original boxes for an exact result — the
   browse finds the candidate set, the refinement re-ranks it.

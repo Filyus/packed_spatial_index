@@ -17,7 +17,11 @@ pub(crate) fn level_end_of(level_bounds: &[usize], node: usize) -> usize {
 /// dimension-agnostic: callers supply `dist` reading their own box storage.
 ///
 /// This single-queue variant is used by the SIMD and f32 frontends; the scalar
-/// f64 indexes use [`collect_neighbors_two_queue`] instead.
+/// f64 indexes use [`collect_neighbors_two_queue`] instead — measured ~5% faster
+/// for scalar f64 `neighbors` (k=10, 200k boxes), so the two kernels are kept
+/// deliberately distinct, not a duplication to merge. (Switching the SIMD/f32
+/// frontends to two-queue is an untested potential win — their bottleneck is the
+/// SIMD box test / exact refinement, not the heap, so it may not transfer.)
 #[cfg(any(feature = "simd", feature = "f32-storage"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_neighbors(

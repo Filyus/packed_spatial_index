@@ -13,6 +13,27 @@ Operational notes for an AI agent (Codex/Claude) working in this repo.
 - Measure before committing a perf change: A/B with `git stash` on a quiet
   machine, keep it only on a stable win, revert dead ends.
 
+## Architecture discipline
+
+The crate shares internal kernels (`TreeAccess` + `range` / `raycast` /
+`neighbors::best_first`) so a traversal change lands in one place instead of
+drifting across the owned / view / SIMD / f32 × 2D / 3D frontends. That is the
+main maintenance win — reach for the shared kernel for cross-cutting algorithm
+changes. But it cuts both ways, so:
+
+- **Keep genuinely-different cases local.** Owned indexes iterate `&entries[..]`
+  slices (LLVM autovectorizes the per-node test); byte views read per element.
+  Do **not** route an owned hot path through the generic per-element kernel — it
+  cost owned `visit` ~50–75% once before it was reverted to the local slice loop.
+  A shared kernel that needs many special cases for ordinary behavior is a sign
+  to stop sharing.
+- **Measure owned paths specifically** when touching a shared kernel: the generic
+  `TreeAccess` loop is free for views but not for slice-backed owned loops. Tests
+  passing is **not** proof of no regression — A/B the hot path vs the prior commit.
+- **File Boundary Rule:** extract for a separate reason to change or to remove
+  real duplication; do not extract if a normal fix then has to touch four files
+  instead of one. A 1000-line file can be fine.
+
 ## Releases
 
 Releases are prepared **by hand** (no generator tool). The agent prepares the

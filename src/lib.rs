@@ -10,10 +10,10 @@
 //! # Queries
 //!
 //! Every query is a method on the index types ([`Index2D`] / [`Index3D`], the
-//! SIMD indexes, and the zero-copy views) — the crate has no free functions, so
-//! docs.rs lists these on each type's page (e.g. [`Index2D`]) rather than in a
-//! crate-level "Functions" section. Range and ray results are item indices in
-//! insertion order.
+//! SIMD indexes, and the zero-copy views), so docs.rs lists them on each type's
+//! page (e.g. [`Index2D`]); the only crate-level free items are small distance
+//! helpers such as [`haversine_distance_2d`]. Range and ray results are item
+//! indices in insertion order.
 //!
 //! * **Range / intersection** — [`search`](Index2D::search) (plus `search_into`
 //!   / `search_with` / lazy [`search_iter`](Index2D::search_iter)),
@@ -22,7 +22,9 @@
 //! * **Nearest neighbors** — from a point [`neighbors`](Index2D::neighbors)
 //!   (plus `_within` / `_into` / `_with` /
 //!   [`visit_neighbors`](Index2D::visit_neighbors)) or from a box
-//!   [`neighbors_of_box`](Index2D::neighbors_of_box) and its variants.
+//!   [`neighbors_of_box`](Index2D::neighbors_of_box) and its variants; or under a
+//!   custom distance metric with [`neighbors_metric`](Index2D::neighbors_metric)
+//!   (e.g. great-circle distance via [`haversine_distance_2d`]).
 //! * **Ray segment** — [`raycast`](Index2D::raycast) (all hits),
 //!   [`raycast_closest`](Index2D::raycast_closest) (nearest box entered), and
 //!   [`visit_raycast`](Index2D::visit_raycast).

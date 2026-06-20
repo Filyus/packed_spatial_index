@@ -117,7 +117,8 @@ assert_eq!(hit, Some((0, 1.0)));
   `contains` / `contains_point` / `from_point`), [`Point2D`][Point2D],
   [`Point3D`][Point3D], [`Ray2D`][Ray2D], [`Ray3D`][Ray3D],
   [`Triangle2D`][Triangle2D] / [`ConvexPolygon2D`][ConvexPolygon2D] (2D region
-  queries), [`Frustum3D`][Frustum3D] (3D culling).
+  queries), [`Frustum3D`][Frustum3D] (3D culling; [`ClipSpaceZ`][ClipSpaceZ]
+  picks the NDC depth convention for `from_view_projection`).
 - **Builders**: [`Index2DBuilder`][Index2DBuilder],
   [`Index3DBuilder`][Index3DBuilder] — [`finish`][finish] (scalar f64),
   [`finish_simd`][finish_simd] (SoA + SIMD), [`finish_f32`][finish_f32] (compact
@@ -304,6 +305,7 @@ Licensed under the Apache License, Version 2.0.
 [Triangle2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Triangle2D.html
 [ConvexPolygon2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.ConvexPolygon2D.html
 [Frustum3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Frustum3D.html
+[ClipSpaceZ]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.ClipSpaceZ.html
 [search_polygon]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_polygon
 [any_polygon]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any_polygon
 [visit_polygon]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_polygon

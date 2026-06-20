@@ -238,7 +238,6 @@ pub(crate) fn valid_max_distance(max_distance: f64) -> Option<f64> {
     }
 }
 
-#[cfg(any(feature = "f32-storage", feature = "simd"))]
 pub(crate) mod best_first;
 pub(crate) mod metric_knn;
 

@@ -11,7 +11,7 @@ use crate::{
     geometry::{Box3D, Point3D},
     join::{join_core, self_join_core},
     neighbors::{
-        NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, max_distance_squared,
+        NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first,
         metric_knn,
     },
     persistence::{
@@ -741,59 +741,19 @@ impl Index3D {
         item_queue: &mut BinaryHeap<NeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
-        item_queue.clear();
-        node_queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return;
-        };
-        if self.num_items == 0 {
-            return;
-        }
-
-        let root_index = self.entries.len() - 1;
-        let root_dist = query.distance_squared_to(self.entries[root_index]);
-        if root_dist > max_dist_sq {
-            return;
-        }
-        node_queue.push(NeighborNodeState::new(root_index, root_dist));
-
-        while results.len() < max_results {
-            while let Some(&node) = node_queue.peek() {
-                if node.dist > max_dist_sq {
-                    node_queue.clear();
-                    break;
-                }
-                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
-                    break;
-                }
-
-                let node = node_queue.pop().unwrap();
-                let upper_bound_level = upper_bound_level(&self.level_bounds, node.index);
-                let end = (node.index + self.node_size).min(self.level_bounds[upper_bound_level]);
-                let is_leaf = node.index < self.num_items;
-
-                if is_leaf {
-                    for pos in node.index..end {
-                        let dist = query.distance_squared_to(self.entries[pos]);
-                        if dist <= max_dist_sq {
-                            item_queue.push(NeighborState::new(self.indices[pos], true, dist));
-                        }
-                    }
-                } else {
-                    for pos in node.index..end {
-                        let dist = query.distance_squared_to(self.entries[pos]);
-                        if dist <= max_dist_sq {
-                            node_queue.push(NeighborNodeState::new(self.indices[pos], dist));
-                        }
-                    }
-                }
-            }
-
-            match item_queue.pop() {
-                Some(state) if state.dist <= max_dist_sq => results.push(state.index),
-                _ => return,
-            }
-        }
+        best_first::collect_neighbors_two_queue(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
+            |pos| self.indices[pos],
+            max_results,
+            max_distance,
+            |pos| query.distance_squared_to(self.entries[pos]),
+            results,
+            item_queue,
+            node_queue,
+        );
     }
 
     fn nearest_one_with_queue(
@@ -802,40 +762,16 @@ impl Index3D {
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
-        queue.clear();
-        let mut best_dist = max_distance_squared(max_distance)?;
-        if self.num_items == 0 {
-            return None;
-        }
-
-        let mut best_index = None;
-        let mut node_index = self.entries.len() - 1;
-        loop {
-            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = query.distance_squared_to(self.entries[pos]);
-                if dist > best_dist {
-                    continue;
-                }
-                if is_leaf {
-                    if dist == 0.0 {
-                        return Some(self.indices[pos]);
-                    }
-                    best_dist = dist;
-                    best_index = Some(self.indices[pos]);
-                } else {
-                    queue.push(NeighborNodeState::new(self.indices[pos], dist));
-                }
-            }
-
-            match queue.pop() {
-                Some(state) if state.dist <= best_dist => node_index = state.index,
-                _ => return best_index,
-            }
-        }
+        best_first::nearest_one(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
+            |pos| self.indices[pos],
+            max_distance,
+            |pos| query.distance_squared_to(self.entries[pos]),
+            queue,
+        )
     }
 
     fn visit_neighbors_with_queue<B, F>(
@@ -848,47 +784,17 @@ impl Index3D {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return ControlFlow::Continue(());
-        };
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.entries.len() - 1;
-        loop {
-            let upper_bound_level = upper_bound_level(&self.level_bounds, node_index);
-            let end = (node_index + self.node_size).min(self.level_bounds[upper_bound_level]);
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let dist = query.distance_squared_to(self.entries[pos]);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(self.indices[pos], is_leaf, dist));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return ControlFlow::Continue(());
-                }
-                if state.is_leaf {
-                    visitor(state.index, state.dist)?;
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-
-            if !continue_search {
-                return ControlFlow::Continue(());
-            }
-        }
+        best_first::visit_neighbors(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
+            |pos| self.indices[pos],
+            max_distance,
+            |pos| query.distance_squared_to(self.entries[pos]),
+            queue,
+            visitor,
+        )
     }
 
     /// Same as [`visit`](Index3D::visit), but the traversal stack is reused by the caller.
@@ -1556,67 +1462,19 @@ impl<'a> Index3DView<'a> {
         item_queue: &mut BinaryHeap<NeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
-        item_queue.clear();
-        node_queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return;
-        };
-        if self.num_items == 0 {
-            return;
-        }
-
-        let root_index = self.num_nodes - 1;
-        let root_dist = query.distance_squared_to(self.entry_at_unchecked(root_index));
-        if root_dist > max_dist_sq {
-            return;
-        }
-        node_queue.push(NeighborNodeState::new(root_index, root_dist));
-
-        while results.len() < max_results {
-            while let Some(&node) = node_queue.peek() {
-                if node.dist > max_dist_sq {
-                    node_queue.clear();
-                    break;
-                }
-                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
-                    break;
-                }
-
-                let node = node_queue.pop().unwrap();
-                let upper_bound_level = self.upper_bound_level(node.index);
-                let end = (node.index + self.node_size)
-                    .min(self.level_bound_unchecked(upper_bound_level));
-                let is_leaf = node.index < self.num_items;
-
-                if is_leaf {
-                    for pos in node.index..end {
-                        let b = self.entry_at_unchecked(pos);
-                        let dist = query.distance_squared_to(b);
-                        if dist <= max_dist_sq {
-                            item_queue.push(NeighborState::new(
-                                self.index_at_unchecked(pos),
-                                true,
-                                dist,
-                            ));
-                        }
-                    }
-                } else {
-                    for pos in node.index..end {
-                        let b = self.entry_at_unchecked(pos);
-                        let dist = query.distance_squared_to(b);
-                        if dist <= max_dist_sq {
-                            node_queue
-                                .push(NeighborNodeState::new(self.index_at_unchecked(pos), dist));
-                        }
-                    }
-                }
-            }
-
-            match item_queue.pop() {
-                Some(state) if state.dist <= max_dist_sq => results.push(state.index),
-                _ => return,
-            }
-        }
+        best_first::collect_neighbors_two_queue(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |pos| self.index_at_unchecked(pos),
+            max_results,
+            max_distance,
+            |pos| query.distance_squared_to(self.entry_at_unchecked(pos)),
+            results,
+            item_queue,
+            node_queue,
+        );
     }
 
     fn nearest_one_with_queue(
@@ -1625,42 +1483,16 @@ impl<'a> Index3DView<'a> {
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
-        queue.clear();
-        let mut best_dist = max_distance_squared(max_distance)?;
-        if self.num_items == 0 {
-            return None;
-        }
-
-        let mut best_index = None;
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper_bound_level = self.upper_bound_level(node_index);
-            let end =
-                (node_index + self.node_size).min(self.level_bound_unchecked(upper_bound_level));
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let b = self.entry_at_unchecked(pos);
-                let dist = query.distance_squared_to(b);
-                if dist > best_dist {
-                    continue;
-                }
-                if is_leaf {
-                    if dist == 0.0 {
-                        return Some(self.index_at_unchecked(pos));
-                    }
-                    best_dist = dist;
-                    best_index = Some(self.index_at_unchecked(pos));
-                } else {
-                    queue.push(NeighborNodeState::new(self.index_at_unchecked(pos), dist));
-                }
-            }
-
-            match queue.pop() {
-                Some(state) if state.dist <= best_dist => node_index = state.index,
-                _ => return best_index,
-            }
-        }
+        best_first::nearest_one(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |pos| self.index_at_unchecked(pos),
+            max_distance,
+            |pos| query.distance_squared_to(self.entry_at_unchecked(pos)),
+            queue,
+        )
     }
 
     #[doc(hidden)]
@@ -1696,53 +1528,17 @@ impl<'a> Index3DView<'a> {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-            return ControlFlow::Continue(());
-        };
-        if self.num_items == 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut node_index = self.num_nodes - 1;
-        loop {
-            let upper_bound_level = self.upper_bound_level(node_index);
-            let end =
-                (node_index + self.node_size).min(self.level_bound_unchecked(upper_bound_level));
-            let is_leaf = node_index < self.num_items;
-
-            for pos in node_index..end {
-                let b = self.entry_at_unchecked(pos);
-                let dist = query.distance_squared_to(b);
-                if dist > max_dist_sq {
-                    continue;
-                }
-                queue.push(NeighborState::new(
-                    self.index_at_unchecked(pos),
-                    is_leaf,
-                    dist,
-                ));
-            }
-
-            let mut continue_search = false;
-            while let Some(state) = queue.pop() {
-                if state.dist > max_dist_sq {
-                    queue.clear();
-                    return ControlFlow::Continue(());
-                }
-                if state.is_leaf {
-                    visitor(state.index, state.dist)?;
-                } else {
-                    node_index = state.index;
-                    continue_search = true;
-                    break;
-                }
-            }
-
-            if !continue_search {
-                return ControlFlow::Continue(());
-            }
-        }
+        best_first::visit_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |n| self.level_bound_unchecked(self.upper_bound_level(n)),
+            |pos| self.index_at_unchecked(pos),
+            max_distance,
+            |pos| query.distance_squared_to(self.entry_at_unchecked(pos)),
+            queue,
+            visitor,
+        )
     }
 
     fn upper_bound_level(&self, node_index: usize) -> usize {

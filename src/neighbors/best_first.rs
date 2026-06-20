@@ -15,6 +15,10 @@ pub(crate) fn level_end_of(level_bounds: &[usize], node: usize) -> usize {
 /// Best-first descent collecting up to `max_results` nearest items. `dist(pos)`
 /// is the squared distance from the query to the box at node `pos`. Layout- and
 /// dimension-agnostic: callers supply `dist` reading their own box storage.
+///
+/// This single-queue variant is used by the SIMD and f32 frontends; the scalar
+/// f64 indexes use [`collect_neighbors_two_queue`] instead.
+#[cfg(any(feature = "simd", feature = "f32-storage"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_neighbors(
     num_nodes: usize,
@@ -65,6 +69,78 @@ pub(crate) fn collect_neighbors(
         }
         if !continue_search {
             return;
+        }
+    }
+}
+
+/// Best-first descent with separate node and item priority queues — the
+/// distance-browsing variant the scalar f64 indexes use. It expands nodes in
+/// distance order and only emits an item once it is closer than the next pending
+/// node, so it avoids pushing every candidate leaf into one heap. `dist(pos)` is
+/// the squared distance to the box at node `pos`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_neighbors_two_queue(
+    num_nodes: usize,
+    num_items: usize,
+    node_size: usize,
+    level_end: impl Fn(usize) -> usize,
+    index_at: impl Fn(usize) -> usize,
+    max_results: usize,
+    max_distance: f64,
+    dist: impl Fn(usize) -> f64,
+    results: &mut Vec<usize>,
+    item_queue: &mut BinaryHeap<NeighborState>,
+    node_queue: &mut BinaryHeap<NeighborNodeState>,
+) {
+    item_queue.clear();
+    node_queue.clear();
+    let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+        return;
+    };
+    if num_items == 0 {
+        return;
+    }
+    let root_index = num_nodes - 1;
+    let root_dist = dist(root_index);
+    if root_dist > max_dist_sq {
+        return;
+    }
+    node_queue.push(NeighborNodeState::new(root_index, root_dist));
+
+    while results.len() < max_results {
+        while let Some(&node) = node_queue.peek() {
+            if node.dist > max_dist_sq {
+                node_queue.clear();
+                break;
+            }
+            if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
+                break;
+            }
+
+            let node = node_queue.pop().unwrap();
+            let end = (node.index + node_size).min(level_end(node.index));
+            let is_leaf = node.index < num_items;
+
+            if is_leaf {
+                for pos in node.index..end {
+                    let d = dist(pos);
+                    if d <= max_dist_sq {
+                        item_queue.push(NeighborState::new(index_at(pos), true, d));
+                    }
+                }
+            } else {
+                for pos in node.index..end {
+                    let d = dist(pos);
+                    if d <= max_dist_sq {
+                        node_queue.push(NeighborNodeState::new(index_at(pos), d));
+                    }
+                }
+            }
+        }
+
+        match item_queue.pop() {
+            Some(state) if state.dist <= max_dist_sq => results.push(state.index),
+            _ => return,
         }
     }
 }

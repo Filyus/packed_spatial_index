@@ -1,0 +1,105 @@
+name: "First geo release only: create tag"
+run-name: "first-geo-release: create tag ${{ inputs.version }}"
+
+# Use this once, after the first 0.1.0 is published to crates.io by hand, to
+# create the `geo-v<version>` tag (which the geo-release workflow turns into a
+# GitHub release). Later releases create their own tag via geo-publish.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: geo/Cargo.toml version to tag
+        required: true
+        type: string
+      confirm:
+        description: Type 'tag packed_spatial_index_geo' to create the tag
+        required: true
+        type: string
+
+concurrency:
+  group: release-tag-geo
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CRATE_NAME: packed_spatial_index_geo
+  MANIFEST: geo/Cargo.toml
+
+jobs:
+  tag:
+    name: tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check release branch
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "Release tags must be created from main, got '$GITHUB_REF_NAME'."
+            exit 1
+          fi
+
+      - name: Check requested version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          actual_version="$(cargo metadata --no-deps --format-version 1 --manifest-path "$MANIFEST" | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          if [ "$actual_version" != "$REQUESTED_VERSION" ]; then
+            echo "$MANIFEST version is '$actual_version', requested '$REQUESTED_VERSION'."
+            exit 1
+          fi
+
+      - name: Check confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          expected="tag $CRATE_NAME"
+          if [ "$CONFIRM" != "$expected" ]; then
+            echo "To create the release tag, set confirm to: $expected"
+            exit 1
+          fi
+
+      - name: Check version is published
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          status="$(curl --user-agent "$CRATE_NAME-release-tag-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CRATE_NAME/$REQUESTED_VERSION")"
+          if [ "$status" != "200" ]; then
+            echo "$CRATE_NAME $REQUESTED_VERSION is not published on crates.io yet (status $status)."
+            exit 1
+          fi
+
+      - name: Check release tag is absent
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          tag="geo-v$REQUESTED_VERSION"
+          tag_status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
+          if [ "$tag_status" = "0" ]; then
+            echo "Release tag '$tag' already exists."
+            exit 1
+          fi
+          if [ "$tag_status" != "2" ]; then
+            echo "Unable to check release tag '$tag'."
+            exit "$tag_status"
+          fi
+
+      - name: Create release tag
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          tag="geo-v$REQUESTED_VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$CRATE_NAME $REQUESTED_VERSION"
+          git push origin "refs/tags/$tag"

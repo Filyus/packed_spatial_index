@@ -145,3 +145,49 @@ jobs:
         run: cargo clippy --manifest-path geo/Cargo.toml --all-targets -- -D warnings
       - name: Test
         run: cargo test --manifest-path geo/Cargo.toml
+
+  # The geo crate's MSRV is pinned by its heavy deps (and the core path-dep) to
+  # 1.89; verify it stays buildable there, like the core msrv job.
+  geo-msrv:
+    name: geo msrv
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install MSRV Rust (1.89.0)
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: geo-msrv
+          workspaces: geo
+      - name: Check geo MSRV
+        run: cargo check --manifest-path geo/Cargo.toml
+
+  # The Rust demo crates are not in the published package and not built by the
+  # other legs, so compile-check them here — a core API change can't silently rot
+  # the worker or the seed tools.
+  demo:
+    name: demo crates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: demo
+          workspaces: |
+            wasm-demo/r2-sim
+            wasm-demo/geo-seed
+            wasm-demo/worker
+      - name: Check r2-sim
+        run: cargo check --manifest-path wasm-demo/r2-sim/Cargo.toml
+      - name: Check geo-seed
+        run: cargo check --manifest-path wasm-demo/geo-seed/Cargo.toml
+      - name: Check worker (wasm)
+        run: cargo check --manifest-path wasm-demo/worker/Cargo.toml --target wasm32-unknown-unknown

@@ -57,6 +57,9 @@ impl Index2D {
             |pos| self.indices[pos],
             |pos| ray.intersects_box(self.entries[pos]),
             true,
+            |node_index| {
+                super::prefetch_aos_node(&self.entries, &self.indices, node_index, self.node_size)
+            },
             results,
             stack,
         );
@@ -152,6 +155,7 @@ impl Index2DView<'_> {
             |pos| self.index_at_unchecked(pos),
             |pos| ray.intersects_box(self.entry_at_unchecked(pos)),
             false,
+            |_| {},
             results,
             stack,
         );

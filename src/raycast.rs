@@ -17,6 +17,7 @@ pub(crate) fn collect_hits(
     index_at: impl Fn(usize) -> usize,
     hit_at: impl Fn(usize) -> bool,
     reverse_internal_push: bool,
+    prefetch_at: impl Fn(usize),
     results: &mut Vec<usize>,
     stack: &mut Vec<usize>,
 ) {
@@ -61,6 +62,11 @@ pub(crate) fn collect_hits(
         if stack.len() > 1 {
             level = stack.pop().unwrap();
             node_index = stack.pop().unwrap();
+            // Prefetch the next node to be popped (its index sits at len-2; pairs
+            // are (index, level)) so its box loads while this node is hit-tested.
+            if stack.len() >= 2 {
+                prefetch_at(stack[stack.len() - 2]);
+            }
         } else {
             return;
         }

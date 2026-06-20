@@ -11,15 +11,16 @@ parallel rows run unpinned so the rayon workers can spread across cores.
 
 ## Baselines
 
-The benchmarks below compare against:
+The benchmarks below compare against these crate versions:
 
-- [`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index) by
+- [`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index) `2.0.0` by
   Jedidiah McCready — a Rust Flatbush port (build and search).
-- [FlatGeobuf](https://flatgeobuf.org/) by Pirmin Kalberer and Björn Harrtell —
-  a Flatbush-inspired geospatial format (build, search, persistence).
-- [`bvh`](https://crates.io/crates/bvh) — used in the closest-hit raycast
+- [FlatGeobuf](https://flatgeobuf.org/) (`flatgeobuf` `6.0.1`) by Pirmin Kalberer
+  and Björn Harrtell — a Flatbush-inspired geospatial format (build, search,
+  persistence).
+- [`bvh`](https://crates.io/crates/bvh) `0.12.0` — used in the closest-hit raycast
   comparison.
-- [`fast_hilbert`](https://crates.io/crates/fast_hilbert) by Stephan Hügel — a
+- [`fast_hilbert`](https://crates.io/crates/fast_hilbert) `2.1.0` by Stephan Hügel — a
   popular standalone Hilbert curve encoder (encode throughput).
 
 This crate's own design follows the packed Hilbert R-tree of

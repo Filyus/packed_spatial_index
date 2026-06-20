@@ -3,7 +3,7 @@
 //! contained-subtree fast path must not change that, and `from_view_projection`
 //! must agree with the plane convention.
 
-use packed_spatial_index::{Box3D, Frustum3D, Index3DBuilder};
+use packed_spatial_index::{Box3D, ClipSpaceZ, Frustum3D, Index3DBuilder};
 
 /// Six inward planes bounding the axis-aligned box `[lo, hi]^3`.
 fn box_frustum(lo: f64, hi: f64) -> Frustum3D {
@@ -111,7 +111,7 @@ fn from_view_projection_identity_is_ndc_cube() {
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ];
-    let frustum = Frustum3D::from_view_projection(identity);
+    let frustum = Frustum3D::from_view_projection(identity, ClipSpaceZ::NegOneToOne);
 
     let inside = Box3D::new(-0.5, -0.5, -0.5, 0.5, 0.5, 0.5);
     let outside = Box3D::new(2.0, 2.0, 2.0, 3.0, 3.0, 3.0);

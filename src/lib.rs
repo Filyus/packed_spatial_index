@@ -116,7 +116,7 @@ pub use builder3d::Index3DBuilder;
 pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
-pub use frustum::Frustum3D;
+pub use frustum::{ClipSpaceZ, Frustum3D};
 pub use geometry::{BoundsError, Box2D, Box3D, Point2D, Point3D};
 pub use index2d::{Index2D, Index2DView, Search2DIter, Serializer2D};
 #[cfg(feature = "f32-storage")]

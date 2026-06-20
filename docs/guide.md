@@ -155,7 +155,7 @@ inward-pointing planes, or from a row-major view-projection matrix via
 `Frustum3D::from_view_projection` (column-major engines pass the transpose).
 
 ```rust
-# use packed_spatial_index::{Index3DBuilder, Box3D, Frustum3D};
+# use packed_spatial_index::{Index3DBuilder, Box3D, Frustum3D, ClipSpaceZ};
 # let mut b = Index3DBuilder::new(1);
 # b.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
 # let index = b.finish()?;
@@ -165,7 +165,7 @@ let identity = [
     [0.0, 0.0, 1.0, 0.0],
     [0.0, 0.0, 0.0, 1.0],
 ];
-let frustum = Frustum3D::from_view_projection(identity); // the clip cube [-1,1]^3
+let frustum = Frustum3D::from_view_projection(identity, ClipSpaceZ::NegOneToOne); // OpenGL clip cube
 assert_eq!(index.search_frustum(frustum), vec![0]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```

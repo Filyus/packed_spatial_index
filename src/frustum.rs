@@ -9,6 +9,23 @@
 
 use crate::geometry::Box3D;
 
+/// The normalized-device-coordinate depth range a projection matrix targets, for
+/// [`Frustum3D::from_view_projection`]. D3D12, Vulkan, Metal and WebGPU clip `z`
+/// to `[0, 1]` (the modern default); OpenGL and WebGL clip it to `[-1, 1]`. Only
+/// the near plane differs between the two conventions. There is deliberately no
+/// silent default on the constructor — the convention is not recoverable from the
+/// matrix, so every caller states it — but [`ClipSpaceZ::default()`] is the
+/// modern `ZeroToOne` if you need one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ClipSpaceZ {
+    /// D3D12 / Vulkan / Metal / WebGPU clip space: `0 <= z <= w`. The modern
+    /// majority, so the [`Default`].
+    #[default]
+    ZeroToOne,
+    /// OpenGL / WebGL clip space: `-w <= z <= w`.
+    NegOneToOne,
+}
+
 /// A 3D frustum as six inward-pointing half-space planes.
 ///
 /// Each plane is `[a, b, c, d]`; a point `p` is *inside* that plane when
@@ -31,21 +48,28 @@ impl Frustum3D {
     /// `vp` via the Gribb-Hartmann method.
     ///
     /// `vp[i][j]` is row `i`, column `j`; a world point `[x, y, z]` maps to clip
-    /// space as `clip_i = vp[i][0]*x + vp[i][1]*y + vp[i][2]*z + vp[i][3]`. The
-    /// clip volume is the OpenGL cube (`-w <= z <= w`). Engines that store the
-    /// matrix column-major (e.g. `glam`, `cgmath`) should pass the transpose.
-    pub fn from_view_projection(vp: [[f64; 4]; 4]) -> Self {
+    /// space as `clip_i = vp[i][0]*x + vp[i][1]*y + vp[i][2]*z + vp[i][3]`. `clip`
+    /// is the NDC depth range your projection targets — pass
+    /// [`ClipSpaceZ::NegOneToOne`] for OpenGL / WebGL or [`ClipSpaceZ::ZeroToOne`]
+    /// for D3D12 / Vulkan / Metal / WebGPU; it changes only the near plane.
+    /// Engines that store the matrix column-major (e.g. `glam`, `cgmath`) should
+    /// pass the transpose.
+    pub fn from_view_projection(vp: [[f64; 4]; 4], clip: ClipSpaceZ) -> Self {
         let row = |i: usize| vp[i];
         let add = |a: [f64; 4], b: [f64; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
         let sub = |a: [f64; 4], b: [f64; 4]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
         let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+        let near = match clip {
+            ClipSpaceZ::ZeroToOne => r2, // D3D/Vulkan/Metal/WebGPU: clip_z >= 0
+            ClipSpaceZ::NegOneToOne => add(r3, r2), // OpenGL: clip_w + clip_z >= 0
+        };
         Self {
             planes: [
                 add(r3, r0), // left
                 sub(r3, r0), // right
                 add(r3, r1), // bottom
                 sub(r3, r1), // top
-                add(r3, r2), // near
+                near,        // near
                 sub(r3, r2), // far
             ],
         }

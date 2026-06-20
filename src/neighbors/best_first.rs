@@ -1,6 +1,7 @@
 //! Layout-agnostic best-first nearest-neighbor traversal.
 
 use super::{NeighborNodeState, NeighborState, max_distance_squared};
+use crate::config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY;
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
@@ -12,16 +13,18 @@ pub(crate) fn level_end_of(level_bounds: &[usize], node: usize) -> usize {
     level_bounds[level_bounds.partition_point(|&end| end <= node)]
 }
 
-/// Best-first descent collecting up to `max_results` nearest items. `dist(pos)`
-/// is the squared distance from the query to the box at node `pos`. Layout- and
-/// dimension-agnostic: callers supply `dist` reading their own box storage.
+/// Best-first descent collecting up to `max_results` nearest items, for callers
+/// that hold only the item queue (the SIMD and f32 frontends). A convenience over
+/// [`collect_neighbors_two_queue`]: it allocates a small pre-sized scratch node
+/// queue and delegates. The scalar f64 indexes call the two-queue kernel directly
+/// with their workspace's node queue.
 ///
-/// This single-queue variant is used by the SIMD and f32 frontends; the scalar
-/// f64 indexes use [`collect_neighbors_two_queue`] instead — measured ~5% faster
-/// for scalar f64 `neighbors` (k=10, 200k boxes), so the two kernels are kept
-/// deliberately distinct, not a duplication to merge. (Switching the SIMD/f32
-/// frontends to two-queue is an untested potential win — their bottleneck is the
-/// SIMD box test / exact refinement, not the heap, so it may not transfer.)
+/// The two-queue distance-browsing algorithm measured faster than a single-queue
+/// collect across every frontend — ~5% scalar f64, ~6% `SimdIndex2D`, ~11%
+/// `Index2DF32`, ~7% `Index3DF32`, flat on `SimdIndex3D` (k=10, 200k boxes,
+/// pinned) — so it is the one kNN collect kernel everywhere. The per-call scratch
+/// alloc is one pre-sized `BinaryHeap` (the same cost as the item queue) and
+/// measured no worse than a reused buffer.
 #[cfg(any(feature = "simd", feature = "f32-storage"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_neighbors(
@@ -36,45 +39,21 @@ pub(crate) fn collect_neighbors(
     results: &mut Vec<usize>,
     queue: &mut BinaryHeap<NeighborState>,
 ) {
-    queue.clear();
-    let Some(max_dist_sq) = max_distance_squared(max_distance) else {
-        return;
-    };
-    if num_items == 0 {
-        return;
-    }
-    let mut node_index = num_nodes - 1;
-    loop {
-        let end = (node_index + node_size).min(level_end(node_index));
-        let is_leaf = node_index < num_items;
-        for pos in node_index..end {
-            let d = dist(pos);
-            if d > max_dist_sq {
-                continue;
-            }
-            queue.push(NeighborState::new(index_at(pos), is_leaf, d));
-        }
-        let mut continue_search = false;
-        while let Some(state) = queue.pop() {
-            if state.dist > max_dist_sq {
-                queue.clear();
-                return;
-            }
-            if state.is_leaf {
-                results.push(state.index);
-                if results.len() == max_results {
-                    return;
-                }
-            } else {
-                node_index = state.index;
-                continue_search = true;
-                break;
-            }
-        }
-        if !continue_search {
-            return;
-        }
-    }
+    let mut node_queue: BinaryHeap<NeighborNodeState> =
+        BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    collect_neighbors_two_queue(
+        num_nodes,
+        num_items,
+        node_size,
+        level_end,
+        index_at,
+        max_results,
+        max_distance,
+        dist,
+        results,
+        queue,
+        &mut node_queue,
+    );
 }
 
 /// Best-first descent with separate node and item priority queues — the
@@ -194,7 +173,10 @@ pub(crate) fn nearest_one(
 }
 
 /// Visit items in nondecreasing squared-distance order; `visitor` may break
-/// early.
+/// early. A convenience over [`visit_neighbors_two_queue`] for callers holding
+/// only the item queue: allocates a small pre-sized scratch node queue and
+/// delegates, so `visit` emits in the SAME order as the two-queue `neighbors`
+/// collect (they must agree on ties — a contract the tests check).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn visit_neighbors<B>(
     num_nodes: usize,
@@ -207,40 +189,87 @@ pub(crate) fn visit_neighbors<B>(
     queue: &mut BinaryHeap<NeighborState>,
     visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
-    queue.clear();
+    let mut node_queue: BinaryHeap<NeighborNodeState> =
+        BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    visit_neighbors_two_queue(
+        num_nodes,
+        num_items,
+        node_size,
+        level_end,
+        index_at,
+        max_distance,
+        dist,
+        queue,
+        &mut node_queue,
+        visitor,
+    )
+}
+
+/// Two-queue distance-browsing visit: emits items in nondecreasing squared
+/// distance via `visitor` (which may break early), in the same order the
+/// two-queue [`collect_neighbors_two_queue`] produces.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn visit_neighbors_two_queue<B>(
+    num_nodes: usize,
+    num_items: usize,
+    node_size: usize,
+    level_end: impl Fn(usize) -> usize,
+    index_at: impl Fn(usize) -> usize,
+    max_distance: f64,
+    dist: impl Fn(usize) -> f64,
+    item_queue: &mut BinaryHeap<NeighborState>,
+    node_queue: &mut BinaryHeap<NeighborNodeState>,
+    visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    item_queue.clear();
+    node_queue.clear();
     let Some(max_dist_sq) = max_distance_squared(max_distance) else {
         return ControlFlow::Continue(());
     };
     if num_items == 0 {
         return ControlFlow::Continue(());
     }
-    let mut node_index = num_nodes - 1;
+    let root_index = num_nodes - 1;
+    let root_dist = dist(root_index);
+    if root_dist > max_dist_sq {
+        return ControlFlow::Continue(());
+    }
+    node_queue.push(NeighborNodeState::new(root_index, root_dist));
+
     loop {
-        let end = (node_index + node_size).min(level_end(node_index));
-        let is_leaf = node_index < num_items;
-        for pos in node_index..end {
-            let d = dist(pos);
-            if d > max_dist_sq {
-                continue;
-            }
-            queue.push(NeighborState::new(index_at(pos), is_leaf, d));
-        }
-        let mut continue_search = false;
-        while let Some(state) = queue.pop() {
-            if state.dist > max_dist_sq {
-                queue.clear();
-                return ControlFlow::Continue(());
-            }
-            if state.is_leaf {
-                visitor(state.index, state.dist)?;
-            } else {
-                node_index = state.index;
-                continue_search = true;
+        while let Some(&node) = node_queue.peek() {
+            if node.dist > max_dist_sq {
+                node_queue.clear();
                 break;
             }
+            if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
+                break;
+            }
+
+            let node = node_queue.pop().unwrap();
+            let end = (node.index + node_size).min(level_end(node.index));
+            let is_leaf = node.index < num_items;
+
+            if is_leaf {
+                for pos in node.index..end {
+                    let d = dist(pos);
+                    if d <= max_dist_sq {
+                        item_queue.push(NeighborState::new(index_at(pos), true, d));
+                    }
+                }
+            } else {
+                for pos in node.index..end {
+                    let d = dist(pos);
+                    if d <= max_dist_sq {
+                        node_queue.push(NeighborNodeState::new(index_at(pos), d));
+                    }
+                }
+            }
         }
-        if !continue_search {
-            return ControlFlow::Continue(());
+
+        match item_queue.pop() {
+            Some(state) if state.dist <= max_dist_sq => visitor(state.index, state.dist)?,
+            _ => return ControlFlow::Continue(()),
         }
     }
 }

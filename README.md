@@ -7,9 +7,8 @@
 [![License](https://img.shields.io/crates/l/packed_spatial_index.svg)](LICENSE)
 
 A fast, packed **static spatial index** for 2D and 3D axis-aligned bounding boxes
-(AABBs), in the style of [flatbush](https://github.com/mourner/flatbush) /
-[`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index). Pack the
-boxes into a Hilbert R-tree once, then run millions of queries over it:
+(AABBs). Pack the boxes into a Hilbert R-tree once, then run millions of queries
+of every kind:
 
 - **range / intersection** search
 - **nearest neighbors** (kNN) from a point or a box, under Euclidean or any custom

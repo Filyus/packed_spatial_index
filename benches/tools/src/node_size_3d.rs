@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{Box3D, Index3DBuilder};
+use psi_perf::emit;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -14,6 +15,7 @@ const REPS_Q: usize = 200;
 const REPS_B: usize = 50;
 
 fn main() {
+    psi_perf::pin_from_env();
     let mut rng = StdRng::seed_from_u64(0x3D0B);
     let boxes: Vec<Box3D> = (0..N)
         .map(|_| {
@@ -38,11 +40,7 @@ fn main() {
         })
         .collect();
 
-    println!(
-        "N={N}, queries={NQ}\n{:>9} | {:>11} | {:>12} | {:>12}",
-        "node_size", "build(serial)", "query SIMD", "query AVX-512"
-    );
-    println!("{}", "-".repeat(54));
+    emit(&serde_json::json!({ "tool": "node_size_3d_meta", "n": N, "nq": NQ }));
 
     for &node_size in &[4usize, 8, 16, 32, 64] {
         let mut build_best = f64::INFINITY;
@@ -92,8 +90,12 @@ fn main() {
             avx_best = avx_best.min(start.elapsed().as_secs_f64() * 1e6);
         }
 
-        println!(
-            "{node_size:>9} | {build_best:>8.3} ms | {simd_best:>9.1} us | {avx_best:>9.1} us"
-        );
+        emit(&serde_json::json!({
+            "tool": "node_size_3d",
+            "node_size": node_size,
+            "build_serial_ms": build_best,
+            "query_simd_us": simd_best,
+            "query_avx512_us": avx_best,
+        }));
     }
 }

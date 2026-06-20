@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
+use psi_perf::emit;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -44,22 +45,17 @@ fn time_build(boxes: &[[f64; 4]], radix: bool, reps: usize) -> f64 {
 }
 
 fn main() {
-    println!(
-        "{:>10} | {:>12} | {:>12} | {:>10}",
-        "N", "pdqsort", "radix", "speedup"
-    );
-    println!("{}", "-".repeat(52));
+    psi_perf::pin_from_env();
     for &n in &[1_000usize, 100_000, 1_000_000] {
         let boxes = gen_boxes(n);
         let reps = if n >= 1_000_000 { 10 } else { 200 };
         let pdq = time_build(&boxes, false, reps);
         let radix = time_build(&boxes, true, reps);
-        println!(
-            "{:>10} | {:>9.3} ms | {:>9.3} ms | {:>8.2}x",
-            n,
-            pdq,
-            radix,
-            pdq / radix
-        );
+        emit(&serde_json::json!({
+            "tool": "sort_2d",
+            "n": n,
+            "pdqsort_ms": pdq,
+            "radix_ms": radix,
+        }));
     }
 }

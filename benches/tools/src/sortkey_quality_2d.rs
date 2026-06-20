@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
+use psi_perf::emit;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -18,6 +19,7 @@ const BUILD_REPEATS: usize = 5;
 const REPEATS: usize = 50; // repetitions for stable query timing
 
 fn main() {
+    psi_perf::pin_from_env();
     let mut rng = StdRng::seed_from_u64(0xB0B);
     let boxes: Vec<[f64; 4]> = (0..N)
         .map(|_| {
@@ -47,14 +49,12 @@ fn main() {
         ("Morton (Z-order)", SortKey2DStrategy::Morton),
     ];
 
-    println!(
-        "N={N}, node_size={NODE_SIZE}, queries={QUERIES} (build best of {BUILD_REPEATS}, query x{REPEATS})\n"
-    );
-    println!(
-        "{:<22} | {:>10} | {:>12} | {:>16} | {:>14}",
-        "Sort key", "build", "query (all)", "checks/query", "results/query"
-    );
-    println!("{}", "-".repeat(86));
+    emit(&serde_json::json!({
+        "tool": "sortkey_quality_2d_meta",
+        "n": N,
+        "node_size": NODE_SIZE,
+        "queries": QUERIES,
+    }));
 
     let mut baseline_visited = 0f64;
     for (i, (name, key)) in keys.iter().enumerate() {
@@ -106,15 +106,14 @@ fn main() {
         std::hint::black_box(sink);
 
         let factor = avg_visited / baseline_visited;
-        println!(
-            "{:<22} | {:>8.2?} | {:>12.2?} | {:>10.0} (x{:.1}) | {:>14.1}",
-            name, build_t, query_t, avg_visited, factor, avg_results
-        );
+        emit(&serde_json::json!({
+            "tool": "sortkey_quality_2d",
+            "sort_key": name,
+            "build_ms": build_t.as_secs_f64() * 1e3,
+            "query_total_ms": query_t.as_secs_f64() * 1e3,
+            "avg_checks": avg_visited,
+            "checks_factor": factor,
+            "avg_results": avg_results,
+        }));
     }
-
-    println!(
-        "\nNote: the number of results is the same for all keys (correctness does not depend\n\
-         on order). Only the amount of work differs: worse key locality means more\n\
-         intersection checks and slower queries."
-    );
 }

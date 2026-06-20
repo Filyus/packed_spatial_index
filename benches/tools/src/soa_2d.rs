@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
+use psi_perf::emit;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -15,6 +16,7 @@ const NQ: usize = 1_000;
 const REPS: usize = 200;
 
 fn main() {
+    psi_perf::pin_from_env();
     let mut rng = StdRng::seed_from_u64(0xB0B);
     let boxes: Vec<[f64; 4]> = (0..N)
         .map(|_| {
@@ -68,11 +70,13 @@ fn main() {
             assert_eq!(a, sm, "SoA-SIMD != AoS");
             assert_eq!(a, av, "SoA-AVX512 != AoS");
         }
-        println!(
-            "avx512f available: {}",
-            std::is_x86_feature_detected!("avx512f")
-        );
-        println!("correctness: scalar == SSE/AVX2 == AVX-512 == AoS OK\n");
+        emit(&serde_json::json!({
+            "tool": "soa_2d_meta",
+            "n": N,
+            "nq": NQ,
+            "avx512f": std::is_x86_feature_detected!("avx512f"),
+            "correctness_ok": true,
+        }));
     }
 
     fn bench<F: FnMut() -> usize>(label: &str, nq: usize, mut f: F) {
@@ -84,7 +88,7 @@ fn main() {
             best = best.min(t.elapsed().as_secs_f64() * 1e6);
         }
         std::hint::black_box(sink);
-        println!("{:<16} : {:>8.1} us / {} queries", label, best, nq);
+        emit(&serde_json::json!({ "tool": "soa_2d", "label": label, "us": best, "queries": nq }));
     }
 
     let (mut buf, mut st) = (Vec::new(), Vec::new());

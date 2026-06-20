@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{Box3D, Index3DBuilder};
+use psi_perf::emit;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -15,6 +16,7 @@ const NQ: usize = 1_000;
 const REPS: usize = 200;
 
 fn main() {
+    psi_perf::pin_from_env();
     let mut rng = StdRng::seed_from_u64(0x3D0B);
     let boxes: Vec<Box3D> = (0..N)
         .map(|_| {
@@ -69,11 +71,13 @@ fn main() {
         assert_eq!(scalar_hits, simd_hits, "SoA SIMD != Index3D");
         assert_eq!(scalar_hits, avx_hits, "SoA AVX-512 != Index3D");
     }
-    println!(
-        "avx512f available: {}",
-        std::is_x86_feature_detected!("avx512f")
-    );
-    println!("correctness: Index3D == SoA scalar == SIMD == AVX-512 OK\n");
+    emit(&serde_json::json!({
+        "tool": "soa_3d_meta",
+        "n": N,
+        "nq": NQ,
+        "avx512f": std::is_x86_feature_detected!("avx512f"),
+        "correctness_ok": true,
+    }));
 
     fn bench<F: FnMut() -> usize>(label: &str, mut f: F) {
         let mut best = f64::INFINITY;
@@ -84,7 +88,7 @@ fn main() {
             best = best.min(start.elapsed().as_secs_f64() * 1e6);
         }
         std::hint::black_box(sink);
-        println!("{label:<18}: {best:>8.1} us / {NQ} queries");
+        emit(&serde_json::json!({ "tool": "soa_3d", "label": label, "us": best, "queries": NQ }));
     }
 
     let (mut out, mut stack) = (Vec::new(), Vec::new());

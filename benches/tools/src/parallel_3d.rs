@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{Box3D, Index3D, Index3DBuilder};
+use psi_perf::emit;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -59,8 +60,12 @@ fn time_build(boxes: &[Box3D], mode: BuildMode, reps: usize) -> f64 {
 }
 
 fn main() {
-    println!("rayon threads: {}", rayon::current_num_threads());
-    println!("auto parallel threshold: 50000 items\n");
+    psi_perf::pin_from_env();
+    emit(&serde_json::json!({
+        "tool": "parallel_3d_meta",
+        "rayon_threads": rayon::current_num_threads(),
+        "node_size": NODE_SIZE,
+    }));
 
     {
         let boxes = gen_boxes(20_000);
@@ -78,14 +83,9 @@ fn main() {
             b.sort_unstable();
             assert_eq!(a, b, "parallel build produced different results");
         }
-        println!("correctness: parallel build == serial build OK\n");
+        emit(&serde_json::json!({ "tool": "parallel_3d_check", "ok": true }));
     }
 
-    println!(
-        "{:>10} | {:>12} | {:>12} | {:>12} | {:>10}",
-        "N", "serial", "auto", "forced", "auto/serial"
-    );
-    println!("{}", "-".repeat(67));
     for &n in &[1_000usize, 10_000, 100_000, 1_000_000] {
         let boxes = gen_boxes(n);
         let reps = if n >= 1_000_000 {
@@ -98,9 +98,12 @@ fn main() {
         let serial = time_build(&boxes, BuildMode::Serial, reps);
         let auto = time_build(&boxes, BuildMode::ParallelAuto, reps);
         let forced = time_build(&boxes, BuildMode::ParallelForced, reps);
-        println!(
-            "{n:>10} | {serial:>9.3} ms | {auto:>9.3} ms | {forced:>9.3} ms | {:>8.2}x",
-            serial / auto
-        );
+        emit(&serde_json::json!({
+            "tool": "parallel_3d",
+            "n": n,
+            "serial_ms": serial,
+            "auto_ms": auto,
+            "forced_ms": forced,
+        }));
     }
 }

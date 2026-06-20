@@ -5,6 +5,7 @@
 use std::time::Instant;
 
 use packed_spatial_index::benchmark_support::radix_sort_pairs;
+use psi_perf::emit;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -26,11 +27,7 @@ fn time<F: FnMut(&mut Vec<(u32, u32)>)>(base: &[(u32, u32)], reps: usize, mut f:
 }
 
 fn main() {
-    println!(
-        "{:>10} | {:>10} | {:>12} | {:>12} | {:>12}",
-        "N", "pdqsort", "radix-8 (4p)", "radix-11 (3p)", "radix-16 (2p)"
-    );
-    println!("{}", "-".repeat(66));
+    psi_perf::pin_from_env();
     for &n in &[100_000usize, 1_000_000, 5_000_000] {
         let base = gen_pairs(n);
         let reps = if n >= 1_000_000 { 15 } else { 150 };
@@ -52,9 +49,13 @@ fn main() {
             assert_eq!(ka, ks, "radix-{bits} produced an invalid order");
         }
 
-        println!(
-            "{:>10} | {:>7.3}ms | {:>9.3}ms | {:>9.3}ms | {:>9.3}ms",
-            n, pdq, r8, r11, r16
-        );
+        emit(&serde_json::json!({
+            "tool": "radix_2d",
+            "n": n,
+            "pdqsort_ms": pdq,
+            "radix8_ms": r8,
+            "radix11_ms": r11,
+            "radix16_ms": r16,
+        }));
     }
 }

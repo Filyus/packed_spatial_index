@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2DBuilder};
+use psi_perf::emit;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -16,6 +17,7 @@ const REPS_Q: usize = 200;
 const REPS_B: usize = 50;
 
 fn main() {
+    psi_perf::pin_from_env();
     let mut rng = StdRng::seed_from_u64(0xB0B);
     let boxes: Vec<[f64; 4]> = (0..N)
         .map(|_| {
@@ -37,11 +39,7 @@ fn main() {
         })
         .collect();
 
-    println!(
-        "N={N}, queries={NQ}\n{:>9} | {:>11} | {:>12} | {:>12}",
-        "node_size", "build(serial)", "query AVX2", "query AVX-512"
-    );
-    println!("{}", "-".repeat(54));
+    emit(&serde_json::json!({ "tool": "node_size_2d_meta", "n": N, "nq": NQ }));
 
     for &ns in &[4usize, 8, 16, 32, 64] {
         // build (AoS serial, lut+radix)
@@ -93,9 +91,12 @@ fn main() {
             q8 = q8.min(t.elapsed().as_secs_f64() * 1e6);
         }
 
-        println!(
-            "{:>9} | {:>8.3} ms | {:>9.1} µs | {:>9.1} µs",
-            ns, bbest, q2, q8
-        );
+        emit(&serde_json::json!({
+            "tool": "node_size_2d",
+            "node_size": ns,
+            "build_serial_ms": bbest,
+            "query_avx2_us": q2,
+            "query_avx512_us": q8,
+        }));
     }
 }

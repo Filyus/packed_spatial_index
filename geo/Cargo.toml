@@ -14,7 +14,7 @@ categories = ["science::geo", "data-structures"]
 # Query/build engine. `stream` + `f32-storage` so the converter can emit compact
 # files and tests can load them back over a RangeReader. The heavy geo deps below
 # stay OUT of this core — that is the whole point of a separate crate.
-packed_spatial_index = { path = "..", features = ["stream", "f32-storage"] }
+packed_spatial_index = { path = "..", version = "0.18.1", features = ["stream", "f32-storage"] }
 
 # GeoParquet metadata (primary geometry column, bbox covering, CRS, encoding).
 geoparquet = "0.8"

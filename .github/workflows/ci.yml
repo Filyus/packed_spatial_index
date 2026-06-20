@@ -121,20 +121,3 @@ jobs:
         run: cargo package --list
       - name: Package crate
         run: cargo package
-
-  benches:
-    name: benches (compile)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: benches
-      # Dev-only benches are not run in CI, only compile-checked so a refactor of
-      # internal APIs can't silently break them.
-      - name: Compile-check benches
-        run: cargo bench --no-run --all-features

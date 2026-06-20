@@ -53,6 +53,12 @@ pub struct ConvertOpts {
     /// is safe — unlike the accelerator, which keeps `id == row` and always
     /// errors on null).
     pub skip_null: bool,
+    /// Interleave the geometry payload with the tree leaves so a streaming query
+    /// fetches a leaf and its geometry in one contiguous range read. This is the
+    /// right default for the converter's purpose (serving geometry over a network)
+    /// — it cuts round-trips. Turn it off for a layout where the tree is read far
+    /// more often than payloads are fetched.
+    pub interleaved: bool,
 }
 
 impl Default for ConvertOpts {
@@ -62,6 +68,7 @@ impl Default for ConvertOpts {
             include_payload: true,
             compact_f32: false,
             skip_null: false,
+            interleaved: true,
         }
     }
 }

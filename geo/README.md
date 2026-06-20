@@ -92,11 +92,11 @@ become a conservative superset; re-check exact hits against the payload geometry
 `ConvertOpts { skip_null: true, .. }` drops null or empty geometries instead of
 erroring.
 
-A runnable end-to-end version (inspect → convert → write a `.psindex`) lives in
-[`examples/convert.rs`](examples/convert.rs):
+The crate ships a CLI, `gp2psindex`, for the file-to-file path:
 
 ```text
-cargo run --example convert -- path/to/file.parquet
+cargo run --bin gp2psindex -- path/to/file.parquet      # writes path/to/file.parquet.psi
+# flags: --f32  --strict (error on null)  --no-payload  --no-interleave
 ```
 
 ## Scope

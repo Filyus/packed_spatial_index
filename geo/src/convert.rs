@@ -94,6 +94,9 @@ fn serialize_2d(
     if opts.compact_f32 {
         let index = builder.finish_f32()?;
         let mut s = index.serialize();
+        if opts.interleaved && payload.is_some() {
+            s = s.interleaved();
+        }
         if let Some(c) = crs {
             s = s.crs(c);
         }
@@ -104,6 +107,9 @@ fn serialize_2d(
     } else {
         let index = builder.finish()?;
         let mut s = index.serialize();
+        if opts.interleaved && payload.is_some() {
+            s = s.interleaved();
+        }
         if let Some(c) = crs {
             s = s.crs(c);
         }
@@ -126,6 +132,9 @@ fn serialize_3d(
     if opts.compact_f32 {
         let index = builder.finish_f32()?;
         let mut s = index.serialize();
+        if opts.interleaved && payload.is_some() {
+            s = s.interleaved();
+        }
         if let Some(c) = crs {
             s = s.crs(c);
         }
@@ -136,6 +145,9 @@ fn serialize_3d(
     } else {
         let index = builder.finish()?;
         let mut s = index.serialize();
+        if opts.interleaved && payload.is_some() {
+            s = s.interleaved();
+        }
         if let Some(c) = crs {
             s = s.crs(c);
         }

@@ -107,6 +107,20 @@ pub struct GeoParquetInfo {
 }
 
 /// Inspect a GeoParquet source's geometry metadata without reading any rows.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::inspect;
+///
+/// let info = inspect(File::open("cities.parquet")?)?;
+/// println!("{}D, {} rows, encoding {}", info.dims, info.num_rows, info.encoding);
+/// if let Some(bounds) = &info.bounds {
+///     println!("extent: {bounds:?}");
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn inspect<R: ChunkReader + 'static>(reader: R) -> Result<GeoParquetInfo, GeoError> {
     let (info, total, _builder) = read_meta(reader)?;
     Ok(GeoParquetInfo {
@@ -128,6 +142,17 @@ pub fn detect_dims<R: ChunkReader + 'static>(reader: R) -> Result<u8, GeoError> 
 
 /// Read every row's 2D bounding box, in file row order. Item `i` corresponds to
 /// GeoParquet row `i`.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::read_bboxes_2d;
+///
+/// let boxes = read_bboxes_2d(File::open("cities.parquet")?)?;
+/// println!("{} bounding boxes", boxes.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn read_bboxes_2d<R: ChunkReader + 'static>(reader: R) -> Result<Vec<Box2D>, GeoError> {
     Ok(scan_2d(reader, false, false)?.boxes)
 }

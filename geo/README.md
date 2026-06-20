@@ -26,8 +26,7 @@ original file.
 
 ```rust,no_run
 use std::fs::File;
-use packed_spatial_index::Box2D;
-use packed_spatial_index_geo::{build_index_2d, BuildOpts};
+use packed_spatial_index_geo::{build_index_2d, BuildOpts, Box2D};
 
 let file = File::open("cities.parquet")?;
 let index = build_index_2d(file, BuildOpts::default())?;

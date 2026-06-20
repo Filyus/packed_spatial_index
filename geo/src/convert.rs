@@ -14,6 +14,21 @@ use crate::{ConvertOpts, GeoError, build, read};
 const WKB_CONTENT_TYPE: &str = "application/geo+wkb";
 
 /// Convert a 2D GeoParquet source into `PSINDEX` bytes.
+///
+/// The bytes carry the index, each row's WKB geometry as a leaf-ordered payload,
+/// and the CRS. Query them with [`StreamIndex2D`](crate::StreamIndex2D) over any
+/// [`RangeReader`](crate::RangeReader) (a local file or an HTTP range source).
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{convert_2d, ConvertOpts};
+///
+/// let psindex = convert_2d(File::open("cities.parquet")?, ConvertOpts::default())?;
+/// std::fs::write("cities.psindex", &psindex)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn convert_2d<R: ChunkReader + 'static>(
     reader: R,
     opts: ConvertOpts,

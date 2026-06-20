@@ -8,6 +8,20 @@ use parquet::file::reader::ChunkReader;
 use crate::{BuildOpts, GeoError, read};
 
 /// Build an [`Index2D`] over the file's row bounding boxes.
+///
+/// Item id equals the GeoParquet row index, so query results are row indices into
+/// the original file.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{build_index_2d, BuildOpts, Box2D};
+///
+/// let index = build_index_2d(File::open("cities.parquet")?, BuildOpts::default())?;
+/// let rows = index.search(Box2D::new(-10.0, 35.0, 20.0, 60.0)); // Vec<usize>
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn build_index_2d<R: ChunkReader + 'static>(
     reader: R,
     opts: BuildOpts,

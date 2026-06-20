@@ -4,6 +4,24 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/Filyus/packed_spatial_index/compare/v0.17.0...v0.18.0) - 2026-06-20
+
+### Geometry
+- **BREAKING:** `Frustum3D::from_view_projection` now takes a second argument, the
+  new `ClipSpaceZ` enum, naming the NDC depth range your projection targets. The
+  old call assumed the OpenGL/WebGL `[-1, 1]` clip cube and silently produced a
+  wrong near plane for D3D12 / Vulkan / Metal / WebGPU, which clip `z` to `[0, 1]`
+  (only the near plane differs). Pass `ClipSpaceZ::ZeroToOne` (the modern
+  majority, also the `Default`) or `ClipSpaceZ::NegOneToOne` (OpenGL/WebGL); the
+  convention is not recoverable from the matrix, so there is no silent default.
+  Migration: existing OpenGL callers add `ClipSpaceZ::NegOneToOne`.
+
+### Nearest Neighbors
+- kNN on the compact f32 indexes (`Index2DF32` / `Index3DF32`) and `SimdIndex2D`
+  is ~7–11% faster: the SIMD and f32 frontends now use the same two-queue
+  distance-browsing collect the scalar `Index2D` already used, so it is the one
+  kNN collect kernel everywhere. No API change. The technique is written up in
+  [docs/knn.md](docs/knn.md).
 
 ## [0.17.0](https://github.com/Filyus/packed_spatial_index/compare/v0.16.0...v0.17.0) - 2026-06-19
 
@@ -16,7 +34,6 @@ All notable changes to this crate are documented here.
   **great-circle distance** for lon/lat data. A `haversine_distance_2d(query, box,
   earth_radius)` helper and an `EARTH_RADIUS_M` constant are provided for the
   geographic case. The default squared-Euclidean `neighbors` path is unchanged.
-
 
 ## [0.16.0](https://github.com/Filyus/packed_spatial_index/compare/v0.15.0...v0.16.0) - 2026-06-19
 
@@ -239,7 +256,6 @@ All notable changes to this crate are documented here.
   a spatial query reads them in coalesced runs, and they are served by both the
   zero-copy views and the streaming reader, in 2D and 3D.
 
-
 ## [0.6.0](https://github.com/Filyus/packed_spatial_index/compare/v0.5.1...v0.6.0) - 2026-06-14
 
 ### Search
@@ -250,7 +266,6 @@ All notable changes to this crate are documented here.
   bail out partway, where `search` (a whole owned `Vec`) and `visit` (a
   push-based callback) are awkward.
 
-
 ## [0.5.1](https://github.com/Filyus/packed_spatial_index/compare/v0.5.0...v0.5.1) - 2026-06-13
 
 ### Documentation
@@ -259,7 +274,6 @@ All notable changes to this crate are documented here.
   type to docs.rs, add examples to `search` / `any` / `first`, document querying
   large or on-disk indexes via memory mapping, and add a clickable queries
   overview to the crate landing page.
-
 
 ## [0.5.0](https://github.com/Filyus/packed_spatial_index/compare/v0.4.3...v0.5.0) - 2026-06-13
 
@@ -296,7 +310,6 @@ All notable changes to this crate are documented here.
 - Prefetch the next stacked node in the default scalar range search (`Index2D`
   and `Index3D`), a consistent ~3-5% range-query speedup.
 
-
 ## [0.4.3](https://github.com/Filyus/packed_spatial_index/compare/v0.4.2...v0.4.3) - 2026-06-09
 
 ### Performance
@@ -310,7 +323,6 @@ All notable changes to this crate are documented here.
 
 ### Documentation
 - Add large-window range search benchmark results to the README.
-
 
 ## [0.4.2](https://github.com/Filyus/packed_spatial_index/compare/v0.4.1...v0.4.2) - 2026-06-08
 
@@ -364,7 +376,6 @@ All notable changes to this crate are documented here.
 ### Benchmarks
 - Move internal performance tools out of the published examples and into a
   local benchmark tools package.
-
 
 ## [0.3.3](https://github.com/Filyus/packed_spatial_index/compare/v0.3.2...v0.3.3) - 2026-06-03
 

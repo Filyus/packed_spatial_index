@@ -324,6 +324,10 @@ box per axis — exact for small boxes, a slight over-estimate for very large or
 near-polar ones. `neighbors_metric` is generic, so the default `neighbors` stays
 the faster path when plain Euclidean is what you want.
 
+All of these — default, box and custom-metric kNN — run on the same best-first
+**distance-browsing** traversal; [docs/knn.md](knn.md) explains the two-queue
+technique and why it is the one collect kernel.
+
 ## Runnable examples
 
 ```bash

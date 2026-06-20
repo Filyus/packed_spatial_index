@@ -138,3 +138,41 @@ fn search_frustum_empty_index() {
     assert!(index.search_frustum(frustum).is_empty());
     assert!(!index.any_frustum(frustum));
 }
+
+#[test]
+fn from_view_projection_clip_space_moves_only_the_near_plane() {
+    // Identity vp. `NegOneToOne` (OpenGL) clips z to [-1, 1]; `ZeroToOne`
+    // (D3D/Vulkan/Metal/WebGPU, the default) clips z to [0, 1]. Only the near
+    // plane differs, so a box behind z=0 but inside [-1, 1] is visible under
+    // OpenGL and culled under the zero-to-one convention.
+    let identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let gl = Frustum3D::from_view_projection(identity, ClipSpaceZ::NegOneToOne);
+    let zo = Frustum3D::from_view_projection(identity, ClipSpaceZ::ZeroToOne);
+
+    // z in [-0.5, -0.2]: in front of the OpenGL near (z >= -1), behind the
+    // zero-to-one near (z >= 0).
+    let behind_zero = Box3D::new(-0.3, -0.3, -0.5, 0.3, 0.3, -0.2);
+    assert!(gl.overlaps_box(behind_zero), "inside the OpenGL clip cube");
+    assert!(
+        !zo.overlaps_box(behind_zero),
+        "behind the zero-to-one near plane"
+    );
+
+    // z in [0.2, 0.5]: inside both conventions.
+    let in_front = Box3D::new(-0.3, -0.3, 0.2, 0.3, 0.3, 0.5);
+    assert!(gl.overlaps_box(in_front));
+    assert!(zo.overlaps_box(in_front));
+
+    // The other five planes are identical: a box outside in x is culled by both.
+    let outside_x = Box3D::new(2.0, -0.3, 0.2, 3.0, 0.3, 0.5);
+    assert!(!gl.overlaps_box(outside_x));
+    assert!(!zo.overlaps_box(outside_x));
+
+    // The modern zero-to-one range is the default.
+    assert_eq!(ClipSpaceZ::default(), ClipSpaceZ::ZeroToOne);
+}

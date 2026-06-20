@@ -6,7 +6,8 @@
   "scripts": {
     "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
     "seed": "cargo run --release --manifest-path ../r2-sim/Cargo.toml -- 200000 index.psi",
-    "upload": "wrangler r2 object put psi-demo/index.psi --file index.psi",
+    "seed:geo": "cargo run --release --manifest-path ../geo-seed/Cargo.toml -- 100000 cities.parquet && cargo run --release --manifest-path ../../geo/Cargo.toml --bin gp2psindex -- cities.parquet index.psi",
+    "upload": "wrangler r2 object put psi-demo/index.psi --file index.psi --remote",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },

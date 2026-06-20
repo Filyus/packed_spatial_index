@@ -76,6 +76,27 @@ curl "https://psi-r2-demo.<your-subdomain>.workers.dev/?minx=100&miny=100&maxx=1
 
 `wrangler dev` runs it locally against R2 first if you prefer.
 
+## Real GeoParquet variant
+
+Instead of the synthetic index, seed from a **real GeoParquet** file through the
+[`packed_spatial_index_geo`](../../geo) converter — the "GeoParquet → cloud-served
+geometry" story end to end:
+
+```sh
+npm run seed:geo   # geo-seed -> cities.parquet -> gp2psindex -> ./index.psi
+npm run upload && npm run deploy
+```
+
+`seed:geo` generates a realistic clustered point GeoParquet (`../geo-seed`), then
+runs the `gp2psindex` CLI to convert it. The Worker is unchanged — it streams any
+PSINDEX. With a geo index the response also carries the matching features'
+geometry as base64 WKB:
+
+```
+GET /?minx=0&miny=40&maxx=30&maxy=60
+  -> { "hits": 1474, "geometries": ["AQE…"], "ids": [...], "reads": 8, "bytes": 4.3MB, "ms": 241 }
+```
+
 ## Query params
 
 | param      | default | meaning                                  |

@@ -53,7 +53,12 @@ export default {
     };
 
     const t0 = Date.now();
-    let result: { hits: number; payloadBytes: number; ids: number[] };
+    let result: {
+      hits: number;
+      payloadBytes: number;
+      ids: number[];
+      geometries: string[];
+    };
     try {
       result = (await query(
         readRange,

@@ -135,16 +135,40 @@ pub async fn query(
         .map_err(stream_err)?;
 
     let payload_bytes: usize = hits.iter().map(|(_, b)| b.len()).sum();
+    // Return the first features' ids and their actual geometry (WKB, base64), so a
+    // caller gets real geometry back over the network, not just a count. Capped to
+    // bound the response.
+    const FEATURE_CAP: usize = 1000;
     let ids = Array::new();
-    for (id, _) in hits.iter().take(1000) {
+    let geometries = Array::new();
+    for (id, wkb) in hits.iter().take(FEATURE_CAP) {
         ids.push(&JsValue::from_f64(*id as f64));
+        geometries.push(&JsValue::from_str(&base64(wkb)));
     }
 
     let out = Object::new();
     set(&out, "hits", JsValue::from_f64(hits.len() as f64))?;
     set(&out, "payloadBytes", JsValue::from_f64(payload_bytes as f64))?;
     set(&out, "ids", ids.into())?;
+    set(&out, "geometries", geometries.into())?;
     Ok(out.into())
+}
+
+/// Minimal standard base64 (no dependency) for the WKB payloads.
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        s.push(T[(n >> 18 & 63) as usize] as char);
+        s.push(T[(n >> 12 & 63) as usize] as char);
+        s.push(if chunk.len() > 1 { T[(n >> 6 & 63) as usize] as char } else { '=' });
+        s.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    s
 }
 
 fn set(obj: &Object, key: &str, val: JsValue) -> Result<(), JsValue> {

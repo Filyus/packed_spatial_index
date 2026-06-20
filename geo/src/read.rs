@@ -49,6 +49,21 @@ fn geo_info(meta: &GeoParquetMetadata) -> Result<GeoInfo, GeoError> {
     })
 }
 
+/// Read just the GeoParquet metadata and row count, without building a batch
+/// reader. Returns the builder so a caller can go on to read batches.
+fn read_meta<R: ChunkReader + 'static>(
+    reader: R,
+) -> Result<(GeoInfo, usize, ParquetRecordBatchReaderBuilder<R>), GeoError> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
+    let file_meta = builder.metadata().file_metadata();
+    let gpq = GeoParquetMetadata::from_parquet_meta(file_meta)
+        .ok_or_else(|| GeoError::Metadata("file has no `geo` metadata".to_string()))?
+        .map_err(|e| GeoError::Metadata(e.to_string()))?;
+    let info = geo_info(&gpq)?;
+    let total = file_meta.num_rows().max(0) as usize;
+    Ok((info, total, builder))
+}
+
 fn open<R: ChunkReader + 'static>(
     reader: R,
 ) -> Result<
@@ -59,21 +74,44 @@ fn open<R: ChunkReader + 'static>(
     ),
     GeoError,
 > {
-    let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
-    let file_meta = builder.metadata().file_metadata();
-    let gpq = GeoParquetMetadata::from_parquet_meta(file_meta)
-        .ok_or_else(|| GeoError::Metadata("file has no `geo` metadata".to_string()))?
-        .map_err(|e| GeoError::Metadata(e.to_string()))?;
-    let info = geo_info(&gpq)?;
-    let total = file_meta.num_rows().max(0) as usize;
+    let (info, total, builder) = read_meta(reader)?;
     let batches = builder.build()?;
     Ok((info, total, batches))
 }
 
+/// A summary of a GeoParquet source's primary geometry column, from [`inspect`].
+#[derive(Debug, Clone)]
+pub struct GeoParquetInfo {
+    /// Name of the primary geometry column.
+    pub geometry_column: String,
+    /// `2` or `3`.
+    pub dims: u8,
+    /// Geometry encoding, e.g. `"WKB"` or `"point"`.
+    pub encoding: String,
+    /// Column CRS as a PROJJSON string, if the file declares one.
+    pub crs: Option<String>,
+    /// Whether a per-row bbox covering column is present.
+    pub has_covering: bool,
+    /// Number of rows in the file.
+    pub num_rows: u64,
+}
+
+/// Inspect a GeoParquet source's geometry metadata without reading any rows.
+pub fn inspect<R: ChunkReader + 'static>(reader: R) -> Result<GeoParquetInfo, GeoError> {
+    let (info, total, _builder) = read_meta(reader)?;
+    Ok(GeoParquetInfo {
+        geometry_column: info.geometry_column,
+        dims: if info.is_3d { 3 } else { 2 },
+        encoding: info.encoding.to_string(),
+        crs: info.crs,
+        has_covering: info.covering.is_some(),
+        num_rows: total as u64,
+    })
+}
+
 /// Report whether a GeoParquet source's primary geometry column is 2D or 3D.
 pub fn detect_dims<R: ChunkReader + 'static>(reader: R) -> Result<u8, GeoError> {
-    let (info, _, _) = open(reader)?;
-    Ok(if info.is_3d { 3 } else { 2 })
+    Ok(inspect(reader)?.dims)
 }
 
 /// Read every row's 2D bounding box, in file row order. Item `i` corresponds to

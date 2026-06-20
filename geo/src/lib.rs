@@ -1,33 +1,20 @@
-//! Build a [`packed_spatial_index`] spatial index from a **GeoParquet** file.
-//!
-//! GeoParquet stores geometry plus, since 1.1, an optional per-row *bbox
-//! covering* column — but it has no per-row spatial index, only per-row-group
-//! statistics. This crate bridges that gap in two ways:
-//!
-//! * **Accelerator** — [`build_index_2d`] / [`build_index_3d`] build an in-memory
-//!   index whose item id is the GeoParquet **row index**. Query results are row
-//!   indices you can read back from the original file.
-//! * **Converter** — [`convert_2d`] / [`convert_3d`] build the index *and* attach
-//!   the WKB geometry as a leaf-ordered payload, serialized to a self-describing
-//!   `PSINDEX` blob. That blob is queryable by the streaming engine straight from
-//!   cloud storage (window / kNN / raycast returning the actual geometry in a
-//!   handful of range reads).
-//!
-//! The heavy `arrow` / `parquet` / `geoparquet` dependencies live only here; the
-//! `packed_spatial_index` core that *queries* the output stays lean (and wasm /
-//! edge friendly). Build runs server-side; query runs anywhere.
+#![doc = include_str!("../README.md")]
 
 mod build;
 mod convert;
 mod read;
 
 pub use build::{build_index_2d, build_index_3d};
-pub use convert::{convert_2d, convert_3d};
-pub use read::{detect_dims, read_bboxes_2d, read_bboxes_3d};
+pub use convert::{convert_2d, convert_2d_into, convert_3d, convert_3d_into};
+pub use read::{GeoParquetInfo, detect_dims, inspect, read_bboxes_2d, read_bboxes_3d};
 
-// Re-export the core types that appear in this crate's signatures so callers
-// don't have to depend on `packed_spatial_index` directly for the basics.
-pub use packed_spatial_index::{Box2D, Box3D, Index2D, Index3D};
+// Re-export the core types this crate produces or names, so a caller can build,
+// convert, load, and query entirely through `packed_spatial_index_geo` without
+// adding `packed_spatial_index` as a second direct dependency.
+pub use packed_spatial_index::{
+    Box2D, Box3D, FileMetadata, Index2D, Index3D, RangeReader, SliceReader, StreamIndex2D,
+    StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, read_metadata,
+};
 
 /// Index build parameters, forwarded to `Index*DBuilder`.
 #[derive(Debug, Clone)]

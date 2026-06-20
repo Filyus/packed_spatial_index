@@ -21,8 +21,8 @@ use packed_spatial_index::{
     Box2D, Box3D, SliceReader, StreamIndex2D, StreamIndex2DF32, read_metadata,
 };
 use packed_spatial_index_geo::{
-    BuildOpts, ConvertOpts, GeoError, build_index_2d, build_index_3d, convert_2d, detect_dims,
-    read_bboxes_2d, read_bboxes_3d,
+    BuildOpts, ConvertOpts, GeoError, build_index_2d, build_index_3d, convert_2d, convert_2d_into,
+    detect_dims, inspect, read_bboxes_2d, read_bboxes_3d,
 };
 
 // --- WKB encoders (little-endian, ISO) --------------------------------------
@@ -543,4 +543,41 @@ fn multi_batch_row_indices_are_correct() {
         index.search(Box2D::new(2300.0, 2300.0, 2300.0, 2300.0)),
         vec![2300]
     );
+}
+
+#[test]
+fn inspect_reports_metadata_without_reading_rows() {
+    let pts = [(0.0, 0.0), (10.0, 10.0)];
+    let wkbs: Vec<Option<Vec<u8>>> = pts.iter().map(|&(x, y)| Some(wkb_point_2d(x, y))).collect();
+    let cov = [[0.0, 0.0, 1.0, 1.0], [9.0, 9.0, 11.0, 11.0]];
+    let data = write_parquet(
+        vec![
+            ("geometry", binary_col(&wkbs)),
+            ("bbox", bbox_struct_2d(&cov)),
+        ],
+        geo_meta_2d(true, true),
+    );
+
+    let info = inspect(data).unwrap();
+    assert_eq!(info.geometry_column, "geometry");
+    assert_eq!(info.dims, 2);
+    assert_eq!(info.encoding, "WKB");
+    assert!(info.has_covering);
+    assert_eq!(info.crs.as_deref(), Some(CRS_JSON));
+    assert_eq!(info.num_rows, 2);
+}
+
+#[test]
+fn convert_into_matches_convert() {
+    let pts = [(0.0, 0.0), (10.0, 10.0), (5.0, 5.0)];
+    let wkbs: Vec<Option<Vec<u8>>> = pts.iter().map(|&(x, y)| Some(wkb_point_2d(x, y))).collect();
+    let data = write_parquet(
+        vec![("geometry", binary_col(&wkbs))],
+        geo_meta_2d(false, true),
+    );
+
+    let owned = convert_2d(data.clone(), ConvertOpts::default()).unwrap();
+    let mut buf = Vec::new();
+    convert_2d_into(data, ConvertOpts::default(), &mut buf).unwrap();
+    assert_eq!(owned, buf);
 }

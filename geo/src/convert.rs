@@ -18,9 +18,9 @@ pub fn convert_2d<R: ChunkReader + 'static>(
     reader: R,
     opts: ConvertOpts,
 ) -> Result<Vec<u8>, GeoError> {
-    let scan = read::scan_2d(reader, opts.include_payload)?;
-    let builder = build::loaded_builder_2d(&scan.boxes, &opts.build);
-    serialize_2d(builder, scan.wkb.as_deref(), scan.crs.as_deref(), &opts)
+    let mut out = Vec::new();
+    convert_2d_into(reader, opts, &mut out)?;
+    Ok(out)
 }
 
 /// Convert a 3D GeoParquet source into `PSINDEX` bytes.
@@ -28,9 +28,44 @@ pub fn convert_3d<R: ChunkReader + 'static>(
     reader: R,
     opts: ConvertOpts,
 ) -> Result<Vec<u8>, GeoError> {
+    let mut out = Vec::new();
+    convert_3d_into(reader, opts, &mut out)?;
+    Ok(out)
+}
+
+/// Convert a 2D GeoParquet source, appending the `PSINDEX` bytes to `out`. Lets
+/// the caller reuse a buffer or write straight into one it already owns.
+pub fn convert_2d_into<R: ChunkReader + 'static>(
+    reader: R,
+    opts: ConvertOpts,
+    out: &mut Vec<u8>,
+) -> Result<(), GeoError> {
+    let scan = read::scan_2d(reader, opts.include_payload)?;
+    let builder = build::loaded_builder_2d(&scan.boxes, &opts.build);
+    serialize_2d(
+        builder,
+        scan.wkb.as_deref(),
+        scan.crs.as_deref(),
+        &opts,
+        out,
+    )
+}
+
+/// Convert a 3D GeoParquet source, appending the `PSINDEX` bytes to `out`.
+pub fn convert_3d_into<R: ChunkReader + 'static>(
+    reader: R,
+    opts: ConvertOpts,
+    out: &mut Vec<u8>,
+) -> Result<(), GeoError> {
     let scan = read::scan_3d(reader, opts.include_payload)?;
     let builder = build::loaded_builder_3d(&scan.boxes, &opts.build);
-    serialize_3d(builder, scan.wkb.as_deref(), scan.crs.as_deref(), &opts)
+    serialize_3d(
+        builder,
+        scan.wkb.as_deref(),
+        scan.crs.as_deref(),
+        &opts,
+        out,
+    )
 }
 
 fn serialize_2d(
@@ -38,7 +73,8 @@ fn serialize_2d(
     wkb: Option<&[Vec<u8>]>,
     crs: Option<&str>,
     opts: &ConvertOpts,
-) -> Result<Vec<u8>, GeoError> {
+    out: &mut Vec<u8>,
+) -> Result<(), GeoError> {
     let payload = if opts.include_payload { wkb } else { None };
     if opts.compact_f32 {
         let index = builder.finish_f32()?;
@@ -49,7 +85,7 @@ fn serialize_2d(
         if let Some(w) = payload {
             s = s.payloads(w).content_type(WKB_CONTENT_TYPE);
         }
-        Ok(s.to_bytes()?)
+        s.to_bytes_into(out)?;
     } else {
         let index = builder.finish()?;
         let mut s = index.serialize();
@@ -59,8 +95,9 @@ fn serialize_2d(
         if let Some(w) = payload {
             s = s.payloads(w).content_type(WKB_CONTENT_TYPE);
         }
-        Ok(s.to_bytes()?)
+        s.to_bytes_into(out)?;
     }
+    Ok(())
 }
 
 fn serialize_3d(
@@ -68,7 +105,8 @@ fn serialize_3d(
     wkb: Option<&[Vec<u8>]>,
     crs: Option<&str>,
     opts: &ConvertOpts,
-) -> Result<Vec<u8>, GeoError> {
+    out: &mut Vec<u8>,
+) -> Result<(), GeoError> {
     let payload = if opts.include_payload { wkb } else { None };
     if opts.compact_f32 {
         let index = builder.finish_f32()?;
@@ -79,7 +117,7 @@ fn serialize_3d(
         if let Some(w) = payload {
             s = s.payloads(w).content_type(WKB_CONTENT_TYPE);
         }
-        Ok(s.to_bytes()?)
+        s.to_bytes_into(out)?;
     } else {
         let index = builder.finish()?;
         let mut s = index.serialize();
@@ -89,6 +127,7 @@ fn serialize_3d(
         if let Some(w) = payload {
             s = s.payloads(w).content_type(WKB_CONTENT_TYPE);
         }
-        Ok(s.to_bytes()?)
+        s.to_bytes_into(out)?;
     }
+    Ok(())
 }

@@ -253,7 +253,8 @@ Real-world reports are what push it toward `1.0`.
 ## Development
 
 AI assistance is part of building this project. The architecture is human-directed
-and the generated output is reviewed carefully before it ships.
+and the generated output is reviewed carefully before it ships, also a broad test
+suite catches mistakes.
 
 ## License
 

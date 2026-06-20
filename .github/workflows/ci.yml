@@ -121,3 +121,27 @@ jobs:
         run: cargo package --list
       - name: Package crate
         run: cargo package
+
+  # The GeoParquet companion crate has its own heavy arrow/parquet dependency
+  # tree, so it gets an isolated lane (own cache) and never touches the core legs.
+  geo:
+    name: geo (companion crate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: geo
+          workspaces: geo
+      - name: Check formatting
+        run: cargo fmt --all --check --manifest-path geo/Cargo.toml
+      - name: Lint
+        run: cargo clippy --manifest-path geo/Cargo.toml --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path geo/Cargo.toml

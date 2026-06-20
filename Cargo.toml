@@ -10,7 +10,7 @@ documentation = "https://docs.rs/packed_spatial_index"
 readme = "README.md"
 keywords = ["spatial", "rtree", "aabb", "knn", "bvh"]
 categories = ["algorithms", "data-structures", "game-development", "science::geo"]
-exclude = ["/.github/", "/benches/tools/", "/wasm-demo/"]
+exclude = ["/.github/", "/benches/tools/", "/wasm-demo/", "/geo/"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -1,0 +1,35 @@
+[package]
+name = "packed_spatial_index_geo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "GeoParquet → packed_spatial_index bridge: build a Hilbert spatial index (and a streamable PSINDEX with geometry payload) from a GeoParquet file."
+license = "Apache-2.0"
+repository = "https://github.com/Filyus/packed_spatial_index"
+readme = "README.md"
+keywords = ["geoparquet", "spatial", "rtree", "geoarrow", "index"]
+categories = ["science::geo", "data-structures"]
+
+[dependencies]
+# Query/build engine. `stream` + `f32-storage` so the converter can emit compact
+# files and tests can load them back over a RangeReader. The heavy geo deps below
+# stay OUT of this core — that is the whole point of a separate crate.
+packed_spatial_index = { path = "..", features = ["stream", "f32-storage"] }
+
+# GeoParquet metadata (primary geometry column, bbox covering, CRS, encoding).
+geoparquet = "0.8"
+# `Dimension` enum, to tell 2D from 3D geometry columns.
+geoarrow-schema = "0.8"
+# Arrow arrays + the synchronous Parquet record-batch reader (must match the
+# arrow/parquet major that `geoparquet` builds on).
+arrow = "58"
+parquet = "58"
+# WKB envelope fallback when a file has no bbox covering column.
+geozero = { version = "0.15", features = ["with-wkb"] }
+
+thiserror = "2"
+
+[dev-dependencies]
+# `Bytes` implements parquet's `ChunkReader`, so tests can feed an in-memory
+# GeoParquet fixture straight into the readers.
+bytes = "1"

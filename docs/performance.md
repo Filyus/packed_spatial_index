@@ -7,9 +7,7 @@ overview.
 Numbers are from one machine and depend on hardware and workload, so treat them as
 relative, not absolute. Single-thread rows are measured with the benchmark thread
 pinned to one performance core (`BENCH_PIN_CORE`, see [Reproducing](#reproducing));
-parallel rows run unpinned so the rayon workers can spread across cores. Some
-baseline crates (`fast_hilbert`, `bvh`) have grown faster across versions since the
-previous numbers, which narrowed a few of the comparisons below.
+parallel rows run unpinned so the rayon workers can spread across cores.
 
 ## Baselines
 

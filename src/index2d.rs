@@ -1911,17 +1911,11 @@ impl TreeAccess for Index2D {
     }
     #[inline]
     fn tree_bounds(&self, pos: usize) -> Box2D {
-        // SAFETY: `pos` is always a valid node position from the tree's own
-        // traversal (node ranges bounded by `level_bounds`, child offsets stored
-        // in `indices`). An owned index is built in-process from trusted input,
-        // so `pos < entries.len()`; this matches the view's unchecked reads and
-        // restores the bounds-check-free iteration the shared kernels rely on.
-        unsafe { *self.entries.get_unchecked(pos) }
+        self.entries[pos]
     }
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
-        // SAFETY: see `tree_bounds`; `pos < indices.len()`.
-        unsafe { *self.indices.get_unchecked(pos) }
+        self.indices[pos]
     }
     #[inline]
     fn bounds_overlap(a: Box2D, b: Box2D) -> bool {

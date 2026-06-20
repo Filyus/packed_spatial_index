@@ -264,7 +264,7 @@ let simd_index = builder.finish_simd()?;       // SimdIndex2D
 box memory, with range results that may include extra near-boundary hits, and
 exact range/KNN available when you pass your source boxes back. On AVX-512 the
 SIMD `f32` *rounded* range query is also **faster** than the f64 `SimdIndex`
-(~1.3–1.5×: half the box bytes plus a wider SIMD batch), so it is a win on speed
+(~1.2–1.45×: half the box bytes plus a wider SIMD batch), so it is a win on speed
 and memory when the extra near-boundary hits are acceptable. Prefer the `f64`
 indexes when you need *exact* results with many hits (the `f32` `*_exact`
 refinement pass is slower on broad queries) and for the fastest exact KNN. Note

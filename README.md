@@ -250,11 +250,10 @@ use case, your numbers or any rough edges, and file an
 [issue](https://github.com/Filyus/packed_spatial_index/issues) for bugs.
 Real-world reports are what push it toward `1.0`.
 
-## AI usage note
+## Development
 
-AI assistance is part of my development process for this project. I guide the
-architecture, review generated output carefully, and take responsibility for the
-crate as published.
+AI assistance is part of building this project. The architecture is human-directed
+and the generated output is reviewed carefully before it ships.
 
 ## License
 

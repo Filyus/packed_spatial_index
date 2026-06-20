@@ -1,4 +1,4 @@
-# packed_spatial_index
+# Packed Spatial Index
 
 [![crates.io](https://img.shields.io/crates/v/packed_spatial_index.svg)](https://crates.io/crates/packed_spatial_index)
 [![docs.rs](https://docs.rs/packed_spatial_index/badge.svg)](https://docs.rs/packed_spatial_index)

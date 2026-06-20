@@ -581,3 +581,40 @@ fn convert_into_matches_convert() {
     convert_2d_into(data, ConvertOpts::default(), &mut buf).unwrap();
     assert_eq!(owned, buf);
 }
+
+#[test]
+fn convert_skip_null_drops_null_rows() {
+    // Row 1 is null; with skip_null the converter keeps the two real geometries.
+    let wkbs = vec![
+        Some(wkb_point_2d(0.0, 0.0)),
+        None,
+        Some(wkb_point_2d(10.0, 10.0)),
+    ];
+    let data = write_parquet(
+        vec![("geometry", binary_col(&wkbs))],
+        geo_meta_2d(false, false),
+    );
+
+    // Default policy still errors.
+    assert!(matches!(
+        convert_2d(data.clone(), ConvertOpts::default()),
+        Err(GeoError::NullGeometry { row: 1 })
+    ));
+
+    let opts = ConvertOpts {
+        skip_null: true,
+        ..Default::default()
+    };
+    let psindex = convert_2d(data, opts).unwrap();
+    let index = StreamIndex2D::open(SliceReader::new(psindex.as_slice())).unwrap();
+    // Two surviving rows; ids are 0 and 1 (compacted), payloads are the originals.
+    let hits = index
+        .search_payloads(Box2D::new(-1.0, -1.0, 11.0, 11.0))
+        .unwrap();
+    assert_eq!(hits.len(), 2);
+    let mut payloads: Vec<&Vec<u8>> = hits.iter().map(|(_, p)| p).collect();
+    payloads.sort();
+    let mut expected = vec![wkbs[0].as_ref().unwrap(), wkbs[2].as_ref().unwrap()];
+    expected.sort();
+    assert_eq!(payloads, expected);
+}

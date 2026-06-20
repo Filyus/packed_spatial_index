@@ -117,12 +117,12 @@ pub fn detect_dims<R: ChunkReader + 'static>(reader: R) -> Result<u8, GeoError> 
 /// Read every row's 2D bounding box, in file row order. Item `i` corresponds to
 /// GeoParquet row `i`.
 pub fn read_bboxes_2d<R: ChunkReader + 'static>(reader: R) -> Result<Vec<Box2D>, GeoError> {
-    Ok(scan_2d(reader, false)?.boxes)
+    Ok(scan_2d(reader, false, false)?.boxes)
 }
 
 /// Read every row's 3D bounding box, in file row order.
 pub fn read_bboxes_3d<R: ChunkReader + 'static>(reader: R) -> Result<Vec<Box3D>, GeoError> {
-    Ok(scan_3d(reader, false)?.boxes)
+    Ok(scan_3d(reader, false, false)?.boxes)
 }
 
 /// Result of a 2D scan: boxes (always) plus, when requested, the per-row WKB
@@ -142,6 +142,7 @@ pub(crate) struct Scan3D {
 pub(crate) fn scan_2d<R: ChunkReader + 'static>(
     reader: R,
     want_wkb: bool,
+    skip_null: bool,
 ) -> Result<Scan2D, GeoError> {
     let (info, total, batches) = open(reader)?;
     if info.is_3d {
@@ -167,36 +168,44 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
             .then(|| binary_column(&batch, &info.geometry_column))
             .transpose()?;
 
-        if let Some(cov) = &info.covering {
-            let geom = batch
-                .column_by_name(&info.geometry_column)
-                .ok_or(GeoError::NoGeometryColumn)?;
-            let xmin = f64_path(&batch, &cov.xmin)?;
-            let ymin = f64_path(&batch, &cov.ymin)?;
-            let xmax = f64_path(&batch, &cov.xmax)?;
-            let ymax = f64_path(&batch, &cov.ymax)?;
-            for i in 0..n {
-                if geom.is_null(i) {
-                    return Err(GeoError::NullGeometry { row: row_base + i });
-                }
-                boxes.push(Box2D::new(xmin[i], ymin[i], xmax[i], ymax[i]));
-            }
-        } else {
-            let geom = geom_bin.as_ref().expect("need_wkb when no covering");
-            for i in 0..n {
-                if geom.is_null(i) {
-                    return Err(GeoError::NullGeometry { row: row_base + i });
-                }
-                let b = wkb_bounds_2d(geom.value(i))
-                    .ok_or(GeoError::NullGeometry { row: row_base + i })?;
-                boxes.push(Box2D::new(b[0], b[1], b[2], b[3]));
-            }
-        }
+        // Covering boxes + the geometry column (for null detection), read once.
+        let cov = info
+            .covering
+            .as_ref()
+            .map(|cov| {
+                Ok::<_, GeoError>((
+                    batch
+                        .column_by_name(&info.geometry_column)
+                        .ok_or(GeoError::NoGeometryColumn)?,
+                    f64_path(&batch, &cov.xmin)?,
+                    f64_path(&batch, &cov.ymin)?,
+                    f64_path(&batch, &cov.xmax)?,
+                    f64_path(&batch, &cov.ymax)?,
+                ))
+            })
+            .transpose()?;
 
-        if let Some(w) = wkb.as_mut() {
-            let geom = geom_bin.as_ref().expect("want_wkb implies binary column");
-            for i in 0..n {
-                w.push(geom.value(i).to_vec());
+        for i in 0..n {
+            let bx = if let Some((geom, xmin, ymin, xmax, ymax)) = &cov {
+                (!geom.is_null(i)).then(|| Box2D::new(xmin[i], ymin[i], xmax[i], ymax[i]))
+            } else {
+                let geom = geom_bin.as_ref().expect("need_wkb when no covering");
+                if geom.is_null(i) {
+                    None
+                } else {
+                    wkb_bounds_2d(geom.value(i)).map(|b| Box2D::new(b[0], b[1], b[2], b[3]))
+                }
+            };
+            match bx {
+                Some(b) => {
+                    boxes.push(b);
+                    if let Some(w) = wkb.as_mut() {
+                        let geom = geom_bin.as_ref().expect("want_wkb implies binary column");
+                        w.push(geom.value(i).to_vec());
+                    }
+                }
+                None if skip_null => continue,
+                None => return Err(GeoError::NullGeometry { row: row_base + i }),
             }
         }
         row_base += n;
@@ -212,6 +221,7 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
 pub(crate) fn scan_3d<R: ChunkReader + 'static>(
     reader: R,
     want_wkb: bool,
+    skip_null: bool,
 ) -> Result<Scan3D, GeoError> {
     let (info, total, batches) = open(reader)?;
     if !info.is_3d {
@@ -239,40 +249,45 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
             .then(|| binary_column(&batch, &info.geometry_column))
             .transpose()?;
 
-        if let Some(cov) = cov_3d {
-            let geom = batch
-                .column_by_name(&info.geometry_column)
-                .ok_or(GeoError::NoGeometryColumn)?;
-            let xmin = f64_path(&batch, &cov.xmin)?;
-            let ymin = f64_path(&batch, &cov.ymin)?;
-            let zmin = f64_path(&batch, cov.zmin.as_ref().unwrap())?;
-            let xmax = f64_path(&batch, &cov.xmax)?;
-            let ymax = f64_path(&batch, &cov.ymax)?;
-            let zmax = f64_path(&batch, cov.zmax.as_ref().unwrap())?;
-            for i in 0..n {
-                if geom.is_null(i) {
-                    return Err(GeoError::NullGeometry { row: row_base + i });
-                }
-                boxes.push(Box3D::new(
-                    xmin[i], ymin[i], zmin[i], xmax[i], ymax[i], zmax[i],
-                ));
-            }
-        } else {
-            let geom = geom_bin.as_ref().expect("need_wkb when no 3D covering");
-            for i in 0..n {
-                if geom.is_null(i) {
-                    return Err(GeoError::NullGeometry { row: row_base + i });
-                }
-                let b = wkb_bounds_3d(geom.value(i))
-                    .ok_or(GeoError::NullGeometry { row: row_base + i })?;
-                boxes.push(Box3D::new(b[0], b[1], b[2], b[3], b[4], b[5]));
-            }
-        }
+        let cov = cov_3d
+            .map(|cov| {
+                Ok::<_, GeoError>((
+                    batch
+                        .column_by_name(&info.geometry_column)
+                        .ok_or(GeoError::NoGeometryColumn)?,
+                    f64_path(&batch, &cov.xmin)?,
+                    f64_path(&batch, &cov.ymin)?,
+                    f64_path(&batch, cov.zmin.as_ref().unwrap())?,
+                    f64_path(&batch, &cov.xmax)?,
+                    f64_path(&batch, &cov.ymax)?,
+                    f64_path(&batch, cov.zmax.as_ref().unwrap())?,
+                ))
+            })
+            .transpose()?;
 
-        if let Some(w) = wkb.as_mut() {
-            let geom = geom_bin.as_ref().expect("want_wkb implies binary column");
-            for i in 0..n {
-                w.push(geom.value(i).to_vec());
+        for i in 0..n {
+            let bx = if let Some((geom, xmin, ymin, zmin, xmax, ymax, zmax)) = &cov {
+                (!geom.is_null(i))
+                    .then(|| Box3D::new(xmin[i], ymin[i], zmin[i], xmax[i], ymax[i], zmax[i]))
+            } else {
+                let geom = geom_bin.as_ref().expect("need_wkb when no 3D covering");
+                if geom.is_null(i) {
+                    None
+                } else {
+                    wkb_bounds_3d(geom.value(i))
+                        .map(|b| Box3D::new(b[0], b[1], b[2], b[3], b[4], b[5]))
+                }
+            };
+            match bx {
+                Some(b) => {
+                    boxes.push(b);
+                    if let Some(w) = wkb.as_mut() {
+                        let geom = geom_bin.as_ref().expect("want_wkb implies binary column");
+                        w.push(geom.value(i).to_vec());
+                    }
+                }
+                None if skip_null => continue,
+                None => return Err(GeoError::NullGeometry { row: row_base + i }),
             }
         }
         row_base += n;

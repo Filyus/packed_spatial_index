@@ -47,6 +47,12 @@ pub struct ConvertOpts {
     /// conservative superset (box bounds are rounded outward); re-check exact hits
     /// against the payload geometry if you need precision.
     pub compact_f32: bool,
+    /// Drop rows whose geometry is null or empty instead of erroring. The output
+    /// index covers the surviving rows; item ids are positions in the output, not
+    /// original file row indices (the converter output is self-contained, so this
+    /// is safe — unlike the accelerator, which keeps `id == row` and always
+    /// errors on null).
+    pub skip_null: bool,
 }
 
 impl Default for ConvertOpts {
@@ -55,6 +61,7 @@ impl Default for ConvertOpts {
             build: BuildOpts::default(),
             include_payload: true,
             compact_f32: false,
+            skip_null: false,
         }
     }
 }

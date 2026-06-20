@@ -68,8 +68,9 @@ become a conservative superset; re-check exact hits against the payload geometry
   payload request) returns `GeoError::UnsupportedEncoding`.
 * Geometry columns may be `Binary`, `LargeBinary`, or `BinaryView`.
 * 2D and 3D (`XYZ` / `XYZM`).
-* Every row must have non-null geometry: item id equals the file row index, which
-  leaves no room to skip rows. A null or empty geometry returns
-  `GeoError::NullGeometry`. Filter such rows before indexing.
+* Null / empty geometry: the accelerator keeps `id == row index`, so it has no
+  room to skip rows and returns `GeoError::NullGeometry`. The converter can drop
+  such rows with `ConvertOpts { skip_null: true, .. }` (its output is
+  self-contained, so compacted ids are fine).
 
 Licensed under Apache-2.0.

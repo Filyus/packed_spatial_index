@@ -13,7 +13,7 @@
 
 use std::hint::black_box;
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group};
 use packed_spatial_index::benchmark_support as hilbert;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -68,4 +68,13 @@ fn bench_hilbert(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_hilbert);
-criterion_main!(benches);
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

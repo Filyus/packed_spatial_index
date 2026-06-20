@@ -183,8 +183,8 @@ Measured and deliberately skipped:
 | AVX2 | 4-wide `_mm256_cmp_pd` | left-pack (`VPERMD` + LUT) | ~1.3–1.65× over SSE2 |
 | SSE2 (`wide`) | `f64x4` (2×128-bit) | scalar bit-loop | the floor |
 
-Numbers are from a Zen 5 (Ryzen AI 7 350), f64 2D, 100k–1M boxes; they depend on
-hardware and workload. Reproduce with the harnesses described in
+Numbers are from a recent AVX-512-capable x86-64 machine, f64 2D, 100k–1M boxes;
+they depend on hardware and workload. Reproduce with the harnesses described in
 [performance.md](../performance.md). Correctness for every tier is in
 `tests/avx2.rs`.
 

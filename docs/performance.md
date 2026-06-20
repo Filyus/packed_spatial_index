@@ -348,3 +348,15 @@ cargo bench --bench coord_precision --no-default-features --features f32-storage
 cargo bench --bench raycast3d_bench --features simd
 cargo bench --bench raytriangle3d_bench --features simd
 ```
+
+For low-noise numbers, set `BENCH_PIN_CORE=<n>` to pin the measuring thread to one
+logical core — a fast performance core (on a hybrid CPU, avoid the efficiency
+cores; check your CPU's topology for which logical IDs are performance cores). It
+is read at startup and is a no-op when unset:
+
+```bash
+BENCH_PIN_CORE=8 cargo bench --bench index2d_bench --features parallel,simd,bench-internals
+```
+
+On Linux the self-pin is a no-op; pin from the OS instead, e.g.
+`taskset -c 8 cargo bench …`.

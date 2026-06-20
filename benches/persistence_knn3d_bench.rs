@@ -6,7 +6,7 @@
 use std::hint::black_box;
 use std::ops::ControlFlow;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use packed_spatial_index::benchmark_support::SortKey3DStrategy;
 use packed_spatial_index::{
     Box3D, Index3D, Index3DBuilder, Index3DView, NeighborWorkspace, Point3D, SearchWorkspace,
@@ -323,4 +323,13 @@ fn bench_knn(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_persistence, bench_loaded_query, bench_knn);
-criterion_main!(benches);
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

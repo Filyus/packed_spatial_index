@@ -8,7 +8,7 @@ use std::hint::black_box;
 #[cfg(feature = "simd")]
 use std::ops::ControlFlow;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use packed_spatial_index::benchmark_support::{self, SortKey2DStrategy, SortKey3DStrategy};
 use packed_spatial_index::{
     Box2D, Box3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
@@ -1034,4 +1034,13 @@ criterion_group!(
     bench_loaded_view,
     bench_knn
 );
-criterion_main!(benches);
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

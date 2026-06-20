@@ -6,7 +6,7 @@
 use std::hint::black_box;
 use std::io::Cursor;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use flatgeobuf::packed_r_tree::{NodeItem, PackedRTree, calc_extent, hilbert_sort};
 use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2D, Index2DBuilder, Index2DView};
@@ -234,4 +234,13 @@ fn bench_persistence(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_build, bench_search, bench_persistence);
-criterion_main!(benches);
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

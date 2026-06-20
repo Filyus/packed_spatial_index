@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use packed_spatial_index::{
     Box2D, Index2DBuilder, NeighborWorkspace, Point2D, SimdIndex2D, SimdIndex2DF32,
 };
@@ -223,4 +223,13 @@ fn bench_neighbors(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_search, bench_neighbors);
-criterion_main!(benches);
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

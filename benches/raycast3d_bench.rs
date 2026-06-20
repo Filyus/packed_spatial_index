@@ -18,7 +18,7 @@ use std::time::Instant;
 use bvh::aabb::{Aabb, Bounded, IntersectsAabb};
 use bvh::bounding_hierarchy::BHShape;
 use bvh::bvh::{Bvh, BvhNode};
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group};
 use nalgebra::Point3;
 use packed_spatial_index::{
     Box3D, Index3D, Index3DBuilder, NeighborWorkspace, Point3D, Ray3D, SearchWorkspace, SimdIndex3D,
@@ -370,4 +370,13 @@ fn raycast_benches(c: &mut Criterion) {
 }
 
 criterion_group!(benches, raycast_benches);
-criterion_main!(benches);
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

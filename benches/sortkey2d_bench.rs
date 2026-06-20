@@ -6,7 +6,7 @@
 
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use packed_spatial_index::benchmark_support::{self, SortKey2DStrategy, radix_sort_pairs};
 use packed_spatial_index::{Box2D, Index2DBuilder};
 use rand::rngs::StdRng;
@@ -159,4 +159,13 @@ fn bench_build(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_encode, bench_encode_sort, bench_build);
-criterion_main!(benches);
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

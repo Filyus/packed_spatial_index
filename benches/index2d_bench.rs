@@ -9,7 +9,7 @@
 
 use std::{hint::black_box, ops::ControlFlow};
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group};
 use packed_spatial_index::benchmark_support::SortKey2DStrategy;
 use packed_spatial_index::{Box2D, Index2D, Index2DBuilder};
 use rand::rngs::StdRng;
@@ -489,4 +489,13 @@ fn bench_query_windows(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_build, bench_query, bench_query_windows);
-criterion_main!(benches);
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

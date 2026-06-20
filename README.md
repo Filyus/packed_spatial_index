@@ -62,6 +62,10 @@ compact in-memory (or mmap'd) index with reusable buffers for high query
 throughput. It is **not** a dynamic R-tree — there are no insert/delete
 operations after `finish()`.
 
+It also serializes to a single file you can put on object storage and range-query
+from the edge or a browser, with no backend. For where this fits (and where a
+spatial database fits better), see [When to use it](docs/when-to-use.md).
+
 ## Performance
 
 Built for throughput on static geometry: fast builds, SIMD range / kNN / raycast

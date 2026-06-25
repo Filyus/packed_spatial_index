@@ -229,16 +229,11 @@ impl Index3DBuilder {
     fn build(self) -> Result<Index3D, BuildError> {
         let node_size = self.node_size;
         let num_items = self.num_items;
-        let TreeLayout {
-            level_bounds,
-            num_nodes,
-        } = try_compute_tree_layout(num_items, node_size)?;
-
         if num_items == 0 {
             return Ok(Index3D {
                 node_size,
                 num_items,
-                level_bounds,
+                level_bounds: vec![0],
                 entries: Vec::new(),
                 indices: Vec::new(),
             });
@@ -248,10 +243,15 @@ impl Index3DBuilder {
             return Ok(build_single_node_index_3d(
                 node_size,
                 num_items,
-                level_bounds,
+                vec![num_items, num_items + 1],
                 self.items,
             ));
         }
+
+        let TreeLayout {
+            level_bounds,
+            num_nodes,
+        } = try_compute_tree_layout(num_items, node_size)?;
 
         let mut entries = vec![Box3D::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0); num_nodes];
         let mut indices = vec![0usize; num_nodes];

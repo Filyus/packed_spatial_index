@@ -1,6 +1,9 @@
 use crate::{geometry::Box2D, hilbert2d as hilbert};
 
 pub(crate) const DEFAULT_RADIX_BITS: u32 = 8;
+// Measured crossover: below this, comparison sort beats radix's scratch
+// allocation and multi-pass fixed cost for full 2D builds.
+const RADIX_SORT_MIN_ITEMS: usize = 385;
 const MIN_RADIX_BITS: u32 = 1;
 const MAX_RADIX_BITS: u32 = 16;
 
@@ -64,7 +67,7 @@ where
     for (i, item) in items.iter().enumerate() {
         order.push(encode(i, item));
     }
-    if radix {
+    if radix && items.len() >= RADIX_SORT_MIN_ITEMS {
         radix_sort_u32(&mut order, radix_bits);
     } else {
         order.sort_unstable_by_key(|&(h, _)| h);

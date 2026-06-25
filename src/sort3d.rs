@@ -1,6 +1,9 @@
 use crate::geometry::Box3D;
 
 const DEFAULT_RADIX_BITS_3D: u32 = 8;
+// Measured crossover: 3D's u64 radix path has enough fixed scratch and
+// multi-pass cost that comparison sort wins for small builds.
+const RADIX_SORT_MIN_ITEMS_3D: usize = 513;
 const MIN_RADIX_BITS: u32 = 1;
 const MAX_RADIX_BITS: u32 = 16;
 
@@ -155,7 +158,7 @@ where
     for (i, item) in items.iter().enumerate() {
         order.push(encode(i, item));
     }
-    if radix {
+    if radix && items.len() >= RADIX_SORT_MIN_ITEMS_3D {
         radix_sort_pairs_u64_with_used_bits(&mut order, radix_bits, key_bits);
     } else {
         order.sort_unstable_by_key(|&(key, _)| key);

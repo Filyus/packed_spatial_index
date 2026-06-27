@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.5.1...psi-geo-v0.6.0) - 2026-06-28
+
 ### Added
 - Added a geo artifact reader API (`open_geo_index`, `GeoArtifactIndex`,
   `GeoHit`, `GeoPayload`) for querying converted `PSINDEX` files through the

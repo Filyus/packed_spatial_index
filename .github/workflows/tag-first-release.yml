@@ -1,31 +1,40 @@
-name: "First geo release only: create tag"
-run-name: "first-geo-release: create tag ${{ inputs.version }}"
+name: "First release only: create tag"
+run-name: "first-release: tag ${{ inputs.crate }} ${{ inputs.version }}"
 
-# Use this once, after the first 0.1.0 is published to crates.io by hand, to
-# create the `geo-v<version>` tag (which the geo-release workflow turns into a
-# GitHub release). Later releases create their own tag via geo-publish.
+# For a brand-new crate the first publish is done locally with a short-lived
+# token (Trusted Publishing cannot publish a crate that does not exist yet). This
+# one-off workflow then creates the crate's release tag after confirming the
+# version is already on crates.io. The tag triggers the GitHub release.
+# Subsequent releases are tagged by publish.yml.
 on:
   workflow_dispatch:
     inputs:
+      crate:
+        description: Crate to tag
+        required: true
+        type: choice
+        options:
+          - packed_spatial_index
+          - packed_spatial_index_geo
       version:
-        description: geo/Cargo.toml version to tag
+        description: Cargo.toml version to tag
         required: true
         type: string
       confirm:
-        description: Type 'tag packed_spatial_index_geo' to create the tag
+        description: Type 'tag <crate>' to confirm
         required: true
         type: string
 
 concurrency:
-  group: release-tag-geo
+  group: release-tag
   cancel-in-progress: false
 
 permissions:
   contents: write
 
 env:
-  CRATE_NAME: packed_spatial_index_geo
-  MANIFEST: geo/Cargo.toml
+  CRATE_NAME: ${{ inputs.crate }}
+  REQUESTED_VERSION: ${{ inputs.version }}
 
 jobs:
   tag:
@@ -38,8 +47,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Resolve crate metadata
+        id: meta
+        run: |
+          case "$CRATE_NAME" in
+            packed_spatial_index)
+              manifest="Cargo.toml"
+              tag_prefix="psi"
+              ;;
+            packed_spatial_index_geo)
+              manifest="geo/Cargo.toml"
+              tag_prefix="psi-geo"
+              ;;
+            *)
+              echo "Unknown crate: $CRATE_NAME"
+              exit 1
+              ;;
+          esac
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+          echo "tag_prefix=$tag_prefix" >> "$GITHUB_OUTPUT"
 
       - name: Check release branch
         run: |
@@ -50,9 +76,9 @@ jobs:
 
       - name: Check requested version
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
         run: |
-          actual_version="$(cargo metadata --no-deps --format-version 1 --manifest-path "$MANIFEST" | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          actual_version="$(python3 -c "import tomllib; print(tomllib.load(open('$MANIFEST', 'rb'))['package']['version'])")"
           if [ "$actual_version" != "$REQUESTED_VERSION" ]; then
             echo "$MANIFEST version is '$actual_version', requested '$REQUESTED_VERSION'."
             exit 1
@@ -69,8 +95,6 @@ jobs:
           fi
 
       - name: Check version is published
-        env:
-          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           status="$(curl --user-agent "$CRATE_NAME-release-tag-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CRATE_NAME/$REQUESTED_VERSION")"
           if [ "$status" != "200" ]; then
@@ -80,9 +104,9 @@ jobs:
 
       - name: Check release tag is absent
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          TAG_PREFIX: ${{ steps.meta.outputs.tag_prefix }}
         run: |
-          tag="geo-v$REQUESTED_VERSION"
+          tag="$TAG_PREFIX-v$REQUESTED_VERSION"
           tag_status=0
           git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
           if [ "$tag_status" = "0" ]; then
@@ -96,9 +120,9 @@ jobs:
 
       - name: Create release tag
         env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+          TAG_PREFIX: ${{ steps.meta.outputs.tag_prefix }}
         run: |
-          tag="geo-v$REQUESTED_VERSION"
+          tag="$TAG_PREFIX-v$REQUESTED_VERSION"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "$CRATE_NAME $REQUESTED_VERSION"

@@ -1,11 +1,20 @@
 name: "Release: publish crate"
-run-name: "release: publish crate"
+run-name: "release: publish ${{ inputs.crate }}"
 
-# Triggered manually after the release commit lands on `main` and CI passes.
-# crates.io Trusted Publishing rejects the `workflow_run` event, so the publish
-# cannot run automatically after CI; `workflow_dispatch` is the supported path.
+# Triggered manually after a `release: prepare <crate> v<version>` commit lands
+# on `main` and CI passes. crates.io Trusted Publishing rejects the
+# `workflow_run` event, so the publish cannot run automatically after CI;
+# `workflow_dispatch` is the supported path.
 on:
   workflow_dispatch:
+    inputs:
+      crate:
+        description: Crate to publish
+        required: true
+        type: choice
+        options:
+          - packed_spatial_index
+          - packed_spatial_index_geo
 
 concurrency:
   group: crates-io-publish
@@ -16,7 +25,7 @@ permissions:
   actions: read
 
 env:
-  CRATE_NAME: packed_spatial_index
+  CRATE_NAME: ${{ inputs.crate }}
 
 jobs:
   preflight:
@@ -24,8 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_publish: ${{ steps.release.outputs.should_publish }}
-      version: ${{ steps.release.outputs.version }}
+      version: ${{ steps.meta.outputs.version }}
       release_sha: ${{ steps.resolve.outputs.release_sha }}
+      manifest: ${{ steps.meta.outputs.manifest }}
+      changelog: ${{ steps.meta.outputs.changelog }}
+      tag_prefix: ${{ steps.meta.outputs.tag_prefix }}
 
     steps:
       - name: Resolve release SHA
@@ -51,20 +63,48 @@ jobs:
           ref: ${{ steps.resolve.outputs.release_sha }}
           fetch-depth: 0
 
+      - name: Resolve crate metadata
+        id: meta
+        run: |
+          case "$CRATE_NAME" in
+            packed_spatial_index)
+              manifest="Cargo.toml"
+              changelog="CHANGELOG.md"
+              tag_prefix="psi"
+              ;;
+            packed_spatial_index_geo)
+              manifest="geo/Cargo.toml"
+              changelog="geo/CHANGELOG.md"
+              tag_prefix="psi-geo"
+              ;;
+            *)
+              echo "Unknown crate: $CRATE_NAME"
+              exit 1
+              ;;
+          esac
+
+          version="$(python3 -c "import tomllib; print(tomllib.load(open('$manifest', 'rb'))['package']['version'])")"
+
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+          echo "changelog=$changelog" >> "$GITHUB_OUTPUT"
+          echo "tag_prefix=$tag_prefix" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release crate: $CRATE_NAME $version ($tag_prefix-v$version)"
+
       - name: Ignore non-release commits
         id: release
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
           subject="$(git log -1 --pretty=%s)"
-          expected="release: prepare $CRATE_NAME v$version"
+          expected="release: prepare $CRATE_NAME v$VERSION"
 
-          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Commit subject: $subject"
           echo "Expected release subject: $expected"
 
           if [ "$subject" != "$expected" ]; then
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
-            echo "Not a release commit; nothing to publish."
+            echo "Not a release commit for $CRATE_NAME; nothing to publish."
             exit 0
           fi
 
@@ -106,16 +146,60 @@ jobs:
       - name: Check changelog section exists
         if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
-          VERSION: ${{ steps.release.outputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          CHANGELOG: ${{ steps.meta.outputs.changelog }}
         run: |
-          if ! grep -Fq "## [$VERSION]" CHANGELOG.md; then
-            echo "No changelog section found for $VERSION in CHANGELOG.md."
+          if ! grep -Fq "## [$VERSION]" "$CHANGELOG"; then
+            echo "No changelog section found for $VERSION in $CHANGELOG."
             exit 1
           fi
 
+      - name: Check internal dependencies are published
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
+        run: |
+          set -euo pipefail
+
+          deps="$(python3 -c "
+          import tomllib
+          m = tomllib.load(open('$MANIFEST', 'rb'))
+          internal = {'packed_spatial_index'}
+          for name, spec in m.get('dependencies', {}).items():
+              if name in internal and isinstance(spec, dict) and 'version' in spec:
+                  print(name, spec['version'])
+          ")"
+
+          if [ -z "$deps" ]; then
+            echo "$CRATE_NAME has no internal crate dependencies to verify."
+          fi
+
+          while read -r name ver; do
+            if [ -z "$name" ]; then
+              continue
+            fi
+            status="$(curl --user-agent "$CRATE_NAME-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$name/$ver")"
+            if [ "$status" != "200" ]; then
+              echo "Dependency $name $ver (pinned by $CRATE_NAME) is not published on crates.io (status $status)."
+              exit 1
+            fi
+            echo "Dependency $name $ver is published."
+          done < <(printf '%s\n' "$deps")
+
       - name: Check semver compatibility
         if: ${{ steps.release.outputs.should_publish == 'true' }}
-        run: cargo semver-checks
+        env:
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
+        run: |
+          status="$(curl --user-agent "$CRATE_NAME-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CRATE_NAME")"
+          if [ "$status" = "200" ]; then
+            cargo semver-checks --manifest-path "$MANIFEST"
+          elif [ "$status" = "404" ]; then
+            echo "$CRATE_NAME is not published yet; skipping semver-checks for first release."
+          else
+            echo "Unexpected crates.io status while checking $CRATE_NAME: $status"
+            exit 1
+          fi
 
       - name: Install nightly Rust for docs.rs check
         if: ${{ steps.release.outputs.should_publish == 'true' }}
@@ -124,13 +208,14 @@ jobs:
       - name: Verify docs.rs build
         if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
           RUSTDOCFLAGS: --cfg docsrs -D warnings
-        run: cargo +nightly doc --no-deps --all-features
+        run: cargo +nightly doc --manifest-path "$MANIFEST" --no-deps --all-features
 
       - name: Check version is unpublished
         if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
-          VERSION: ${{ steps.release.outputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           status="$(curl --user-agent "$CRATE_NAME-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CRATE_NAME/$VERSION")"
           if [ "$status" = "200" ]; then
@@ -145,9 +230,10 @@ jobs:
       - name: Check release tag is absent
         if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
-          VERSION: ${{ steps.release.outputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG_PREFIX: ${{ steps.meta.outputs.tag_prefix }}
         run: |
-          tag="v$VERSION"
+          tag="$TAG_PREFIX-v$VERSION"
           tag_status=0
           git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
           if [ "$tag_status" = "0" ]; then
@@ -161,7 +247,9 @@ jobs:
 
       - name: Publish dry run
         if: ${{ steps.release.outputs.should_publish == 'true' }}
-        run: cargo publish --dry-run
+        env:
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
+        run: cargo publish --dry-run --manifest-path "$MANIFEST"
 
   publish:
     name: publish
@@ -172,6 +260,12 @@ jobs:
     permissions:
       contents: write
       id-token: write
+
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      MANIFEST: ${{ needs.preflight.outputs.manifest }}
+      CHANGELOG: ${{ needs.preflight.outputs.changelog }}
+      TAG_PREFIX: ${{ needs.preflight.outputs.tag_prefix }}
 
     steps:
       - name: Checkout release commit
@@ -184,10 +278,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Check release commit still matches Cargo.toml
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          actual_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          actual_version="$(python3 -c "import tomllib; print(tomllib.load(open('$MANIFEST', 'rb'))['package']['version'])")"
           subject="$(git log -1 --pretty=%s)"
           expected="release: prepare $CRATE_NAME v$actual_version"
 
@@ -204,8 +296,6 @@ jobs:
           fi
 
       - name: Check version is unpublished
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           status="$(curl --user-agent "$CRATE_NAME-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CRATE_NAME/$VERSION")"
           if [ "$status" = "200" ]; then
@@ -218,10 +308,8 @@ jobs:
           fi
 
       - name: Check release tag is absent
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          tag="v$VERSION"
+          tag="$TAG_PREFIX-v$VERSION"
           tag_status=0
           git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
           if [ "$tag_status" = "0" ]; then
@@ -238,49 +326,41 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Publish
-        run: cargo publish
+        run: cargo publish --manifest-path "$MANIFEST"
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
       - name: Create release tag
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          tag="v$VERSION"
+          tag="$TAG_PREFIX-v$VERSION"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "$CRATE_NAME $VERSION"
           git push origin "refs/tags/$tag"
 
       - name: Extract changelog section
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          # Print the body between this version's heading and the next `## [`
-          # heading. Match with index() rather than a regex to stay portable
-          # across awk variants and avoid bracket-escaping pitfalls.
           awk -v head="## [$VERSION]" '
             index($0, head) == 1 { flag = 1; next }
             flag && index($0, "## [") == 1 { exit }
             flag { print }
-          ' CHANGELOG.md > release-notes.md
+          ' "$CHANGELOG" > release-notes.md
 
           if [ ! -s release-notes.md ]; then
-            echo "No changelog section found for $VERSION in CHANGELOG.md."
+            echo "No changelog section found for $VERSION in $CHANGELOG."
             exit 1
           fi
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          tag="v$VERSION"
+          tag="$TAG_PREFIX-v$VERSION"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists; nothing to do."
             exit 0
           fi
           gh release create "$tag" \
-            --title "$tag" \
+            --title "$CRATE_NAME $VERSION" \
             --notes-file release-notes.md \
             --verify-tag

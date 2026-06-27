@@ -4,14 +4,14 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
-## [0.18.1](https://github.com/Filyus/packed_spatial_index/compare/v0.18.0...v0.18.1) - 2026-06-20
+## [0.18.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.18.0...psi-v0.18.1) - 2026-06-20
 
 ### Raycast
 - All-hits raycast on the scalar `Index2D` / `Index3D` is ~5–12% faster on heavy
   traversal: it prefetches the next tree node while the current one is hit-tested
   (a free cache hint, neutral when little is visited). No API change.
 
-## [0.18.0](https://github.com/Filyus/packed_spatial_index/compare/v0.17.0...v0.18.0) - 2026-06-20
+## [0.18.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.17.0...psi-v0.18.0) - 2026-06-20
 
 ### Geometry
 - **BREAKING:** `Frustum3D::from_view_projection` now takes a second argument, the
@@ -30,7 +30,7 @@ All notable changes to this crate are documented here.
   kNN collect kernel everywhere. No API change. The technique is written up in
   [docs/knn.md](docs/internals/knn.md).
 
-## [0.17.0](https://github.com/Filyus/packed_spatial_index/compare/v0.16.0...v0.17.0) - 2026-06-19
+## [0.17.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.16.0...psi-v0.17.0) - 2026-06-19
 
 ### Nearest Neighbors
 - **Custom-metric nearest-neighbor queries.** `neighbors_metric` /
@@ -42,7 +42,7 @@ All notable changes to this crate are documented here.
   earth_radius)` helper and an `EARTH_RADIUS_M` constant are provided for the
   geographic case. The default squared-Euclidean `neighbors` path is unchanged.
 
-## [0.16.0](https://github.com/Filyus/packed_spatial_index/compare/v0.15.0...v0.16.0) - 2026-06-19
+## [0.16.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.15.0...psi-v0.16.0) - 2026-06-19
 
 ### SIMD
 - Add a runtime **AVX2 tier** to the SIMD search / visit / all-hits raycast
@@ -58,7 +58,7 @@ All notable changes to this crate are documented here.
   scalar loop (it was the one collection path still left scalar): a dense 1M-box
   ray drops ~29.5 µs to ~17.1 µs (~1.73×).
 
-## [0.15.0](https://github.com/Filyus/packed_spatial_index/compare/v0.14.0...v0.15.0) - 2026-06-19
+## [0.15.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.14.0...psi-v0.15.0) - 2026-06-19
 
 ### SIMD
 - Collect AVX-512 range-search results with a masked compress-store
@@ -82,7 +82,7 @@ All notable changes to this crate are documented here.
   measured scan / scalar-index / SIMD-index crossovers to the guide (a linear
   scan wins below ~100–130 boxes; an index amortizes after ~50–120 queries).
 
-## [0.14.0](https://github.com/Filyus/packed_spatial_index/compare/v0.13.0...v0.14.0) - 2026-06-19
+## [0.14.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.13.0...psi-v0.14.0) - 2026-06-19
 
 ### 2D
 - Add the 2D region queries to the zero-copy `Index2DView`: `search_triangle` /
@@ -94,7 +94,7 @@ All notable changes to this crate are documented here.
 - Add `search_frustum` (plus `_into` / `any_frustum` / `visit_frustum`) to the
   zero-copy `Index3DView`, for frustum culling directly over serialized bytes.
 
-## [0.13.0](https://github.com/Filyus/packed_spatial_index/compare/v0.12.0...v0.13.0) - 2026-06-18
+## [0.13.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.12.0...psi-v0.13.0) - 2026-06-18
 
 ### 2D
 - Add 2D convex-polygon region queries to `Index2D`: `search_polygon` /
@@ -113,7 +113,7 @@ All notable changes to this crate are documented here.
   touch faster. The predicates are public on `ConvexPolygon2D`: `overlaps_box`
   and `contains_box`.
 
-## [0.12.0](https://github.com/Filyus/packed_spatial_index/compare/v0.11.0...v0.12.0) - 2026-06-18
+## [0.12.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.11.0...psi-v0.12.0) - 2026-06-18
 
 ### 3D
 - Add 3D frustum culling queries to `Index3D`: `search_frustum` /
@@ -128,7 +128,7 @@ All notable changes to this crate are documented here.
   inside the frustum are accepted whole. The predicates are public on `Frustum3D`:
   `overlaps_box` and `contains_box`.
 
-## [0.11.0](https://github.com/Filyus/packed_spatial_index/compare/v0.10.0...v0.11.0) - 2026-06-18
+## [0.11.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.10.0...psi-v0.11.0) - 2026-06-18
 
 ### 2D
 - Add 2D triangle region queries to `Index2D`: `search_triangle` /
@@ -146,7 +146,7 @@ All notable changes to this crate are documented here.
 - Move the API coverage matrix into the guide (`docs/guide.md`), where the full
   width renders, and leave a pointer from the README.
 
-## [0.10.0](https://github.com/Filyus/packed_spatial_index/compare/v0.9.0...v0.10.0) - 2026-06-18
+## [0.10.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.9.0...psi-v0.10.0) - 2026-06-18
 
 ### Nearest Neighbors
 - Add point nearest-neighbor queries to the scalar `Index2DF32` / `Index3DF32`:
@@ -172,7 +172,7 @@ All notable changes to this crate are documented here.
   or fold with `visit`, and for a few boxes a scalar index or a plain linear scan
   can beat the SIMD one.
 
-## [0.9.0](https://github.com/Filyus/packed_spatial_index/compare/v0.8.0...v0.9.0) - 2026-06-17
+## [0.9.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.8.0...psi-v0.9.0) - 2026-06-17
 
 ### Persistence
 - Add `StreamDirectory` and `into_directory` / `from_directory`
@@ -190,7 +190,7 @@ All notable changes to this crate are documented here.
   copy. **Breaking:** `StreamLimits` gained a field, so a struct literal that set
   every field without `..StreamLimits::default()` now needs it.
 
-## [0.8.0](https://github.com/Filyus/packed_spatial_index/compare/v0.7.0...v0.8.0) - 2026-06-16
+## [0.8.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.7.0...psi-v0.8.0) - 2026-06-16
 
 ### Geometry
 - Add triangle primitives: `Triangle2D` / `Triangle3D` (f64) and
@@ -232,7 +232,7 @@ All notable changes to this crate are documented here.
   scalar f32 `search` / `search_exact` are faster. `SimdIndex*F32::search`
   returns slightly fewer near-boundary false positives than 0.7.0.
 
-## [0.7.0](https://github.com/Filyus/packed_spatial_index/compare/v0.6.0...v0.7.0) - 2026-06-14
+## [0.7.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.6.0...psi-v0.7.0) - 2026-06-14
 
 ### API
 - Add a `serialize()` builder (`Serializer2D` / `Serializer3D`) that replaces the
@@ -263,7 +263,7 @@ All notable changes to this crate are documented here.
   a spatial query reads them in coalesced runs, and they are served by both the
   zero-copy views and the streaming reader, in 2D and 3D.
 
-## [0.6.0](https://github.com/Filyus/packed_spatial_index/compare/v0.5.1...v0.6.0) - 2026-06-14
+## [0.6.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.5.1...psi-v0.6.0) - 2026-06-14
 
 ### Search
 - Add `search_iter`, a lazy iterator over the items intersecting a query box, on
@@ -273,7 +273,7 @@ All notable changes to this crate are documented here.
   bail out partway, where `search` (a whole owned `Vec`) and `visit` (a
   push-based callback) are awkward.
 
-## [0.5.1](https://github.com/Filyus/packed_spatial_index/compare/v0.5.0...v0.5.1) - 2026-06-13
+## [0.5.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.5.0...psi-v0.5.1) - 2026-06-13
 
 ### Documentation
 - Restructure the README into a concise reference and move the long-form guide,
@@ -282,7 +282,7 @@ All notable changes to this crate are documented here.
   large or on-disk indexes via memory mapping, and add a clickable queries
   overview to the crate landing page.
 
-## [0.5.0](https://github.com/Filyus/packed_spatial_index/compare/v0.4.3...v0.5.0) - 2026-06-13
+## [0.5.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.4.3...psi-v0.5.0) - 2026-06-13
 
 ### 2D
 - Reject 2D builds with more than `u32::MAX` items (returns
@@ -317,7 +317,7 @@ All notable changes to this crate are documented here.
 - Prefetch the next stacked node in the default scalar range search (`Index2D`
   and `Index3D`), a consistent ~3-5% range-query speedup.
 
-## [0.4.3](https://github.com/Filyus/packed_spatial_index/compare/v0.4.2...v0.4.3) - 2026-06-09
+## [0.4.3](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.4.2...psi-v0.4.3) - 2026-06-09
 
 ### Performance
 - Speed up covered range queries by collecting fully contained subtrees directly
@@ -331,7 +331,7 @@ All notable changes to this crate are documented here.
 ### Documentation
 - Add large-window range search benchmark results to the README.
 
-## [0.4.2](https://github.com/Filyus/packed_spatial_index/compare/v0.4.1...v0.4.2) - 2026-06-08
+## [0.4.2](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.4.1...psi-v0.4.2) - 2026-06-08
 
 ### SIMD
 - Update SIMD comparisons for `wide` 1.5.
@@ -343,7 +343,7 @@ All notable changes to this crate are documented here.
 ### WASM Demo
 - Publish the interactive demo through GitHub Pages.
 
-## [0.4.1](https://github.com/Filyus/packed_spatial_index/compare/v0.4.0...v0.4.1) - 2026-06-05
+## [0.4.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.4.0...psi-v0.4.1) - 2026-06-05
 
 ### API
 - Add opt-in `f32-storage` SIMD indexes for compact coordinate storage.
@@ -374,7 +374,7 @@ All notable changes to this crate are documented here.
 - Add proptest search and persistence robustness checks
 - Rustfmt proptest files
 
-## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/v0.3.3...v0.4.0) - 2026-06-03
+## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.3.3...psi-v0.4.0) - 2026-06-03
 
 ### API
 - Return `BuildError::TreeTooLarge` instead of panicking when a requested tree
@@ -384,7 +384,7 @@ All notable changes to this crate are documented here.
 - Move internal performance tools out of the published examples and into a
   local benchmark tools package.
 
-## [0.3.3](https://github.com/Filyus/packed_spatial_index/compare/v0.3.2...v0.3.3) - 2026-06-03
+## [0.3.3](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.3.2...psi-v0.3.3) - 2026-06-03
 
 ### Geometry
 - Add point box constructors
@@ -397,7 +397,7 @@ All notable changes to this crate are documented here.
 ### Lint
 - Require SAFETY comments on all unsafe blocks
 
-## [0.3.2](https://github.com/Filyus/packed_spatial_index/compare/v0.3.1...v0.3.2) - 2026-06-02
+## [0.3.2](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.3.1...psi-v0.3.2) - 2026-06-02
 
 ### SIMD
 

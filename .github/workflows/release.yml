@@ -4,7 +4,8 @@ run-name: "release: create GitHub release ${{ github.ref_name }}"
 on:
   push:
     tags:
-      - "v[0-9]*.[0-9]*.[0-9]*"
+      - "psi-v[0-9]*.[0-9]*.[0-9]*"
+      - "psi-geo-v[0-9]*.[0-9]*.[0-9]*"
 
 concurrency:
   group: github-release-${{ github.ref_name }}
@@ -22,22 +23,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Extract changelog section
+      - name: Resolve release metadata
+        id: meta
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          version="${TAG#v}"
-          # Print the body between this version's heading and the next `## [`
-          # heading. Match with index() rather than a regex to stay portable
-          # across awk variants and avoid bracket-escaping pitfalls.
-          awk -v head="## [$version]" '
+          case "$TAG" in
+            psi-geo-v*)
+              crate="packed_spatial_index_geo"
+              version="${TAG#psi-geo-v}"
+              changelog="geo/CHANGELOG.md"
+              ;;
+            psi-v*)
+              crate="packed_spatial_index"
+              version="${TAG#psi-v}"
+              changelog="CHANGELOG.md"
+              ;;
+            *)
+              echo "Unsupported release tag: $TAG"
+              exit 1
+              ;;
+          esac
+
+          echo "crate=$crate" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "changelog=$changelog" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG ($crate $version)"
+
+      - name: Extract changelog section
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          CHANGELOG: ${{ steps.meta.outputs.changelog }}
+        run: |
+          awk -v head="## [$VERSION]" '
             index($0, head) == 1 { flag = 1; next }
             flag && index($0, "## [") == 1 { exit }
             flag { print }
-          ' CHANGELOG.md > release-notes.md
+          ' "$CHANGELOG" > release-notes.md
 
           if [ ! -s release-notes.md ]; then
-            echo "No changelog section found for $version in CHANGELOG.md."
+            echo "No changelog section found for $VERSION in $CHANGELOG."
             exit 1
           fi
 
@@ -45,12 +70,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          CRATE_NAME: ${{ steps.meta.outputs.crate }}
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; nothing to do."
             exit 0
           fi
           gh release create "$TAG" \
-            --title "$TAG" \
+            --title "$CRATE_NAME $VERSION" \
             --notes-file release-notes.md \
             --verify-tag

@@ -10,8 +10,8 @@ pub use convert::{
     convert_3d, convert_3d_into, decode_row_id_payload, decode_row_wkb_payload,
 };
 pub use read::{
-    GeoParquetInfo, detect_dims, detect_dims_with_opts, inspect, inspect_with_opts,
-    read_bboxes_2d, read_bboxes_2d_with_opts, read_bboxes_3d, read_bboxes_3d_with_opts,
+    GeoParquetInfo, detect_dims, detect_dims_with_opts, inspect, inspect_with_opts, read_bboxes_2d,
+    read_bboxes_2d_with_opts, read_bboxes_3d, read_bboxes_3d_with_opts,
 };
 
 // Re-export the core types this crate produces or names, so a caller can build,

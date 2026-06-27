@@ -18,10 +18,8 @@ use geoarrow_schema::Dimension;
 use geoparquet::metadata::{GeoParquetBboxCovering, GeoParquetColumnEncoding, GeoParquetMetadata};
 use geozero::GeomProcessor;
 use packed_spatial_index::{Box2D, Box3D};
-use parquet::basic::{
-    EdgeInterpolationAlgorithm, LogicalType, Type as ParquetPhysicalType,
-};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::basic::{EdgeInterpolationAlgorithm, LogicalType, Type as ParquetPhysicalType};
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::ChunkReader;
 
@@ -88,7 +86,10 @@ struct NativeGeoColumn {
 }
 
 fn geo_info(meta: &GeoParquetMetadata, opts: &ReadOpts) -> Result<GeoInfo, GeoError> {
-    let name = opts.geometry_column.as_ref().unwrap_or(&meta.primary_column);
+    let name = opts
+        .geometry_column
+        .as_ref()
+        .unwrap_or(&meta.primary_column);
     let col = meta.columns.get(name).ok_or_else(|| {
         opts.geometry_column
             .as_ref()

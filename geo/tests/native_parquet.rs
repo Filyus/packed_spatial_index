@@ -86,8 +86,8 @@ fn two_native_geometry_columns() -> Bytes {
     .unwrap();
     assert_eq!(batch.schema().field(0).data_type(), &DataType::Binary);
 
-    let options =
-        ArrowWriterOptions::new().with_parquet_schema(native_geometry_schema(&["geom_a", "geom_b"]));
+    let options = ArrowWriterOptions::new()
+        .with_parquet_schema(native_geometry_schema(&["geom_a", "geom_b"]));
     let mut buf = Vec::new();
     let mut writer = ArrowWriter::try_new_with_options(&mut buf, batch.schema(), options).unwrap();
     writer.write(&batch).unwrap();
@@ -113,7 +113,10 @@ fn one_native_3d_geometry_column() -> Bytes {
 #[test]
 fn native_geometry_without_geo_metadata_reads_builds_and_converts() {
     let info = inspect(srid_fixture()).unwrap();
-    assert_eq!(info.metadata_source, GeometryMetadataSource::ParquetGeospatial);
+    assert_eq!(
+        info.metadata_source,
+        GeometryMetadataSource::ParquetGeospatial
+    );
     assert_eq!(info.version, "parquet-geospatial");
     assert_eq!(info.geometry_column, "geometry");
     assert_eq!(info.dims, 2);
@@ -127,7 +130,12 @@ fn native_geometry_without_geo_metadata_reads_builds_and_converts() {
 
     let index = build_index_2d(srid_fixture(), BuildOpts::default()).unwrap();
     assert_eq!(
-        index.search(Box2D::new(-10_000_000.0, -10_000_000.0, 10_000_000.0, 10_000_000.0)),
+        index.search(Box2D::new(
+            -10_000_000.0,
+            -10_000_000.0,
+            10_000_000.0,
+            10_000_000.0
+        )),
         vec![0]
     );
 
@@ -137,7 +145,12 @@ fn native_geometry_without_geo_metadata_reads_builds_and_converts() {
 
     let stream = StreamIndex2D::open(SliceReader::new(psindex.as_slice())).unwrap();
     let hits = stream
-        .search_payloads(Box2D::new(-10_000_000.0, -10_000_000.0, 10_000_000.0, 10_000_000.0))
+        .search_payloads(Box2D::new(
+            -10_000_000.0,
+            -10_000_000.0,
+            10_000_000.0,
+            10_000_000.0,
+        ))
         .unwrap();
     assert_eq!(hits.len(), 1);
     let (row, wkb) = decode_row_wkb_payload(&hits[0].1).unwrap();
@@ -148,7 +161,10 @@ fn native_geometry_without_geo_metadata_reads_builds_and_converts() {
 #[test]
 fn native_geography_indexes_coordinate_aabbs() {
     let info = inspect(geography_fixture()).unwrap();
-    assert_eq!(info.metadata_source, GeometryMetadataSource::ParquetGeospatial);
+    assert_eq!(
+        info.metadata_source,
+        GeometryMetadataSource::ParquetGeospatial
+    );
     assert_eq!(info.geometry_column, "geography");
     assert_eq!(info.dims, 2);
     assert_eq!(info.encoding, "GEOGRAPHY(SPHERICAL)");
@@ -161,7 +177,10 @@ fn native_geography_indexes_coordinate_aabbs() {
 #[test]
 fn native_geometry_fixture_detects_3d_and_supports_3d_scan() {
     let info = inspect(geometry_fixture()).unwrap();
-    assert_eq!(info.metadata_source, GeometryMetadataSource::ParquetGeospatial);
+    assert_eq!(
+        info.metadata_source,
+        GeometryMetadataSource::ParquetGeospatial
+    );
     assert_eq!(info.geometry_column, "geometry");
     assert_eq!(info.encoding, "GEOMETRY");
     assert_eq!(info.dims, 3);

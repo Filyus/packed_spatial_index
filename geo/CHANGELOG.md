@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.3.1...psi-geo-v0.4.0) - 2026-06-27
+
 ### Added
 - Metadata-only geometry discovery API (`discover`, `discover_with_opts`) that
   reports GeoParquet/native Parquet geospatial candidates, default selection

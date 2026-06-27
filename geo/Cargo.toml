@@ -1,6 +1,6 @@
 [package]
 name = "packed_spatial_index_geo"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.89"
 description = "GeoParquet / native Parquet geospatial bridge: build a Hilbert spatial index and streamable PSINDEX from geospatial Parquet files."

@@ -8,6 +8,7 @@
 //! definition; GeoParquet-native GeoArrow encodings still need a covering column
 //! unless the caller only needs row ids.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use arrow::array::{
@@ -69,6 +70,18 @@ impl fmt::Display for GeometryEncoding {
             } => write!(f, "GEOGRAPHY({algorithm})"),
         }
     }
+}
+
+fn dim_hint_to_option(dim: DimHint) -> Option<u8> {
+    match dim {
+        DimHint::Two => Some(2),
+        DimHint::Three => Some(3),
+        DimHint::Unknown => None,
+    }
+}
+
+fn can_build_index(encoding: &GeometryEncoding, has_covering: bool) -> bool {
+    encoding.is_wkb() || has_covering
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +226,215 @@ fn native_dim_hint(meta: &ParquetMetaData, column_index: usize) -> DimHint {
 
 fn wkb_type_has_z(ty: i32) -> bool {
     (1000..2000).contains(&ty) || (3000..4000).contains(&ty)
+}
+
+/// Metadata-only discovery result for geospatial columns in a Parquet source.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GeometryDiscovery {
+    /// Number of rows recorded in the Parquet file metadata.
+    pub num_rows: u64,
+    /// GeoParquet `geo.version`, if GeoParquet metadata is present.
+    pub geo_metadata_version: Option<String>,
+    /// GeoParquet `geo.primary_column`, if GeoParquet metadata is present.
+    pub geo_primary_column: Option<String>,
+    /// The column the default reader policy would select, or why it cannot.
+    pub selection: GeometryColumnSelection,
+    /// All discovered usable geometry candidates.
+    pub columns: Vec<GeometryColumnInfo>,
+}
+
+/// Geometry column selection outcome for [`discover`] / [`discover_with_opts`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum GeometryColumnSelection {
+    /// A concrete geometry column is selected.
+    Selected {
+        /// Selected column name.
+        column: String,
+        /// Why this column was selected.
+        reason: GeometrySelectionReason,
+    },
+    /// More than one native Parquet geospatial column exists and no explicit
+    /// selection was provided.
+    Ambiguous {
+        /// Candidate column names.
+        columns: Vec<String>,
+    },
+    /// The caller requested a column that is not a supported geometry candidate.
+    Missing {
+        /// Requested column name.
+        column: String,
+    },
+    /// No supported geometry candidate exists.
+    None,
+}
+
+/// Reason a discovery call selected a geometry column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometrySelectionReason {
+    /// The caller provided [`ReadOpts::geometry_column`].
+    Explicit,
+    /// GeoParquet `geo.primary_column` selected the column.
+    GeoParquetPrimary,
+    /// A native Parquet geospatial file has exactly one candidate column.
+    SingleNativeParquet,
+}
+
+/// Metadata-only capability summary for one geometry column.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GeometryColumnInfo {
+    /// Column name.
+    pub name: String,
+    /// Where this column's geospatial metadata came from.
+    pub metadata_source: GeometryMetadataSource,
+    /// Geometry encoding, e.g. `"WKB"`, `"point"`, `"GEOMETRY"`, or
+    /// `"GEOGRAPHY(SPHERICAL)"`.
+    pub encoding: String,
+    /// Declared CRS, if present.
+    pub crs: Option<String>,
+    /// Dimension known from metadata/statistics (`2` or `3`), or `None` if
+    /// discovery cannot know without scanning WKB rows.
+    pub dims: Option<u8>,
+    /// Whether a GeoParquet bbox covering is declared for this column.
+    pub has_covering: bool,
+    /// Declared column extent, if present.
+    pub bounds: Option<Vec<f64>>,
+    /// Whether this crate can build a per-row spatial index from metadata/WKB.
+    pub can_build_index: bool,
+    /// Whether this crate can emit original row WKB payloads for the converter.
+    pub can_emit_row_wkb: bool,
+}
+
+/// Discover geospatial columns without reading geometry rows.
+pub fn discover<R: ChunkReader + 'static>(reader: R) -> Result<GeometryDiscovery, GeoError> {
+    discover_with_opts(reader, ReadOpts::default())
+}
+
+/// Discover geospatial columns without reading geometry rows, using explicit
+/// selection options when supplied.
+pub fn discover_with_opts<R: ChunkReader + 'static>(
+    reader: R,
+    opts: ReadOpts,
+) -> Result<GeometryDiscovery, GeoError> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
+    let meta = builder.metadata();
+    let file_meta = meta.file_metadata();
+    let geo_meta = match GeoParquetMetadata::from_parquet_meta(file_meta) {
+        Some(Ok(gpq)) => Some(gpq),
+        Some(Err(e)) => return Err(GeoError::Metadata(e.to_string())),
+        None => None,
+    };
+
+    let mut columns = Vec::new();
+    let mut geo_names = HashSet::new();
+    if let Some(gpq) = &geo_meta {
+        let mut names: Vec<_> = gpq.columns.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            let col = &gpq.columns[&name];
+            let encoding = GeometryEncoding::GeoParquet(col.encoding);
+            let covering = col.covering.as_ref().map(|c| c.bbox.clone());
+            let has_covering = covering.is_some();
+            let dim = if covering.as_ref().is_some_and(|c| c.zmin.is_some())
+                || col
+                    .geometry_types
+                    .iter()
+                    .any(|t| matches!(t.dimension(), Dimension::XYZ | Dimension::XYZM))
+            {
+                DimHint::Three
+            } else {
+                DimHint::Two
+            };
+            columns.push(GeometryColumnInfo {
+                name: name.clone(),
+                metadata_source: GeometryMetadataSource::GeoParquet,
+                encoding: encoding.to_string(),
+                crs: col.crs.as_ref().map(|v| v.to_string()),
+                dims: dim_hint_to_option(dim),
+                has_covering,
+                bounds: col.bbox.clone(),
+                can_build_index: can_build_index(&encoding, has_covering),
+                can_emit_row_wkb: encoding.is_wkb(),
+            });
+            geo_names.insert(name);
+        }
+    }
+
+    let native = native_geo_columns(meta);
+    let mut native_names = Vec::new();
+    for candidate in native {
+        if geo_names.contains(&candidate.name) {
+            continue;
+        }
+        let has_covering = false;
+        native_names.push(candidate.name.clone());
+        columns.push(GeometryColumnInfo {
+            name: candidate.name,
+            metadata_source: GeometryMetadataSource::ParquetGeospatial,
+            encoding: candidate.encoding.to_string(),
+            crs: candidate.crs,
+            dims: dim_hint_to_option(native_dim_hint(meta, candidate.column_index)),
+            has_covering,
+            bounds: None,
+            can_build_index: can_build_index(&candidate.encoding, has_covering),
+            can_emit_row_wkb: candidate.encoding.is_wkb(),
+        });
+    }
+
+    let selection = discovery_selection(&columns, geo_meta.as_ref(), &native_names, &opts);
+    Ok(GeometryDiscovery {
+        num_rows: file_meta.num_rows().max(0) as u64,
+        geo_metadata_version: geo_meta.as_ref().map(|gpq| gpq.version.clone()),
+        geo_primary_column: geo_meta.as_ref().map(|gpq| gpq.primary_column.clone()),
+        selection,
+        columns,
+    })
+}
+
+fn discovery_selection(
+    columns: &[GeometryColumnInfo],
+    geo_meta: Option<&GeoParquetMetadata>,
+    native_names: &[String],
+    opts: &ReadOpts,
+) -> GeometryColumnSelection {
+    if let Some(column) = &opts.geometry_column {
+        return if columns.iter().any(|candidate| &candidate.name == column) {
+            GeometryColumnSelection::Selected {
+                column: column.clone(),
+                reason: GeometrySelectionReason::Explicit,
+            }
+        } else {
+            GeometryColumnSelection::Missing {
+                column: column.clone(),
+            }
+        };
+    }
+
+    if let Some(gpq) = geo_meta {
+        return if columns.iter().any(|candidate| {
+            candidate.metadata_source == GeometryMetadataSource::GeoParquet
+                && candidate.name == gpq.primary_column
+        }) {
+            GeometryColumnSelection::Selected {
+                column: gpq.primary_column.clone(),
+                reason: GeometrySelectionReason::GeoParquetPrimary,
+            }
+        } else {
+            GeometryColumnSelection::None
+        };
+    }
+
+    match native_names {
+        [] => GeometryColumnSelection::None,
+        [one] => GeometryColumnSelection::Selected {
+            column: one.clone(),
+            reason: GeometrySelectionReason::SingleNativeParquet,
+        },
+        many => GeometryColumnSelection::Ambiguous {
+            columns: many.to_vec(),
+        },
+    }
 }
 
 /// Read just the GeoParquet metadata and row count, without building a batch

@@ -18,8 +18,9 @@ spatial index that pinpoints individual features. This crate fills the gap:
   original source row id + WKB geometry), serialized to a self-describing,
   **streamable `PSINDEX`** that answers window / kNN / raycast queries straight
   from object storage in a handful of range reads, with no Parquet re-read
-- **inspection** — read a file's geometry metadata (dims, encoding, CRS,
-  metadata source, covering, extent, row count)
+- **discovery / inspection** — list usable geometry candidates before selecting
+  one, then read the selected column's metadata (dims, encoding, CRS, metadata
+  source, covering, extent, row count)
 - 2D and 3D, optional **`f32`** storage for half-size files, and **`skip_null`** to
   drop empty geometry
 
@@ -110,6 +111,7 @@ The crate ships a CLI, `gp2psindex`, for the file-to-file path:
 cargo run --bin gp2psindex -- path/to/file.parquet      # writes path/to/file.parquet.psi
 # flags: --f32  --strict (error on null)  --geometry-column name
 #        --payload none|row-id|row-wkb  --no-payload  --no-interleave
+cargo run --bin gp2psindex -- inspect path/to/file.parquet --json
 ```
 
 ## Scope
@@ -119,6 +121,8 @@ cargo run --bin gp2psindex -- path/to/file.parquet      # writes path/to/file.pa
   GeoParquet `primary_column` is the default; use `ReadOpts::geometry_column`,
   `BuildOpts::geometry_column`, `ConvertOpts::geometry_column`, or
   `gp2psindex --geometry-column` to select explicitly.
+- Use `discover` / `discover_with_opts` when a file may contain several geometry
+  candidates and you want metadata-only selection status before reading rows.
 - Boxes come from the **bbox covering** column when present, otherwise from each
   geometry's **WKB** envelope.
 - Native Parquet `GEOMETRY` / `GEOGRAPHY` columns are WKB by definition, so they

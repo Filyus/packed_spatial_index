@@ -21,9 +21,10 @@ use packed_spatial_index::{
     Box2D, Box3D, SliceReader, StreamIndex2D, StreamIndex2DF32, read_metadata,
 };
 use packed_spatial_index_geo::{
-    BuildOpts, ConvertOpts, ConvertPayload, GeoError, ROW_ID_CONTENT_TYPE, ROW_WKB_CONTENT_TYPE,
+    BuildOpts, ConvertOpts, ConvertPayload, GeoError, GeometryColumnSelection,
+    GeometryMetadataSource, GeometrySelectionReason, ROW_ID_CONTENT_TYPE, ROW_WKB_CONTENT_TYPE,
     build_index_2d, build_index_3d, convert_2d, convert_2d_into, decode_row_id_payload,
-    decode_row_wkb_payload, detect_dims, inspect, read_bboxes_2d, read_bboxes_3d,
+    decode_row_wkb_payload, detect_dims, discover, inspect, read_bboxes_2d, read_bboxes_3d,
 };
 
 // --- WKB encoders (little-endian, ISO) --------------------------------------
@@ -597,6 +598,94 @@ fn inspect_reports_metadata_without_reading_rows() {
         inspect(with_bounds).unwrap().bounds,
         Some(vec![0.0, 0.0, 10.0, 10.0])
     );
+}
+
+#[test]
+fn discover_selects_geoparquet_primary_column() {
+    let wkbs = [Some(wkb_point_2d(0.0, 0.0)), Some(wkb_point_2d(10.0, 10.0))];
+    let cov = [[0.0, 0.0, 1.0, 1.0], [9.0, 9.0, 11.0, 11.0]];
+    let data = write_parquet(
+        vec![
+            ("geometry", binary_col(&wkbs)),
+            ("bbox", bbox_struct_2d(&cov)),
+        ],
+        geo_meta_2d(true, true),
+    );
+
+    let discovery = discover(data).unwrap();
+    assert_eq!(discovery.num_rows, 2);
+    assert_eq!(discovery.geo_metadata_version.as_deref(), Some("1.1.0"));
+    assert_eq!(discovery.geo_primary_column.as_deref(), Some("geometry"));
+    assert_eq!(
+        discovery.selection,
+        GeometryColumnSelection::Selected {
+            column: "geometry".to_string(),
+            reason: GeometrySelectionReason::GeoParquetPrimary,
+        }
+    );
+    assert_eq!(discovery.columns.len(), 1);
+
+    let column = &discovery.columns[0];
+    assert_eq!(column.name, "geometry");
+    assert_eq!(column.metadata_source, GeometryMetadataSource::GeoParquet);
+    assert_eq!(column.encoding, "WKB");
+    assert_eq!(column.dims, Some(2));
+    assert!(column.has_covering);
+    assert_eq!(column.crs.as_deref(), Some(CRS_JSON));
+    assert!(column.can_build_index);
+    assert!(column.can_emit_row_wkb);
+}
+
+#[test]
+fn discover_lists_all_geoparquet_columns() {
+    let wkbs = [Some(wkb_point_2d(0.0, 0.0))];
+    let data = write_parquet(
+        vec![
+            ("geom_a", binary_col(&wkbs)),
+            ("geom_b", binary_col(&wkbs)),
+        ],
+        r#"{"version":"1.1.0","primary_column":"geom_a","columns":{"geom_a":{"encoding":"WKB","geometry_types":["Point"]},"geom_b":{"encoding":"WKB","geometry_types":["Point"]}}}"#
+            .to_string(),
+    );
+
+    let discovery = discover(data).unwrap();
+    let names: Vec<_> = discovery
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["geom_a", "geom_b"]);
+    assert_eq!(
+        discovery.selection,
+        GeometryColumnSelection::Selected {
+            column: "geom_a".to_string(),
+            reason: GeometrySelectionReason::GeoParquetPrimary,
+        }
+    );
+}
+
+#[test]
+fn discover_reports_native_geoarrow_covering_capabilities() {
+    let pts = [(5.0, 5.0), (50.0, 50.0)];
+    let cov = [[0.0, 0.0, 10.0, 10.0], [40.0, 40.0, 60.0, 60.0]];
+    let data = write_parquet(
+        vec![
+            ("geometry", native_point_struct(&pts)),
+            ("bbox", bbox_struct_2d(&cov)),
+        ],
+        geo_meta_2d_native_with_covering(),
+    );
+
+    let discovery = discover(data).unwrap();
+    assert_eq!(discovery.columns.len(), 1);
+    let column = &discovery.columns[0];
+    assert_eq!(column.name, "geometry");
+    assert_eq!(column.metadata_source, GeometryMetadataSource::GeoParquet);
+    assert_eq!(column.encoding, "point");
+    assert_eq!(column.dims, Some(2));
+    assert!(column.has_covering);
+    assert!(column.can_build_index);
+    assert!(!column.can_emit_row_wkb);
 }
 
 #[test]

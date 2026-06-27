@@ -1,364 +1,395 @@
-//! `gp2psindex` — convert a geospatial Parquet file into a streamable `PSINDEX`.
-//!
-//! ```text
-//! gp2psindex <input.parquet> [output.psi] [--f32] [--strict]
-//!   [--geometry-column name] [--payload none|row-id|row-wkb]
-//!   [--no-payload] [--no-interleave]
-//! gp2psindex inspect <input.parquet> [--geometry-column name] [--json]
-//! ```
-//!
-//! Defaults: 2D/3D auto-detected, payload is `original row id + WKB`, null/empty
-//! rows dropped. Query the output with `packed_spatial_index`'s `StreamIndex2D` /
-//! `StreamIndex3D` over a file or HTTP range source.
-
 use std::fs::File;
 use std::process::ExitCode;
 
 use packed_spatial_index_geo::{
-    ConvertOpts, ConvertPayload, GeometryColumnSelection, GeometryDiscovery,
-    GeometryMetadataSource, GeometrySelectionReason, ReadOpts, convert_2d, convert_3d,
-    discover_with_opts, inspect_with_opts,
+    AntimeridianPolicy, ConvertRequest, EnvelopePolicy, GeoDiscovery, GeoError, GeometryProfile,
+    GeometrySelector, IndexDimsRequest, InspectRequest, NullPolicy, PayloadPlan,
+    PropertyProjection, StoragePrecision, open,
 };
 
-const USAGE: &str = "usage: gp2psindex <input.parquet> [output.psi] [--f32] [--strict] [--geometry-column name] [--payload none|row-id|row-wkb] [--no-payload] [--no-interleave]\n       gp2psindex inspect <input.parquet> [--geometry-column name] [--json]";
+const USAGE: &str = "\
+usage:
+  gp2psindex discover <input.parquet> [--json]
+  gp2psindex inspect <input.parquet> [--geometry-column name] [--exact] [--json]
+  gp2psindex build <input.parquet> <output.psi>
+      [--geometry-column name]
+      [--dims auto|2d|3d]
+      [--precision f64|f32]
+      [--nulls error|skip]
+      [--payload none|row-ref|row-wkb|feature-json]
+      [--properties none|all|include:a,b|exclude:a,b]
+      [--antimeridian reject|split|world]
+      [--no-interleave]
+  gp2psindex validate <input.parquet> [--geometry-column name]";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if is_inspect_command(&args) {
-        return inspect_main(&args[1..]);
-    }
-
-    convert_main(&args)
-}
-
-fn is_inspect_command(args: &[String]) -> bool {
-    args.first().is_some_and(|arg| arg == "inspect")
-}
-
-fn convert_main(args: &[String]) -> ExitCode {
-    let flag = |name: &str| args.iter().any(|a| a == name);
-    let positionals = positionals(args);
-
-    if positionals.is_empty() || flag("--help") || flag("-h") {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    let input = positionals[0].clone();
-    let output = positionals
-        .get(1)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("{input}.psi"));
-
-    let payload = match payload_mode(args) {
-        Ok(payload) => payload,
-        Err(e) => {
-            eprintln!("error: {e}");
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        }
-    };
-    let geometry_column = match geometry_column(args) {
-        Ok(column) => column,
-        Err(e) => {
-            eprintln!("error: {e}");
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        }
-    };
-    let opts = ConvertOpts {
-        geometry_column,
-        compact_f32: flag("--f32"),
-        skip_null: !flag("--strict"),
-        include_payload: !flag("--no-payload") && payload != ConvertPayload::None,
-        payload,
-        interleaved: !flag("--no-interleave"),
-        ..Default::default()
-    };
-
-    match run(&input, &output, opts) {
+    match run(std::env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(err) => {
+            eprintln!("error: {err}");
+            eprintln!("{USAGE}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn inspect_main(args: &[String]) -> ExitCode {
-    let flag = |name: &str| args.iter().any(|a| a == name);
-    let positionals = positionals(args);
-    if positionals.len() != 1 || flag("--help") || flag("-h") {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    let geometry_column = match geometry_column(args) {
-        Ok(column) => column,
-        Err(e) => {
-            eprintln!("error: {e}");
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        }
+fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Err("missing command".into());
     };
-
-    let input = positionals[0];
-    let opts = ReadOpts { geometry_column };
-    match inspect_run(input, opts, flag("--json")) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
+    match command {
+        "discover" => discover_cmd(&args[1..]),
+        "inspect" => inspect_cmd(&args[1..]),
+        "build" => build_cmd(&args[1..]),
+        "validate" => validate_cmd(&args[1..]),
+        _ => Err(format!("unknown command `{command}`").into()),
     }
 }
 
-fn positionals(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip_next_value = false;
-    for arg in args {
-        if skip_next_value {
-            skip_next_value = false;
-            continue;
-        }
-        if arg == "--payload" || arg == "--geometry-column" {
-            skip_next_value = true;
-            continue;
-        }
-        if arg.starts_with("--") {
-            continue;
-        }
-        out.push(arg);
-    }
-    out
-}
-
-fn payload_mode(args: &[String]) -> Result<ConvertPayload, String> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        let value = if arg == "--payload" {
-            iter.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--payload=")
-        };
-        match value {
-            Some("none") => return Ok(ConvertPayload::None),
-            Some("row-id") | Some("row-ids") => return Ok(ConvertPayload::RowIds),
-            Some("row-wkb") => return Ok(ConvertPayload::RowWkb),
-            Some(other) => return Err(format!("unknown payload mode `{other}`")),
-            None if arg == "--payload" => return Err("--payload requires a value".to_string()),
-            None => {}
-        }
-    }
-    Ok(ConvertPayload::default())
-}
-
-fn geometry_column(args: &[String]) -> Result<Option<String>, String> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        let value = if arg == "--geometry-column" {
-            iter.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--geometry-column=")
-        };
-        match value {
-            Some("") => {
-                return Err("--geometry-column requires a non-empty value".to_string());
-            }
-            Some(value) => return Ok(Some(value.to_string())),
-            None if arg == "--geometry-column" => {
-                return Err("--geometry-column requires a value".to_string());
-            }
-            None => {}
-        }
-    }
-    Ok(None)
-}
-
-fn run(input: &str, output: &str, opts: ConvertOpts) -> Result<(), Box<dyn std::error::Error>> {
-    let info = inspect_with_opts(
-        File::open(input)?,
-        ReadOpts {
-            geometry_column: opts.geometry_column.clone(),
-        },
-    )?;
-    eprintln!(
-        "{:?} {} — {} rows, {}D, column {}, encoding {}, covering={}",
-        info.metadata_source,
-        info.version,
-        info.num_rows,
-        info.dims,
-        info.geometry_column,
-        info.encoding,
-        info.has_covering
-    );
-
-    let bytes = if info.dims == 3 {
-        convert_3d(File::open(input)?, opts)?
-    } else {
-        convert_2d(File::open(input)?, opts)?
-    };
-
-    std::fs::write(output, &bytes)?;
-    eprintln!("wrote {output} ({} bytes)", bytes.len());
-    Ok(())
-}
-
-fn inspect_run(input: &str, opts: ReadOpts, json: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let discovery = discover_with_opts(File::open(input)?, opts)?;
-    if json {
-        serde_json::to_writer_pretty(std::io::stdout(), &discovery)?;
+fn discover_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    let input = parsed.required_pos(0, "input.parquet")?;
+    parsed.no_extra_pos(1)?;
+    let dataset = open(File::open(input)?)?;
+    if parsed.flag("--json") {
+        serde_json::to_writer_pretty(std::io::stdout(), dataset.discovery())?;
         println!();
     } else {
-        print_discovery(&discovery);
+        print_discovery(dataset.discovery());
     }
     Ok(())
 }
 
-fn print_discovery(discovery: &GeometryDiscovery) {
-    println!("rows: {}", discovery.num_rows);
-    match (
-        &discovery.geo_metadata_version,
-        &discovery.geo_primary_column,
-    ) {
-        (Some(version), Some(primary)) => {
-            println!("geoparquet: version {version}, primary column {primary}");
-        }
-        (Some(version), None) => println!("geoparquet: version {version}"),
-        (None, _) => println!("geoparquet: none"),
+fn inspect_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    let input = parsed.required_pos(0, "input.parquet")?;
+    parsed.no_extra_pos(1)?;
+    let selector = geometry_selector(parsed.option("--geometry-column")?);
+    let mut dataset = open(File::open(input)?)?;
+    let profile = dataset.inspect(InspectRequest {
+        selector,
+        exact: parsed.flag("--exact"),
+    })?;
+    if parsed.flag("--json") {
+        serde_json::to_writer_pretty(std::io::stdout(), &profile)?;
+        println!();
+    } else {
+        print_profile(&profile);
     }
-    println!("selection: {}", selection_label(&discovery.selection));
-    println!("columns:");
+    Ok(())
+}
+
+fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    let input = parsed.required_pos(0, "input.parquet")?;
+    let output = parsed.required_pos(1, "output.psi")?;
+    parsed.no_extra_pos(2)?;
+    let mut dataset = open(File::open(input)?)?;
+    let payload = parse_payload(
+        parsed.option("--payload")?.as_deref().unwrap_or("row-wkb"),
+        parsed.option("--properties")?,
+    )?;
+    let request = ConvertRequest {
+        selector: geometry_selector(parsed.option("--geometry-column")?),
+        dims: parse_dims(parsed.option("--dims")?.as_deref().unwrap_or("auto"))?,
+        nulls: parse_nulls(parsed.option("--nulls")?.as_deref().unwrap_or("skip"))?,
+        envelope: parse_antimeridian(parsed.option("--antimeridian")?)?,
+        precision: parse_precision(parsed.option("--precision")?.as_deref().unwrap_or("f64"))?,
+        payload,
+        interleaved: !parsed.flag("--no-interleave"),
+        ..ConvertRequest::default()
+    };
+    let mut bytes = Vec::new();
+    let artifact = dataset.convert_into(request, &mut bytes)?;
+    std::fs::write(output, &bytes)?;
     println!(
-        "  {:<24} {:<18} {:<20} {:<7} {:<8} {:<8} {:<8} crs",
-        "column", "source", "encoding", "dims", "cover", "index", "row_wkb"
+        "wrote {output}: {} bytes, {} features, {} index entries",
+        bytes.len(),
+        artifact.manifest.feature_count,
+        artifact.manifest.index_entry_count
+    );
+    Ok(())
+}
+
+fn validate_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    let input = parsed.required_pos(0, "input.parquet")?;
+    parsed.no_extra_pos(1)?;
+    let selector = geometry_selector(parsed.option("--geometry-column")?);
+    let mut dataset = open(File::open(input)?)?;
+    let profile = dataset.inspect(InspectRequest {
+        selector,
+        exact: true,
+    })?;
+    println!(
+        "ok: {} rows, column `{}`, encoding {}",
+        profile.num_rows, profile.column, profile.encoding
+    );
+    Ok(())
+}
+
+fn print_discovery(discovery: &GeoDiscovery) {
+    println!("rows: {}", discovery.num_rows);
+    if let Some(version) = &discovery.file_metadata.geoparquet_version {
+        println!("geoparquet: {version}");
+    }
+    if let Some(primary) = &discovery.file_metadata.geoparquet_primary_column {
+        println!("primary: {primary}");
+    }
+    println!(
+        "selection: {}",
+        selection_label(&discovery.default_selection)
+    );
+    println!(
+        "{:<24} {:<18} {:<22} {:<8} {:<8} {:<5} {:<5}",
+        "column", "source", "encoding", "dims", "bounds", "index", "wkb"
     );
     for column in &discovery.columns {
         println!(
-            "  {:<24} {:<18} {:<20} {:<7} {:<8} {:<8} {:<8} {}",
+            "{:<24} {:<18} {:<22} {:<8} {:<8} {:<5} {:<5}",
             column.name,
-            source_label(column.metadata_source),
-            column.encoding,
-            dims_label(column.dims),
-            yes_no(column.has_covering),
-            yes_no(column.can_build_index),
-            yes_no(column.can_emit_row_wkb),
-            column.crs.as_deref().unwrap_or("-")
+            format!("{:?}", column.source),
+            column.encoding.to_string(),
+            column.coordinate_dims.to_string(),
+            yes_no(column.extent.is_some()),
+            yes_no(column.capabilities.can_build_index),
+            yes_no(column.capabilities.can_emit_row_wkb),
         );
     }
 }
 
-fn selection_label(selection: &GeometryColumnSelection) -> String {
+fn selection_label(selection: &packed_spatial_index_geo::SelectionStatus) -> String {
     match selection {
-        GeometryColumnSelection::Selected { column, reason } => {
-            format!("selected `{column}` ({})", reason_label(*reason))
+        packed_spatial_index_geo::SelectionStatus::Selected { column, reason } => {
+            format!("selected `{column}` ({reason:?})")
         }
-        GeometryColumnSelection::Ambiguous { columns } => {
-            format!("ambiguous: {}", columns.join(", "))
+        packed_spatial_index_geo::SelectionStatus::Ambiguous { columns } => {
+            format!("ambiguous {columns:?}")
         }
-        GeometryColumnSelection::Missing { column } => format!("missing `{column}`"),
-        GeometryColumnSelection::None => "none".to_string(),
+        packed_spatial_index_geo::SelectionStatus::Missing { column } => {
+            format!("missing `{column}`")
+        }
+        packed_spatial_index_geo::SelectionStatus::None => "none".to_string(),
     }
 }
 
-fn reason_label(reason: GeometrySelectionReason) -> &'static str {
-    match reason {
-        GeometrySelectionReason::Explicit => "explicit",
-        GeometrySelectionReason::GeoParquetPrimary => "GeoParquet primary",
-        GeometrySelectionReason::SingleNativeParquet => "single native Parquet column",
+fn print_profile(profile: &GeometryProfile) {
+    println!("rows: {}", profile.num_rows);
+    println!("column: {}", profile.column);
+    println!("source: {:?}", profile.source);
+    println!("encoding: {}", profile.encoding);
+    println!("dims: {}", profile.coordinate_dims);
+    println!("edges: {:?}", profile.edges);
+    println!("crs: {:?}", profile.crs);
+    if let Some(extent) = &profile.extent {
+        println!("extent: {:?}", extent.values);
     }
-}
-
-fn source_label(source: GeometryMetadataSource) -> &'static str {
-    match source {
-        GeometryMetadataSource::GeoParquet => "GeoParquet",
-        GeometryMetadataSource::ParquetGeospatial => "ParquetGeospatial",
-    }
-}
-
-fn dims_label(dims: Option<u8>) -> String {
-    dims.map(|d| format!("{d}D"))
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+fn geometry_selector(name: Option<String>) -> GeometrySelector {
+    name.map(GeometrySelector::Name)
+        .unwrap_or(GeometrySelector::Default)
+}
+
+fn parse_dims(value: &str) -> Result<IndexDimsRequest, Box<dyn std::error::Error>> {
+    match value {
+        "auto" => Ok(IndexDimsRequest::Auto),
+        "2d" | "2D" => Ok(IndexDimsRequest::D2),
+        "3d" | "3D" => Ok(IndexDimsRequest::D3),
+        _ => Err(format!("invalid --dims `{value}`").into()),
+    }
+}
+
+fn parse_nulls(value: &str) -> Result<NullPolicy, Box<dyn std::error::Error>> {
+    match value {
+        "error" => Ok(NullPolicy::Error),
+        "skip" => Ok(NullPolicy::Skip),
+        _ => Err(format!("invalid --nulls `{value}`").into()),
+    }
+}
+
+fn parse_precision(value: &str) -> Result<StoragePrecision, Box<dyn std::error::Error>> {
+    match value {
+        "f64" => Ok(StoragePrecision::F64),
+        "f32" => Ok(StoragePrecision::F32),
+        _ => Err(format!("invalid --precision `{value}`").into()),
+    }
+}
+
+fn parse_antimeridian(value: Option<String>) -> Result<EnvelopePolicy, Box<dyn std::error::Error>> {
+    let Some(value) = value else {
+        return Ok(EnvelopePolicy::Planar);
+    };
+    let antimeridian = match value.as_str() {
+        "reject" => AntimeridianPolicy::Reject,
+        "split" => AntimeridianPolicy::Split,
+        "world" => AntimeridianPolicy::ExpandToWorld,
+        _ => return Err(format!("invalid --antimeridian `{value}`").into()),
+    };
+    Ok(EnvelopePolicy::Geographic { antimeridian })
+}
+
+fn parse_payload(
+    value: &str,
+    properties: Option<String>,
+) -> Result<PayloadPlan, Box<dyn std::error::Error>> {
+    match value {
+        "none" => Ok(PayloadPlan::None),
+        "row-ref" => Ok(PayloadPlan::RowRef),
+        "row-wkb" => Ok(PayloadPlan::RowWkb),
+        "feature-json" => Ok(PayloadPlan::FeatureJson {
+            properties: parse_properties(properties.as_deref().unwrap_or("all"))?,
+        }),
+        _ => Err(format!("invalid --payload `{value}`").into()),
+    }
+}
+
+fn parse_properties(value: &str) -> Result<PropertyProjection, Box<dyn std::error::Error>> {
+    match value {
+        "none" => Ok(PropertyProjection::None),
+        "all" => Ok(PropertyProjection::AllNonGeometry),
+        value if value.starts_with("include:") => Ok(PropertyProjection::Include(split_names(
+            value.trim_start_matches("include:"),
+        ))),
+        value if value.starts_with("exclude:") => Ok(PropertyProjection::Exclude(split_names(
+            value.trim_start_matches("exclude:"),
+        ))),
+        _ => Err(format!("invalid --properties `{value}`").into()),
+    }
+}
+
+fn split_names(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+struct Parsed<'a> {
+    args: &'a [String],
+}
+
+impl<'a> Parsed<'a> {
+    fn new(args: &'a [String]) -> Self {
+        Self { args }
+    }
+
+    fn flag(&self, flag: &str) -> bool {
+        self.args.iter().any(|arg| arg == flag)
+    }
+
+    fn option(&self, flag: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let equals = format!("{flag}=");
+        for (idx, arg) in self.args.iter().enumerate() {
+            if let Some(value) = arg.strip_prefix(&equals) {
+                return Ok(Some(value.to_string()));
+            }
+            if arg == flag {
+                let Some(value) = self.args.get(idx + 1) else {
+                    return Err(format!("{flag} needs a value").into());
+                };
+                if value.starts_with("--") {
+                    return Err(format!("{flag} needs a value").into());
+                }
+                return Ok(Some(value.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    fn positionals(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut skip = false;
+        for arg in self.args {
+            if skip {
+                skip = false;
+                continue;
+            }
+            if arg.starts_with("--") {
+                if !arg.contains('=') && option_takes_value(arg) {
+                    skip = true;
+                }
+                continue;
+            }
+            out.push(arg.as_str());
+        }
+        out
+    }
+
+    fn required_pos(&self, index: usize, name: &str) -> Result<&str, Box<dyn std::error::Error>> {
+        self.positionals()
+            .get(index)
+            .copied()
+            .ok_or_else(|| format!("missing {name}").into())
+    }
+
+    fn no_extra_pos(&self, max: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let count = self.positionals().len();
+        if count > max {
+            return Err("too many positional arguments".into());
+        }
+        Ok(())
+    }
+}
+
+fn option_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--geometry-column"
+            | "--dims"
+            | "--precision"
+            | "--nulls"
+            | "--payload"
+            | "--properties"
+            | "--antimeridian"
+    )
+}
+
+#[allow(dead_code)]
+fn map_geo_error(err: GeoError) -> Box<dyn std::error::Error> {
+    Box::new(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn args(items: &[&str]) -> Vec<String> {
-        items.iter().map(|s| s.to_string()).collect()
+    #[test]
+    fn old_positional_convert_is_not_a_command() {
+        let err = run(vec!["input.parquet".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("unknown command"));
     }
 
     #[test]
-    fn payload_value_is_not_positional() {
-        let args = args(&["in.parquet", "out.psi", "--payload", "row-id"]);
-        let positional: Vec<&str> = positionals(&args).into_iter().map(String::as_str).collect();
-
-        assert_eq!(positional, vec!["in.parquet", "out.psi"]);
-        assert_eq!(payload_mode(&args), Ok(ConvertPayload::RowIds));
-    }
-
-    #[test]
-    fn payload_equals_form_is_parsed() {
-        let args = args(&["in.parquet", "--payload=row-wkb"]);
-
-        assert_eq!(positionals(&args).len(), 1);
-        assert_eq!(payload_mode(&args), Ok(ConvertPayload::RowWkb));
-    }
-
-    #[test]
-    fn payload_requires_a_value() {
-        let args = args(&["in.parquet", "--payload"]);
-        let positional: Vec<&str> = positionals(&args).into_iter().map(String::as_str).collect();
-
-        assert!(payload_mode(&args).is_err());
-        assert_eq!(positional, vec!["in.parquet"]);
-    }
-
-    #[test]
-    fn geometry_column_value_is_not_positional() {
-        let args = args(&["in.parquet", "out.psi", "--geometry-column", "geom"]);
-        let positional: Vec<&str> = positionals(&args).into_iter().map(String::as_str).collect();
-
-        assert_eq!(positional, vec!["in.parquet", "out.psi"]);
-        assert_eq!(geometry_column(&args), Ok(Some("geom".to_string())));
-    }
-
-    #[test]
-    fn geometry_column_equals_form_is_parsed() {
-        let args = args(&["in.parquet", "--geometry-column=geom"]);
-
-        assert_eq!(positionals(&args).len(), 1);
-        assert_eq!(geometry_column(&args), Ok(Some("geom".to_string())));
-    }
-
-    #[test]
-    fn geometry_column_requires_a_value() {
-        let args = args(&["in.parquet", "--geometry-column"]);
-        let positional: Vec<&str> = positionals(&args).into_iter().map(String::as_str).collect();
-
-        assert!(geometry_column(&args).is_err());
-        assert_eq!(positional, vec!["in.parquet"]);
-    }
-
-    #[test]
-    fn inspect_subcommand_keeps_input_as_only_positional() {
-        let args = args(&[
-            "inspect",
-            "in.parquet",
-            "--geometry-column",
-            "geom",
-            "--json",
-        ]);
-        let tail = &args[1..];
-        let positional: Vec<&str> = positionals(tail).into_iter().map(String::as_str).collect();
-
-        assert!(is_inspect_command(&args));
-        assert_eq!(positional, vec!["in.parquet"]);
-        assert_eq!(geometry_column(tail), Ok(Some("geom".to_string())));
+    fn parses_build_flags() {
+        let args = vec![
+            "in.parquet".to_string(),
+            "out.psi".to_string(),
+            "--geometry-column=geom".to_string(),
+            "--dims".to_string(),
+            "3d".to_string(),
+            "--payload".to_string(),
+            "feature-json".to_string(),
+            "--properties".to_string(),
+            "include:name,pop".to_string(),
+            "--antimeridian".to_string(),
+            "split".to_string(),
+        ];
+        let parsed = Parsed::new(&args);
+        assert_eq!(parsed.required_pos(0, "input").unwrap(), "in.parquet");
+        assert_eq!(parsed.required_pos(1, "output").unwrap(), "out.psi");
+        assert_eq!(
+            parsed.option("--geometry-column").unwrap().as_deref(),
+            Some("geom")
+        );
+        assert!(matches!(
+            parse_dims(parsed.option("--dims").unwrap().as_deref().unwrap()).unwrap(),
+            IndexDimsRequest::D3
+        ));
     }
 }

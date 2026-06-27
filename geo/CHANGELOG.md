@@ -4,6 +4,20 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Replaced the function-oriented public API with the `open(...) -> GeoDataset`
+  session API. Discovery, inspection, scanning, building, and conversion now hang
+  off the dataset, and geo-level search returns `FeatureRef` values rather than
+  raw compact item ids.
+- Made the CLI explicit-subcommand only: `discover`, `inspect`, `build`, and
+  `validate`.
+
+### Added
+- Typed geometry discovery/profile metadata, GeoArrow envelope scanning without
+  covering columns, GeoArrow-to-WKB payload emission, antimeridian split handling,
+  `FeatureJson` payloads with projected properties, and the optional `geoM`
+  manifest chunk in generated `PSINDEX` artifacts.
+
 ## [0.4.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.4.0...psi-geo-v0.4.1) - 2026-06-27
 
 ### Changed

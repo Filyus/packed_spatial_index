@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod artifact;
 mod dataset;
 mod error;
 mod geoarrow;
@@ -7,6 +8,10 @@ mod manifest;
 mod types;
 mod wkb;
 
+pub use artifact::{
+    GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoHit, GeoPayload, open_geo_index,
+    open_geo_index_with_limits,
+};
 pub use dataset::{
     FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN,
     FEATURE_WKB_CONTENT_TYPE, GeoDataset, decode_feature_ref_payload, decode_feature_wkb_payload,

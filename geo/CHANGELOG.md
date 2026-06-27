@@ -4,6 +4,17 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Added
+- Added a geo artifact reader API (`open_geo_index`, `GeoArtifactIndex`,
+  `GeoHit`, `GeoPayload`) for querying converted `PSINDEX` files through the
+  geospatial contract instead of manually decoding core payload bytes.
+
+### Changed
+- Extended generated `geoM` manifests with index storage precision so readers
+  can open 2D/3D and f64/f32 artifacts from the manifest alone.
+- `FeatureJson` payloads now include a `feature_ref` member, allowing artifact
+  queries to return the source `FeatureRef` alongside the GeoJSON Feature.
+
 ## [0.5.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.5.0...psi-geo-v0.5.1) - 2026-06-28
 
 ### Changed

@@ -1,3 +1,4 @@
+use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;
 use std::sync::Arc;
@@ -8,11 +9,12 @@ use arrow::datatypes::{DataType, Field};
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
 use packed_spatial_index_geo::{
-    AntimeridianPolicy, Box2D, ConvertRequest, CoordinateDims, EnvelopePolicy,
-    FEATURE_REF_RECORD_LEN, GeoError, GeoIndex, GeometryEncoding, GeometryMetadataSource,
-    GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NullPolicy, PayloadPlan,
-    PropertyProjection, SliceReader, StreamIndex2D, decode_feature_ref_payload,
-    decode_feature_wkb_payload, open, read_geo_manifest,
+    AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, EnvelopePolicy,
+    FEATURE_REF_RECORD_LEN, GeoArtifactIndex, GeoError, GeoIndex, GeoPayload, GeometryEncoding,
+    GeometryMetadataSource, GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest,
+    NullPolicy, PayloadPlan, PropertyProjection, RangeReader, SliceReader, StoragePrecision,
+    StreamIndex2D, decode_feature_ref_payload, decode_feature_wkb_payload, open, open_geo_index,
+    read_geo_manifest,
 };
 use parquet::arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions};
 use parquet::basic::{GeometryType, LogicalType, Repetition, Type as ParquetPhysicalType};
@@ -327,6 +329,62 @@ fn geoarrow_row_wkb_payload_and_manifest_roundtrip() {
 }
 
 #[test]
+fn geo_artifact_reader_searches_default_row_wkb_payloads() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 2.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let bytes = dataset.convert(ConvertRequest::default()).unwrap();
+
+    let artifact = open_geo_index(SliceReader::new(bytes)).unwrap();
+    assert_eq!(artifact.manifest().selected_column, "geometry");
+    let GeoArtifactIndex::D2(index) = artifact else {
+        panic!("expected 2D artifact");
+    };
+    let hits = index.search_hits(Box2D::new(1.0, 2.0, 1.0, 2.0)).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].feature.row_number, 0);
+    let GeoPayload::RowWkb(wkb) = &hits[0].payload else {
+        panic!("expected RowWkb payload");
+    };
+    assert_eq!(wkb, &wkb_point_2d(1.0, 2.0));
+    assert_eq!(
+        index
+            .search_features(Box2D::new(1.0, 2.0, 1.0, 2.0))
+            .unwrap()[0]
+            .row_number,
+        0
+    );
+}
+
+#[test]
+fn geo_artifact_reader_searches_row_ref_payloads() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[None, Some(wkb_point_2d(5.0, 5.0))]),
+        )],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            nulls: NullPolicy::Skip,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let hits = index.search_hits(Box2D::new(5.0, 5.0, 5.0, 5.0)).unwrap();
+    assert_eq!(hits[0].feature.row_number, 1);
+    assert_eq!(hits[0].payload, GeoPayload::RowRef);
+}
+
+#[test]
 fn feature_json_includes_projected_properties() {
     let data = write_geoparquet(
         vec![
@@ -353,8 +411,126 @@ fn feature_json_includes_projected_properties() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&hits[0].1).unwrap();
     assert_eq!(json["type"], "Feature");
+    assert_eq!(json["feature_ref"]["row_number"], 0);
     assert_eq!(json["properties"]["name"], "alpha");
     assert_eq!(json["geometry"]["type"], "Point");
+}
+
+#[test]
+fn geo_artifact_reader_searches_feature_json_payloads() {
+    let data = write_geoparquet(
+        vec![
+            ("geometry", binary_col(&[Some(wkb_point_2d(3.0, 4.0))])),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["alpha"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::FeatureJson {
+                properties: PropertyProjection::AllNonGeometry,
+            },
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let hits = index.search_hits(Box2D::new(3.0, 4.0, 3.0, 4.0)).unwrap();
+    assert_eq!(hits[0].feature.row_number, 0);
+    let GeoPayload::FeatureJson(json) = &hits[0].payload else {
+        panic!("expected FeatureJson payload");
+    };
+    assert_eq!(json["properties"]["name"], "alpha");
+}
+
+#[test]
+fn geo_artifact_reader_uses_manifest_precision_for_f32_artifacts() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(9.0, 10.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            precision: StoragePrecision::F32,
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    assert_eq!(index.manifest().storage_precision, StoragePrecision::F32);
+    let hits = index.search_hits(Box2D::new(9.0, 10.0, 9.0, 10.0)).unwrap();
+    assert_eq!(hits[0].feature.row_number, 0);
+}
+
+#[test]
+fn geo_artifact_reader_searches_3d_artifacts() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_3d(1.0, 2.0, 3.0))]))],
+        geo_meta_wkb(&["Point Z"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            dims: IndexDimsRequest::D3,
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+
+    let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 3D artifact");
+    };
+    let hits = index
+        .search_hits(Box3D::new(1.0, 2.0, 3.0, 1.0, 2.0, 3.0))
+        .unwrap();
+    assert_eq!(hits[0].feature.row_number, 0);
+    assert_eq!(hits[0].payload, GeoPayload::RowRef);
+}
+
+#[test]
+fn geo_artifact_reader_does_not_require_known_length() {
+    struct NoLenReader(SliceReader<Vec<u8>>);
+
+    impl RangeReader for NoLenReader {
+        fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            self.0.read_exact_at(offset, buf)
+        }
+    }
+
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(6.0, 7.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let bytes = dataset.convert(ConvertRequest::default()).unwrap();
+
+    let GeoArtifactIndex::D2(index) = open_geo_index(NoLenReader(SliceReader::new(bytes))).unwrap()
+    else {
+        panic!("expected 2D artifact");
+    };
+    let hits = index
+        .search_features(Box2D::new(6.0, 7.0, 6.0, 7.0))
+        .unwrap();
+    assert_eq!(hits[0].row_number, 0);
+}
+
+#[test]
+fn geo_artifact_reader_requires_geo_manifest() {
+    let mut builder = packed_spatial_index::Index2DBuilder::new(1);
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    let bytes = builder.finish().unwrap().to_bytes();
+    assert!(matches!(
+        open_geo_index(SliceReader::new(bytes)),
+        Err(GeoError::MissingGeoManifest)
+    ));
 }
 
 #[test]

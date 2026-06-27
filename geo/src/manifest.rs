@@ -1,11 +1,11 @@
 use crate::{GeoArtifactManifest, GeoError};
 
-const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
-const FORMAT_VERSION: u64 = 2;
-const SUPERBLOCK_LEN: usize = 32;
-const CHUNK_ENTRY_LEN: usize = 24;
+pub(crate) const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
+pub(crate) const FORMAT_VERSION: u64 = 2;
+pub(crate) const SUPERBLOCK_LEN: usize = 32;
+pub(crate) const CHUNK_ENTRY_LEN: usize = 24;
 const CHUNK_FLAG_CRITICAL: u32 = 1;
-const TAG_GEO_MANIFEST: [u8; 4] = *b"geoM";
+pub(crate) const TAG_GEO_MANIFEST: [u8; 4] = *b"geoM";
 
 #[derive(Debug, Clone)]
 struct Chunk {
@@ -19,9 +19,24 @@ pub fn read_geo_manifest(bytes: &[u8]) -> Result<Option<GeoArtifactManifest>, Ge
     let Some(chunk) = chunks.iter().find(|chunk| chunk.tag == TAG_GEO_MANIFEST) else {
         return Ok(None);
     };
-    serde_json::from_slice(&chunk.content)
-        .map(Some)
-        .map_err(|e| GeoError::Container(e.to_string()))
+    read_geo_manifest_content(&chunk.content).map(Some)
+}
+
+pub(crate) fn read_geo_manifest_content(content: &[u8]) -> Result<GeoArtifactManifest, GeoError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(content).map_err(|e| GeoError::Container(e.to_string()))?;
+    let schema_version = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            GeoError::UnsupportedArtifact("geoM manifest has no schema_version".to_string())
+        })?;
+    if schema_version != 2 {
+        return Err(GeoError::UnsupportedArtifact(format!(
+            "unsupported geoM schema version {schema_version}"
+        )));
+    }
+    serde_json::from_value(value).map_err(|e| GeoError::Container(e.to_string()))
 }
 
 pub(crate) fn append_geo_manifest(
@@ -142,7 +157,7 @@ fn align8(value: usize) -> Result<usize, GeoError> {
         .ok_or_else(|| GeoError::Container("alignment overflow".to_string()))
 }
 
-fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, GeoError> {
+pub(crate) fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, GeoError> {
     let end = offset + 4;
     let Some(slice) = bytes.get(offset..end) else {
         return Err(GeoError::Container("truncated u32".to_string()));
@@ -150,7 +165,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, GeoError> {
     Ok(u32::from_le_bytes(slice.try_into().unwrap()))
 }
 
-fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, GeoError> {
+pub(crate) fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, GeoError> {
     let end = offset + 8;
     let Some(slice) = bytes.get(offset..end) else {
         return Err(GeoError::Container("truncated u64".to_string()));

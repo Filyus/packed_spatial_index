@@ -67,6 +67,7 @@ files.
 | Read feature boxes / payloads | [`GeoDataset::scan`][scan], [`ScanRequest`][ScanRequest], [`GeometryScan`][GeometryScan] |
 | Build an in-memory feature index | [`GeoDataset::build`][build], [`BuildRequest`][BuildRequest], [`GeoIndex`][GeoIndex], [`GeoIndex2D::search_features`][search_features_2d], [`GeoIndex3D::search_features`][search_features_3d] |
 | Convert to streamable `PSINDEX` | [`GeoDataset::convert`][convert], [`GeoDataset::convert_into`][convert_into], [`ConvertRequest`][ConvertRequest], [`GeoArtifact`][GeoArtifact] |
+| Open a converted geo artifact | [`open_geo_index`][open_geo_index], [`GeoArtifactIndex`][GeoArtifactIndex], [`GeoHit`][GeoHit], [`GeoPayload`][GeoPayload] |
 | Choose index dimensions / precision | [`IndexDimsRequest`][IndexDimsRequest], [`StoragePrecision`][StoragePrecision] |
 | Control nulls and antimeridian behavior | [`NullPolicy`][NullPolicy], [`EnvelopePolicy`][EnvelopePolicy], [`AntimeridianPolicy`][AntimeridianPolicy] |
 | Pick artifact payloads | [`PayloadPlan`][PayloadPlan], [`PropertyProjection`][PropertyProjection], [`FeatureRef`][FeatureRef] |
@@ -111,18 +112,22 @@ std::fs::write("cities.psindex", &psindex)?;
 ```
 
 Serve `cities.psindex` over HTTP range requests (or read it locally) and query it
-with the re-exported streaming types — no second dependency needed:
+through the geo artifact reader:
 
 ```rust,no_run
 use packed_spatial_index_geo::{
-    decode_feature_wkb_payload, Box2D, SliceReader, StreamIndex2D,
+    open_geo_index, Box2D, GeoArtifactIndex, GeoPayload, SliceReader,
 };
 
 let bytes = std::fs::read("cities.psindex")?;
-let index = StreamIndex2D::open(SliceReader::new(bytes))?;
-for (_item, payload) in index.search_payloads(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
-    let (feature, wkb) = decode_feature_wkb_payload(&payload).expect("default geo payload");
-    println!("row {}: {} WKB bytes", feature.row_number, wkb.len());
+let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    panic!("expected a 2D artifact");
+};
+
+for hit in index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    if let GeoPayload::RowWkb(wkb) = hit.payload {
+        println!("row {}: {} WKB bytes", hit.feature.row_number, wkb.len());
+    }
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -139,9 +144,9 @@ Payload modes:
 - `PayloadPlan::FeatureJson`: GeoJSON Feature bytes with projected properties.
 - `PayloadPlan::None`: no payload section.
 
-Converted `PSINDEX` files also carry an optional app-private `geoM` manifest
-chunk. Core `packed_spatial_index` readers skip it; this crate reads it with
-`read_geo_manifest`.
+Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
+`packed_spatial_index` readers skip it; this crate reads it through
+`open_geo_index` or, when only metadata is needed, `read_geo_manifest`.
 
 The crate ships a CLI, `gp2psindex`, for the file-to-file path:
 
@@ -206,6 +211,10 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [search_features_3d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.search_features
 [ConvertRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ConvertRequest.html
 [GeoArtifact]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifact.html
+[open_geo_index]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geo_index.html
+[GeoArtifactIndex]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoArtifactIndex.html
+[GeoHit]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoHit.html
+[GeoPayload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoPayload.html
 [IndexDimsRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.IndexDimsRequest.html
 [StoragePrecision]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.StoragePrecision.html
 [NullPolicy]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.NullPolicy.html

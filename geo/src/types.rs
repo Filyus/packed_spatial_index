@@ -155,6 +155,14 @@ impl CoordinateDims {
         matches!(self, CoordinateDims::Xym | CoordinateDims::Xyzm)
     }
 
+    pub(crate) fn index_dims(self) -> Option<u8> {
+        match self {
+            CoordinateDims::Xy | CoordinateDims::Xym => Some(2),
+            CoordinateDims::Xyz | CoordinateDims::Xyzm => Some(3),
+            CoordinateDims::Unknown => None,
+        }
+    }
+
     pub(crate) fn merge(self, other: Self) -> Self {
         use CoordinateDims::{Unknown, Xy, Xym, Xyz, Xyzm};
         match (self, other) {
@@ -648,6 +656,7 @@ pub struct GeoArtifactManifest {
     pub edges: EdgeModel,
     pub encoding: GeometryEncoding,
     pub dims: CoordinateDims,
+    pub storage_precision: StoragePrecision,
     pub null_policy: NullPolicy,
     pub antimeridian_policy: AntimeridianPolicy,
     pub payload_plan: PayloadPlan,

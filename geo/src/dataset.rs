@@ -1260,7 +1260,7 @@ fn artifact_manifest(
     source_fingerprint: &str,
 ) -> GeoArtifactManifest {
     GeoArtifactManifest {
-        schema_version: 1,
+        schema_version: 2,
         source_format: match profile.source {
             GeometryMetadataSource::GeoParquet => "geoparquet".to_string(),
             GeometryMetadataSource::ParquetGeospatial => "parquet-geospatial".to_string(),
@@ -1271,6 +1271,7 @@ fn artifact_manifest(
         edges: profile.edges,
         encoding: profile.encoding.clone(),
         dims: profile.coordinate_dims,
+        storage_precision: req.precision,
         null_policy: req.nulls,
         antimeridian_policy: match req.envelope {
             EnvelopePolicy::Planar => AntimeridianPolicy::Reject,
@@ -1343,6 +1344,7 @@ fn feature_json_payload(
     let feature = serde_json::json!({
         "type": "Feature",
         "id": feature.feature_id.as_deref().unwrap_or(""),
+        "feature_ref": feature,
         "geometry": geometry,
         "properties": properties,
     });

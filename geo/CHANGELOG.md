@@ -4,6 +4,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.5.0...psi-geo-v0.5.1) - 2026-06-28
+
+### Changed
+- Refined the crate description, README heading, and README opening copy so the
+  crates.io landing page explains the GeoParquet/native Parquet indexing use
+  case more cleanly.
+- Added a README API-at-a-glance table for the `open(...) -> GeoDataset` session
+  workflow and related request, payload, and artifact helpers.
+
 ## [0.5.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.4.1...psi-geo-v0.5.0) - 2026-06-28
 
 ### Changed

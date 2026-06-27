@@ -73,15 +73,18 @@ If geo should pick up a newly released core, update the
 `packed_spatial_index` dependency pin in `geo/Cargo.toml` as part of the geo
 release, after the core version is published.
 
-### 3. Build the changelog section
+### 3. Build or promote the changelog section
 
 Changelog paths:
 
 - `packed_spatial_index`: `CHANGELOG.md`;
 - `packed_spatial_index_geo`: `geo/CHANGELOG.md`.
 
-Build the section from `git log <previous-tag>..HEAD`, or all relevant history
-for the first release.
+Feature commits may already have added user-facing notes under `## [Unreleased]`.
+That is allowed and often preferred: start from those notes, audit them against
+`git log <previous-tag>..HEAD` (or all relevant history for the first release),
+add anything missing, and remove internal noise. Do not rewrite or delete good
+`Unreleased` notes merely because they were committed before release prep.
 
 Heading under `## [Unreleased]`:
 
@@ -106,6 +109,9 @@ public methods/types/features and a one-line "why it matters". Drop internal
 noise: tests only, lint, CI/workflow only, benchmark-only, demo-only, and
 `release:` commits.
 
+When the wording is ready, promote the selected crate's `Unreleased` content to
+the dated version section. Leave `## [Unreleased]` present above it and empty.
+
 ### 4. Version-facing docs
 
 If the minor changed, update install snippets in the relevant README:
@@ -123,10 +129,14 @@ git diff -- Cargo.toml CHANGELOG.md README.md geo/Cargo.toml geo/CHANGELOG.md ge
 ```
 
 Wait for the maintainer to OK the changelog wording. Do **not** commit first.
+If the wording was already committed under `## [Unreleased]`, still show the
+final release diff so the maintainer can review the promoted `## [X.Y.Z]`
+section before the release commit is created.
 
 ### 6. Commit and push after approval
 
-Commit exactly the release files with the exact subject:
+Commit exactly the release files that changed for release prep with the exact
+subject:
 
 ```sh
 git commit -m "release: prepare <crate> vX.Y.Z"
@@ -134,7 +144,9 @@ git push origin main
 ```
 
 The subject must match the selected crate's manifest version exactly, or the
-publish workflow refuses to publish.
+publish workflow refuses to publish. The changelog prose may have landed in an
+earlier feature commit, but this release commit's `HEAD` must contain a
+non-empty `## [X.Y.Z]` section for the selected crate.
 
 ### 7. Start the publish workflow after CI passes
 

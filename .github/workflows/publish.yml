@@ -2,9 +2,11 @@ name: "Release: publish crate"
 run-name: "release: publish ${{ inputs.crate }}"
 
 # Triggered manually after a `release: prepare <crate> v<version>` commit lands
-# on `main` and CI passes. crates.io Trusted Publishing rejects the
-# `workflow_run` event, so the publish cannot run automatically after CI;
-# `workflow_dispatch` is the supported path.
+# on `main` and CI passes. Changelog notes may have been drafted earlier under
+# `## [Unreleased]`; this workflow only requires the release commit's HEAD to
+# contain a reviewed, non-empty `## [<version>]` section. crates.io Trusted
+# Publishing rejects the `workflow_run` event, so the publish cannot run
+# automatically after CI; `workflow_dispatch` is the supported path.
 on:
   workflow_dispatch:
     inputs:
@@ -143,14 +145,20 @@ jobs:
         with:
           tool: cargo-semver-checks
 
-      - name: Check changelog section exists
+      - name: Check changelog section
         if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           CHANGELOG: ${{ steps.meta.outputs.changelog }}
         run: |
-          if ! grep -Fq "## [$VERSION]" "$CHANGELOG"; then
-            echo "No changelog section found for $VERSION in $CHANGELOG."
+          awk -v head="## [$VERSION]" '
+            index($0, head) == 1 { flag = 1; next }
+            flag && index($0, "## [") == 1 { exit }
+            flag { print }
+          ' "$CHANGELOG" > release-notes-preflight.md
+
+          if ! grep -Eq '[^[:space:]]' release-notes-preflight.md; then
+            echo "No non-empty changelog section found for $VERSION in $CHANGELOG."
             exit 1
           fi
 

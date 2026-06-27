@@ -47,6 +47,14 @@ If `git status --short` prints anything, classify the changes before preparing
 the release. Commit any missing feature/fix/doc work first and wait for CI, or
 ask. Do not fold in-progress work into the release commit.
 
+It is fine for feature commits to update the selected crate's `## [Unreleased]`
+section as part of their user-facing change. Treat those notes as feature work:
+audit them during release prep, add anything missing, then promote the reviewed
+content to `## [X.Y.Z]` in the release commit. The publish workflow cares about
+the final release commit's `Cargo.toml` version, subject, and changelog section;
+it does not require the changelog prose to have been authored for the first time
+in that release commit.
+
 Prepare the bump and changelog by hand, following
 [`RELEASING-AGENT.md`](RELEASING-AGENT.md). The release files are:
 
@@ -102,7 +110,7 @@ Preflight checks:
 - `X.Y.Z` matches the selected crate's manifest version;
 - any internal dependency pin, such as geo's `packed_spatial_index` dependency,
   is already published on crates.io;
-- the selected crate's changelog has a `## [X.Y.Z]` section;
+- the selected crate's changelog has a non-empty `## [X.Y.Z]` section;
 - `cargo semver-checks` succeeds if the crate already exists on crates.io;
 - the docs.rs-style nightly docs build succeeds;
 - `<crate> X.Y.Z` is not already published;
@@ -120,7 +128,7 @@ approving, check:
 - the workflow is `Release: publish crate`;
 - the selected crate and version are intended;
 - the release SHA is the release commit that passed CI;
-- the changelog section is the one reviewed before the release commit.
+- the changelog section is the one reviewed for the release.
 
 After approval, the workflow authenticates to crates.io through Trusted
 Publishing, publishes the selected crate, creates the annotated release tag,

@@ -4,6 +4,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Refined README and rustdoc wording to describe both GeoParquet and native
+  Parquet geospatial inputs consistently.
+
+### Fixed
+- Ignored local `dev/` research bundles so downloaded investigation data does
+  not show up as untracked release noise.
+- Documented the exact geo crate formatting check used by CI.
+
 ## [0.3.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.2.0...psi-geo-v0.3.0) - 2026-06-27
 
 ### Added

@@ -1,5 +1,6 @@
 //! The one geo-specific primitive: read per-row bounding boxes (and, for the
-//! converter, the raw WKB geometry) from a GeoParquet source, in file row order.
+//! converter, the raw WKB geometry) from a geospatial Parquet source, in file
+//! row order.
 //!
 //! Boxes come from the GeoParquet 1.1 *bbox covering* column when present (cheap,
 //! no geometry decode); otherwise each geometry's envelope is computed from its
@@ -349,7 +350,7 @@ pub fn detect_dims_with_opts<R: ChunkReader + 'static>(
 }
 
 /// Read every row's 2D bounding box, in file row order. Item `i` corresponds to
-/// GeoParquet row `i`.
+/// source file row `i`.
 ///
 /// # Examples
 ///

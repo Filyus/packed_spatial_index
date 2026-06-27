@@ -86,7 +86,7 @@ pub struct ConvertOpts {
     /// What to attach when [`include_payload`](Self::include_payload) is `true`.
     ///
     /// The default is [`ConvertPayload::RowWkb`], preserving the original
-    /// GeoParquet row id next to each WKB geometry. This matters when
+    /// source row id next to each WKB geometry. This matters when
     /// [`skip_null`](Self::skip_null) compacts the output ids.
     pub payload: ConvertPayload,
     /// Store coordinates as `f32` for a roughly half-size file. Queries become a
@@ -129,7 +129,8 @@ impl ConvertOpts {
     }
 }
 
-/// Anything that can go wrong reading a GeoParquet source or building the index.
+/// Anything that can go wrong reading a geospatial Parquet source or building
+/// the index.
 #[derive(Debug, thiserror::Error)]
 pub enum GeoError {
     /// Error from the underlying `parquet` reader.

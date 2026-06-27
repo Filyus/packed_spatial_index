@@ -1,4 +1,4 @@
-//! Accelerator (Model 1): build an in-memory index over the GeoParquet row
+//! Accelerator (Model 1): build an in-memory index over the source file's row
 //! bounding boxes. Item id equals the file row index, so query results are row
 //! indices you can read back from the original Parquet.
 
@@ -9,7 +9,7 @@ use crate::{BuildOpts, GeoError, read};
 
 /// Build an [`Index2D`] over the file's row bounding boxes.
 ///
-/// Item id equals the GeoParquet row index, so query results are row indices into
+/// Item id equals the source file row index, so query results are row indices into
 /// the original file.
 ///
 /// # Examples

@@ -1,4 +1,4 @@
-# Packed Spatial Index — GeoParquet
+# Packed Spatial Index — Geospatial Parquet
 
 [![crates.io](https://img.shields.io/crates/v/packed_spatial_index_geo.svg)](https://crates.io/crates/packed_spatial_index_geo)
 [![docs.rs](https://docs.rs/packed_spatial_index_geo/badge.svg)](https://docs.rs/packed_spatial_index_geo)
@@ -15,7 +15,7 @@ spatial index that pinpoints individual features. This crate fills the gap:
 - **accelerator** — build an in-memory index over the rows; a query returns **row
   indices** into the original file
 - **converter** — build the index and attach a leaf-ordered payload (by default,
-  original GeoParquet row id + WKB geometry), serialized to a self-describing,
+  original source row id + WKB geometry), serialized to a self-describing,
   **streamable `PSINDEX`** that answers window / kNN / raycast queries straight
   from object storage in a handful of range reads, with no Parquet re-read
 - **inspection** — read a file's geometry metadata (dims, encoding, CRS,
@@ -100,8 +100,8 @@ Payload modes:
 
 - `ConvertPayload::RowWkb` (default): `u64le original_row_id` followed by WKB.
 - `ConvertPayload::RowIds`: fixed-width `u64le original_row_id` only; smallest
-  sidecar mode and compatible with native GeoParquet when a covering column is
-  present.
+  sidecar mode and compatible with GeoParquet-native GeoArrow encodings when a
+  covering column is present.
 - `ConvertPayload::None` or `include_payload: false`: no payload section.
 
 The crate ships a CLI, `gp2psindex`, for the file-to-file path:

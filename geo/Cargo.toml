@@ -30,6 +30,6 @@ geozero = { version = "0.15", features = ["with-wkb"] }
 thiserror = "2"
 
 [dev-dependencies]
-# `Bytes` implements parquet's `ChunkReader`, so tests can feed an in-memory
-# GeoParquet fixture straight into the readers.
+# `Bytes` implements parquet's `ChunkReader`, so tests can feed in-memory
+# Parquet fixtures straight into the readers.
 bytes = "1"

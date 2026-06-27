@@ -47,6 +47,15 @@ If `git status --short` prints anything, classify the changes before preparing
 the release. Commit any missing feature/fix/doc work first and wait for CI, or
 ask. Do not fold in-progress work into the release commit.
 
+For geo changes, run the same formatter command as CI before pushing:
+
+```powershell
+cargo fmt --all --check --manifest-path geo/Cargo.toml
+```
+
+The root `cargo fmt --all` does not format `geo/`, because the companion crate
+is intentionally not a workspace member.
+
 It is fine for feature commits to update the selected crate's `## [Unreleased]`
 section as part of their user-facing change. Treat those notes as feature work:
 audit them during release prep, add anything missing, then promote the reviewed

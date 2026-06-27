@@ -56,6 +56,15 @@ git rev-list --left-right --count origin/main...HEAD  # must be "0  0"
 If the tree is dirty, classify per `RELEASING.md`; never fold stray work into
 the release commit.
 
+For geo changes, run the formatter exactly as the geo CI lane does:
+
+```sh
+cargo fmt --all --check --manifest-path geo/Cargo.toml
+```
+
+The root `cargo fmt --all` does not cover `geo/`, because the companion crate is
+kept outside the root workspace.
+
 ### 2. Decide the version
 
 Use the selected crate's public API surface (pre-1.0):

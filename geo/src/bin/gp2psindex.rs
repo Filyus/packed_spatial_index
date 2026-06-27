@@ -1,4 +1,4 @@
-//! `gp2psindex` — convert a GeoParquet file into a streamable `PSINDEX`.
+//! `gp2psindex` — convert a geospatial Parquet file into a streamable `PSINDEX`.
 //!
 //! ```text
 //! gp2psindex <input.parquet> [output.psi] [--f32] [--strict]

@@ -1,6 +1,6 @@
 //! Converter (Model 2): build the index and optionally attach a leaf-ordered
 //! payload, plus the CRS, serialized to a self-describing `PSINDEX` blob. The
-//! default payload stores the original GeoParquet row id followed by WKB bytes,
+//! default payload stores the original source row id followed by WKB bytes,
 //! so a compacted converter output can still point back to source rows.
 
 use packed_spatial_index::{Index2DBuilder, Index3DBuilder};
@@ -14,12 +14,12 @@ pub const ROW_ID_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.geo.
 /// Content type recorded for `u64le original_row_id` followed by WKB bytes.
 pub const ROW_WKB_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.geo.row-wkb";
 
-/// Payload written by the GeoParquet converter.
+/// Payload written by the geospatial Parquet converter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ConvertPayload {
     /// Write no payload. Search results are compact item ids only.
     None,
-    /// Write one fixed-width little-endian `u64` original GeoParquet row id per
+    /// Write one fixed-width little-endian `u64` original source row id per
     /// indexed item. This is the compact sidecar-index mode.
     RowIds,
     /// Write `u64le original_row_id` followed by the item's WKB geometry.
@@ -40,7 +40,7 @@ pub fn decode_row_id_payload(payload: &[u8]) -> Option<u64> {
 }
 
 /// Decode a [`ConvertPayload::RowWkb`] payload blob into the original
-/// GeoParquet row id and WKB geometry bytes.
+/// source row id and WKB geometry bytes.
 pub fn decode_row_wkb_payload(payload: &[u8]) -> Option<(u64, &[u8])> {
     if payload.len() < 8 {
         return None;
@@ -50,7 +50,7 @@ pub fn decode_row_wkb_payload(payload: &[u8]) -> Option<(u64, &[u8])> {
     Some((u64::from_le_bytes(row), &payload[8..]))
 }
 
-/// Convert a 2D GeoParquet source into `PSINDEX` bytes.
+/// Convert a 2D geospatial Parquet source into `PSINDEX` bytes.
 ///
 /// The bytes carry the index, the selected leaf-ordered payload, and the CRS.
 /// By default each payload is `u64le original_row_id` followed by WKB geometry.
@@ -76,7 +76,7 @@ pub fn convert_2d<R: ChunkReader + 'static>(
     Ok(out)
 }
 
-/// Convert a 3D GeoParquet source into `PSINDEX` bytes.
+/// Convert a 3D geospatial Parquet source into `PSINDEX` bytes.
 pub fn convert_3d<R: ChunkReader + 'static>(
     reader: R,
     opts: ConvertOpts,
@@ -86,7 +86,7 @@ pub fn convert_3d<R: ChunkReader + 'static>(
     Ok(out)
 }
 
-/// Convert a 2D GeoParquet source, appending the `PSINDEX` bytes to `out`. Lets
+/// Convert a 2D geospatial Parquet source, appending the `PSINDEX` bytes to `out`. Lets
 /// the caller reuse a buffer or write straight into one it already owns.
 pub fn convert_2d_into<R: ChunkReader + 'static>(
     reader: R,
@@ -106,7 +106,7 @@ pub fn convert_2d_into<R: ChunkReader + 'static>(
     )
 }
 
-/// Convert a 3D GeoParquet source, appending the `PSINDEX` bytes to `out`.
+/// Convert a 3D geospatial Parquet source, appending the `PSINDEX` bytes to `out`.
 pub fn convert_3d_into<R: ChunkReader + 'static>(
     reader: R,
     opts: ConvertOpts,

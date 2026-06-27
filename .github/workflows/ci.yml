@@ -122,7 +122,7 @@ jobs:
       - name: Package crate
         run: cargo package
 
-  # The GeoParquet companion crate has its own heavy arrow/parquet dependency
+  # The geospatial companion crate has its own heavy arrow/parquet dependency
   # tree, so it gets an isolated lane (own cache) and never touches the core legs.
   geo:
     name: geo (companion crate)

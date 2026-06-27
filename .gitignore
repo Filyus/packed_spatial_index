@@ -1,5 +1,6 @@
 target/
 Cargo.lock
+dev/
 node_modules/
 wasm-demo/web/pkg/
 wasm-demo/web/dist/

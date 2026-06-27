@@ -26,7 +26,7 @@ pub fn build_index_2d<R: ChunkReader + 'static>(
     reader: R,
     opts: BuildOpts,
 ) -> Result<Index2D, GeoError> {
-    let boxes = read::read_bboxes_2d(reader)?;
+    let boxes = read::read_bboxes_2d_with_opts(reader, opts.read_opts())?;
     Ok(loaded_builder_2d(&boxes, &opts).finish()?)
 }
 
@@ -35,7 +35,7 @@ pub fn build_index_3d<R: ChunkReader + 'static>(
     reader: R,
     opts: BuildOpts,
 ) -> Result<Index3D, GeoError> {
-    let boxes = read::read_bboxes_3d(reader)?;
+    let boxes = read::read_bboxes_3d_with_opts(reader, opts.read_opts())?;
     Ok(loaded_builder_3d(&boxes, &opts).finish()?)
 }
 

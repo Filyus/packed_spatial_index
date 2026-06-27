@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! gp2psindex <input.parquet> [output.psi] [--f32] [--strict]
-//!   [--payload none|row-id|row-wkb] [--no-payload] [--no-interleave]
+//!   [--geometry-column name] [--payload none|row-id|row-wkb]
+//!   [--no-payload] [--no-interleave]
 //! ```
 //!
 //! Defaults: 2D/3D auto-detected, payload is `original row id + WKB`, null/empty
@@ -12,9 +13,11 @@
 use std::fs::File;
 use std::process::ExitCode;
 
-use packed_spatial_index_geo::{ConvertOpts, ConvertPayload, convert_2d, convert_3d, inspect};
+use packed_spatial_index_geo::{
+    ConvertOpts, ConvertPayload, ReadOpts, convert_2d, convert_3d, inspect_with_opts,
+};
 
-const USAGE: &str = "usage: gp2psindex <input.parquet> [output.psi] [--f32] [--strict] [--payload none|row-id|row-wkb] [--no-payload] [--no-interleave]";
+const USAGE: &str = "usage: gp2psindex <input.parquet> [output.psi] [--f32] [--strict] [--geometry-column name] [--payload none|row-id|row-wkb] [--no-payload] [--no-interleave]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -40,7 +43,16 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let geometry_column = match geometry_column(&args) {
+        Ok(column) => column,
+        Err(e) => {
+            eprintln!("error: {e}");
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
     let opts = ConvertOpts {
+        geometry_column,
         compact_f32: flag("--f32"),
         skip_null: !flag("--strict"),
         include_payload: !flag("--no-payload") && payload != ConvertPayload::None,
@@ -60,14 +72,14 @@ fn main() -> ExitCode {
 
 fn positionals(args: &[String]) -> Vec<&String> {
     let mut out = Vec::new();
-    let mut skip_payload_value = false;
+    let mut skip_next_value = false;
     for arg in args {
-        if skip_payload_value {
-            skip_payload_value = false;
+        if skip_next_value {
+            skip_next_value = false;
             continue;
         }
-        if arg == "--payload" {
-            skip_payload_value = true;
+        if arg == "--payload" || arg == "--geometry-column" {
+            skip_next_value = true;
             continue;
         }
         if arg.starts_with("--") {
@@ -98,11 +110,44 @@ fn payload_mode(args: &[String]) -> Result<ConvertPayload, String> {
     Ok(ConvertPayload::default())
 }
 
+fn geometry_column(args: &[String]) -> Result<Option<String>, String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let value = if arg == "--geometry-column" {
+            iter.next().map(String::as_str)
+        } else {
+            arg.strip_prefix("--geometry-column=")
+        };
+        match value {
+            Some("") => {
+                return Err("--geometry-column requires a non-empty value".to_string());
+            }
+            Some(value) => return Ok(Some(value.to_string())),
+            None if arg == "--geometry-column" => {
+                return Err("--geometry-column requires a value".to_string());
+            }
+            None => {}
+        }
+    }
+    Ok(None)
+}
+
 fn run(input: &str, output: &str, opts: ConvertOpts) -> Result<(), Box<dyn std::error::Error>> {
-    let info = inspect(File::open(input)?)?;
+    let info = inspect_with_opts(
+        File::open(input)?,
+        ReadOpts {
+            geometry_column: opts.geometry_column.clone(),
+        },
+    )?;
     eprintln!(
-        "GeoParquet {} — {} rows, {}D, encoding {}, covering={}",
-        info.version, info.num_rows, info.dims, info.encoding, info.has_covering
+        "{:?} {} — {} rows, {}D, column {}, encoding {}, covering={}",
+        info.metadata_source,
+        info.version,
+        info.num_rows,
+        info.dims,
+        info.geometry_column,
+        info.encoding,
+        info.has_covering
     );
 
     let bytes = if info.dims == 3 {
@@ -147,6 +192,32 @@ mod tests {
         let positional: Vec<&str> = positionals(&args).into_iter().map(String::as_str).collect();
 
         assert!(payload_mode(&args).is_err());
+        assert_eq!(positional, vec!["in.parquet"]);
+    }
+
+    #[test]
+    fn geometry_column_value_is_not_positional() {
+        let args = args(&["in.parquet", "out.psi", "--geometry-column", "geom"]);
+        let positional: Vec<&str> = positionals(&args).into_iter().map(String::as_str).collect();
+
+        assert_eq!(positional, vec!["in.parquet", "out.psi"]);
+        assert_eq!(geometry_column(&args), Ok(Some("geom".to_string())));
+    }
+
+    #[test]
+    fn geometry_column_equals_form_is_parsed() {
+        let args = args(&["in.parquet", "--geometry-column=geom"]);
+
+        assert_eq!(positionals(&args).len(), 1);
+        assert_eq!(geometry_column(&args), Ok(Some("geom".to_string())));
+    }
+
+    #[test]
+    fn geometry_column_requires_a_value() {
+        let args = args(&["in.parquet", "--geometry-column"]);
+        let positional: Vec<&str> = positionals(&args).into_iter().map(String::as_str).collect();
+
+        assert!(geometry_column(&args).is_err());
         assert_eq!(positional, vec!["in.parquet"]);
     }
 }

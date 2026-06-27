@@ -7,10 +7,10 @@
 [![License](https://img.shields.io/crates/l/packed_spatial_index_geo.svg)](https://github.com/Filyus/packed_spatial_index/blob/main/LICENSE)
 
 Build a [`packed_spatial_index`](https://crates.io/crates/packed_spatial_index)
-spatial index from a **GeoParquet** file. GeoParquet stores geometry plus, since
-1.1, an optional per-row *bbox covering* column — but it has no per-row spatial
-index, only per-row-group statistics. That prunes whole row groups; it cannot
-pinpoint individual features. This crate fills the gap:
+spatial index from **GeoParquet** or Apache Parquet's native geospatial
+`GEOMETRY` / `GEOGRAPHY` logical types. These formats store geometry plus, in
+some cases, optional bbox/statistics metadata — but they do not provide a per-row
+spatial index that pinpoints individual features. This crate fills the gap:
 
 - **accelerator** — build an in-memory index over the rows; a query returns **row
   indices** into the original file
@@ -18,8 +18,8 @@ pinpoint individual features. This crate fills the gap:
   original GeoParquet row id + WKB geometry), serialized to a self-describing,
   **streamable `PSINDEX`** that answers window / kNN / raycast queries straight
   from object storage in a handful of range reads, with no Parquet re-read
-- **inspection** — read a file's geometry metadata (dims, encoding, CRS, covering,
-  extent, row count) without scanning any rows
+- **inspection** — read a file's geometry metadata (dims, encoding, CRS,
+  metadata source, covering, extent, row count)
 - 2D and 3D, optional **`f32`** storage for half-size files, and **`skip_null`** to
   drop empty geometry
 
@@ -58,7 +58,7 @@ Use `ConvertPayload::RowIds` when you want only a compact sidecar index that
 points back to the original GeoParquet rows.
 
 ```text
-GeoParquet  ──(this crate, native)──►  index / PSINDEX  ──(core, anywhere)──►  queries
+GeoParquet / Parquet geo  ──(this crate, native)──►  index / PSINDEX  ──(core, anywhere)──►  queries
 ```
 
 The two phases need not share a runtime: convert on a server, query from the edge.
@@ -108,14 +108,25 @@ The crate ships a CLI, `gp2psindex`, for the file-to-file path:
 
 ```text
 cargo run --bin gp2psindex -- path/to/file.parquet      # writes path/to/file.parquet.psi
-# flags: --f32  --strict (error on null)  --payload none|row-id|row-wkb
-#        --no-payload  --no-interleave
+# flags: --f32  --strict (error on null)  --geometry-column name
+#        --payload none|row-id|row-wkb  --no-payload  --no-interleave
 ```
 
 ## Scope
 
+- Inputs may be GeoParquet files with `geo` metadata or native Apache Parquet
+  `GEOMETRY` / `GEOGRAPHY` logical-type columns. When both are present,
+  GeoParquet `primary_column` is the default; use `ReadOpts::geometry_column`,
+  `BuildOpts::geometry_column`, `ConvertOpts::geometry_column`, or
+  `gp2psindex --geometry-column` to select explicitly.
 - Boxes come from the **bbox covering** column when present, otherwise from each
   geometry's **WKB** envelope.
+- Native Parquet `GEOMETRY` / `GEOGRAPHY` columns are WKB by definition, so they
+  work for envelope scans and `RowWkb` payloads even without GeoParquet `geo`
+  metadata.
+- `GEOGRAPHY` is indexed as a coordinate-axis-aligned bounding box over the
+  stored WKB coordinates. This is a candidate index, not exact spherical or
+  ellipsoidal predicate evaluation.
 - The geometry is only decoded when there is no covering column, or when the
   converter needs WKB. So a native geoarrow encoding *with* a covering column
   works for the accelerator and `ConvertPayload::RowIds`; decoding a native

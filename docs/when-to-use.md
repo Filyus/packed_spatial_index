@@ -59,12 +59,12 @@ This is not an either/or. A database or a batch pipeline is a fine *source*, and
 `packed_spatial_index` is the cheap, serverless *read path* in front of it: build
 the index from whatever holds the data, then serve queries from a static file.
 
-## Example: GeoParquet
+## Example: GeoParquet / native Parquet geospatial
 
 The contrast is sharpest in cloud-native geo. The database path is "load the
-GeoParquet into PostGIS, stand up and operate a server, point clients at it." The
-[`packed_spatial_index_geo`](../geo) path is "convert the GeoParquet to a
-`PSINDEX` once, drop it on R2, let the edge range-query it." Same windowed and kNN
-queries, returning the matching features' geometry — with no server in the loop.
-When the data is a static dump and the queries are read-only, removing the server
-is the whole point.
+GeoParquet or native Parquet `GEOMETRY` / `GEOGRAPHY` file into PostGIS, stand up
+and operate a server, point clients at it." The [`packed_spatial_index_geo`](../geo)
+path is "convert the Parquet spatial data to a `PSINDEX` once, drop it on R2, let
+the edge range-query it." Same windowed and kNN queries, returning the matching
+features' geometry — with no server in the loop. When the data is a static dump
+and the queries are read-only, removing the server is the whole point.

@@ -4,6 +4,19 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Added
+- Native Apache Parquet `GEOMETRY` / `GEOGRAPHY` logical-type support, including
+  files that have no GeoParquet `geo` metadata.
+- Explicit geometry-column selection for readers, builders, converter options,
+  and `gp2psindex --geometry-column`.
+- `GeometryMetadataSource` on `GeoParquetInfo` to distinguish GeoParquet metadata
+  from native Parquet geospatial logical types.
+
+### Changed
+- `GEOGRAPHY` inputs are indexed as coordinate bounding boxes over their WKB
+  coordinates; exact spherical or ellipsoidal predicates remain the caller's
+  responsibility after candidate lookup.
+
 ## [0.2.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.1.0...psi-geo-v0.2.0) - 2026-06-27
 
 ### Added

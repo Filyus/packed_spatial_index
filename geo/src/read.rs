@@ -3,8 +3,11 @@
 //!
 //! Boxes come from the GeoParquet 1.1 *bbox covering* column when present (cheap,
 //! no geometry decode); otherwise each geometry's envelope is computed from its
-//! WKB. Only the `WKB` geometry encoding is supported in this version; native
-//! geoarrow encodings return [`GeoError::UnsupportedEncoding`].
+//! WKB. Apache Parquet `GEOMETRY` / `GEOGRAPHY` logical types are WKB by
+//! definition; GeoParquet-native GeoArrow encodings still need a covering column
+//! unless the caller only needs row ids.
+
+use std::fmt;
 
 use arrow::array::{
     Array, ArrayRef, BinaryArray, BinaryViewArray, Float32Array, Float64Array, LargeBinaryArray,
@@ -15,25 +18,83 @@ use geoarrow_schema::Dimension;
 use geoparquet::metadata::{GeoParquetBboxCovering, GeoParquetColumnEncoding, GeoParquetMetadata};
 use geozero::GeomProcessor;
 use packed_spatial_index::{Box2D, Box3D};
+use parquet::basic::{
+    EdgeInterpolationAlgorithm, LogicalType, Type as ParquetPhysicalType,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::ChunkReader;
 
-use crate::GeoError;
+use crate::{GeoError, GeometryMetadataSource, ReadOpts};
 
 /// What the GeoParquet `geo` metadata tells us about the primary column.
 struct GeoInfo {
     geometry_column: String,
-    encoding: GeoParquetColumnEncoding,
+    encoding: GeometryEncoding,
     crs: Option<String>,
     covering: Option<GeoParquetBboxCovering>,
-    is_3d: bool,
+    dim: DimHint,
     version: String,
     bounds: Option<Vec<f64>>,
+    metadata_source: GeometryMetadataSource,
 }
 
-fn geo_info(meta: &GeoParquetMetadata) -> Result<GeoInfo, GeoError> {
-    let name = &meta.primary_column;
-    let col = meta.columns.get(name).ok_or(GeoError::NoGeometryColumn)?;
+#[derive(Debug, Clone)]
+enum GeometryEncoding {
+    GeoParquet(GeoParquetColumnEncoding),
+    ParquetGeometry,
+    ParquetGeography {
+        algorithm: Option<EdgeInterpolationAlgorithm>,
+    },
+}
+
+impl GeometryEncoding {
+    fn is_wkb(&self) -> bool {
+        matches!(
+            self,
+            GeometryEncoding::GeoParquet(GeoParquetColumnEncoding::WKB)
+                | GeometryEncoding::ParquetGeometry
+                | GeometryEncoding::ParquetGeography { .. }
+        )
+    }
+}
+
+impl fmt::Display for GeometryEncoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GeometryEncoding::GeoParquet(enc) => write!(f, "{enc}"),
+            GeometryEncoding::ParquetGeometry => f.write_str("GEOMETRY"),
+            GeometryEncoding::ParquetGeography { algorithm: None } => f.write_str("GEOGRAPHY"),
+            GeometryEncoding::ParquetGeography {
+                algorithm: Some(algorithm),
+            } => write!(f, "GEOGRAPHY({algorithm})"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DimHint {
+    Two,
+    Three,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+struct NativeGeoColumn {
+    name: String,
+    column_index: usize,
+    encoding: GeometryEncoding,
+    crs: Option<String>,
+}
+
+fn geo_info(meta: &GeoParquetMetadata, opts: &ReadOpts) -> Result<GeoInfo, GeoError> {
+    let name = opts.geometry_column.as_ref().unwrap_or(&meta.primary_column);
+    let col = meta.columns.get(name).ok_or_else(|| {
+        opts.geometry_column
+            .as_ref()
+            .map(|name| GeoError::GeometryColumnNotFound(name.clone()))
+            .unwrap_or(GeoError::NoGeometryColumn)
+    })?;
     let covering = col.covering.as_ref().map(|c| c.bbox.clone());
     let is_3d = covering.as_ref().is_some_and(|c| c.zmin.is_some())
         || col
@@ -42,34 +103,146 @@ fn geo_info(meta: &GeoParquetMetadata) -> Result<GeoInfo, GeoError> {
             .any(|t| matches!(t.dimension(), Dimension::XYZ | Dimension::XYZM));
     Ok(GeoInfo {
         geometry_column: name.clone(),
-        encoding: col.encoding,
+        encoding: GeometryEncoding::GeoParquet(col.encoding),
         // PROJJSON object serialized back to a compact string for the index's
         // `META.crs` chunk.
         crs: col.crs.as_ref().map(|v| v.to_string()),
         covering,
-        is_3d,
+        dim: if is_3d { DimHint::Three } else { DimHint::Two },
         version: meta.version.clone(),
         bounds: col.bbox.clone(),
+        metadata_source: GeometryMetadataSource::GeoParquet,
     })
+}
+
+fn native_info(
+    meta: &ParquetMetaData,
+    opts: &ReadOpts,
+    candidates: &[NativeGeoColumn],
+) -> Result<GeoInfo, GeoError> {
+    let selected = if let Some(name) = &opts.geometry_column {
+        candidates
+            .iter()
+            .find(|c| &c.name == name)
+            .ok_or_else(|| GeoError::GeometryColumnNotFound(name.clone()))?
+    } else {
+        match candidates {
+            [] => return Err(GeoError::NoGeometryColumn),
+            [one] => one,
+            many => {
+                return Err(GeoError::AmbiguousGeometryColumn {
+                    columns: many.iter().map(|c| c.name.clone()).collect(),
+                });
+            }
+        }
+    };
+
+    Ok(GeoInfo {
+        geometry_column: selected.name.clone(),
+        encoding: selected.encoding.clone(),
+        crs: selected.crs.clone(),
+        covering: None,
+        dim: native_dim_hint(meta, selected.column_index),
+        version: "parquet-geospatial".to_string(),
+        bounds: None,
+        metadata_source: GeometryMetadataSource::ParquetGeospatial,
+    })
+}
+
+fn native_geo_columns(meta: &ParquetMetaData) -> Vec<NativeGeoColumn> {
+    meta.file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .enumerate()
+        .filter_map(|(column_index, col)| {
+            let parts = col.path().parts();
+            if parts.len() != 1
+                || col.max_rep_level() != 0
+                || col.physical_type() != ParquetPhysicalType::BYTE_ARRAY
+            {
+                return None;
+            }
+
+            match col.logical_type_ref()? {
+                LogicalType::Geometry { crs } => Some(NativeGeoColumn {
+                    name: parts[0].clone(),
+                    column_index,
+                    encoding: GeometryEncoding::ParquetGeometry,
+                    crs: crs.clone(),
+                }),
+                LogicalType::Geography { crs, algorithm } => Some(NativeGeoColumn {
+                    name: parts[0].clone(),
+                    column_index,
+                    encoding: GeometryEncoding::ParquetGeography {
+                        algorithm: *algorithm,
+                    },
+                    crs: crs.clone(),
+                }),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn native_dim_hint(meta: &ParquetMetaData, column_index: usize) -> DimHint {
+    let mut saw_stats = false;
+    for row_group in meta.row_groups() {
+        let Some(types) = row_group
+            .column(column_index)
+            .geo_statistics()
+            .and_then(|stats| stats.geospatial_types())
+        else {
+            return DimHint::Unknown;
+        };
+
+        saw_stats = true;
+        if types.iter().any(|&ty| wkb_type_has_z(ty)) {
+            return DimHint::Three;
+        }
+    }
+
+    if saw_stats {
+        DimHint::Two
+    } else {
+        DimHint::Unknown
+    }
+}
+
+fn wkb_type_has_z(ty: i32) -> bool {
+    (1000..2000).contains(&ty) || (3000..4000).contains(&ty)
 }
 
 /// Read just the GeoParquet metadata and row count, without building a batch
 /// reader. Returns the builder so a caller can go on to read batches.
 fn read_meta<R: ChunkReader + 'static>(
     reader: R,
+    opts: &ReadOpts,
 ) -> Result<(GeoInfo, usize, ParquetRecordBatchReaderBuilder<R>), GeoError> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
-    let file_meta = builder.metadata().file_metadata();
-    let gpq = GeoParquetMetadata::from_parquet_meta(file_meta)
-        .ok_or_else(|| GeoError::Metadata("file has no `geo` metadata".to_string()))?
-        .map_err(|e| GeoError::Metadata(e.to_string()))?;
-    let info = geo_info(&gpq)?;
+    let meta = builder.metadata();
+    let file_meta = meta.file_metadata();
+    let native = native_geo_columns(meta);
+    let geo_meta = GeoParquetMetadata::from_parquet_meta(file_meta);
+    let explicit_geo_column = opts.geometry_column.as_ref();
+    let info = match geo_meta {
+        Some(Ok(gpq))
+            if explicit_geo_column.is_none()
+                || gpq.columns.contains_key(explicit_geo_column.unwrap()) =>
+        {
+            geo_info(&gpq, opts)?
+        }
+        Some(Ok(gpq)) => native_info(meta, opts, &native).or_else(|_| geo_info(&gpq, opts))?,
+        Some(Err(e)) => return Err(GeoError::Metadata(e.to_string())),
+        None => native_info(meta, opts, &native)?,
+    };
     let total = file_meta.num_rows().max(0) as usize;
     Ok((info, total, builder))
 }
 
 fn open<R: ChunkReader + 'static>(
     reader: R,
+    opts: &ReadOpts,
 ) -> Result<
     (
         GeoInfo,
@@ -78,23 +251,31 @@ fn open<R: ChunkReader + 'static>(
     ),
     GeoError,
 > {
-    let (info, total, builder) = read_meta(reader)?;
+    let (info, total, builder) = read_meta(reader, opts)?;
     let batches = builder.build()?;
     Ok((info, total, batches))
 }
 
-/// A summary of a GeoParquet source's primary geometry column, from [`inspect`].
+/// A summary of a GeoParquet or native Parquet geospatial source's selected
+/// geometry column, from [`inspect`].
 #[derive(Debug, Clone)]
 pub struct GeoParquetInfo {
-    /// GeoParquet spec version the file declares, e.g. `"1.1.0"`.
+    /// Metadata version/source marker. GeoParquet files report their declared
+    /// spec version, e.g. `"1.1.0"`; native Parquet geospatial files report
+    /// `"parquet-geospatial"`.
     pub version: String,
-    /// Name of the primary geometry column.
+    /// Name of the selected geometry column.
     pub geometry_column: String,
+    /// Where the selected geometry metadata came from.
+    pub metadata_source: GeometryMetadataSource,
     /// `2` or `3`.
     pub dims: u8,
-    /// Geometry encoding, e.g. `"WKB"` or `"point"`.
+    /// Geometry encoding, e.g. `"WKB"`, `"point"`, `"GEOMETRY"`, or
+    /// `"GEOGRAPHY(SPHERICAL)"`.
     pub encoding: String,
-    /// Column CRS as a PROJJSON string, if the file declares one.
+    /// Column CRS, if the file declares one. GeoParquet reports compact
+    /// PROJJSON; native Parquet geospatial reports the logical type's `crs`
+    /// string verbatim.
     pub crs: Option<String>,
     /// Whether a per-row bbox covering column is present.
     pub has_covering: bool,
@@ -106,7 +287,7 @@ pub struct GeoParquetInfo {
     pub num_rows: u64,
 }
 
-/// Inspect a GeoParquet source's geometry metadata without reading any rows.
+/// Inspect a source's selected geometry metadata.
 ///
 /// # Examples
 ///
@@ -122,11 +303,28 @@ pub struct GeoParquetInfo {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn inspect<R: ChunkReader + 'static>(reader: R) -> Result<GeoParquetInfo, GeoError> {
-    let (info, total, _builder) = read_meta(reader)?;
+    inspect_with_opts(reader, ReadOpts::default())
+}
+
+/// Inspect a source's selected geometry metadata with explicit reader options.
+///
+/// GeoParquet metadata provides dimensionality without reading rows. Native
+/// Parquet geospatial files that lack geospatial type statistics may require a
+/// WKB pass to infer whether any geometry carries Z coordinates.
+pub fn inspect_with_opts<R: ChunkReader + 'static>(
+    reader: R,
+    opts: ReadOpts,
+) -> Result<GeoParquetInfo, GeoError> {
+    let (mut info, total, builder) = read_meta(reader, &opts)?;
+    if info.dim == DimHint::Unknown {
+        let batches = builder.build()?;
+        info.dim = infer_dim_from_batches(batches, &info.geometry_column)?;
+    }
     Ok(GeoParquetInfo {
         version: info.version,
         geometry_column: info.geometry_column,
-        dims: if info.is_3d { 3 } else { 2 },
+        metadata_source: info.metadata_source,
+        dims: if info.dim == DimHint::Three { 3 } else { 2 },
         encoding: info.encoding.to_string(),
         crs: info.crs,
         has_covering: info.covering.is_some(),
@@ -135,9 +333,18 @@ pub fn inspect<R: ChunkReader + 'static>(reader: R) -> Result<GeoParquetInfo, Ge
     })
 }
 
-/// Report whether a GeoParquet source's primary geometry column is 2D or 3D.
+/// Report whether a source's selected geometry column is 2D or 3D.
 pub fn detect_dims<R: ChunkReader + 'static>(reader: R) -> Result<u8, GeoError> {
     Ok(inspect(reader)?.dims)
+}
+
+/// Report whether a source's selected geometry column is 2D or 3D with explicit
+/// reader options.
+pub fn detect_dims_with_opts<R: ChunkReader + 'static>(
+    reader: R,
+    opts: ReadOpts,
+) -> Result<u8, GeoError> {
+    Ok(inspect_with_opts(reader, opts)?.dims)
 }
 
 /// Read every row's 2D bounding box, in file row order. Item `i` corresponds to
@@ -154,12 +361,28 @@ pub fn detect_dims<R: ChunkReader + 'static>(reader: R) -> Result<u8, GeoError> 
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn read_bboxes_2d<R: ChunkReader + 'static>(reader: R) -> Result<Vec<Box2D>, GeoError> {
-    Ok(scan_2d(reader, false, false)?.boxes)
+    read_bboxes_2d_with_opts(reader, ReadOpts::default())
+}
+
+/// Read every row's 2D bounding box with explicit reader options.
+pub fn read_bboxes_2d_with_opts<R: ChunkReader + 'static>(
+    reader: R,
+    opts: ReadOpts,
+) -> Result<Vec<Box2D>, GeoError> {
+    Ok(scan_2d(reader, false, false, &opts)?.boxes)
 }
 
 /// Read every row's 3D bounding box, in file row order.
 pub fn read_bboxes_3d<R: ChunkReader + 'static>(reader: R) -> Result<Vec<Box3D>, GeoError> {
-    Ok(scan_3d(reader, false, false)?.boxes)
+    read_bboxes_3d_with_opts(reader, ReadOpts::default())
+}
+
+/// Read every row's 3D bounding box with explicit reader options.
+pub fn read_bboxes_3d_with_opts<R: ChunkReader + 'static>(
+    reader: R,
+    opts: ReadOpts,
+) -> Result<Vec<Box3D>, GeoError> {
+    Ok(scan_3d(reader, false, false, &opts)?.boxes)
 }
 
 /// Result of a 2D scan: boxes (always) plus, when requested, the per-row WKB
@@ -182,9 +405,10 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
     reader: R,
     want_wkb: bool,
     skip_null: bool,
+    opts: &ReadOpts,
 ) -> Result<Scan2D, GeoError> {
-    let (info, total, batches) = open(reader)?;
-    if info.is_3d {
+    let (info, total, batches) = open(reader, opts)?;
+    if info.dim == DimHint::Three {
         return Err(GeoError::DimMismatch {
             expected: 2,
             found: 3,
@@ -232,8 +456,16 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
                 let geom = geom_bin.as_ref().expect("need_wkb when no covering");
                 if geom.is_null(i) {
                     None
+                } else if let Some((b, has_z)) = wkb_bounds_2d(geom.value(i)) {
+                    if info.dim == DimHint::Unknown && has_z {
+                        return Err(GeoError::DimMismatch {
+                            expected: 2,
+                            found: 3,
+                        });
+                    }
+                    Some(Box2D::new(b[0], b[1], b[2], b[3]))
                 } else {
-                    wkb_bounds_2d(geom.value(i)).map(|b| Box2D::new(b[0], b[1], b[2], b[3]))
+                    None
                 }
             };
             match bx {
@@ -264,9 +496,10 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
     reader: R,
     want_wkb: bool,
     skip_null: bool,
+    opts: &ReadOpts,
 ) -> Result<Scan3D, GeoError> {
-    let (info, total, batches) = open(reader)?;
-    if !info.is_3d {
+    let (info, total, batches) = open(reader, opts)?;
+    if info.dim == DimHint::Two {
         return Err(GeoError::DimMismatch {
             expected: 3,
             found: 2,
@@ -284,6 +517,7 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
     let mut row_ids = Vec::with_capacity(total);
     let mut wkb = want_wkb.then(|| Vec::with_capacity(total));
     let mut row_base = 0usize;
+    let mut saw_z = info.dim == DimHint::Three;
 
     for batch in batches {
         let batch = batch?;
@@ -316,9 +550,11 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
                 let geom = geom_bin.as_ref().expect("need_wkb when no 3D covering");
                 if geom.is_null(i) {
                     None
+                } else if let Some((b, has_z)) = wkb_bounds_3d(geom.value(i)) {
+                    saw_z |= has_z;
+                    Some(Box3D::new(b[0], b[1], b[2], b[3], b[4], b[5]))
                 } else {
-                    wkb_bounds_3d(geom.value(i))
-                        .map(|b| Box3D::new(b[0], b[1], b[2], b[3], b[4], b[5]))
+                    None
                 }
             };
             match bx {
@@ -337,6 +573,13 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
         row_base += n;
     }
 
+    if info.dim == DimHint::Unknown && !saw_z {
+        return Err(GeoError::DimMismatch {
+            expected: 3,
+            found: 2,
+        });
+    }
+
     Ok(Scan3D {
         boxes,
         row_ids,
@@ -348,7 +591,7 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
 /// Require the `WKB` encoding only when the geometry column will actually be
 /// decoded (no covering boxes, or the caller wants the WKB payload).
 fn require_wkb_if(info: &GeoInfo, needed: bool) -> Result<(), GeoError> {
-    if !needed || info.encoding == GeoParquetColumnEncoding::WKB {
+    if !needed || info.encoding.is_wkb() {
         Ok(())
     } else {
         Err(GeoError::UnsupportedEncoding(info.encoding.to_string()))
@@ -398,6 +641,29 @@ fn binary_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<WkbCol<'a>, G
     }
 }
 
+fn infer_dim_from_batches(
+    batches: parquet::arrow::arrow_reader::ParquetRecordBatchReader,
+    geometry_column: &str,
+) -> Result<DimHint, GeoError> {
+    for batch in batches {
+        let batch = batch?;
+        let geom = binary_column(&batch, geometry_column)?;
+        for i in 0..batch.num_rows() {
+            if geom.is_null(i) {
+                continue;
+            }
+            let Some(bounds) = wkb_bounds(geom.value(i), true) else {
+                continue;
+            };
+            if bounds.has_z {
+                return Ok(DimHint::Three);
+            }
+        }
+    }
+
+    Ok(DimHint::Two)
+}
+
 /// Resolve a GeoParquet schema path (`["bbox", "xmin"]`) to a leaf array and read
 /// it as `f64`, accepting either `Float64` or `Float32` storage.
 fn f64_path(batch: &RecordBatch, path: &[String]) -> Result<Vec<f64>, GeoError> {
@@ -440,6 +706,7 @@ struct Bounds {
     min: [f64; 3],
     max: [f64; 3],
     three_d: bool,
+    has_z: bool,
     any: bool,
 }
 
@@ -449,16 +716,23 @@ impl Bounds {
             min: [f64::INFINITY; 3],
             max: [f64::NEG_INFINITY; 3],
             three_d,
+            has_z: false,
             any: false,
         }
     }
-    fn add(&mut self, x: f64, y: f64, z: f64) {
+    fn add(&mut self, x: f64, y: f64, z: Option<f64>) {
         self.min[0] = self.min[0].min(x);
         self.min[1] = self.min[1].min(y);
-        self.min[2] = self.min[2].min(z);
         self.max[0] = self.max[0].max(x);
         self.max[1] = self.max[1].max(y);
-        self.max[2] = self.max[2].max(z);
+        if let Some(z) = z {
+            self.min[2] = self.min[2].min(z);
+            self.max[2] = self.max[2].max(z);
+            self.has_z = true;
+        } else if self.three_d {
+            self.min[2] = self.min[2].min(0.0);
+            self.max[2] = self.max[2].max(0.0);
+        }
         self.any = true;
     }
 }
@@ -468,7 +742,7 @@ impl GeomProcessor for Bounds {
         self.three_d
     }
     fn xy(&mut self, x: f64, y: f64, _idx: usize) -> geozero::error::Result<()> {
-        self.add(x, y, 0.0);
+        self.add(x, y, None);
         Ok(())
     }
     fn coordinate(
@@ -481,7 +755,7 @@ impl GeomProcessor for Bounds {
         _tm: Option<u64>,
         _idx: usize,
     ) -> geozero::error::Result<()> {
-        self.add(x, y, z.unwrap_or(0.0));
+        self.add(x, y, z);
         Ok(())
     }
 }
@@ -493,12 +767,15 @@ fn wkb_bounds(bytes: &[u8], three_d: bool) -> Option<Bounds> {
     b.any.then_some(b)
 }
 
-fn wkb_bounds_2d(bytes: &[u8]) -> Option<[f64; 4]> {
-    let b = wkb_bounds(bytes, false)?;
-    Some([b.min[0], b.min[1], b.max[0], b.max[1]])
+fn wkb_bounds_2d(bytes: &[u8]) -> Option<([f64; 4], bool)> {
+    let b = wkb_bounds(bytes, true)?;
+    Some(([b.min[0], b.min[1], b.max[0], b.max[1]], b.has_z))
 }
 
-fn wkb_bounds_3d(bytes: &[u8]) -> Option<[f64; 6]> {
+fn wkb_bounds_3d(bytes: &[u8]) -> Option<([f64; 6], bool)> {
     let b = wkb_bounds(bytes, true)?;
-    Some([b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]])
+    Some((
+        [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]],
+        b.has_z,
+    ))
 }

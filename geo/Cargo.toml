@@ -23,7 +23,7 @@ geoarrow-schema = "0.8"
 # Arrow arrays + the synchronous Parquet record-batch reader (must match the
 # arrow/parquet major that `geoparquet` builds on).
 arrow = "58"
-parquet = "58"
+parquet = { version = "58", features = ["geospatial"] }
 # WKB envelope fallback when a file has no bbox covering column.
 geozero = { version = "0.15", features = ["with-wkb"] }
 

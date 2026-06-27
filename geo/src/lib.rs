@@ -9,7 +9,10 @@ pub use convert::{
     ConvertPayload, ROW_ID_CONTENT_TYPE, ROW_WKB_CONTENT_TYPE, convert_2d, convert_2d_into,
     convert_3d, convert_3d_into, decode_row_id_payload, decode_row_wkb_payload,
 };
-pub use read::{GeoParquetInfo, detect_dims, inspect, read_bboxes_2d, read_bboxes_3d};
+pub use read::{
+    GeoParquetInfo, detect_dims, detect_dims_with_opts, inspect, inspect_with_opts,
+    read_bboxes_2d, read_bboxes_2d_with_opts, read_bboxes_3d, read_bboxes_3d_with_opts,
+};
 
 // Re-export the core types this crate produces or names, so a caller can build,
 // convert, load, and query entirely through `packed_spatial_index_geo` without
@@ -19,9 +22,29 @@ pub use packed_spatial_index::{
     StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, read_metadata,
 };
 
+/// Geometry metadata source used to select and interpret the geometry column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeometryMetadataSource {
+    /// GeoParquet `geo` key-value metadata.
+    GeoParquet,
+    /// Apache Parquet native `GEOMETRY` / `GEOGRAPHY` logical types.
+    ParquetGeospatial,
+}
+
+/// Reader column-selection options.
+#[derive(Debug, Clone, Default)]
+pub struct ReadOpts {
+    /// Geometry column to read. When omitted, GeoParquet `primary_column` wins;
+    /// native Parquet geospatial files auto-select only if exactly one root
+    /// `GEOMETRY` / `GEOGRAPHY` column exists.
+    pub geometry_column: Option<String>,
+}
+
 /// Index build parameters, forwarded to `Index*DBuilder`.
 #[derive(Debug, Clone)]
 pub struct BuildOpts {
+    /// Geometry column to index. See [`ReadOpts::geometry_column`].
+    pub geometry_column: Option<String>,
     /// Tree node fan-out. `None` keeps the crate default.
     pub node_size: Option<usize>,
     /// Build the index in parallel (requires the core `parallel` feature, on by
@@ -32,8 +55,17 @@ pub struct BuildOpts {
 impl Default for BuildOpts {
     fn default() -> Self {
         Self {
+            geometry_column: None,
             node_size: None,
             parallel: true,
+        }
+    }
+}
+
+impl BuildOpts {
+    pub(crate) fn read_opts(&self) -> ReadOpts {
+        ReadOpts {
+            geometry_column: self.geometry_column.clone(),
         }
     }
 }
@@ -41,6 +73,8 @@ impl Default for BuildOpts {
 /// Converter parameters for [`convert_2d`] / [`convert_3d`].
 #[derive(Debug, Clone)]
 pub struct ConvertOpts {
+    /// Geometry column to convert. See [`ReadOpts::geometry_column`].
+    pub geometry_column: Option<String>,
     /// Index build parameters.
     pub build: BuildOpts,
     /// Attach a leaf-ordered payload section. When `false`, only the index
@@ -76,12 +110,21 @@ pub struct ConvertOpts {
 impl Default for ConvertOpts {
     fn default() -> Self {
         Self {
+            geometry_column: None,
             build: BuildOpts::default(),
             include_payload: true,
             payload: ConvertPayload::RowWkb,
             compact_f32: false,
             skip_null: false,
             interleaved: true,
+        }
+    }
+}
+
+impl ConvertOpts {
+    pub(crate) fn read_opts(&self) -> ReadOpts {
+        ReadOpts {
+            geometry_column: self.geometry_column.clone(),
         }
     }
 }
@@ -108,8 +151,19 @@ pub enum GeoError {
     #[error(transparent)]
     Payload(#[from] packed_spatial_index::PayloadError),
     /// The file has no primary geometry column.
-    #[error("no GeoParquet geometry column")]
+    #[error("no geometry column")]
     NoGeometryColumn,
+    /// The requested geometry column is missing or not a supported geometry
+    /// column.
+    #[error("geometry column `{0}` not found")]
+    GeometryColumnNotFound(String),
+    /// The file has multiple native Parquet geospatial columns and no explicit
+    /// selection was provided.
+    #[error("ambiguous geometry column; choose one of: {columns:?}")]
+    AmbiguousGeometryColumn {
+        /// Candidate root-level native Parquet geospatial columns.
+        columns: Vec<String>,
+    },
     /// A row has null or empty geometry. v1 keeps item id equal to the file row
     /// index, which has no room for skipped rows; filter such rows before
     /// indexing. (A skip/remap policy may be added later.)

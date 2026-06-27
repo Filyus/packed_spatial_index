@@ -94,7 +94,7 @@ pub fn convert_2d_into<R: ChunkReader + 'static>(
     out: &mut Vec<u8>,
 ) -> Result<(), GeoError> {
     let want_wkb = opts.include_payload && opts.payload.needs_wkb();
-    let scan = read::scan_2d(reader, want_wkb, opts.skip_null)?;
+    let scan = read::scan_2d(reader, want_wkb, opts.skip_null, &opts.read_opts())?;
     let builder = build::loaded_builder_2d(&scan.boxes, &opts.build);
     serialize_2d(
         builder,
@@ -113,7 +113,7 @@ pub fn convert_3d_into<R: ChunkReader + 'static>(
     out: &mut Vec<u8>,
 ) -> Result<(), GeoError> {
     let want_wkb = opts.include_payload && opts.payload.needs_wkb();
-    let scan = read::scan_3d(reader, want_wkb, opts.skip_null)?;
+    let scan = read::scan_3d(reader, want_wkb, opts.skip_null, &opts.read_opts())?;
     let builder = build::loaded_builder_3d(&scan.boxes, &opts.build);
     serialize_3d(
         builder,

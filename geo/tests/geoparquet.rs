@@ -21,8 +21,9 @@ use packed_spatial_index::{
     Box2D, Box3D, SliceReader, StreamIndex2D, StreamIndex2DF32, read_metadata,
 };
 use packed_spatial_index_geo::{
-    BuildOpts, ConvertOpts, GeoError, build_index_2d, build_index_3d, convert_2d, convert_2d_into,
-    detect_dims, inspect, read_bboxes_2d, read_bboxes_3d,
+    BuildOpts, ConvertOpts, ConvertPayload, GeoError, ROW_ID_CONTENT_TYPE, ROW_WKB_CONTENT_TYPE,
+    build_index_2d, build_index_3d, convert_2d, convert_2d_into, decode_row_id_payload,
+    decode_row_wkb_payload, detect_dims, inspect, read_bboxes_2d, read_bboxes_3d,
 };
 
 // --- WKB encoders (little-endian, ISO) --------------------------------------
@@ -322,7 +323,7 @@ fn convert_2d_roundtrips_payloads_and_metadata() {
     let psindex = convert_2d(data, ConvertOpts::default()).unwrap();
 
     let meta = read_metadata(&psindex).unwrap();
-    assert_eq!(meta.content_type.as_deref(), Some("application/geo+wkb"));
+    assert_eq!(meta.content_type.as_deref(), Some(ROW_WKB_CONTENT_TYPE));
     assert_eq!(meta.crs.as_deref(), Some(CRS_JSON));
 
     let index = StreamIndex2D::open(SliceReader::new(psindex.as_slice())).unwrap();
@@ -332,9 +333,11 @@ fn convert_2d_roundtrips_payloads_and_metadata() {
         sorted(hits.iter().map(|(i, _)| *i).collect()),
         brute_2d(&boxes, q)
     );
-    // Each returned payload is exactly the original row's WKB.
+    // Each returned payload preserves the source row id before the WKB bytes.
     for (id, payload) in &hits {
-        assert_eq!(payload, wkbs[*id].as_ref().unwrap(), "payload for row {id}");
+        let (row, wkb) = decode_row_wkb_payload(payload).unwrap();
+        assert_eq!(row as usize, *id);
+        assert_eq!(wkb, wkbs[row as usize].as_ref().unwrap());
     }
 }
 
@@ -499,6 +502,22 @@ fn native_encoding_uses_covering_and_rejects_payload() {
         ..Default::default()
     };
     assert!(convert_2d(make(), opts).is_ok());
+
+    // Row-id payloads are also compatible with native encoding because they do
+    // not require decoding the geometry column.
+    let opts = ConvertOpts {
+        payload: ConvertPayload::RowIds,
+        ..Default::default()
+    };
+    let psindex = convert_2d(make(), opts).unwrap();
+    let meta = read_metadata(&psindex).unwrap();
+    assert_eq!(meta.content_type.as_deref(), Some(ROW_ID_CONTENT_TYPE));
+    let index = StreamIndex2D::open(SliceReader::new(psindex.as_slice())).unwrap();
+    let hits = index
+        .search_payloads(Box2D::new(1.0, 1.0, 2.0, 2.0))
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(decode_row_id_payload(&hits[0].1), Some(0));
 }
 
 #[test]
@@ -620,14 +639,56 @@ fn convert_skip_null_drops_null_rows() {
     };
     let psindex = convert_2d(data, opts).unwrap();
     let index = StreamIndex2D::open(SliceReader::new(psindex.as_slice())).unwrap();
-    // Two surviving rows; ids are 0 and 1 (compacted), payloads are the originals.
+    // Two surviving rows; ids are compacted, payload row ids point to the source.
     let hits = index
         .search_payloads(Box2D::new(-1.0, -1.0, 11.0, 11.0))
         .unwrap();
     assert_eq!(hits.len(), 2);
-    let mut payloads: Vec<&Vec<u8>> = hits.iter().map(|(_, p)| p).collect();
-    payloads.sort();
-    let mut expected = vec![wkbs[0].as_ref().unwrap(), wkbs[2].as_ref().unwrap()];
-    expected.sort();
-    assert_eq!(payloads, expected);
+    let mut decoded: Vec<(usize, u64, Vec<u8>)> = hits
+        .iter()
+        .map(|(id, payload)| {
+            let (row, wkb) = decode_row_wkb_payload(payload).unwrap();
+            (*id, row, wkb.to_vec())
+        })
+        .collect();
+    decoded.sort_by_key(|(_, row, _)| *row);
+    assert_eq!(decoded[0].0, 0);
+    assert_eq!(decoded[0].1, 0);
+    assert_eq!(decoded[0].2, *wkbs[0].as_ref().unwrap());
+    assert_eq!(decoded[1].0, 1);
+    assert_eq!(decoded[1].1, 2);
+    assert_eq!(decoded[1].2, *wkbs[2].as_ref().unwrap());
+}
+
+#[test]
+fn convert_row_id_payload_is_compact_sidecar_mode() {
+    let wkbs = vec![
+        Some(wkb_point_2d(0.0, 0.0)),
+        None,
+        Some(wkb_point_2d(10.0, 10.0)),
+    ];
+    let data = write_parquet(
+        vec![("geometry", binary_col(&wkbs))],
+        geo_meta_2d(false, false),
+    );
+    let opts = ConvertOpts {
+        payload: ConvertPayload::RowIds,
+        skip_null: true,
+        ..Default::default()
+    };
+
+    let psindex = convert_2d(data, opts).unwrap();
+
+    let meta = read_metadata(&psindex).unwrap();
+    assert_eq!(meta.content_type.as_deref(), Some(ROW_ID_CONTENT_TYPE));
+    let index = StreamIndex2D::open(SliceReader::new(psindex.as_slice())).unwrap();
+    let hits = index
+        .search_payloads(Box2D::new(-1.0, -1.0, 11.0, 11.0))
+        .unwrap();
+    let mut rows: Vec<u64> = hits
+        .iter()
+        .map(|(_, payload)| decode_row_id_payload(payload).unwrap())
+        .collect();
+    rows.sort_unstable();
+    assert_eq!(rows, vec![0, 2]);
 }

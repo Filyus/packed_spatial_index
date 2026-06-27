@@ -166,12 +166,14 @@ pub fn read_bboxes_3d<R: ChunkReader + 'static>(reader: R) -> Result<Vec<Box3D>,
 /// geometry and the column CRS for the converter.
 pub(crate) struct Scan2D {
     pub boxes: Vec<Box2D>,
+    pub row_ids: Vec<u64>,
     pub wkb: Option<Vec<Vec<u8>>>,
     pub crs: Option<String>,
 }
 
 pub(crate) struct Scan3D {
     pub boxes: Vec<Box3D>,
+    pub row_ids: Vec<u64>,
     pub wkb: Option<Vec<Vec<u8>>>,
     pub crs: Option<String>,
 }
@@ -195,6 +197,7 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
     require_wkb_if(&info, need_wkb)?;
 
     let mut boxes = Vec::with_capacity(total);
+    let mut row_ids = Vec::with_capacity(total);
     let mut wkb = want_wkb.then(|| Vec::with_capacity(total));
     let mut row_base = 0usize;
 
@@ -236,6 +239,7 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
             match bx {
                 Some(b) => {
                     boxes.push(b);
+                    row_ids.push((row_base + i) as u64);
                     if let Some(w) = wkb.as_mut() {
                         let geom = geom_bin.as_ref().expect("want_wkb implies binary column");
                         w.push(geom.value(i).to_vec());
@@ -250,6 +254,7 @@ pub(crate) fn scan_2d<R: ChunkReader + 'static>(
 
     Ok(Scan2D {
         boxes,
+        row_ids,
         wkb,
         crs: info.crs,
     })
@@ -276,6 +281,7 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
     require_wkb_if(&info, need_wkb)?;
 
     let mut boxes = Vec::with_capacity(total);
+    let mut row_ids = Vec::with_capacity(total);
     let mut wkb = want_wkb.then(|| Vec::with_capacity(total));
     let mut row_base = 0usize;
 
@@ -318,6 +324,7 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
             match bx {
                 Some(b) => {
                     boxes.push(b);
+                    row_ids.push((row_base + i) as u64);
                     if let Some(w) = wkb.as_mut() {
                         let geom = geom_bin.as_ref().expect("want_wkb implies binary column");
                         w.push(geom.value(i).to_vec());
@@ -332,6 +339,7 @@ pub(crate) fn scan_3d<R: ChunkReader + 'static>(
 
     Ok(Scan3D {
         boxes,
+        row_ids,
         wkb,
         crs: info.crs,
     })

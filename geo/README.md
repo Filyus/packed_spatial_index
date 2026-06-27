@@ -14,10 +14,10 @@ pinpoint individual features. This crate fills the gap:
 
 - **accelerator** — build an in-memory index over the rows; a query returns **row
   indices** into the original file
-- **converter** — build the index *and* attach each row's WKB geometry as a
-  payload, serialized to a self-describing, **streamable `PSINDEX`** that answers
-  window / kNN / raycast queries straight from object storage in a handful of
-  range reads, with no Parquet re-read
+- **converter** — build the index and attach a leaf-ordered payload (by default,
+  original GeoParquet row id + WKB geometry), serialized to a self-describing,
+  **streamable `PSINDEX`** that answers window / kNN / raycast queries straight
+  from object storage in a handful of range reads, with no Parquet re-read
 - **inspection** — read a file's geometry metadata (dims, encoding, CRS, covering,
   extent, row count) without scanning any rows
 - 2D and 3D, optional **`f32`** storage for half-size files, and **`skip_null`** to
@@ -51,10 +51,11 @@ Reach for the **accelerator** when the GeoParquet file stays put and you just wa
 fast windowed / kNN / raycast lookups against it: the index is tiny (boxes + row
 ids), and a query hands you row indices to read back from the file.
 
-Reach for the **converter** when you want a portable, cloud-served store: it folds
-the geometry into one self-describing `PSINDEX` blob that the core streaming engine
-queries directly over HTTP range requests, returning the geometry itself — no
-Parquet alongside.
+Reach for the **converter** when you want a portable, cloud-served store: by
+default it folds source row ids and geometry into one self-describing `PSINDEX`
+blob that the core streaming engine queries directly over HTTP range requests.
+Use `ConvertPayload::RowIds` when you want only a compact sidecar index that
+points back to the original GeoParquet rows.
 
 ```text
 GeoParquet  ──(this crate, native)──►  index / PSINDEX  ──(core, anywhere)──►  queries
@@ -77,11 +78,14 @@ Serve `cities.psindex` over HTTP range requests (or read it locally) and query i
 with the re-exported streaming types — no second dependency needed:
 
 ```rust,no_run
-use packed_spatial_index_geo::{Box2D, SliceReader, StreamIndex2D};
+use packed_spatial_index_geo::{
+    decode_row_wkb_payload, Box2D, SliceReader, StreamIndex2D,
+};
 
 let bytes = std::fs::read("cities.psindex")?;
 let index = StreamIndex2D::open(SliceReader::new(bytes))?;
-for (row, wkb) in index.search_payloads(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+for (_item, payload) in index.search_payloads(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    let (row, wkb) = decode_row_wkb_payload(&payload).expect("default geo payload");
     println!("feature {row}: {} WKB bytes", wkb.len());
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -92,11 +96,20 @@ become a conservative superset; re-check exact hits against the payload geometry
 `ConvertOpts { skip_null: true, .. }` drops null or empty geometries instead of
 erroring.
 
+Payload modes:
+
+- `ConvertPayload::RowWkb` (default): `u64le original_row_id` followed by WKB.
+- `ConvertPayload::RowIds`: fixed-width `u64le original_row_id` only; smallest
+  sidecar mode and compatible with native GeoParquet when a covering column is
+  present.
+- `ConvertPayload::None` or `include_payload: false`: no payload section.
+
 The crate ships a CLI, `gp2psindex`, for the file-to-file path:
 
 ```text
 cargo run --bin gp2psindex -- path/to/file.parquet      # writes path/to/file.parquet.psi
-# flags: --f32  --strict (error on null)  --no-payload  --no-interleave
+# flags: --f32  --strict (error on null)  --payload none|row-id|row-wkb
+#        --no-payload  --no-interleave
 ```
 
 ## Scope
@@ -104,14 +117,16 @@ cargo run --bin gp2psindex -- path/to/file.parquet      # writes path/to/file.pa
 - Boxes come from the **bbox covering** column when present, otherwise from each
   geometry's **WKB** envelope.
 - The geometry is only decoded when there is no covering column, or when the
-  converter needs the WKB payload. So a native geoarrow encoding *with* a covering
-  column works for the accelerator; decoding a native encoding (no covering, or a
-  payload request) returns `GeoError::UnsupportedEncoding`.
+  converter needs WKB. So a native geoarrow encoding *with* a covering column
+  works for the accelerator and `ConvertPayload::RowIds`; decoding a native
+  encoding (no covering, or a WKB payload request) returns
+  `GeoError::UnsupportedEncoding`.
 - Geometry columns may be `Binary`, `LargeBinary`, or `BinaryView`.
 - 2D and 3D (`XYZ` / `XYZM`).
 - Null / empty geometry: the accelerator keeps `id == row index`, so it has no room
   to skip rows and returns `GeoError::NullGeometry`. The converter can drop such
-  rows with `skip_null` (its output is self-contained, so compacted ids are fine).
+  rows with `skip_null`; item ids are compacted, and the default / row-id payloads
+  preserve the original GeoParquet row id.
 
 ## License
 

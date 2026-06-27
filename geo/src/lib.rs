@@ -5,7 +5,10 @@ mod convert;
 mod read;
 
 pub use build::{build_index_2d, build_index_3d};
-pub use convert::{convert_2d, convert_2d_into, convert_3d, convert_3d_into};
+pub use convert::{
+    ConvertPayload, ROW_ID_CONTENT_TYPE, ROW_WKB_CONTENT_TYPE, convert_2d, convert_2d_into,
+    convert_3d, convert_3d_into, decode_row_id_payload, decode_row_wkb_payload,
+};
 pub use read::{GeoParquetInfo, detect_dims, inspect, read_bboxes_2d, read_bboxes_3d};
 
 // Re-export the core types this crate produces or names, so a caller can build,
@@ -40,9 +43,18 @@ impl Default for BuildOpts {
 pub struct ConvertOpts {
     /// Index build parameters.
     pub build: BuildOpts,
-    /// Attach each row's WKB geometry as a leaf-ordered payload. When `false`
-    /// only the index (bboxes + row ids) is serialized.
+    /// Attach a leaf-ordered payload section. When `false`, only the index
+    /// (bboxes + compact item ids) is serialized.
+    ///
+    /// Kept as a coarse on/off switch for callers that already set it. When it
+    /// is `true`, [`payload`](Self::payload) selects what the payload contains.
     pub include_payload: bool,
+    /// What to attach when [`include_payload`](Self::include_payload) is `true`.
+    ///
+    /// The default is [`ConvertPayload::RowWkb`], preserving the original
+    /// GeoParquet row id next to each WKB geometry. This matters when
+    /// [`skip_null`](Self::skip_null) compacts the output ids.
+    pub payload: ConvertPayload,
     /// Store coordinates as `f32` for a roughly half-size file. Queries become a
     /// conservative superset (box bounds are rounded outward); re-check exact hits
     /// against the payload geometry if you need precision.
@@ -66,6 +78,7 @@ impl Default for ConvertOpts {
         Self {
             build: BuildOpts::default(),
             include_payload: true,
+            payload: ConvertPayload::RowWkb,
             compact_f32: false,
             skip_null: false,
             interleaved: true,

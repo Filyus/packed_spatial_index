@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.1.0...psi-geo-v0.2.0) - 2026-06-27
+
 ### Added
 - `ConvertPayload` payload modes for the converter: no payload, row-id-only
   sidecar payload, or original row id + WKB.

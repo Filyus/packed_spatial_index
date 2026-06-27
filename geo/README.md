@@ -80,6 +80,18 @@ values. A feature ref always carries the source `row_number`; `part` is set when
 one source row becomes multiple index entries, for example after antimeridian
 splitting.
 
+## Examples
+
+The crate includes small runnable examples that use the bundled Apache Parquet
+geospatial fixtures:
+
+```text
+cargo run --manifest-path geo/Cargo.toml --example discover
+cargo run --manifest-path geo/Cargo.toml --example build_index
+cargo run --manifest-path geo/Cargo.toml --example convert_and_query
+cargo run --manifest-path geo/Cargo.toml --example feature_json_payload
+```
+
 ## When to use it
 
 Reach for the **accelerator** when the geospatial Parquet file stays put and you

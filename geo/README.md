@@ -1,4 +1,4 @@
-# Packed Spatial Index — Geospatial Parquet
+# Geospatial Parquet Index
 
 [![crates.io](https://img.shields.io/crates/v/packed_spatial_index_geo.svg)](https://crates.io/crates/packed_spatial_index_geo)
 [![docs.rs](https://docs.rs/packed_spatial_index_geo/badge.svg)](https://docs.rs/packed_spatial_index_geo)
@@ -7,10 +7,10 @@
 [![License](https://img.shields.io/crates/l/packed_spatial_index_geo.svg)](https://github.com/Filyus/packed_spatial_index/blob/main/LICENSE)
 
 Build a [`packed_spatial_index`](https://crates.io/crates/packed_spatial_index)
-spatial index from **GeoParquet** or Apache Parquet's native geospatial
-`GEOMETRY` / `GEOGRAPHY` logical types. These formats store geometry plus, in
-some cases, optional bbox/statistics metadata — but they do not provide a per-row
-spatial index that pinpoints individual features. This crate fills the gap:
+spatial index for **GeoParquet** and native Apache Parquet `GEOMETRY` /
+`GEOGRAPHY` columns. These formats store geometry plus, in some cases, optional
+bbox/statistics metadata — but they do not provide a per-row spatial index that
+pinpoints individual features. This crate fills the gap:
 
 - **accelerator** — build an in-memory index over the features; a query returns
   `FeatureRef` values that preserve source row numbers even when rows are
@@ -48,6 +48,36 @@ Requires Rust 1.89 or newer.
 [dependencies]
 packed_spatial_index_geo = "0.5"
 ```
+
+## API at a glance
+
+Open the Parquet source once with [`open`][open], inspect the metadata-only
+[`GeoDiscovery`][GeoDiscovery], then run the operation you need through the
+[`GeoDataset`][GeoDataset] session. Geometry selection is explicit where it
+matters: use [`GeometrySelector::Name`][GeometrySelector] for a named column, or
+the default policy for GeoParquet primary / single native Parquet geospatial
+files.
+
+| Task | API |
+| --- | --- |
+| Open a source | [`open`][open] |
+| List usable geometry columns | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery], [`GeometryColumnInfo`][GeometryColumnInfo] |
+| Select a geometry column | [`GeoDataset::select`][select], [`GeometrySelector`][GeometrySelector], [`GeometryColumn`][GeometryColumn] |
+| Profile the selected column | [`GeoDataset::inspect`][inspect], [`InspectRequest`][InspectRequest], [`GeometryProfile`][GeometryProfile] |
+| Read feature boxes / payloads | [`GeoDataset::scan`][scan], [`ScanRequest`][ScanRequest], [`GeometryScan`][GeometryScan] |
+| Build an in-memory feature index | [`GeoDataset::build`][build], [`BuildRequest`][BuildRequest], [`GeoIndex`][GeoIndex], [`GeoIndex2D::search_features`][search_features_2d], [`GeoIndex3D::search_features`][search_features_3d] |
+| Convert to streamable `PSINDEX` | [`GeoDataset::convert`][convert], [`GeoDataset::convert_into`][convert_into], [`ConvertRequest`][ConvertRequest], [`GeoArtifact`][GeoArtifact] |
+| Choose index dimensions / precision | [`IndexDimsRequest`][IndexDimsRequest], [`StoragePrecision`][StoragePrecision] |
+| Control nulls and antimeridian behavior | [`NullPolicy`][NullPolicy], [`EnvelopePolicy`][EnvelopePolicy], [`AntimeridianPolicy`][AntimeridianPolicy] |
+| Pick artifact payloads | [`PayloadPlan`][PayloadPlan], [`PropertyProjection`][PropertyProjection], [`FeatureRef`][FeatureRef] |
+| Decode default payloads | [`decode_feature_ref_payload`][decode_feature_ref_payload], [`decode_feature_wkb_payload`][decode_feature_wkb_payload] |
+| Read the geo artifact manifest | [`read_geo_manifest`][read_geo_manifest], [`GeoArtifactManifest`][GeoArtifactManifest] |
+| Use the CLI | `gp2psindex discover`, `inspect`, `build`, `validate` |
+
+The in-memory `GeoIndex` search methods return [`FeatureRef`][FeatureRef]
+values. A feature ref always carries the source `row_number`; `part` is set when
+one source row becomes multiple index entries, for example after antimeridian
+splitting.
 
 ## When to use it
 
@@ -151,3 +181,40 @@ cargo run --bin gp2psindex -- validate path/to/file.parquet
 ## License
 
 Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial_index/blob/main/LICENSE).
+
+<!-- docs.rs API links -->
+[open]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open.html
+[GeoDataset]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html
+[discovery]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.discovery
+[select]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.select
+[inspect]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.inspect
+[scan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.scan
+[build]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.build
+[convert]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert
+[convert_into]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert_into
+[GeoDiscovery]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDiscovery.html
+[GeometryColumnInfo]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeometryColumnInfo.html
+[GeometrySelector]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometrySelector.html
+[GeometryColumn]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeometryColumn.html
+[InspectRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.InspectRequest.html
+[GeometryProfile]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeometryProfile.html
+[ScanRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ScanRequest.html
+[GeometryScan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometryScan.html
+[BuildRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.BuildRequest.html
+[GeoIndex]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoIndex.html
+[search_features_2d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.search_features
+[search_features_3d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.search_features
+[ConvertRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ConvertRequest.html
+[GeoArtifact]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifact.html
+[IndexDimsRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.IndexDimsRequest.html
+[StoragePrecision]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.StoragePrecision.html
+[NullPolicy]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.NullPolicy.html
+[EnvelopePolicy]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.EnvelopePolicy.html
+[AntimeridianPolicy]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.AntimeridianPolicy.html
+[PayloadPlan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.PayloadPlan.html
+[PropertyProjection]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.PropertyProjection.html
+[FeatureRef]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureRef.html
+[decode_feature_ref_payload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.decode_feature_ref_payload.html
+[decode_feature_wkb_payload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.decode_feature_wkb_payload.html
+[read_geo_manifest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.read_geo_manifest.html
+[GeoArtifactManifest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactManifest.html

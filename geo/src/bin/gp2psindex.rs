@@ -1,3 +1,5 @@
+//! Command-line converter and inspector for geospatial Parquet inputs.
+
 use std::fs::File;
 use std::process::ExitCode;
 

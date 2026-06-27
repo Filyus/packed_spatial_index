@@ -14,6 +14,11 @@ struct Chunk {
     content: Vec<u8>,
 }
 
+/// Read the embedded `geoM` manifest from a converted `PSINDEX` byte buffer.
+///
+/// Returns `Ok(None)` when the container has no `geoM` chunk. Use
+/// [`open_geo_index`](crate::open_geo_index) when you want to query the artifact
+/// as a geospatial index instead of only reading metadata.
 pub fn read_geo_manifest(bytes: &[u8]) -> Result<Option<GeoArtifactManifest>, GeoError> {
     let chunks = parse_chunks(bytes)?;
     let Some(chunk) = chunks.iter().find(|chunk| chunk.tag == TAG_GEO_MANIFEST) else {

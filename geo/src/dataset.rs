@@ -29,11 +29,34 @@ use crate::{
     SelectionStatus, StoragePrecision,
 };
 
+/// Content type used for [`PayloadPlan::RowRef`](crate::PayloadPlan::RowRef)
+/// payload sections.
 pub const FEATURE_REF_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-ref";
+/// Content type used for [`PayloadPlan::RowWkb`](crate::PayloadPlan::RowWkb)
+/// payload sections.
 pub const FEATURE_WKB_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-wkb";
+/// Content type used for [`PayloadPlan::FeatureJson`](crate::PayloadPlan::FeatureJson)
+/// payload sections.
 pub const FEATURE_JSON_CONTENT_TYPE: &str = "application/geo+json";
+/// Byte length of the fixed-width [`FeatureRef`] payload record.
 pub const FEATURE_REF_RECORD_LEN: usize = 24;
 
+/// Open a GeoParquet or native Parquet geospatial dataset.
+///
+/// This performs metadata discovery only. Row data is read later by
+/// [`GeoDataset::inspect`] with `exact: true`, [`GeoDataset::scan`],
+/// [`GeoDataset::build`], or [`GeoDataset::convert`].
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::open;
+///
+/// let dataset = open(File::open("cities.parquet")?)?;
+/// println!("{} rows", dataset.discovery().num_rows);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn open<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoError> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
     let (discovery, states) = discover_metadata(builder.metadata())?;
@@ -46,6 +69,16 @@ pub fn open<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoErr
     })
 }
 
+/// Session object for one opened geospatial Parquet source.
+///
+/// `GeoDataset` owns the Parquet reader builder and exposes the high-level
+/// workflow: discover columns, select/profile one geometry column, scan feature
+/// envelopes, build an in-memory index, or convert to a streamable `PSINDEX`
+/// artifact.
+///
+/// A dataset is consumed the first time rows are read. Call
+/// [`GeoDataset::discovery`] and [`GeoDataset::select`] freely before scanning;
+/// open a new dataset if you need to run multiple independent scans.
 pub struct GeoDataset<R: ChunkReader> {
     builder: Option<ParquetRecordBatchReaderBuilder<R>>,
     discovery: GeoDiscovery,
@@ -54,10 +87,21 @@ pub struct GeoDataset<R: ChunkReader> {
 }
 
 impl<R: ChunkReader + 'static> GeoDataset<R> {
+    /// Return metadata-only discovery for all usable geometry columns.
+    ///
+    /// Discovery never scans geometry payloads. Unknown dimensions or geometry
+    /// types in this value mean “not declared in metadata”; use
+    /// [`GeoDataset::inspect`] with [`InspectRequest::exact`] when exact row
+    /// inspection is needed.
     pub fn discovery(&self) -> &GeoDiscovery {
         &self.discovery
     }
 
+    /// Resolve a selector to a concrete geometry column.
+    ///
+    /// This is a metadata-only operation. It applies the same default selection
+    /// policy used by scan/build/convert: GeoParquet primary column first, then
+    /// exactly one native Parquet geospatial column.
     pub fn select(&self, selector: GeometrySelector) -> Result<GeometryColumn, GeoError> {
         let state = self.select_state(&selector)?;
         Ok(GeometryColumn {
@@ -66,6 +110,11 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         })
     }
 
+    /// Profile the selected geometry column.
+    ///
+    /// With the default request this returns metadata-derived information. Set
+    /// [`InspectRequest::exact`] to scan rows when dimensions are unknown from
+    /// metadata.
     pub fn inspect(&mut self, req: InspectRequest) -> Result<GeometryProfile, GeoError> {
         let state = self.select_state(&req.selector)?.clone();
         if req.exact && state.info.coordinate_dims == CoordinateDims::Unknown {
@@ -78,11 +127,22 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         Ok(profile_from_state(&state, self.discovery.num_rows))
     }
 
+    /// Scan feature envelopes, feature references, and optional payloads.
+    ///
+    /// The scan result contains one index entry per envelope. With geographic
+    /// antimeridian splitting enabled, one source row may produce multiple
+    /// entries with the same row number and different [`FeatureRef::part`]
+    /// values.
     pub fn scan(&mut self, req: crate::ScanRequest) -> Result<GeometryScan, GeoError> {
         let state = self.select_state(&req.selector)?.clone();
         self.scan_selected(&state, req)
     }
 
+    /// Build an in-memory [`GeoIndex`] over the selected geometry column.
+    ///
+    /// The returned index maps candidate hits back to [`FeatureRef`] values
+    /// rather than compact item ids. Use [`GeoIndex2D::raw_index`] or
+    /// [`GeoIndex3D::raw_index`] when you need direct access to the core index.
     pub fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError> {
         let scan = self.scan(crate::ScanRequest {
             selector: req.selector,
@@ -129,6 +189,11 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         })
     }
 
+    /// Convert the selected geometry column into a streamable `PSINDEX` buffer.
+    ///
+    /// The generated bytes include the core index, optional payloads, and a
+    /// `geoM` manifest describing the selected column, CRS, dimensions, payload
+    /// plan, and feature-entry mapping. Existing contents of `out` are replaced.
     pub fn convert_into(
         &mut self,
         req: ConvertRequest,
@@ -198,6 +263,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         })
     }
 
+    /// Convert the selected geometry column into a new `Vec<u8>`.
+    ///
+    /// This is a convenience wrapper around [`GeoDataset::convert_into`].
     pub fn convert(&mut self, req: ConvertRequest) -> Result<Vec<u8>, GeoError> {
         let mut out = Vec::new();
         self.convert_into(req, &mut out)?;
@@ -1390,6 +1458,9 @@ fn encode_feature_wkb(feature: &FeatureRef, wkb: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Decode a fixed-width [`FeatureRef`] payload.
+///
+/// Returns `None` if the payload is shorter than [`FEATURE_REF_RECORD_LEN`].
 pub fn decode_feature_ref_payload(payload: &[u8]) -> Option<FeatureRef> {
     if payload.len() < FEATURE_REF_RECORD_LEN {
         return None;
@@ -1407,6 +1478,10 @@ pub fn decode_feature_ref_payload(payload: &[u8]) -> Option<FeatureRef> {
     })
 }
 
+/// Decode a [`FeatureRef`] followed by WKB bytes.
+///
+/// This is the payload shape generated by [`PayloadPlan::RowWkb`]. Returns
+/// `None` when the fixed feature-ref prefix is truncated.
 pub fn decode_feature_wkb_payload(payload: &[u8]) -> Option<(FeatureRef, &[u8])> {
     let feature = decode_feature_ref_payload(payload)?;
     Some((feature, &payload[FEATURE_REF_RECORD_LEN..]))

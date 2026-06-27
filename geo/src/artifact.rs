@@ -12,10 +12,34 @@ use crate::{
     },
 };
 
+/// Open a converted geospatial `PSINDEX` artifact.
+///
+/// The reader first fetches the `geoM` manifest from the container directory,
+/// then opens the matching 2D/3D and f64/f32 streaming index. The backing
+/// [`RangeReader`] does not need to report a length; this works with local files
+/// and HTTP range-style readers.
+///
+/// # Example
+///
+/// ```no_run
+/// use packed_spatial_index_geo::{open_geo_index, Box2D, GeoArtifactIndex, SliceReader};
+///
+/// let bytes = std::fs::read("cities.psindex")?;
+/// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+///     panic!("expected a 2D artifact");
+/// };
+/// let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn open_geo_index<R: RangeReader>(reader: R) -> Result<GeoArtifactIndex<R>, GeoError> {
     open_geo_index_with_limits(reader, StreamLimits::default())
 }
 
+/// Open a converted geospatial `PSINDEX` artifact with explicit stream limits.
+///
+/// Use this when opening untrusted or externally hosted artifacts and you want
+/// to cap accepted item counts, directory sizes, or range-read sizes through
+/// [`StreamLimits`].
 pub fn open_geo_index_with_limits<R: RangeReader>(
     reader: R,
     limits: StreamLimits,
@@ -54,12 +78,19 @@ pub fn open_geo_index_with_limits<R: RangeReader>(
     }
 }
 
+/// A streamable geospatial index opened from a converted artifact.
+///
+/// Match on `D2` or `D3` to query with the corresponding box type. The variant
+/// is chosen from the artifact's `geoM` manifest.
 pub enum GeoArtifactIndex<R> {
+    /// 2D artifact.
     D2(GeoArtifactIndex2D<R>),
+    /// 3D artifact.
     D3(GeoArtifactIndex3D<R>),
 }
 
 impl<R> GeoArtifactIndex<R> {
+    /// Return the parsed `geoM` manifest.
     pub fn manifest(&self) -> &GeoArtifactManifest {
         match self {
             GeoArtifactIndex::D2(index) => index.manifest(),
@@ -68,18 +99,27 @@ impl<R> GeoArtifactIndex<R> {
     }
 }
 
+/// A 2D geospatial artifact index.
+///
+/// Use [`GeoArtifactIndex2D::search_hits`] when payloads are present and you
+/// want decoded [`FeatureRef`] values plus typed payload data.
 pub struct GeoArtifactIndex2D<R> {
     index: GeoStreamIndex2D<R>,
     manifest: GeoArtifactManifest,
 }
 
 impl<R> GeoArtifactIndex2D<R> {
+    /// Return the parsed `geoM` manifest.
     pub fn manifest(&self) -> &GeoArtifactManifest {
         &self.manifest
     }
 }
 
 impl<R: RangeReader> GeoArtifactIndex2D<R> {
+    /// Search the underlying core index and return compact item ids.
+    ///
+    /// This does not decode geo payloads and therefore also works for
+    /// [`PayloadPlan::None`] artifacts.
     pub fn search_items(&self, query: Box2D) -> Result<Vec<usize>, GeoError> {
         match &self.index {
             GeoStreamIndex2D::F64(index) => Ok(index.search(query)?),
@@ -87,6 +127,10 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
         }
     }
 
+    /// Search and return source feature references.
+    ///
+    /// This requires an artifact payload plan that stores feature refs
+    /// (`RowRef`, `RowWkb`, or `FeatureJson`).
     pub fn search_features(&self, query: Box2D) -> Result<Vec<FeatureRef>, GeoError> {
         Ok(self
             .search_hits(query)?
@@ -95,6 +139,10 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             .collect())
     }
 
+    /// Search and return decoded geo hits.
+    ///
+    /// Each hit includes the compact item id, the source [`FeatureRef`], and
+    /// the decoded [`GeoPayload`] described by the artifact manifest.
     pub fn search_hits(&self, query: Box2D) -> Result<Vec<GeoHit>, GeoError> {
         let hits = match &self.index {
             GeoStreamIndex2D::F64(index) => index.search_payloads(query)?,
@@ -104,18 +152,24 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     }
 }
 
+/// A 3D geospatial artifact index.
 pub struct GeoArtifactIndex3D<R> {
     index: GeoStreamIndex3D<R>,
     manifest: GeoArtifactManifest,
 }
 
 impl<R> GeoArtifactIndex3D<R> {
+    /// Return the parsed `geoM` manifest.
     pub fn manifest(&self) -> &GeoArtifactManifest {
         &self.manifest
     }
 }
 
 impl<R: RangeReader> GeoArtifactIndex3D<R> {
+    /// Search the underlying core index and return compact item ids.
+    ///
+    /// This does not decode geo payloads and therefore also works for
+    /// [`PayloadPlan::None`] artifacts.
     pub fn search_items(&self, query: Box3D) -> Result<Vec<usize>, GeoError> {
         match &self.index {
             GeoStreamIndex3D::F64(index) => Ok(index.search(query)?),
@@ -123,6 +177,10 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
         }
     }
 
+    /// Search and return source feature references.
+    ///
+    /// This requires an artifact payload plan that stores feature refs
+    /// (`RowRef`, `RowWkb`, or `FeatureJson`).
     pub fn search_features(&self, query: Box3D) -> Result<Vec<FeatureRef>, GeoError> {
         Ok(self
             .search_hits(query)?
@@ -131,6 +189,10 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
             .collect())
     }
 
+    /// Search and return decoded geo hits.
+    ///
+    /// Each hit includes the compact item id, the source [`FeatureRef`], and
+    /// the decoded [`GeoPayload`] described by the artifact manifest.
     pub fn search_hits(&self, query: Box3D) -> Result<Vec<GeoHit>, GeoError> {
         let hits = match &self.index {
             GeoStreamIndex3D::F64(index) => index.search_payloads(query)?,
@@ -140,17 +202,25 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     }
 }
 
+/// One query hit from a converted geospatial artifact.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeoHit {
+    /// Compact item id in the core index.
     pub item: usize,
+    /// Source feature reference stored in the artifact payload.
     pub feature: FeatureRef,
+    /// Decoded payload for the hit.
     pub payload: GeoPayload,
 }
 
+/// Decoded artifact payload.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GeoPayload {
+    /// A `RowRef` payload; the feature ref is available on [`GeoHit::feature`].
     RowRef,
+    /// A `RowWkb` payload containing WKB geometry bytes.
     RowWkb(Vec<u8>),
+    /// A `FeatureJson` payload decoded as a GeoJSON Feature value.
     FeatureJson(serde_json::Value),
 }
 

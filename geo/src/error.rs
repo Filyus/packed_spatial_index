@@ -1,43 +1,79 @@
+/// Error returned by geospatial Parquet discovery, scanning, conversion, and
+/// artifact reading.
 #[derive(Debug, thiserror::Error)]
 pub enum GeoError {
+    /// Parquet reader error.
     #[error("parquet: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
+    /// Arrow array/record-batch error.
     #[error("arrow: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
+    /// Invalid or unsupported geospatial metadata.
     #[error("geoparquet metadata: {0}")]
     Metadata(String),
+    /// WKB parse or envelope error.
     #[error("wkb: {0}")]
     Wkb(String),
+    /// Core index build error.
     #[error(transparent)]
     Build(#[from] packed_spatial_index::BuildError),
+    /// Core payload serialization error.
     #[error(transparent)]
     Payload(#[from] packed_spatial_index::PayloadError),
+    /// Core stream reader error.
     #[error(transparent)]
     Stream(#[from] packed_spatial_index::StreamError),
+    /// PSINDEX container framing error.
     #[error("psindex container: {0}")]
     Container(String),
+    /// Converted artifact has no `geoM` manifest.
     #[error("PSINDEX artifact has no geoM manifest")]
     MissingGeoManifest,
+    /// Artifact manifest or layout is not supported.
     #[error("unsupported geo artifact: {0}")]
     UnsupportedArtifact(String),
+    /// Artifact payload could not be decoded according to the manifest.
     #[error("cannot decode geo payload: {0}")]
     PayloadDecode(String),
+    /// Dataset rows have already been consumed by a scan/build/convert call.
     #[error("dataset reader has already been consumed")]
     DatasetConsumed,
+    /// No usable geometry column exists.
     #[error("no geometry column")]
     NoGeometryColumn,
+    /// Requested geometry column was not found or is not usable.
     #[error("geometry column `{0}` not found")]
     GeometryColumnNotFound(String),
+    /// Multiple geometry columns match the default selector.
     #[error("ambiguous geometry column; choose one of: {columns:?}")]
-    AmbiguousGeometryColumn { columns: Vec<String> },
+    AmbiguousGeometryColumn {
+        /// Candidate column names.
+        columns: Vec<String>,
+    },
+    /// A row contains null or empty geometry and the null policy is `Error`.
     #[error("row {row} has null or empty geometry")]
-    NullGeometry { row: usize },
+    NullGeometry {
+        /// Source row number.
+        row: usize,
+    },
+    /// Geometry encoding is not supported for the requested operation.
     #[error("unsupported geometry encoding: {0}")]
     UnsupportedEncoding(String),
+    /// Geometry dimensionality does not match the requested index dimensions.
     #[error("geometry is {found}D but {expected}D was requested")]
-    DimMismatch { expected: u8, found: u8 },
+    DimMismatch {
+        /// Requested dimension count.
+        expected: u8,
+        /// Found dimension count.
+        found: u8,
+    },
+    /// A geographic envelope crosses the antimeridian under `Reject` policy.
     #[error("row {row} crosses the antimeridian; choose split or world policy")]
-    Antimeridian { row: u64 },
+    Antimeridian {
+        /// Source row number.
+        row: u64,
+    },
+    /// A `FeatureJson` property projection references a missing column.
     #[error("properties projection references missing column `{0}`")]
     PropertyColumnNotFound(String),
 }

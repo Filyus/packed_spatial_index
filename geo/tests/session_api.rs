@@ -1,3 +1,4 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;
 use std::sync::Arc;
 
@@ -157,6 +158,10 @@ fn native_parquet(names: &[&str], values: Vec<Vec<Vec<u8>>>) -> Bytes {
     writer.write(&batch).unwrap();
     writer.close().unwrap();
     Bytes::from(buf)
+}
+
+fn assert_no_panic<T>(label: &str, f: impl FnOnce() -> T) -> T {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| panic!("{label} panicked"))
 }
 
 #[test]
@@ -377,6 +382,11 @@ fn antimeridian_split_duplicates_feature_ref_parts() {
     assert_eq!(scan.features[0].row_number, scan.features[1].row_number);
     assert_eq!(scan.features[0].part, Some(0));
     assert_eq!(scan.features[1].part, Some(1));
+    for bbox in &scan.boxes {
+        assert!(bbox.min_x >= -180.0);
+        assert!(bbox.max_x <= 180.0);
+        assert!(bbox.min_x <= bbox.max_x);
+    }
 }
 
 #[test]
@@ -458,4 +468,119 @@ fn cli_discover_json_smoke() {
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["columns"][0]["source"], "parquet_geospatial");
+}
+
+#[test]
+fn geo_manifest_reader_handles_corrupt_bytes_without_panic() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 2.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let bytes = dataset.convert(ConvertRequest::default()).unwrap();
+    assert!(read_geo_manifest(&bytes).unwrap().is_some());
+
+    let mut huge_directory = vec![0; 32];
+    huge_directory[..8].copy_from_slice(b"PSINDEX\0");
+    huge_directory[8..16].copy_from_slice(&2u64.to_le_bytes());
+    huge_directory[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+
+    let mut cases = vec![Vec::new(), b"PSINDEX".to_vec(), huge_directory];
+    for i in 0..bytes.len().min(160) {
+        let mut mutated = bytes.clone();
+        mutated[i] ^= 0xA5;
+        cases.push(mutated);
+    }
+
+    for (i, case) in cases.iter().enumerate() {
+        let _ = assert_no_panic(&format!("manifest case {i}"), || read_geo_manifest(case));
+    }
+}
+
+#[test]
+fn payload_decoders_handle_short_and_arbitrary_bytes_without_panic() {
+    for len in 0..FEATURE_REF_RECORD_LEN {
+        let payload = vec![0xAB; len];
+        assert_no_panic(&format!("short row-ref len {len}"), || {
+            assert!(decode_feature_ref_payload(&payload).is_none());
+        });
+        assert_no_panic(&format!("short row-wkb len {len}"), || {
+            assert!(decode_feature_wkb_payload(&payload).is_none());
+        });
+    }
+
+    let mut payload = vec![0xCD; FEATURE_REF_RECORD_LEN + 5];
+    let (feature, wkb) = assert_no_panic("arbitrary full row-wkb payload", || {
+        decode_feature_wkb_payload(&payload).unwrap()
+    });
+    assert_eq!(feature.row_number, u64::from_le_bytes([0xCD; 8]));
+    assert_eq!(wkb, &[0xCD; 5]);
+
+    payload.truncate(FEATURE_REF_RECORD_LEN);
+    let (_feature, wkb) = assert_no_panic("empty row-wkb suffix", || {
+        decode_feature_wkb_payload(&payload).unwrap()
+    });
+    assert!(wkb.is_empty());
+}
+
+#[test]
+fn malformed_wkb_scan_returns_error_without_panic() {
+    let cases = [
+        Vec::new(),
+        vec![2, 1, 0, 0, 0],
+        vec![1, 1, 0, 0],
+        vec![1, 2, 0, 0, 0, 3, 0],
+    ];
+
+    for (i, wkb) in cases.into_iter().enumerate() {
+        let data = write_geoparquet(
+            vec![("geometry", binary_col(&[Some(wkb)]))],
+            geo_meta_wkb(&["Point"]),
+        );
+        let result = assert_no_panic(&format!("malformed WKB case {i}"), || {
+            let mut dataset = open(data).unwrap();
+            dataset.scan(Default::default())
+        });
+        assert!(
+            result.is_err(),
+            "malformed WKB case {i} unexpectedly scanned"
+        );
+    }
+}
+
+#[test]
+fn malformed_geoparquet_metadata_errors_without_panic() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 2.0))]))],
+        "{ not json".to_string(),
+    );
+    let result = assert_no_panic("malformed GeoParquet metadata", || open(data));
+    assert!(matches!(result, Err(GeoError::Metadata(_))));
+}
+
+#[test]
+fn feature_json_missing_property_projection_errors_without_panic() {
+    let data = write_geoparquet(
+        vec![
+            ("geometry", binary_col(&[Some(wkb_point_2d(3.0, 4.0))])),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["alpha"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+    let result = assert_no_panic("missing FeatureJson property projection", || {
+        let mut dataset = open(data).unwrap();
+        dataset.convert(ConvertRequest {
+            payload: PayloadPlan::FeatureJson {
+                properties: PropertyProjection::Include(vec!["missing".to_string()]),
+            },
+            ..ConvertRequest::default()
+        })
+    });
+    assert!(matches!(
+        result,
+        Err(GeoError::PropertyColumnNotFound(name)) if name == "missing"
+    ));
 }

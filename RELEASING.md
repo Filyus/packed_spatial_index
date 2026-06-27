@@ -162,8 +162,8 @@ create the tag with the one-off workflow.
    ```
 
    The workflow verifies that the selected version is already published and that
-   `psi-geo-v0.1.0` is absent, then pushes the tag. The tag triggers the GitHub
-   Release.
+   `psi-geo-v0.1.0` is absent, then pushes the tag and creates the GitHub
+   Release from `geo/CHANGELOG.md`.
 
 6. Configure Trusted Publishing for the crate before its next release.
 

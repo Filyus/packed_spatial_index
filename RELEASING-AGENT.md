@@ -163,7 +163,8 @@ gh workflow run tag-first-release.yml --ref main \
   -f confirm="tag <crate>"
 ```
 
-The first-release tag is `psi-vX.Y.Z` for core or `psi-geo-vX.Y.Z` for geo.
+The first-release tag is `psi-vX.Y.Z` for core or `psi-geo-vX.Y.Z` for geo. The
+workflow also creates the GitHub Release from the selected crate's changelog.
 
 ## Changelog taxonomy
 

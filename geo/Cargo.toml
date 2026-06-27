@@ -16,14 +16,9 @@ categories = ["science::geo", "data-structures"]
 # stay OUT of this core — that is the whole point of a separate crate.
 packed_spatial_index = { path = "..", version = "0.18.1", features = ["stream", "f32-storage"] }
 
-# GeoParquet metadata (primary geometry column, bbox covering, CRS, encoding).
-geoparquet = "0.8"
-# `Dimension` enum, to tell 2D from 3D geometry columns.
-geoarrow-schema = "0.8"
-# Arrow arrays + the synchronous Parquet record-batch reader (must match the
-# arrow/parquet major that `geoparquet` builds on).
-arrow = "58"
-parquet = { version = "58", features = ["geospatial"] }
+# Arrow arrays + the synchronous Parquet record-batch reader.
+arrow = "59"
+parquet = { version = "59", features = ["geospatial"] }
 # WKB envelope fallback when a file has no bbox covering column.
 geozero = { version = "0.15", features = ["with-wkb"] }
 

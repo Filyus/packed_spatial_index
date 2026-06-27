@@ -8,7 +8,7 @@
 //! definition; GeoParquet-native GeoArrow encodings still need a covering column
 //! unless the caller only needs row ids.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use arrow::array::{
@@ -16,12 +16,11 @@ use arrow::array::{
     StructArray,
 };
 use arrow::record_batch::RecordBatch;
-use geoarrow_schema::Dimension;
-use geoparquet::metadata::{GeoParquetBboxCovering, GeoParquetColumnEncoding, GeoParquetMetadata};
 use geozero::GeomProcessor;
 use packed_spatial_index::{Box2D, Box3D};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::{EdgeInterpolationAlgorithm, LogicalType, Type as ParquetPhysicalType};
+use parquet::file::metadata::FileMetaData;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::ChunkReader;
 
@@ -41,7 +40,7 @@ struct GeoInfo {
 
 #[derive(Debug, Clone)]
 enum GeometryEncoding {
-    GeoParquet(GeoParquetColumnEncoding),
+    GeoParquet(String),
     ParquetGeometry,
     ParquetGeography {
         algorithm: Option<EdgeInterpolationAlgorithm>,
@@ -50,12 +49,10 @@ enum GeometryEncoding {
 
 impl GeometryEncoding {
     fn is_wkb(&self) -> bool {
-        matches!(
-            self,
-            GeometryEncoding::GeoParquet(GeoParquetColumnEncoding::WKB)
-                | GeometryEncoding::ParquetGeometry
-                | GeometryEncoding::ParquetGeography { .. }
-        )
+        match self {
+            GeometryEncoding::GeoParquet(enc) => enc.eq_ignore_ascii_case("WKB"),
+            GeometryEncoding::ParquetGeometry | GeometryEncoding::ParquetGeography { .. } => true,
+        }
     }
 }
 
@@ -72,6 +69,55 @@ impl fmt::Display for GeometryEncoding {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct GeoParquetMetadata {
+    version: String,
+    primary_column: String,
+    columns: HashMap<String, GeoParquetColumnMetadata>,
+}
+
+impl GeoParquetMetadata {
+    fn from_parquet_meta(metadata: &FileMetaData) -> Option<Result<Self, GeoError>> {
+        let value = metadata
+            .key_value_metadata()?
+            .iter()
+            .find(|kv| kv.key == "geo")?
+            .value
+            .as_ref()?;
+        Some(serde_json::from_str(value).map_err(|e| GeoError::Metadata(e.to_string())))
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GeoParquetColumnMetadata {
+    encoding: String,
+    #[serde(default)]
+    geometry_types: Vec<String>,
+    #[serde(default)]
+    crs: Option<serde_json::Value>,
+    #[serde(default)]
+    bbox: Option<Vec<f64>>,
+    #[serde(default)]
+    covering: Option<GeoParquetCovering>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GeoParquetCovering {
+    bbox: GeoParquetBboxCovering,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct GeoParquetBboxCovering {
+    xmin: Vec<String>,
+    ymin: Vec<String>,
+    #[serde(default)]
+    zmin: Option<Vec<String>>,
+    xmax: Vec<String>,
+    ymax: Vec<String>,
+    #[serde(default)]
+    zmax: Option<Vec<String>>,
+}
+
 fn dim_hint_to_option(dim: DimHint) -> Option<u8> {
     match dim {
         DimHint::Two => Some(2),
@@ -82,6 +128,10 @@ fn dim_hint_to_option(dim: DimHint) -> Option<u8> {
 
 fn can_build_index(encoding: &GeometryEncoding, has_covering: bool) -> bool {
     encoding.is_wkb() || has_covering
+}
+
+fn geometry_type_has_z(geometry_type: &str) -> bool {
+    geometry_type.ends_with(" Z") || geometry_type.ends_with(" ZM")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,13 +162,10 @@ fn geo_info(meta: &GeoParquetMetadata, opts: &ReadOpts) -> Result<GeoInfo, GeoEr
     })?;
     let covering = col.covering.as_ref().map(|c| c.bbox.clone());
     let is_3d = covering.as_ref().is_some_and(|c| c.zmin.is_some())
-        || col
-            .geometry_types
-            .iter()
-            .any(|t| matches!(t.dimension(), Dimension::XYZ | Dimension::XYZM));
+        || col.geometry_types.iter().any(|t| geometry_type_has_z(t));
     Ok(GeoInfo {
         geometry_column: name.clone(),
-        encoding: GeometryEncoding::GeoParquet(col.encoding),
+        encoding: GeometryEncoding::GeoParquet(col.encoding.clone()),
         // PROJJSON object serialized back to a compact string for the index's
         // `META.crs` chunk.
         crs: col.crs.as_ref().map(|v| v.to_string()),
@@ -180,19 +227,19 @@ fn native_geo_columns(meta: &ParquetMetaData) -> Vec<NativeGeoColumn> {
             }
 
             match col.logical_type_ref()? {
-                LogicalType::Geometry { crs } => Some(NativeGeoColumn {
+                LogicalType::Geometry(geometry) => Some(NativeGeoColumn {
                     name: parts[0].clone(),
                     column_index,
                     encoding: GeometryEncoding::ParquetGeometry,
-                    crs: crs.clone(),
+                    crs: geometry.crs.clone(),
                 }),
-                LogicalType::Geography { crs, algorithm } => Some(NativeGeoColumn {
+                LogicalType::Geography(geography) => Some(NativeGeoColumn {
                     name: parts[0].clone(),
                     column_index,
                     encoding: GeometryEncoding::ParquetGeography {
-                        algorithm: *algorithm,
+                        algorithm: geography.algorithm(),
                     },
-                    crs: crs.clone(),
+                    crs: geography.crs.clone(),
                 }),
                 _ => None,
             }
@@ -322,7 +369,7 @@ pub fn discover_with_opts<R: ChunkReader + 'static>(
     let file_meta = meta.file_metadata();
     let geo_meta = match GeoParquetMetadata::from_parquet_meta(file_meta) {
         Some(Ok(gpq)) => Some(gpq),
-        Some(Err(e)) => return Err(GeoError::Metadata(e.to_string())),
+        Some(Err(e)) => return Err(e),
         None => None,
     };
 
@@ -333,14 +380,11 @@ pub fn discover_with_opts<R: ChunkReader + 'static>(
         names.sort();
         for name in names {
             let col = &gpq.columns[&name];
-            let encoding = GeometryEncoding::GeoParquet(col.encoding);
+            let encoding = GeometryEncoding::GeoParquet(col.encoding.clone());
             let covering = col.covering.as_ref().map(|c| c.bbox.clone());
             let has_covering = covering.is_some();
             let dim = if covering.as_ref().is_some_and(|c| c.zmin.is_some())
-                || col
-                    .geometry_types
-                    .iter()
-                    .any(|t| matches!(t.dimension(), Dimension::XYZ | Dimension::XYZM))
+                || col.geometry_types.iter().any(|t| geometry_type_has_z(t))
             {
                 DimHint::Three
             } else {
@@ -457,7 +501,7 @@ fn read_meta<R: ChunkReader + 'static>(
             geo_info(&gpq, opts)?
         }
         Some(Ok(gpq)) => native_info(meta, opts, &native).or_else(|_| geo_info(&gpq, opts))?,
-        Some(Err(e)) => return Err(GeoError::Metadata(e.to_string())),
+        Some(Err(e)) => return Err(e),
         None => native_info(meta, opts, &native)?,
     };
     let total = file_meta.num_rows().max(0) as usize;

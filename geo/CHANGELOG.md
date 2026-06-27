@@ -4,6 +4,11 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Updated the Arrow / Parquet reader stack to `59` and parse the GeoParquet
+  `geo` metadata directly, avoiding a stale `parquet` dependency in the
+  companion reader.
+
 ## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.3.1...psi-geo-v0.4.0) - 2026-06-27
 
 ### Added

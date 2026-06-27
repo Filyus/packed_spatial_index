@@ -665,6 +665,17 @@ fn discover_lists_all_geoparquet_columns() {
 }
 
 #[test]
+fn malformed_geo_metadata_is_reported() {
+    let wkbs = [Some(wkb_point_2d(0.0, 0.0))];
+    let data = write_parquet(
+        vec![("geometry", binary_col(&wkbs))],
+        r#"{"version":"1.1.0","primary_column":"geometry","columns":"bad"}"#.to_string(),
+    );
+
+    assert!(matches!(discover(data), Err(GeoError::Metadata(_))));
+}
+
+#[test]
 fn discover_reports_native_geoarrow_covering_capabilities() {
     let pts = [(5.0, 5.0), (50.0, 50.0)];
     let cov = [[0.0, 0.0, 10.0, 10.0], [40.0, 40.0, 60.0, 60.0]];

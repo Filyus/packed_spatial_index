@@ -16,7 +16,7 @@ use packed_spatial_index_geo::{
     read_bboxes_2d_with_opts, read_bboxes_3d,
 };
 use parquet::arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions};
-use parquet::basic::{LogicalType, Repetition, Type as ParquetPhysicalType};
+use parquet::basic::{GeometryType, LogicalType, Repetition, Type as ParquetPhysicalType};
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::schema::types::{SchemaDescriptor, Type as ParquetType};
 
@@ -69,7 +69,7 @@ fn native_geometry_schema(names: &[&str]) -> SchemaDescriptor {
             Arc::new(
                 ParquetType::primitive_type_builder(name, ParquetPhysicalType::BYTE_ARRAY)
                     .with_repetition(Repetition::REQUIRED)
-                    .with_logical_type(Some(LogicalType::Geometry { crs: None }))
+                    .with_logical_type(Some(LogicalType::Geometry(GeometryType { crs: None })))
                     .build()
                     .unwrap(),
             )

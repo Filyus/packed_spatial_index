@@ -42,20 +42,20 @@ Requires Rust 1.89 or newer.
 
 ```toml
 [dependencies]
-packed_spatial_index_geo = "0.2"
+packed_spatial_index_geo = "0.3"
 ```
 
 ## When to use it
 
-Reach for the **accelerator** when the GeoParquet file stays put and you just want
-fast windowed / kNN / raycast lookups against it: the index is tiny (boxes + row
-ids), and a query hands you row indices to read back from the file.
+Reach for the **accelerator** when the geospatial Parquet file stays put and you
+just want fast windowed / kNN / raycast lookups against it: the index is tiny
+(boxes + row ids), and a query hands you row indices to read back from the file.
 
 Reach for the **converter** when you want a portable, cloud-served store: by
 default it folds source row ids and geometry into one self-describing `PSINDEX`
 blob that the core streaming engine queries directly over HTTP range requests.
 Use `ConvertPayload::RowIds` when you want only a compact sidecar index that
-points back to the original GeoParquet rows.
+points back to the original source rows.
 
 ```text
 GeoParquet / Parquet geo  ──(this crate, native)──►  index / PSINDEX  ──(core, anywhere)──►  queries
@@ -134,10 +134,10 @@ cargo run --bin gp2psindex -- path/to/file.parquet      # writes path/to/file.pa
   `GeoError::UnsupportedEncoding`.
 - Geometry columns may be `Binary`, `LargeBinary`, or `BinaryView`.
 - 2D and 3D (`XYZ` / `XYZM`).
-- Null / empty geometry: the accelerator keeps `id == row index`, so it has no room
-  to skip rows and returns `GeoError::NullGeometry`. The converter can drop such
-  rows with `skip_null`; item ids are compacted, and the default / row-id payloads
-  preserve the original GeoParquet row id.
+- Null / empty geometry: the accelerator keeps `id == row index`, so it has no
+  room to skip rows and returns `GeoError::NullGeometry`. The converter can drop
+  such rows with `skip_null`; item ids are compacted, and the default / row-id
+  payloads preserve the original source row id.
 
 ## License
 

@@ -37,23 +37,24 @@ pub(crate) fn build_simd_index_3d(
 ) -> Result<SimdIndex3D, BuildError> {
     let node_size = config.node_size;
     let num_items = config.num_items;
-    let TreeLayout {
-        level_bounds,
-        num_nodes,
-    } = try_compute_tree_layout(num_items, node_size)?;
 
     if num_items == 0 {
-        return Ok(SimdIndex3D::empty(node_size, num_items, level_bounds));
+        return Ok(SimdIndex3D::empty(node_size, num_items, vec![0]));
     }
 
     if num_items <= node_size {
         return Ok(build_single_node_soa_3d(
             node_size,
             num_items,
-            level_bounds,
+            vec![num_items, num_items + 1],
             items,
         ));
     }
+
+    let TreeLayout {
+        level_bounds,
+        num_nodes,
+    } = try_compute_tree_layout(num_items, node_size)?;
 
     let mut min_xs = vec![0.0f64; num_nodes];
     let mut min_ys = vec![0.0f64; num_nodes];

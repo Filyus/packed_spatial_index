@@ -65,16 +65,12 @@ pub(crate) fn build_f32_2(
 ) -> Result<Index2DF32, BuildError> {
     let node_size = config.node_size;
     let num_items = config.num_items;
-    let TreeLayout {
-        level_bounds,
-        num_nodes,
-    } = try_compute_tree_layout(num_items, node_size)?;
 
     if num_items == 0 {
         return Ok(Index2DF32 {
             node_size,
             num_items,
-            level_bounds,
+            level_bounds: vec![0],
             min_xs: Vec::new(),
             min_ys: Vec::new(),
             max_xs: Vec::new(),
@@ -87,10 +83,15 @@ pub(crate) fn build_f32_2(
         return Ok(build_single_node_soa_f32(
             node_size,
             num_items,
-            level_bounds,
+            vec![num_items, num_items + 1],
             items,
         ));
     }
+
+    let TreeLayout {
+        level_bounds,
+        num_nodes,
+    } = try_compute_tree_layout(num_items, node_size)?;
 
     let mut min_xs = vec![0.0f32; num_nodes];
     let mut min_ys = vec![0.0f32; num_nodes];

@@ -46,7 +46,7 @@ Requires Rust 1.89 or newer.
 
 ```toml
 [dependencies]
-packed_spatial_index_geo = "0.4"
+packed_spatial_index_geo = "0.5"
 ```
 
 ## When to use it

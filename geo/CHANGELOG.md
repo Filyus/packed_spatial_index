@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.4.1...psi-geo-v0.5.0) - 2026-06-28
+
 ### Changed
 - Replaced the function-oriented public API with the `open(...) -> GeoDataset`
   session API. Discovery, inspection, scanning, building, and conversion now hang

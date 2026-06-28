@@ -257,7 +257,7 @@ jobs:
         if: ${{ steps.release.outputs.should_publish == 'true' }}
         env:
           MANIFEST: ${{ steps.meta.outputs.manifest }}
-        run: cargo publish --dry-run --manifest-path "$MANIFEST"
+        run: cargo publish --dry-run --allow-dirty --manifest-path "$MANIFEST"
 
   publish:
     name: publish

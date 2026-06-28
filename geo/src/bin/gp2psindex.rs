@@ -11,9 +11,10 @@ use arrow_json::LineDelimitedWriter;
 use base64::Engine as _;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, ConvertRequest, DuplicateFeatureRows, EnvelopePolicy,
-    FeatureReadOrder, FeatureReadRequest, FeatureRows, GeoArtifactIndex, GeoDiscovery, GeoError,
-    GeometryProfile, GeometryReadMode, GeometrySelector, IndexDimsRequest, InspectRequest,
-    NullPolicy, PayloadPlan, PropertyProjection, SliceReader, StoragePrecision, ValidateRequest,
+    FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRows, GeoArtifactIndex,
+    GeoDiscovery, GeoError, GeometryProfile, GeometryReadMode, GeometrySelector, IndexDimsRequest,
+    InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan, PropertyProjection,
+    QueryGeometry, SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest,
     ValidationReport, ValidationSeverity, open, open_geo_index,
 };
 
@@ -42,6 +43,9 @@ usage:
       [--antimeridian reject|split|world]
   gp2psindex query <source.parquet> <index.psi>
       --bbox xmin,ymin,xmax,ymax
+      [--exact]
+      [--predicate intersects]
+      [--treat-nonplanar-as-planar]
       [--geometry none|wkb]
       [--properties none|all|include:a,b|exclude:a,b]
       [--order source|hit]
@@ -190,6 +194,12 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let order = parse_feature_order(parsed.option("--order")?.as_deref().unwrap_or("source"))?;
     let duplicates =
         parse_duplicates(parsed.option("--duplicates")?.as_deref().unwrap_or("dedup"))?;
+    let exact = parsed.flag("--exact");
+    let predicate = parsed.option("--predicate")?;
+    let treat_nonplanar = parsed.flag("--treat-nonplanar-as-planar");
+    if !exact && (predicate.is_some() || treat_nonplanar) {
+        return Err("--predicate and --treat-nonplanar-as-planar require --exact".into());
+    }
 
     if parsed.flag("--json") && parsed.flag("--ndjson") {
         return Err("--json and --ndjson are mutually exclusive".into());
@@ -202,6 +212,25 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         GeoArtifactIndex::D2(index) => index.search_features(query)?,
         GeoArtifactIndex::D3(_) => return Err("query CLI currently accepts a 2D --bbox".into()),
     };
+    let expected_source_fingerprint =
+        (!parsed.flag("--allow-source-mismatch")).then_some(manifest.source_fingerprint.clone());
+    let features = if exact {
+        let mut dataset = open(File::open(source)?)?;
+        dataset.filter_features(FeatureFilterRequest {
+            features,
+            selector: GeometrySelector::Name(manifest.selected_column.clone()),
+            query: QueryGeometry::Box2D(query),
+            predicate: parse_spatial_predicate(predicate.as_deref().unwrap_or("intersects"))?,
+            non_planar: if treat_nonplanar {
+                NonPlanarExactPolicy::TreatAsPlanar
+            } else {
+                NonPlanarExactPolicy::Reject
+            },
+            expected_source_fingerprint: expected_source_fingerprint.clone(),
+        })?
+    } else {
+        features
+    };
 
     let mut dataset = open(File::open(source)?)?;
     let rows = dataset.read_features(FeatureReadRequest {
@@ -211,8 +240,7 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         geometry,
         order,
         duplicates,
-        expected_source_fingerprint: (!parsed.flag("--allow-source-mismatch"))
-            .then_some(manifest.source_fingerprint),
+        expected_source_fingerprint,
     })?;
     print_query_rows(&rows, parsed.flag("--json"))?;
     Ok(())
@@ -377,6 +405,13 @@ fn parse_duplicates(value: &str) -> Result<DuplicateFeatureRows, Box<dyn std::er
         "dedup" => Ok(DuplicateFeatureRows::DedupRows),
         "parts" => Ok(DuplicateFeatureRows::KeepParts),
         _ => Err(format!("invalid --duplicates `{value}`").into()),
+    }
+}
+
+fn parse_spatial_predicate(value: &str) -> Result<SpatialPredicate, Box<dyn std::error::Error>> {
+    match value {
+        "intersects" => Ok(SpatialPredicate::Intersects),
+        _ => Err(format!("invalid --predicate `{value}`").into()),
     }
 }
 
@@ -624,6 +659,7 @@ fn option_takes_value(arg: &str) -> bool {
             | "--geometry"
             | "--order"
             | "--duplicates"
+            | "--predicate"
     )
 }
 

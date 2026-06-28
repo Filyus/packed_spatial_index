@@ -69,6 +69,7 @@ files.
 | Build an index | [`GeoDataset::build`][build], [`GeoIndex`][GeoIndex] |
 | Convert to `PSINDEX` | [`GeoDataset::convert`][convert] |
 | Open a `PSINDEX` | [`open_geo_index`][open_geo_index] |
+| Exact-filter hits | [`GeoDataset::filter_features`][filter_features], [`FeatureFilterRequest`][FeatureFilterRequest] |
 | Read source rows | [`GeoDataset::read_features`][read_features], [`FeatureReadRequest`][FeatureReadRequest] |
 | Tune requests | [`IndexDimsRequest`][IndexDimsRequest], [`NullPolicy`][NullPolicy] |
 | Pick payloads | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
@@ -220,8 +221,8 @@ an index query:
 ```rust,no_run
 use std::fs::File;
 use packed_spatial_index_geo::{
-    open, open_geo_index, Box2D, FeatureReadRequest, GeoArtifactIndex,
-    GeometryReadMode, PropertyProjection, SliceReader,
+    open, open_geo_index, Box2D, FeatureFilterRequest, FeatureReadRequest,
+    GeoArtifactIndex, GeometryReadMode, PropertyProjection, SliceReader,
 };
 
 let bytes = std::fs::read("cities.psindex")?;
@@ -231,8 +232,53 @@ let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else 
 let manifest = index.manifest().clone();
 let hits = index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 
-let mut source = open(File::open("cities.parquet")?)?;
-let rows = source.read_features(FeatureReadRequest {
+let selector = packed_spatial_index_geo::GeometrySelector::Name(
+    manifest.selected_column,
+);
+let expected_source_fingerprint = Some(manifest.source_fingerprint);
+let bbox = Box2D::new(-10.0, 35.0, 20.0, 60.0);
+let mut filter_source = open(File::open("cities.parquet")?)?;
+let filtered = filter_source.filter_features(FeatureFilterRequest {
+    selector: selector.clone(),
+    expected_source_fingerprint: expected_source_fingerprint.clone(),
+    ..FeatureFilterRequest::from_hits_intersects_box2d(hits, bbox)
+})?;
+
+let mut row_source = open(File::open("cities.parquet")?)?;
+let rows = row_source.read_features(FeatureReadRequest {
+    selector,
+    expected_source_fingerprint,
+    properties: PropertyProjection::Include(vec!["name".to_string()]),
+    geometry: GeometryReadMode::Wkb,
+    ..FeatureReadRequest::from_features(filtered)
+})?;
+
+println!("{} rows", rows.batch.num_rows());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`filter_features` applies exact planar predicates to the source geometries, so
+the final read-back step can work with true hits instead of bbox candidates. It
+reads geometry WKB internally; open a fresh dataset session for `read_features`
+after filtering.
+
+If candidate filtering is enough, skip the exact step and read the hit refs
+directly:
+
+```rust,no_run
+# use std::fs::File;
+# use packed_spatial_index_geo::{
+#     open, Box2D, FeatureReadRequest, GeoArtifactIndex, GeometryReadMode,
+#     PropertyProjection, SliceReader, open_geo_index,
+# };
+# let bytes = std::fs::read("cities.psindex")?;
+# let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+#     panic!("expected a 2D artifact");
+# };
+# let manifest = index.manifest().clone();
+# let hits = index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+# let mut source = open(File::open("cities.parquet")?)?;
+# let rows = source.read_features(FeatureReadRequest {
     selector: packed_spatial_index_geo::GeometrySelector::Name(
         manifest.selected_column,
     ),
@@ -247,8 +293,7 @@ println!("{} rows", rows.batch.num_rows());
 ```
 
 This reads selected Parquet row groups and projected columns. It is not a
-single-row byte seek into Parquet, and bbox hits are still candidate hits unless
-you run an exact geometry predicate afterwards.
+single-row byte seek into Parquet.
 
 ## CLI
 
@@ -303,6 +348,17 @@ gp2psindex query input.parquet output.psi \
   --properties include:name,pop
 ```
 
+Add `--exact` to filter bbox candidates with a planar geometry/rectangle
+intersection predicate before reading the final rows:
+
+```text
+gp2psindex query input.parquet output.psi \
+  --bbox -10,35,20,60 \
+  --exact \
+  --predicate intersects \
+  --properties include:name,pop
+```
+
 Add WKB bytes to JSON output when a downstream step needs the geometry:
 
 ```text
@@ -343,6 +399,9 @@ gp2psindex build input.parquet output.psi \
 - `GEOGRAPHY` is indexed as a coordinate-axis-aligned bounding box over the
   stored WKB coordinates. This is a candidate index, not exact spherical or
   ellipsoidal predicate evaluation.
+- Exact filtering is XY planar. `GEOGRAPHY` and non-planar edge models reject
+  by default; opt in only when treating stored coordinates as planar is
+  acceptable for the query.
 - GeoParquet GeoArrow encodings `point`, `linestring`, `polygon`, `multipoint`,
   `multilinestring`, and `multipolygon` can be scanned without a covering column
   and can be emitted as ISO WKB payloads.
@@ -367,6 +426,7 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [build]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.build
 [convert]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert
 [convert_into]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert_into
+[filter_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.filter_features
 [read_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.read_features
 [GeoDiscovery]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDiscovery.html
 [GeometryColumnInfo]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeometryColumnInfo.html
@@ -396,6 +456,7 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [PayloadPlan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.PayloadPlan.html
 [PropertyProjection]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.PropertyProjection.html
 [FeatureRef]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureRef.html
+[FeatureFilterRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureFilterRequest.html
 [FeatureReadRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureReadRequest.html
 [FeatureRows]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureRows.html
 [GeometryReadMode]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometryReadMode.html

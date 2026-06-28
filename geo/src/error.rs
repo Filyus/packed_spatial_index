@@ -59,6 +59,16 @@ pub enum GeoError {
     /// Geometry encoding is not supported for the requested operation.
     #[error("unsupported geometry encoding: {0}")]
     UnsupportedEncoding(String),
+    /// Exact planar predicates were requested for a non-planar geometry column.
+    #[error(
+        "exact planar predicate requested for non-planar column `{column}` with edges {edges:?}; choose treat-as-planar to opt in"
+    )]
+    NonPlanarExactPredicate {
+        /// Selected geometry column.
+        column: String,
+        /// Declared edge model.
+        edges: crate::EdgeModel,
+    },
     /// Geometry dimensionality does not match the requested index dimensions.
     #[error("geometry is {found}D but {expected}D was requested")]
     DimMismatch {

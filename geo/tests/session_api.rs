@@ -12,10 +12,11 @@ use base64::Engine as _;
 use bytes::Bytes;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, DuplicateFeatureRows,
-    EnvelopePolicy, FEATURE_REF_RECORD_LEN, FeatureReadOrder, FeatureReadRequest, FeatureRef,
-    GeoArtifactIndex, GeoError, GeoIndex, GeoPayload, GeometryEncoding, GeometryMetadataSource,
-    GeometryReadMode, GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NullPolicy,
-    PayloadPlan, PropertyProjection, RangeReader, SliceReader, StoragePrecision, StreamIndex2D,
+    EnvelopePolicy, FEATURE_REF_RECORD_LEN, FeatureFilterRequest, FeatureReadOrder,
+    FeatureReadRequest, FeatureRef, GeoArtifactIndex, GeoError, GeoIndex, GeoPayload,
+    GeometryEncoding, GeometryMetadataSource, GeometryReadMode, GeometryScan, GeometrySelector,
+    IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
+    PropertyProjection, RangeReader, SliceReader, StoragePrecision, StreamIndex2D,
     decode_feature_ref_payload, decode_feature_wkb_payload, open, open_geo_index,
     read_geo_manifest,
 };
@@ -110,6 +111,17 @@ fn geo_meta_wkb(geometry_types: &[&str]) -> String {
         .join(",");
     format!(
         r#"{{"version":"1.1.0","primary_column":"geometry","columns":{{"geometry":{{"encoding":"WKB","geometry_types":[{types}]}}}}}}"#
+    )
+}
+
+fn geo_meta_wkb_edges(geometry_types: &[&str], edges: &str) -> String {
+    let types = geometry_types
+        .iter()
+        .map(|ty| format!(r#""{ty}""#))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        r#"{{"version":"1.1.0","primary_column":"geometry","columns":{{"geometry":{{"encoding":"WKB","geometry_types":[{types}],"edges":"{edges}"}}}}}}"#
     )
 }
 
@@ -461,6 +473,208 @@ fn read_features_reports_fingerprint_and_bounds_errors() {
 }
 
 #[test]
+fn filter_features_removes_bbox_false_positive_and_keeps_points() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_line_2d(&[(0.0, 0.0), (10.0, 10.0)])),
+                    Some(wkb_point_2d(0.5, 9.5)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["line", "point"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["LineString", "Point"]),
+    );
+    let query = Box2D::new(0.0, 9.0, 1.0, 10.0);
+    let mut indexed = open(data.clone()).unwrap();
+    let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
+        panic!("expected 2D index");
+    };
+    let candidates = index.search_features(query);
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|feature| feature.row_number)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+
+    let mut source = open(data.clone()).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_box2d(candidates, query))
+        .unwrap();
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].row_number, 1);
+
+    let mut source = open(data).unwrap();
+    let rows = source
+        .read_features(FeatureReadRequest {
+            properties: PropertyProjection::Include(vec!["name".to_string()]),
+            ..FeatureReadRequest::from_features(exact)
+        })
+        .unwrap();
+    let names = rows
+        .batch
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(names.value(0), "point");
+}
+
+#[test]
+fn filter_features_supports_native_parquet_and_geoarrow_sources() {
+    let query = Box2D::new(4.0, 4.0, 6.0, 6.0);
+
+    let native = native_parquet(
+        &["geometry"],
+        vec![vec![wkb_point_2d(5.0, 5.0), wkb_point_2d(10.0, 10.0)]],
+    );
+    let mut source = open(native).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_box2d(
+            vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
+            query,
+        ))
+        .unwrap();
+    assert_eq!(
+        exact.iter().map(|f| f.row_number).collect::<Vec<_>>(),
+        vec![0]
+    );
+
+    let geoarrow = write_geoparquet(
+        vec![("geometry", geoarrow_points(&[(5.0, 5.0), (10.0, 10.0)]))],
+        geo_meta_arrow("point", "Point"),
+    );
+    let mut source = open(geoarrow).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_box2d(
+            vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
+            query,
+        ))
+        .unwrap();
+    assert_eq!(
+        exact.iter().map(|f| f.row_number).collect::<Vec<_>>(),
+        vec![0]
+    );
+}
+
+#[test]
+fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(5.0, 5.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut source = open(data.clone()).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_box2d(
+            vec![
+                FeatureRef {
+                    row_number: 0,
+                    row_group: None,
+                    row_in_group: None,
+                    part: Some(0),
+                    feature_id: None,
+                },
+                FeatureRef {
+                    row_number: 0,
+                    row_group: None,
+                    row_in_group: None,
+                    part: Some(1),
+                    feature_id: None,
+                },
+            ],
+            Box2D::new(4.0, 4.0, 6.0, 6.0),
+        ))
+        .unwrap();
+    assert_eq!(
+        exact
+            .iter()
+            .map(|feature| (feature.row_number, feature.part))
+            .collect::<Vec<_>>(),
+        vec![(0, Some(0)), (0, Some(1))]
+    );
+
+    let malformed = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(vec![1, 2, 3])]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut source = open(malformed).unwrap();
+    assert!(matches!(
+        source.filter_features(FeatureFilterRequest::intersects_box2d(
+            vec![FeatureRef::row_number(0)],
+            Box2D::new(0.0, 0.0, 1.0, 1.0),
+        )),
+        Err(GeoError::Wkb(_))
+    ));
+
+    let empty = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[Some(wkb_point_2d(f64::NAN, f64::NAN))]),
+        )],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut source = open(empty).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_box2d(
+            vec![FeatureRef::row_number(0)],
+            Box2D::new(0.0, 0.0, 10.0, 10.0),
+        ))
+        .unwrap();
+    assert!(exact.is_empty());
+
+    let mut source = open(data).unwrap();
+    let mismatch = source
+        .filter_features(FeatureFilterRequest {
+            expected_source_fingerprint: Some("fnv64:0000000000000000".to_string()),
+            ..FeatureFilterRequest::intersects_box2d(
+                vec![FeatureRef::row_number(0)],
+                Box2D::new(4.0, 4.0, 6.0, 6.0),
+            )
+        })
+        .unwrap_err();
+    assert!(matches!(
+        mismatch,
+        GeoError::SourceFingerprintMismatch { .. }
+    ));
+}
+
+#[test]
+fn filter_features_rejects_non_planar_edges_unless_opted_in() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(5.0, 5.0))]))],
+        geo_meta_wkb_edges(&["Point"], "spherical"),
+    );
+    let mut source = open(data.clone()).unwrap();
+    let err = source
+        .filter_features(FeatureFilterRequest::intersects_box2d(
+            vec![FeatureRef::row_number(0)],
+            Box2D::new(4.0, 4.0, 6.0, 6.0),
+        ))
+        .unwrap_err();
+    assert!(matches!(err, GeoError::NonPlanarExactPredicate { .. }));
+
+    let mut source = open(data).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest {
+            non_planar: NonPlanarExactPolicy::TreatAsPlanar,
+            ..FeatureFilterRequest::intersects_box2d(
+                vec![FeatureRef::row_number(0)],
+                Box2D::new(4.0, 4.0, 6.0, 6.0),
+            )
+        })
+        .unwrap();
+    assert_eq!(exact[0].row_number, 0);
+}
+
+#[test]
 fn row_ref_artifact_hits_feed_read_features() {
     let data = write_geoparquet(
         vec![
@@ -506,6 +720,71 @@ fn row_ref_artifact_hits_feed_read_features() {
         .unwrap();
     assert_eq!(rows.features[0].row_number, 1);
     assert_eq!(names.value(0), "far");
+}
+
+#[test]
+fn row_ref_artifact_hits_feed_exact_filter_then_read_features() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_line_2d(&[(0.0, 0.0), (10.0, 10.0)])),
+                    Some(wkb_point_2d(0.5, 9.5)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["line", "point"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["LineString", "Point"]),
+    );
+    let mut dataset = open(data.clone()).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let query = Box2D::new(0.0, 9.0, 1.0, 10.0);
+    let manifest = index.manifest().clone();
+    let hits = index.search_hits(query).unwrap();
+    assert_eq!(hits.len(), 2);
+
+    let mut source = open(data.clone()).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest {
+            selector: GeometrySelector::Name(manifest.selected_column.clone()),
+            expected_source_fingerprint: Some(manifest.source_fingerprint.clone()),
+            ..FeatureFilterRequest::from_hits_intersects_box2d(hits, query)
+        })
+        .unwrap();
+    assert_eq!(
+        exact.iter().map(|f| f.row_number).collect::<Vec<_>>(),
+        vec![1]
+    );
+
+    let mut source = open(data).unwrap();
+    let rows = source
+        .read_features(FeatureReadRequest {
+            selector: GeometrySelector::Name(manifest.selected_column),
+            expected_source_fingerprint: Some(manifest.source_fingerprint),
+            properties: PropertyProjection::Include(vec!["name".to_string()]),
+            ..FeatureReadRequest::from_features(exact)
+        })
+        .unwrap();
+    let names = rows
+        .batch
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(names.value(0), "point");
 }
 
 #[test]
@@ -878,7 +1157,7 @@ fn antimeridian_split_duplicates_feature_ref_parts() {
         )],
         geo_meta_wkb(&["LineString"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open(data.clone()).unwrap();
     let scan = dataset
         .scan(packed_spatial_index_geo::ScanRequest {
             envelope: EnvelopePolicy::Geographic {
@@ -899,6 +1178,18 @@ fn antimeridian_split_duplicates_feature_ref_parts() {
         assert!(bbox.max_x <= 180.0);
         assert!(bbox.min_x <= bbox.max_x);
     }
+
+    let mut source = open(data).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_box2d(
+            scan.features,
+            Box2D::new(-180.0, -1.0, 180.0, 2.0),
+        ))
+        .unwrap();
+    assert_eq!(
+        exact.iter().map(|feature| feature.part).collect::<Vec<_>>(),
+        vec![Some(0), Some(1)]
+    );
 }
 
 #[test]
@@ -1042,6 +1333,148 @@ fn cli_query_json_smoke() {
         json[0]["geometry_wkb"],
         base64::engine::general_purpose::STANDARD.encode(wkb_point_2d(8.0, 8.0))
     );
+}
+
+#[test]
+fn cli_query_exact_filters_candidates_and_handles_non_planar_policy() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_line_2d(&[(0.0, 0.0), (10.0, 10.0)])),
+                    Some(wkb_point_2d(0.5, 9.5)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["line", "point"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["LineString", "Point"]),
+    );
+    let mut dataset = open(data.clone()).unwrap();
+    let psindex = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let dir = env::temp_dir().join(format!(
+        "psi_geo_query_exact_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.parquet");
+    let index_path = dir.join("source.psi");
+    fs::write(&source_path, &data).unwrap();
+    fs::write(&index_path, &psindex).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("0,9,1,10")
+        .arg("--properties")
+        .arg("include:name")
+        .arg("--exact")
+        .arg("--predicate")
+        .arg("intersects")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(json[0]["feature"]["row_number"], 1);
+    assert_eq!(json[0]["properties"]["name"], "point");
+
+    let ndjson = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("0,9,1,10")
+        .arg("--exact")
+        .arg("--ndjson")
+        .output()
+        .unwrap();
+    assert!(
+        ndjson.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&ndjson.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&ndjson.stdout).lines().count(), 1);
+
+    let bad_predicate = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("0,9,1,10")
+        .arg("--exact")
+        .arg("--predicate")
+        .arg("contains")
+        .output()
+        .unwrap();
+    assert!(!bad_predicate.status.success());
+
+    let non_planar = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(5.0, 5.0))]))],
+        geo_meta_wkb_edges(&["Point"], "spherical"),
+    );
+    let mut dataset = open(non_planar.clone()).unwrap();
+    let non_planar_index = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let non_planar_source = dir.join("non_planar.parquet");
+    let non_planar_psi = dir.join("non_planar.psi");
+    fs::write(&non_planar_source, &non_planar).unwrap();
+    fs::write(&non_planar_psi, &non_planar_index).unwrap();
+
+    let rejected = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&non_planar_source)
+        .arg(&non_planar_psi)
+        .arg("--bbox")
+        .arg("4,4,6,6")
+        .arg("--exact")
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("non-planar"),
+        "stderr: {}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+
+    let opted_in = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&non_planar_source)
+        .arg(&non_planar_psi)
+        .arg("--bbox")
+        .arg("4,4,6,6")
+        .arg("--exact")
+        .arg("--treat-nonplanar-as-planar")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        opted_in.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&opted_in.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&opted_in.stdout).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1);
 }
 
 #[test]

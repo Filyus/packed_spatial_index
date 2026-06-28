@@ -1,6 +1,6 @@
 use arrow::record_batch::RecordBatch;
 use packed_spatial_index::{Box2D, Box3D, Index2D, Index3D};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Source that made a geometry column discoverable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -608,6 +608,17 @@ pub struct FeatureRef {
 }
 
 impl FeatureRef {
+    /// Create a feature ref from an absolute source row number.
+    pub fn row_number(row_number: u64) -> Self {
+        Self {
+            row_number,
+            row_group: None,
+            row_in_group: None,
+            part: None,
+            feature_id: None,
+        }
+    }
+
     pub(crate) fn row_in_group(row_number: u64, row_group: u32, row_in_group: u32) -> Self {
         Self {
             row_number,
@@ -765,6 +776,126 @@ impl Default for FeatureReadRequest {
             duplicates: DuplicateFeatureRows::DedupRows,
             expected_source_fingerprint: None,
         }
+    }
+}
+
+/// Query geometry for exact source filtering.
+///
+/// # Example
+///
+/// ```rust
+/// use packed_spatial_index_geo::{Box2D, QueryGeometry};
+///
+/// let query = QueryGeometry::Box2D(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+/// assert!(matches!(query, QueryGeometry::Box2D(_)));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum QueryGeometry {
+    /// Query rectangle in source XY coordinates.
+    Box2D(Box2D),
+}
+
+impl Serialize for QueryGeometry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            QueryGeometry::Box2D(bbox) => {
+                QueryGeometrySerde::Box2D([bbox.min_x, bbox.min_y, bbox.max_x, bbox.max_y])
+                    .serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for QueryGeometry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match QueryGeometrySerde::deserialize(deserializer)? {
+            QueryGeometrySerde::Box2D([min_x, min_y, max_x, max_y]) => {
+                QueryGeometry::Box2D(Box2D::new(min_x, min_y, max_x, max_y))
+            }
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum QueryGeometrySerde {
+    Box2D([f64; 4]),
+}
+
+/// Exact source-filtering predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpatialPredicate {
+    /// Keep features whose geometry intersects the query geometry.
+    Intersects,
+}
+
+/// How exact filtering handles non-planar geography/edge metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NonPlanarExactPolicy {
+    /// Reject exact filtering when the selected column is not planar.
+    Reject,
+    /// Treat stored coordinates as planar XY for the predicate.
+    TreatAsPlanar,
+}
+
+/// Request for [`GeoDataset::filter_features`](crate::GeoDataset::filter_features).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{
+///     open, Box2D, FeatureFilterRequest, FeatureRef,
+/// };
+///
+/// let mut source = open(File::open("cities.parquet")?)?;
+/// let exact = source.filter_features(FeatureFilterRequest::intersects_box2d(
+///     vec![FeatureRef::row_number(42)],
+///     Box2D::new(-10.0, 35.0, 20.0, 60.0),
+/// ))?;
+/// println!("{} exact hits", exact.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeatureFilterRequest {
+    /// Candidate feature refs to filter against source geometry.
+    pub features: Vec<FeatureRef>,
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Query geometry.
+    pub query: QueryGeometry,
+    /// Predicate to evaluate.
+    pub predicate: SpatialPredicate,
+    /// Non-planar edge handling.
+    pub non_planar: NonPlanarExactPolicy,
+    /// Optional source fingerprint expected by the caller or artifact manifest.
+    pub expected_source_fingerprint: Option<String>,
+}
+
+impl FeatureFilterRequest {
+    /// Create an `intersects` request from candidate feature refs and a 2D box.
+    pub fn intersects_box2d(features: Vec<FeatureRef>, bbox: Box2D) -> Self {
+        Self {
+            features,
+            selector: GeometrySelector::Default,
+            query: QueryGeometry::Box2D(bbox),
+            predicate: SpatialPredicate::Intersects,
+            non_planar: NonPlanarExactPolicy::Reject,
+            expected_source_fingerprint: None,
+        }
+    }
+
+    /// Create an `intersects` request from artifact hits and a 2D box.
+    pub fn from_hits_intersects_box2d(hits: Vec<crate::GeoHit>, bbox: Box2D) -> Self {
+        Self::intersects_box2d(hits.into_iter().map(|hit| hit.feature).collect(), bbox)
     }
 }
 

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Cursor;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -10,6 +11,8 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use arrow_json::LineDelimitedWriter;
 use arrow_select::concat::concat_batches;
 use arrow_select::take::take;
+use geo::Intersects;
+use geozero::wkb::{FromWkb, WkbDialect};
 use packed_spatial_index::{Box2D, Box3D, Index2DBuilder, Index2DF32, Index3DBuilder, Index3DF32};
 use parquet::arrow::{
     ProjectionMask,
@@ -27,13 +30,14 @@ use crate::wkb::{self, GeometryBounds};
 use crate::{
     AntimeridianPolicy, BuildRequest, ColumnCapabilities, ConvertRequest, CoordinateDims, CrsInfo,
     DeclaredExtent, DiscoveryWarning, DuplicateFeatureRows, EdgeAlgorithm, EdgeModel,
-    EnvelopePolicy, FeatureReadOrder, FeatureReadRequest, FeatureRef, FeatureRows, FileGeoMetadata,
-    GeoArtifact, GeoArtifactManifest, GeoDiscovery, GeoError, GeoIndex, GeoIndex2D, GeoIndex3D,
-    GeoIndexMetadata, GeometryColumn, GeometryColumnInfo, GeometryEncoding, GeometryMetadataSource,
-    GeometryProfile, GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D,
-    GeometrySelectionReason, GeometrySelector, GeometryTypeSet, IndexBuildOptions,
-    IndexDimsRequest, InspectRequest, NativeGeospatialStatsReport, NullPolicy, PayloadPlan,
-    PropertyProjection, RowBoundsSource, SelectionStatus, StoragePrecision, ValidateRequest,
+    EnvelopePolicy, FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRef,
+    FeatureRows, FileGeoMetadata, GeoArtifact, GeoArtifactManifest, GeoDiscovery, GeoError,
+    GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata, GeometryColumn, GeometryColumnInfo,
+    GeometryEncoding, GeometryMetadataSource, GeometryProfile, GeometryReadMode, GeometryScan,
+    GeometryScan2D, GeometryScan3D, GeometrySelectionReason, GeometrySelector, GeometryTypeSet,
+    IndexBuildOptions, IndexDimsRequest, InspectRequest, NativeGeospatialStatsReport,
+    NonPlanarExactPolicy, NullPolicy, PayloadPlan, PropertyProjection, QueryGeometry,
+    RowBoundsSource, SelectionStatus, SpatialPredicate, StoragePrecision, ValidateRequest,
     ValidationCode, ValidationReport, ValidationSeverity,
 };
 
@@ -399,6 +403,75 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         let mut out = Vec::new();
         self.convert_into(req, &mut out)?;
         Ok(out)
+    }
+
+    /// Filter candidate feature refs by an exact planar source-geometry predicate.
+    ///
+    /// This is the post-filter step after a bbox query. It reads only the
+    /// selected source geometry rows, materializes WKB, and evaluates the
+    /// requested predicate in stored XY coordinates. `GEOGRAPHY` and other
+    /// non-planar edge models reject by default because this method does not
+    /// evaluate spherical or ellipsoidal predicates.
+    ///
+    /// Like [`GeoDataset::read_features`], this consumes the dataset reader.
+    /// Open a fresh source dataset if you want to read projected rows after
+    /// filtering.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{
+    ///     open, Box2D, FeatureFilterRequest, FeatureReadRequest,
+    /// };
+    ///
+    /// let candidates = vec![packed_spatial_index_geo::FeatureRef::row_number(42)];
+    /// let query = Box2D::new(-10.0, 35.0, 20.0, 60.0);
+    ///
+    /// let mut filter_source = open(File::open("cities.parquet")?)?;
+    /// let exact = filter_source.filter_features(
+    ///     FeatureFilterRequest::intersects_box2d(candidates, query),
+    /// )?;
+    ///
+    /// let mut read_source = open(File::open("cities.parquet")?)?;
+    /// let rows = read_source.read_features(FeatureReadRequest::from_features(exact))?;
+    /// println!("{} exact rows", rows.batch.num_rows());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn filter_features(
+        &mut self,
+        req: FeatureFilterRequest,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        let state = self.select_state(&req.selector)?.clone();
+        reject_non_planar_exact(&state, req.non_planar)?;
+
+        let rows = self.read_features(FeatureReadRequest {
+            features: req.features,
+            selector: req.selector,
+            properties: PropertyProjection::None,
+            geometry: GeometryReadMode::Wkb,
+            order: FeatureReadOrder::RequestOrder,
+            duplicates: DuplicateFeatureRows::KeepParts,
+            expected_source_fingerprint: req.expected_source_fingerprint,
+        })?;
+        if rows.features.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let wkb = binary_column(&rows.batch, "geometry_wkb")?;
+        let mut exact = Vec::new();
+        for row in 0..rows.features.len() {
+            if wkb.is_null(row) {
+                continue;
+            }
+            let Some(geometry) = decode_geo_geometry(wkb.value(row))? else {
+                continue;
+            };
+            if exact_predicate_matches(&geometry, req.query, req.predicate) {
+                exact.push(rows.features[row].clone());
+            }
+        }
+        Ok(exact)
     }
 
     /// Read source Parquet rows for feature refs returned by a geo index query.
@@ -1494,6 +1567,64 @@ fn profile_from_state(state: &ColumnState, num_rows: u64) -> GeometryProfile {
         extent: state.info.extent.clone(),
         row_bounds: state.info.row_bounds.clone(),
         num_rows,
+    }
+}
+
+fn reject_non_planar_exact(
+    state: &ColumnState,
+    policy: NonPlanarExactPolicy,
+) -> Result<(), GeoError> {
+    if matches!(policy, NonPlanarExactPolicy::TreatAsPlanar) {
+        return Ok(());
+    }
+    if matches!(
+        state.info.encoding,
+        GeometryEncoding::ParquetGeography { .. }
+    ) || !matches!(state.info.edges, EdgeModel::Planar)
+    {
+        return Err(GeoError::NonPlanarExactPredicate {
+            column: state.info.name.clone(),
+            edges: state.info.edges,
+        });
+    }
+    Ok(())
+}
+
+fn decode_geo_geometry(bytes: &[u8]) -> Result<Option<geo_types::Geometry<f64>>, GeoError> {
+    let mut cursor = Cursor::new(bytes);
+    match geo_types::Geometry::<f64>::from_wkb(&mut cursor, WkbDialect::Wkb) {
+        Ok(geometry) => Ok(Some(geometry)),
+        Err(err) => {
+            let msg = err.to_string();
+            let lower = msg.to_ascii_lowercase();
+            if lower.contains("empty") || lower.contains("missing geometry") {
+                Ok(None)
+            } else {
+                Err(GeoError::Wkb(msg))
+            }
+        }
+    }
+}
+
+fn exact_predicate_matches(
+    geometry: &geo_types::Geometry<f64>,
+    query: QueryGeometry,
+    predicate: SpatialPredicate,
+) -> bool {
+    match (query, predicate) {
+        (QueryGeometry::Box2D(bbox), SpatialPredicate::Intersects) => {
+            let rect = geo_types::Rect::new(
+                geo_types::Coord {
+                    x: bbox.min_x,
+                    y: bbox.min_y,
+                },
+                geo_types::Coord {
+                    x: bbox.max_x,
+                    y: bbox.max_y,
+                },
+            );
+            geometry.intersects(&rect)
+        }
     }
 }
 

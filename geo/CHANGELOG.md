@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.11.0...psi-geo-v0.12.0) - 2026-06-29
+
 ### Added
 
 - Added `GeoQuery2D` and `GeoQuery3D` query values for geo candidate and

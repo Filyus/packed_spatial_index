@@ -788,11 +788,45 @@ impl Default for FeatureReadRequest {
 ///
 /// let query = QueryGeometry::Box2D(Box2D::new(-10.0, 35.0, 20.0, 60.0));
 /// assert!(matches!(query, QueryGeometry::Box2D(_)));
+/// let radius = QueryGeometry::SphericalRadius {
+///     lon: -73.9857,
+///     lat: 40.7484,
+///     radius_metres: 500.0,
+/// };
+/// assert!(matches!(radius, QueryGeometry::SphericalRadius { .. }));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum QueryGeometry {
     /// Query rectangle in source XY coordinates.
     Box2D(Box2D),
+    /// Spherical point-radius query in longitude/latitude coordinates.
+    SphericalRadius {
+        /// Query longitude in degrees.
+        lon: f64,
+        /// Query latitude in degrees.
+        lat: f64,
+        /// Query radius in metres on a spherical Earth.
+        radius_metres: f64,
+    },
+}
+
+impl QueryGeometry {
+    /// Return 2D lon/lat candidate boxes for this query geometry.
+    ///
+    /// `Box2D` returns itself. `SphericalRadius` returns one or two longitude /
+    /// latitude boxes, splitting at the antimeridian when needed.
+    pub fn candidate_boxes_2d(&self) -> Result<Vec<Box2D>, crate::GeoError> {
+        match *self {
+            QueryGeometry::Box2D(bbox) => Ok(vec![bbox]),
+            QueryGeometry::SphericalRadius {
+                lon,
+                lat,
+                radius_metres,
+            } => Ok(
+                crate::geodetic::SphericalRadius::new(lon, lat, radius_metres)?.candidate_boxes(),
+            ),
+        }
+    }
 }
 
 impl Serialize for QueryGeometry {
@@ -805,6 +839,16 @@ impl Serialize for QueryGeometry {
                 QueryGeometrySerde::Box2D([bbox.min_x, bbox.min_y, bbox.max_x, bbox.max_y])
                     .serialize(serializer)
             }
+            QueryGeometry::SphericalRadius {
+                lon,
+                lat,
+                radius_metres,
+            } => QueryGeometrySerde::SphericalRadius {
+                lon: *lon,
+                lat: *lat,
+                radius_metres: *radius_metres,
+            }
+            .serialize(serializer),
         }
     }
 }
@@ -818,6 +862,15 @@ impl<'de> Deserialize<'de> for QueryGeometry {
             QueryGeometrySerde::Box2D([min_x, min_y, max_x, max_y]) => {
                 QueryGeometry::Box2D(Box2D::new(min_x, min_y, max_x, max_y))
             }
+            QueryGeometrySerde::SphericalRadius {
+                lon,
+                lat,
+                radius_metres,
+            } => QueryGeometry::SphericalRadius {
+                lon,
+                lat,
+                radius_metres,
+            },
         })
     }
 }
@@ -826,6 +879,11 @@ impl<'de> Deserialize<'de> for QueryGeometry {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 enum QueryGeometrySerde {
     Box2D([f64; 4]),
+    SphericalRadius {
+        lon: f64,
+        lat: f64,
+        radius_metres: f64,
+    },
 }
 
 /// Exact source-filtering predicate.
@@ -896,6 +954,42 @@ impl FeatureFilterRequest {
     /// Create an `intersects` request from artifact hits and a 2D box.
     pub fn from_hits_intersects_box2d(hits: Vec<crate::GeoHit>, bbox: Box2D) -> Self {
         Self::intersects_box2d(hits.into_iter().map(|hit| hit.feature).collect(), bbox)
+    }
+
+    /// Create an `intersects` request from candidate feature refs and a spherical radius.
+    pub fn intersects_spherical_radius(
+        features: Vec<FeatureRef>,
+        lon: f64,
+        lat: f64,
+        radius_metres: f64,
+    ) -> Self {
+        Self {
+            features,
+            selector: GeometrySelector::Default,
+            query: QueryGeometry::SphericalRadius {
+                lon,
+                lat,
+                radius_metres,
+            },
+            predicate: SpatialPredicate::Intersects,
+            non_planar: NonPlanarExactPolicy::Reject,
+            expected_source_fingerprint: None,
+        }
+    }
+
+    /// Create an `intersects` spherical-radius request from artifact hits.
+    pub fn from_hits_intersects_spherical_radius(
+        hits: Vec<crate::GeoHit>,
+        lon: f64,
+        lat: f64,
+        radius_metres: f64,
+    ) -> Self {
+        Self::intersects_spherical_radius(
+            hits.into_iter().map(|hit| hit.feature).collect(),
+            lon,
+            lat,
+            radius_metres,
+        )
     }
 }
 

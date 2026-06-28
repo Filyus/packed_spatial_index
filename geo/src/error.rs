@@ -69,6 +69,22 @@ pub enum GeoError {
         /// Declared edge model.
         edges: crate::EdgeModel,
     },
+    /// Exact spherical predicates were requested for a non-spherical geometry column.
+    #[error(
+        "exact spherical predicate requested for column `{column}` with edges {edges:?}; spherical radius filtering requires GEOGRAPHY(SPHERICAL)"
+    )]
+    NonSphericalExactPredicate {
+        /// Selected geometry column.
+        column: String,
+        /// Declared edge model.
+        edges: crate::EdgeModel,
+    },
+    /// Spherical radius query parameters are invalid.
+    #[error("invalid spherical query: {0}")]
+    InvalidSphericalQuery(String),
+    /// The geometry type is not supported for spherical exact filtering.
+    #[error("unsupported geometry for spherical exact filtering: {0}")]
+    UnsupportedGeodeticGeometry(String),
     /// Geometry dimensionality does not match the requested index dimensions.
     #[error("geometry is {found}D but {expected}D was requested")]
     DimMismatch {

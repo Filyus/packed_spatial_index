@@ -24,6 +24,7 @@ use parquet::file::reader::ChunkReader;
 use serde::Deserialize;
 
 use crate::geoarrow;
+use crate::geodetic::SphericalRadius;
 use crate::manifest;
 use crate::validation;
 use crate::wkb::{self, GeometryBounds};
@@ -405,13 +406,13 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         Ok(out)
     }
 
-    /// Filter candidate feature refs by an exact planar source-geometry predicate.
+    /// Filter candidate feature refs by an exact source-geometry predicate.
     ///
-    /// This is the post-filter step after a bbox query. It reads only the
+    /// This is the post-filter step after an index query. It reads only the
     /// selected source geometry rows, materializes WKB, and evaluates the
-    /// requested predicate in stored XY coordinates. `GEOGRAPHY` and other
-    /// non-planar edge models reject by default because this method does not
-    /// evaluate spherical or ellipsoidal predicates.
+    /// requested predicate. Box queries are exact planar XY predicates.
+    /// Spherical-radius queries are accepted only for spherical geography and
+    /// currently support `Point` / `MultiPoint` geometries.
     ///
     /// Like [`GeoDataset::read_features`], this consumes the dataset reader.
     /// Open a fresh source dataset if you want to read projected rows after
@@ -443,7 +444,15 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         req: FeatureFilterRequest,
     ) -> Result<Vec<FeatureRef>, GeoError> {
         let state = self.select_state(&req.selector)?.clone();
-        reject_non_planar_exact(&state, req.non_planar)?;
+        if let Some(expected) = &req.expected_source_fingerprint
+            && expected != &self.source_fingerprint
+        {
+            return Err(GeoError::SourceFingerprintMismatch {
+                expected: expected.clone(),
+                actual: self.source_fingerprint.clone(),
+            });
+        }
+        let query = prepare_filter_query(&state, req.query, req.non_planar)?;
 
         let rows = self.read_features(FeatureReadRequest {
             features: req.features,
@@ -467,7 +476,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
             let Some(geometry) = decode_geo_geometry(wkb.value(row))? else {
                 continue;
             };
-            if exact_predicate_matches(&geometry, req.query, req.predicate) {
+            if exact_predicate_matches(&geometry, query, req.predicate)? {
                 exact.push(rows.features[row].clone());
             }
         }
@@ -1590,6 +1599,51 @@ fn reject_non_planar_exact(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PreparedFilterQuery {
+    Box2D(Box2D),
+    SphericalRadius(SphericalRadius),
+}
+
+fn prepare_filter_query(
+    state: &ColumnState,
+    query: QueryGeometry,
+    non_planar: NonPlanarExactPolicy,
+) -> Result<PreparedFilterQuery, GeoError> {
+    match query {
+        QueryGeometry::Box2D(bbox) => {
+            reject_non_planar_exact(state, non_planar)?;
+            Ok(PreparedFilterQuery::Box2D(bbox))
+        }
+        QueryGeometry::SphericalRadius {
+            lon,
+            lat,
+            radius_metres,
+        } => {
+            let compatible_native = !matches!(
+                state.info.encoding,
+                GeometryEncoding::ParquetGeography { .. }
+            ) || matches!(
+                state.info.encoding,
+                GeometryEncoding::ParquetGeography {
+                    algorithm: EdgeAlgorithm::Spherical
+                }
+            );
+            if !matches!(state.info.edges, EdgeModel::Spherical) || !compatible_native {
+                return Err(GeoError::NonSphericalExactPredicate {
+                    column: state.info.name.clone(),
+                    edges: state.info.edges,
+                });
+            }
+            Ok(PreparedFilterQuery::SphericalRadius(SphericalRadius::new(
+                lon,
+                lat,
+                radius_metres,
+            )?))
+        }
+    }
+}
+
 fn decode_geo_geometry(bytes: &[u8]) -> Result<Option<geo_types::Geometry<f64>>, GeoError> {
     let mut cursor = Cursor::new(bytes);
     match geo_types::Geometry::<f64>::from_wkb(&mut cursor, WkbDialect::Wkb) {
@@ -1608,11 +1662,11 @@ fn decode_geo_geometry(bytes: &[u8]) -> Result<Option<geo_types::Geometry<f64>>,
 
 fn exact_predicate_matches(
     geometry: &geo_types::Geometry<f64>,
-    query: QueryGeometry,
+    query: PreparedFilterQuery,
     predicate: SpatialPredicate,
-) -> bool {
+) -> Result<bool, GeoError> {
     match (query, predicate) {
-        (QueryGeometry::Box2D(bbox), SpatialPredicate::Intersects) => {
+        (PreparedFilterQuery::Box2D(bbox), SpatialPredicate::Intersects) => {
             let rect = geo_types::Rect::new(
                 geo_types::Coord {
                     x: bbox.min_x,
@@ -1623,8 +1677,47 @@ fn exact_predicate_matches(
                     y: bbox.max_y,
                 },
             );
-            geometry.intersects(&rect)
+            Ok(geometry.intersects(&rect))
         }
+        (PreparedFilterQuery::SphericalRadius(query), SpatialPredicate::Intersects) => {
+            spherical_radius_matches(geometry, query)
+        }
+    }
+}
+
+fn spherical_radius_matches(
+    geometry: &geo_types::Geometry<f64>,
+    query: SphericalRadius,
+) -> Result<bool, GeoError> {
+    match geometry {
+        geo_types::Geometry::Point(point) => Ok(query.contains_point(point.x(), point.y())),
+        geo_types::Geometry::MultiPoint(points) => Ok(points
+            .iter()
+            .any(|point| query.contains_point(point.x(), point.y()))),
+        geo_types::Geometry::Line(_) => {
+            Err(GeoError::UnsupportedGeodeticGeometry("Line".to_string()))
+        }
+        geo_types::Geometry::LineString(_) => Err(GeoError::UnsupportedGeodeticGeometry(
+            "LineString".to_string(),
+        )),
+        geo_types::Geometry::Polygon(_) => {
+            Err(GeoError::UnsupportedGeodeticGeometry("Polygon".to_string()))
+        }
+        geo_types::Geometry::MultiLineString(_) => Err(GeoError::UnsupportedGeodeticGeometry(
+            "MultiLineString".to_string(),
+        )),
+        geo_types::Geometry::MultiPolygon(_) => Err(GeoError::UnsupportedGeodeticGeometry(
+            "MultiPolygon".to_string(),
+        )),
+        geo_types::Geometry::GeometryCollection(_) => Err(GeoError::UnsupportedGeodeticGeometry(
+            "GeometryCollection".to_string(),
+        )),
+        geo_types::Geometry::Rect(_) => {
+            Err(GeoError::UnsupportedGeodeticGeometry("Rect".to_string()))
+        }
+        geo_types::Geometry::Triangle(_) => Err(GeoError::UnsupportedGeodeticGeometry(
+            "Triangle".to_string(),
+        )),
     }
 }
 

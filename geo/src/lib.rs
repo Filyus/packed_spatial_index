@@ -5,6 +5,7 @@ mod artifact;
 mod dataset;
 mod error;
 mod geoarrow;
+mod geodetic;
 mod manifest;
 mod types;
 mod validation;

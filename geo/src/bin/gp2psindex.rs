@@ -42,7 +42,7 @@ usage:
       [--properties none|all|include:a,b|exclude:a,b]
       [--antimeridian reject|split|world]
   gp2psindex query <source.parquet> <index.psi>
-      --bbox xmin,ymin,xmax,ymax
+      (--bbox xmin,ymin,xmax,ymax | --radius lon,lat,metres)
       [--exact]
       [--predicate intersects]
       [--treat-nonplanar-as-planar]
@@ -183,22 +183,35 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let source = parsed.required_pos(0, "source.parquet")?;
     let index_path = parsed.required_pos(1, "index.psi")?;
     parsed.no_extra_pos(2)?;
-    let query = parse_bbox(
-        parsed
-            .option("--bbox")?
-            .ok_or("--bbox xmin,ymin,xmax,ymax is required")?
-            .as_str(),
-    )?;
+    let bbox = parsed.option("--bbox")?;
+    let radius = parsed.option("--radius")?;
+    let query = match (bbox, radius) {
+        (Some(_), Some(_)) => return Err("--bbox and --radius are mutually exclusive".into()),
+        (Some(value), None) => QueryGeometry::Box2D(parse_bbox(&value)?),
+        (None, Some(value)) => {
+            let (lon, lat, radius_metres) = parse_radius(&value)?;
+            QueryGeometry::SphericalRadius {
+                lon,
+                lat,
+                radius_metres,
+            }
+        }
+        (None, None) => return Err("--bbox or --radius is required".into()),
+    };
     let geometry = parse_geometry_read(parsed.option("--geometry")?.as_deref().unwrap_or("none"))?;
     let properties = parse_properties(parsed.option("--properties")?.as_deref().unwrap_or("all"))?;
     let order = parse_feature_order(parsed.option("--order")?.as_deref().unwrap_or("source"))?;
     let duplicates =
         parse_duplicates(parsed.option("--duplicates")?.as_deref().unwrap_or("dedup"))?;
-    let exact = parsed.flag("--exact");
+    let radius_query = matches!(query, QueryGeometry::SphericalRadius { .. });
+    let exact = parsed.flag("--exact") || radius_query;
     let predicate = parsed.option("--predicate")?;
     let treat_nonplanar = parsed.flag("--treat-nonplanar-as-planar");
     if !exact && (predicate.is_some() || treat_nonplanar) {
         return Err("--predicate and --treat-nonplanar-as-planar require --exact".into());
+    }
+    if radius_query && treat_nonplanar {
+        return Err("--treat-nonplanar-as-planar cannot be used with --radius".into());
     }
 
     if parsed.flag("--json") && parsed.flag("--ndjson") {
@@ -208,9 +221,22 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(index_path)?;
     let artifact = open_geo_index(SliceReader::new(bytes))?;
     let manifest = artifact.manifest().clone();
+    let candidate_boxes = query.candidate_boxes_2d()?;
     let features = match artifact {
-        GeoArtifactIndex::D2(index) => index.search_features(query)?,
-        GeoArtifactIndex::D3(_) => return Err("query CLI currently accepts a 2D --bbox".into()),
+        GeoArtifactIndex::D2(index) => {
+            let mut features = Vec::new();
+            for bbox in candidate_boxes {
+                for feature in index.search_features(bbox)? {
+                    if !features.contains(&feature) {
+                        features.push(feature);
+                    }
+                }
+            }
+            features
+        }
+        GeoArtifactIndex::D3(_) => {
+            return Err("query CLI currently accepts only 2D --bbox/--radius queries".into());
+        }
     };
     let expected_source_fingerprint =
         (!parsed.flag("--allow-source-mismatch")).then_some(manifest.source_fingerprint.clone());
@@ -219,7 +245,7 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         dataset.filter_features(FeatureFilterRequest {
             features,
             selector: GeometrySelector::Name(manifest.selected_column.clone()),
-            query: QueryGeometry::Box2D(query),
+            query,
             predicate: parse_spatial_predicate(predicate.as_deref().unwrap_or("intersects"))?,
             non_planar: if treat_nonplanar {
                 NonPlanarExactPolicy::TreatAsPlanar
@@ -413,6 +439,17 @@ fn parse_spatial_predicate(value: &str) -> Result<SpatialPredicate, Box<dyn std:
         "intersects" => Ok(SpatialPredicate::Intersects),
         _ => Err(format!("invalid --predicate `{value}`").into()),
     }
+}
+
+fn parse_radius(value: &str) -> Result<(f64, f64, f64), Box<dyn std::error::Error>> {
+    let parts = value
+        .split(',')
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()?;
+    if parts.len() != 3 {
+        return Err("--radius expects three comma-separated numbers".into());
+    }
+    Ok((parts[0], parts[1], parts[2]))
 }
 
 fn parse_bbox(value: &str) -> Result<Box2D, Box<dyn std::error::Error>> {
@@ -660,6 +697,7 @@ fn option_takes_value(arg: &str) -> bool {
             | "--order"
             | "--duplicates"
             | "--predicate"
+            | "--radius"
     )
 }
 

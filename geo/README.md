@@ -369,6 +369,63 @@ gp2psindex query input.parquet output.psi \
   --json
 ```
 
+## Spherical radius queries
+
+For `GEOGRAPHY(SPHERICAL)` / GeoParquet spherical edges, `query --radius`
+performs a lon/lat radius lookup. The command first searches the 2D artifact
+with one or two candidate boxes (splitting at the antimeridian when needed),
+then applies exact spherical distance filtering before reading projected rows.
+This release supports `Point` and `MultiPoint` geometries; lines and polygons
+return a clear unsupported-geometry error.
+
+```text
+gp2psindex query input.parquet output.psi \
+  --radius -73.9857,40.7484,500 \
+  --properties include:name \
+  --json
+```
+
+The API path uses the same request type as planar exact filtering:
+
+```rust,no_run
+use std::fs::File;
+use packed_spatial_index_geo::{
+    open, open_geo_index, FeatureFilterRequest, FeatureReadRequest,
+    GeoArtifactIndex, PropertyProjection, SliceReader,
+};
+
+let bytes = std::fs::read("places.psi")?;
+let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    panic!("expected a 2D artifact");
+};
+
+let query = packed_spatial_index_geo::QueryGeometry::SphericalRadius {
+    lon: -73.9857,
+    lat: 40.7484,
+    radius_metres: 500.0,
+};
+let mut hits = Vec::new();
+for bbox in query.candidate_boxes_2d()? {
+    hits.extend(index.search_hits(bbox)?);
+}
+
+let mut filter_source = open(File::open("places.parquet")?)?;
+let exact = filter_source.filter_features(
+    FeatureFilterRequest::from_hits_intersects_spherical_radius(
+        hits, -73.9857, 40.7484, 500.0,
+    ),
+)?;
+
+let mut read_source = open(File::open("places.parquet")?)?;
+let rows = read_source.read_features(FeatureReadRequest {
+    properties: PropertyProjection::Include(vec!["name".to_string()]),
+    ..FeatureReadRequest::from_features(exact)
+})?;
+
+println!("{} rows", rows.batch.num_rows());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 If the artifact should carry GeoJSON Feature payloads, name the properties you
 want to keep:
 
@@ -399,8 +456,11 @@ gp2psindex build input.parquet output.psi \
 - `GEOGRAPHY` is indexed as a coordinate-axis-aligned bounding box over the
   stored WKB coordinates. This is a candidate index, not exact spherical or
   ellipsoidal predicate evaluation.
-- Exact filtering is XY planar. `GEOGRAPHY` and non-planar edge models reject
-  by default; opt in only when treating stored coordinates as planar is
+- Spherical radius exact filtering is available for spherical geography
+  `Point` / `MultiPoint` sources. Ellipsoidal predicates and exact spherical
+  line / polygon distance are out of scope for now.
+- Box exact filtering is XY planar. `GEOGRAPHY` and non-planar edge models
+  reject by default; opt in only when treating stored coordinates as planar is
   acceptable for the query.
 - GeoParquet GeoArrow encodings `point`, `linestring`, `polygon`, `multipoint`,
   `multilinestring`, and `multipolygon` can be scanned without a covering column

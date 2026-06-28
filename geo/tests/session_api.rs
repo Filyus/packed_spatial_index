@@ -69,6 +69,17 @@ fn wkb_line_2d(coords: &[(f64, f64)]) -> Vec<u8> {
     v
 }
 
+fn wkb_multipoint_2d(coords: &[(f64, f64)]) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(1);
+    v.extend_from_slice(&4u32.to_le_bytes());
+    v.extend_from_slice(&(coords.len() as u32).to_le_bytes());
+    for (x, y) in coords {
+        v.extend_from_slice(&wkb_point_2d(*x, *y));
+    }
+    v
+}
+
 fn binary_col(values: &[Option<Vec<u8>>]) -> ArrayRef {
     let values: Vec<Option<&[u8]>> = values.iter().map(|value| value.as_deref()).collect();
     Arc::new(BinaryArray::from(values))
@@ -644,6 +655,170 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
         mismatch,
         GeoError::SourceFingerprintMismatch { .. }
     ));
+}
+
+#[test]
+fn filter_features_spherical_radius_matches_points_and_multipoints() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                Some(wkb_point_2d(2.3522, 48.8566)),
+                Some(wkb_point_2d(13.4050, 52.5200)),
+            ]),
+        )],
+        geo_meta_wkb_edges(&["Point"], "spherical"),
+    );
+    let mut source = open(data).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_spherical_radius(
+            vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
+            2.35,
+            48.85,
+            2_000.0,
+        ))
+        .unwrap();
+    assert_eq!(
+        exact
+            .iter()
+            .map(|feature| feature.row_number)
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
+
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                Some(wkb_multipoint_2d(&[(13.4050, 52.5200), (2.3522, 48.8566)])),
+                Some(wkb_multipoint_2d(&[(13.4050, 52.5200)])),
+            ]),
+        )],
+        geo_meta_wkb_edges(&["MultiPoint"], "spherical"),
+    );
+    let mut source = open(data).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_spherical_radius(
+            vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
+            2.35,
+            48.85,
+            2_000.0,
+        ))
+        .unwrap();
+    assert_eq!(
+        exact
+            .iter()
+            .map(|feature| feature.row_number)
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
+}
+
+#[test]
+fn filter_features_spherical_radius_rejects_wrong_edges_and_unsupported_geometry() {
+    let planar = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(2.0, 49.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut source = open(planar).unwrap();
+    assert!(matches!(
+        source.filter_features(FeatureFilterRequest::intersects_spherical_radius(
+            vec![FeatureRef::row_number(0)],
+            2.0,
+            49.0,
+            1_000.0,
+        )),
+        Err(GeoError::NonSphericalExactPredicate { .. })
+    ));
+
+    let unknown_edges = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(2.0, 49.0))]))],
+        geo_meta_wkb_edges(&["Point"], "karney"),
+    );
+    let mut source = open(unknown_edges).unwrap();
+    assert!(matches!(
+        source.filter_features(FeatureFilterRequest::intersects_spherical_radius(
+            vec![FeatureRef::row_number(0)],
+            2.0,
+            49.0,
+            1_000.0,
+        )),
+        Err(GeoError::NonSphericalExactPredicate { .. })
+    ));
+
+    let line = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[Some(wkb_line_2d(&[(2.0, 49.0), (3.0, 49.0)]))]),
+        )],
+        geo_meta_wkb_edges(&["LineString"], "spherical"),
+    );
+    let mut source = open(line).unwrap();
+    assert!(matches!(
+        source.filter_features(FeatureFilterRequest::intersects_spherical_radius(
+            vec![FeatureRef::row_number(0)],
+            2.0,
+            49.0,
+            1_000.0,
+        )),
+        Err(GeoError::UnsupportedGeodeticGeometry(kind)) if kind == "LineString"
+    ));
+}
+
+#[test]
+fn filter_features_spherical_radius_handles_empty_malformed_and_candidate_boxes() {
+    let empty = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[Some(wkb_point_2d(f64::NAN, f64::NAN))]),
+        )],
+        geo_meta_wkb_edges(&["Point"], "spherical"),
+    );
+    let mut source = open(empty).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects_spherical_radius(
+            vec![FeatureRef::row_number(0)],
+            2.0,
+            49.0,
+            1_000.0,
+        ))
+        .unwrap();
+    assert!(exact.is_empty());
+
+    let malformed = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(vec![1, 2, 3])]))],
+        geo_meta_wkb_edges(&["Point"], "spherical"),
+    );
+    let mut source = open(malformed).unwrap();
+    assert!(matches!(
+        source.filter_features(FeatureFilterRequest::intersects_spherical_radius(
+            vec![FeatureRef::row_number(0)],
+            2.0,
+            49.0,
+            1_000.0,
+        )),
+        Err(GeoError::Wkb(_))
+    ));
+
+    let antimeridian = packed_spatial_index_geo::QueryGeometry::SphericalRadius {
+        lon: 179.5,
+        lat: 0.0,
+        radius_metres: 200_000.0,
+    }
+    .candidate_boxes_2d()
+    .unwrap();
+    assert_eq!(antimeridian.len(), 2);
+
+    let pole = packed_spatial_index_geo::QueryGeometry::SphericalRadius {
+        lon: 0.0,
+        lat: 89.0,
+        radius_metres: 300_000.0,
+    }
+    .candidate_boxes_2d()
+    .unwrap();
+    assert_eq!(pole.len(), 1);
+    assert_eq!(pole[0].min_x, -180.0);
+    assert_eq!(pole[0].max_x, 180.0);
 }
 
 #[test]
@@ -1475,6 +1650,143 @@ fn cli_query_exact_filters_candidates_and_handles_non_planar_policy() {
     );
     let json: serde_json::Value = serde_json::from_slice(&opted_in.stdout).unwrap();
     assert_eq!(json.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn cli_query_spherical_radius_filters_geography_points() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(179.8, 0.0)),
+                    Some(wkb_point_2d(-179.8, 0.0)),
+                    Some(wkb_point_2d(170.0, 0.0)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["west", "east", "far"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb_edges(&["Point"], "spherical"),
+    );
+    let mut dataset = open(data.clone()).unwrap();
+    let psindex = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+
+    let dir = env::temp_dir().join(format!(
+        "psi_geo_query_radius_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.parquet");
+    let index_path = dir.join("source.psi");
+    fs::write(&source_path, &data).unwrap();
+    fs::write(&index_path, &psindex).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--radius")
+        .arg("180,0,60000")
+        .arg("--properties")
+        .arg("include:name")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut names = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["properties"]["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, vec!["east".to_string(), "west".to_string()]);
+
+    let ndjson = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--radius")
+        .arg("180,0,60000")
+        .arg("--ndjson")
+        .output()
+        .unwrap();
+    assert!(
+        ndjson.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&ndjson.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&ndjson.stdout).lines().count(), 2);
+
+    let mutually_exclusive = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("-180,-1,180,1")
+        .arg("--radius")
+        .arg("180,0,60000")
+        .output()
+        .unwrap();
+    assert!(!mutually_exclusive.status.success());
+
+    let invalid = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--radius")
+        .arg("200,0,60000")
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+
+    let planar = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(179.8, 0.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(planar.clone()).unwrap();
+    let planar_index = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let planar_source = dir.join("planar.parquet");
+    let planar_psi = dir.join("planar.psi");
+    fs::write(&planar_source, &planar).unwrap();
+    fs::write(&planar_psi, &planar_index).unwrap();
+
+    let planar_rejected = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&planar_source)
+        .arg(&planar_psi)
+        .arg("--radius")
+        .arg("180,0,60000")
+        .output()
+        .unwrap();
+    assert!(!planar_rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&planar_rejected.stderr).contains("spherical"),
+        "stderr: {}",
+        String::from_utf8_lossy(&planar_rejected.stderr)
+    );
 }
 
 #[test]

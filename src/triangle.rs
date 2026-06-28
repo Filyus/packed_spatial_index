@@ -192,6 +192,18 @@ impl Triangle2D {
     }
 }
 
+impl crate::geometry::Overlaps2D for Triangle2D {
+    #[inline]
+    fn overlaps_box(&self, bx: Box2D) -> bool {
+        self.overlaps_box(bx)
+    }
+
+    #[inline]
+    fn contains_box(&self, bx: Box2D) -> bool {
+        self.contains_box(bx)
+    }
+}
+
 macro_rules! tri3 {
     ($name:ident, $t:ty, $stride:expr, $closest:path) => {
         /// A 3D triangle: three vertices `[x, y, z]`. `repr(C)`, unpadded, so a

@@ -1,7 +1,7 @@
 //! A 2D convex polygon query region (the half-plane generalization of
 //! [`Triangle2D`](crate::Triangle2D)): N vertices, exact box-vs-polygon SAT.
 
-use crate::geometry::Box2D;
+use crate::geometry::{Box2D, Overlaps2D};
 
 /// A convex polygon in 2D, given as vertices in order (CW or CCW). The query
 /// predicates assume convexity; a non-convex polygon yields unspecified results.
@@ -113,5 +113,17 @@ impl ConvexPolygon2D {
             }
         }
         true
+    }
+}
+
+impl Overlaps2D for ConvexPolygon2D {
+    #[inline]
+    fn overlaps_box(&self, bx: Box2D) -> bool {
+        self.overlaps_box(bx)
+    }
+
+    #[inline]
+    fn contains_box(&self, bx: Box2D) -> bool {
+        self.contains_box(bx)
     }
 }

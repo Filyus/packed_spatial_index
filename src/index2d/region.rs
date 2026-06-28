@@ -1,13 +1,99 @@
 use std::ops::ControlFlow;
 
 use crate::{
-    config::DEFAULT_SEARCH_STACK_CAPACITY, geometry::Box2D, polygon::ConvexPolygon2D,
-    range::visit_region, tree_access::leaf_group_range, triangle::Triangle2D,
+    config::DEFAULT_SEARCH_STACK_CAPACITY,
+    geometry::{Box2D, Overlaps2D},
+    polygon::ConvexPolygon2D,
+    range::visit_region,
+    tree_access::leaf_group_range,
+    triangle::Triangle2D,
 };
 
 use super::{Index2D, Index2DView};
 
 impl Index2D {
+    /// Item indices whose boxes overlap any 2D query geometry implementing
+    /// [`Overlaps2D`].
+    ///
+    /// This is the generic 2D region-query interface. Built-in region methods
+    /// such as [`search_triangle`](Self::search_triangle) and
+    /// [`search_polygon`](Self::search_polygon) remain as named conveniences;
+    /// plain box queries should continue to use [`search`](Self::search) in hot
+    /// paths because it keeps the owned-index slice traversal specialized.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Box2D, Triangle2D, ConvexPolygon2D};
+    ///
+    /// let mut b = Index2DBuilder::new(2);
+    /// b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// b.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// let index = b.finish()?;
+    ///
+    /// let tri = Triangle2D::new([0.0, 0.0], [2.0, 0.0], [0.0, 2.0]);
+    /// assert_eq!(index.search_overlaps(&tri), vec![0]);
+    ///
+    /// let poly = ConvexPolygon2D::new(vec![
+    ///     [0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0],
+    /// ]);
+    /// assert_eq!(index.search_overlaps(&poly), vec![0]);
+    /// # Ok::<(), packed_spatial_index::BuildError>(())
+    /// ```
+    pub fn search_overlaps<Q: Overlaps2D>(&self, query: &Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_overlaps_into(query, &mut out);
+        out
+    }
+
+    /// [`search_overlaps`](Self::search_overlaps) into a reused buffer
+    /// (cleared first).
+    pub fn search_overlaps_into<Q: Overlaps2D>(&self, query: &Q, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_overlaps_with_stack(query, &mut stack, |i| {
+            out.push(i);
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
+    /// Whether any item's box overlaps `query`, short-circuiting on the first hit.
+    pub fn any_overlaps<Q: Overlaps2D>(&self, query: &Q) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_overlaps_with_stack(query, &mut stack, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Visit each item whose box overlaps `query`; return [`ControlFlow::Break`]
+    /// from `visitor` to stop early.
+    pub fn visit_overlaps<B, Q, F>(&self, query: &Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_overlaps_with_stack(query, &mut stack, visitor)
+    }
+
+    fn visit_overlaps_with_stack<B, Q, F>(
+        &self,
+        query: &Q,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region(
+            self,
+            stack,
+            |b| query.overlaps_box(b),
+            |b| query.contains_box(b),
+            visitor,
+        )
+    }
+
     /// Item indices whose box overlaps the 2D triangle `tri`.
     ///
     /// A tight region query: like `search(tri.aabb())` but with the bounding-box
@@ -270,6 +356,63 @@ impl Index2D {
 }
 
 impl Index2DView<'_> {
+    /// Item indices whose boxes overlap any 2D query geometry implementing
+    /// [`Overlaps2D`]. The zero-copy view counterpart of
+    /// [`Index2D::search_overlaps`].
+    pub fn search_overlaps<Q: Overlaps2D>(&self, query: &Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_overlaps_into(query, &mut out);
+        out
+    }
+
+    /// [`search_overlaps`](Self::search_overlaps) into a reused buffer
+    /// (cleared first).
+    pub fn search_overlaps_into<Q: Overlaps2D>(&self, query: &Q, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_overlaps_with_stack(query, &mut stack, |i| {
+            out.push(i);
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
+    /// Whether any item's box overlaps `query`, short-circuiting on the first hit.
+    pub fn any_overlaps<Q: Overlaps2D>(&self, query: &Q) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_overlaps_with_stack(query, &mut stack, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Visit each item whose box overlaps `query`; return [`ControlFlow::Break`]
+    /// from `visitor` to stop early.
+    pub fn visit_overlaps<B, Q, F>(&self, query: &Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_overlaps_with_stack(query, &mut stack, visitor)
+    }
+
+    fn visit_overlaps_with_stack<B, Q, F>(
+        &self,
+        query: &Q,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region(
+            self,
+            stack,
+            |b| query.overlaps_box(b),
+            |b| query.contains_box(b),
+            visitor,
+        )
+    }
+
     /// Item indices whose box overlaps the 2D triangle `tri`. The zero-copy view
     /// counterpart of [`Index2D::search_triangle`].
     pub fn search_triangle(&self, tri: Triangle2D) -> Vec<usize> {

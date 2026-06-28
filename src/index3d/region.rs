@@ -1,13 +1,100 @@
 use std::ops::ControlFlow;
 
 use crate::{
-    config::DEFAULT_SEARCH_STACK_CAPACITY, frustum::Frustum3D, geometry::Box3D,
-    range::visit_region, tree_access::leaf_group_range,
+    config::DEFAULT_SEARCH_STACK_CAPACITY,
+    frustum::Frustum3D,
+    geometry::{Box3D, Overlaps3D},
+    range::visit_region,
+    tree_access::leaf_group_range,
 };
 
 use super::{Index3D, Index3DView};
 
 impl Index3D {
+    /// Item indices whose boxes overlap any 3D query geometry implementing
+    /// [`Overlaps3D`].
+    ///
+    /// This is the generic 3D region-query interface. Built-in region methods
+    /// such as [`search_frustum`](Self::search_frustum) remain as named
+    /// conveniences; plain box queries should continue to use
+    /// [`search`](Self::search) in hot paths because it keeps the owned-index
+    /// slice traversal specialized.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index3DBuilder, Box3D, Frustum3D};
+    ///
+    /// let mut b = Index3DBuilder::new(2);
+    /// b.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// b.add(Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+    /// let index = b.finish()?;
+    ///
+    /// let frustum = Frustum3D::from_planes([
+    ///     [1.0, 0.0, 0.0, 0.0],
+    ///     [-1.0, 0.0, 0.0, 2.0],
+    ///     [0.0, 1.0, 0.0, 0.0],
+    ///     [0.0, -1.0, 0.0, 2.0],
+    ///     [0.0, 0.0, 1.0, 0.0],
+    ///     [0.0, 0.0, -1.0, 2.0],
+    /// ]);
+    /// assert_eq!(index.search_overlaps(&frustum), vec![0]);
+    /// # Ok::<(), packed_spatial_index::BuildError>(())
+    /// ```
+    pub fn search_overlaps<Q: Overlaps3D>(&self, query: &Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_overlaps_into(query, &mut out);
+        out
+    }
+
+    /// [`search_overlaps`](Self::search_overlaps) into a reused buffer
+    /// (cleared first).
+    pub fn search_overlaps_into<Q: Overlaps3D>(&self, query: &Q, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_overlaps_with_stack(query, &mut stack, |i| {
+            out.push(i);
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
+    /// Whether any item's box overlaps `query`, short-circuiting on the first hit.
+    pub fn any_overlaps<Q: Overlaps3D>(&self, query: &Q) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_overlaps_with_stack(query, &mut stack, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Visit each item whose box overlaps `query`; return [`ControlFlow::Break`]
+    /// from `visitor` to stop early.
+    pub fn visit_overlaps<B, Q, F>(&self, query: &Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_overlaps_with_stack(query, &mut stack, visitor)
+    }
+
+    fn visit_overlaps_with_stack<B, Q, F>(
+        &self,
+        query: &Q,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region(
+            self,
+            stack,
+            |b| query.overlaps_box(b),
+            |b| query.contains_box(b),
+            visitor,
+        )
+    }
+
     /// Item indices whose box overlaps the view frustum `frustum`.
     ///
     /// A **conservative** culling query: it returns every item whose box is inside
@@ -146,6 +233,63 @@ impl Index3D {
 }
 
 impl Index3DView<'_> {
+    /// Item indices whose boxes overlap any 3D query geometry implementing
+    /// [`Overlaps3D`]. The zero-copy view counterpart of
+    /// [`Index3D::search_overlaps`].
+    pub fn search_overlaps<Q: Overlaps3D>(&self, query: &Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_overlaps_into(query, &mut out);
+        out
+    }
+
+    /// [`search_overlaps`](Self::search_overlaps) into a reused buffer
+    /// (cleared first).
+    pub fn search_overlaps_into<Q: Overlaps3D>(&self, query: &Q, out: &mut Vec<usize>) {
+        out.clear();
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let _ = self.visit_overlaps_with_stack(query, &mut stack, |i| {
+            out.push(i);
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
+    /// Whether any item's box overlaps `query`, short-circuiting on the first hit.
+    pub fn any_overlaps<Q: Overlaps3D>(&self, query: &Q) -> bool {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_overlaps_with_stack(query, &mut stack, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Visit each item whose box overlaps `query`; return [`ControlFlow::Break`]
+    /// from `visitor` to stop early.
+    pub fn visit_overlaps<B, Q, F>(&self, query: &Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        self.visit_overlaps_with_stack(query, &mut stack, visitor)
+    }
+
+    fn visit_overlaps_with_stack<B, Q, F>(
+        &self,
+        query: &Q,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region(
+            self,
+            stack,
+            |b| query.overlaps_box(b),
+            |b| query.contains_box(b),
+            visitor,
+        )
+    }
+
     /// Item indices whose box overlaps the view frustum `frustum`. The zero-copy
     /// view counterpart of [`Index3D::search_frustum`] (conservative culling).
     pub fn search_frustum(&self, frustum: Frustum3D) -> Vec<usize> {

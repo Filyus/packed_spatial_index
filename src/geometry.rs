@@ -437,6 +437,107 @@ impl Point3D {
     }
 }
 
+/// Geometry that can be tested for overlap with 2D boxes.
+///
+/// Implement this trait to enable generic 2D region queries through
+/// [`Index2D::search_overlaps`](crate::Index2D::search_overlaps) and
+/// [`Index2D::visit_overlaps`](crate::Index2D::visit_overlaps).
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{Box2D, Triangle2D, Overlaps2D, Index2DBuilder};
+///
+/// let mut b = Index2DBuilder::new(1);
+/// b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+/// let index = b.finish().unwrap();
+///
+/// // Works with any geometry implementing Overlaps2D.
+/// let tri = Triangle2D::new([0.0, 0.0], [2.0, 0.0], [0.0, 2.0]);
+/// assert_eq!(index.search_overlaps(&tri), vec![0]);
+/// ```
+pub trait Overlaps2D {
+    /// Return `true` when this query geometry accepts or overlaps `bx`.
+    ///
+    /// Built-in 2D region types use exact overlap predicates.
+    fn overlaps_box(&self, bx: Box2D) -> bool;
+
+    /// Whether the box `bx` lies entirely inside this geometry.
+    ///
+    /// Used to accept whole subtrees without per-item tests. Default is `false`
+    /// (no containment optimization).
+    #[inline]
+    fn contains_box(&self, _bx: Box2D) -> bool {
+        false
+    }
+}
+
+impl Overlaps2D for Box2D {
+    #[inline]
+    fn overlaps_box(&self, other: Box2D) -> bool {
+        self.overlaps(other)
+    }
+
+    #[inline]
+    fn contains_box(&self, other: Box2D) -> bool {
+        self.contains(other)
+    }
+}
+
+/// Geometry that can be tested for overlap with 3D boxes.
+///
+/// Implement this trait to enable generic 3D region queries through
+/// [`Index3D::search_overlaps`](crate::Index3D::search_overlaps) and
+/// [`Index3D::visit_overlaps`](crate::Index3D::visit_overlaps). The overlap
+/// predicate follows the query geometry's semantics; conservative query types
+/// such as [`Frustum3D`](crate::Frustum3D) may accept boxes just outside the
+/// exact shape.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{Box3D, Frustum3D, Index3DBuilder};
+///
+/// let mut b = Index3DBuilder::new(1);
+/// b.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+/// let index = b.finish().unwrap();
+///
+/// let frustum = Frustum3D::from_planes([
+///     [1.0, 0.0, 0.0, 0.0],
+///     [-1.0, 0.0, 0.0, 2.0],
+///     [0.0, 1.0, 0.0, 0.0],
+///     [0.0, -1.0, 0.0, 2.0],
+///     [0.0, 0.0, 1.0, 0.0],
+///     [0.0, 0.0, -1.0, 2.0],
+/// ]);
+/// assert_eq!(index.search_overlaps(&frustum), vec![0]);
+/// ```
+pub trait Overlaps3D {
+    /// Return `true` when this query geometry accepts or overlaps `bx`.
+    fn overlaps_box(&self, bx: Box3D) -> bool;
+
+    /// Whether the box `bx` lies entirely inside this geometry.
+    ///
+    /// Used to accept whole subtrees without per-item tests. Default is `false`
+    /// (no containment optimization).
+    #[inline]
+    fn contains_box(&self, _bx: Box3D) -> bool {
+        false
+    }
+}
+
+impl Overlaps3D for Box3D {
+    #[inline]
+    fn overlaps_box(&self, other: Box3D) -> bool {
+        self.overlaps(other)
+    }
+
+    #[inline]
+    fn contains_box(&self, other: Box3D) -> bool {
+        self.contains(other)
+    }
+}
+
 #[inline(always)]
 pub(crate) const fn empty_box2d() -> Box2D {
     Box2D::new(

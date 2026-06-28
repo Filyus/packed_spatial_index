@@ -26,7 +26,7 @@ this page is the honest split.
   for millions of read-only queries without per-row or transactional overhead.
 - **You want the index to be reproducible.** A byte-identical build you can hash,
   cache, ship through CI, mmap, or serve from a CDN.
-- **Your queries go beyond a database's comfort zone.** Range / intersection, kNN
+- **Your queries go beyond a database's comfort zone.** Range / overlap, kNN
   (including great-circle distance), all-hits and closest-hit ray casts, triangle
   / convex-polygon / view-frustum culling and spatial joins — as a library with
   tight loops. In a graphics or game context a database is the wrong tool

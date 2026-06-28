@@ -15,10 +15,12 @@
 //! helpers such as [`haversine_distance_2d`]. Range and ray results are item
 //! indices in insertion order.
 //!
-//! * **Range / intersection** — [`search`](Index2D::search) (plus `search_into`
+//! * **Range / overlap** — [`search`](Index2D::search) (plus `search_into`
 //!   / `search_with` / lazy [`search_iter`](Index2D::search_iter)),
 //!   [`any`](Index2D::any), [`first`](Index2D::first),
-//!   [`visit`](Index2D::visit).
+//!   [`visit`](Index2D::visit), and generic
+//!   [`search_overlaps`](Index2D::search_overlaps) for any geometry
+//!   implementing [`Overlaps2D`].
 //! * **Nearest neighbors** — from a point [`neighbors`](Index2D::neighbors)
 //!   (plus `_within` / `_into` / `_with` /
 //!   [`visit_neighbors`](Index2D::visit_neighbors)) or from a box
@@ -37,7 +39,8 @@
 //!   [`search_polygon`](Index2D::search_polygon) on [`Index2D`], 3D view frustum
 //!   [`search_frustum`](Index3D::search_frustum) on [`Index3D`] (each with
 //!   `any_*` / `visit_*` / `_into`, and on the zero-copy [`Index2DView`] /
-//!   [`Index3DView`]).
+//!   [`Index3DView`]). Region geometry types implement [`Overlaps2D`] or
+//!   [`Overlaps3D`] for generic queries via `search_overlaps`.
 //!
 //! # Quick Start
 //! ```
@@ -96,6 +99,8 @@ mod join;
 #[cfg(feature = "simd")]
 mod leftpack;
 mod neighbors;
+#[cfg(test)]
+mod overlaps_tests;
 mod persistence;
 mod polygon;
 mod range;
@@ -117,7 +122,7 @@ pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use frustum::{ClipSpaceZ, Frustum3D};
-pub use geometry::{BoundsError, Box2D, Box3D, Point2D, Point3D};
+pub use geometry::{BoundsError, Box2D, Box3D, Overlaps2D, Overlaps3D, Point2D, Point3D};
 pub use index2d::{Index2D, Index2DView, Search2DIter, Serializer2D};
 #[cfg(feature = "f32-storage")]
 pub use index2d_f32::{Index2DF32, Serializer2DF32};

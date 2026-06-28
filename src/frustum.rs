@@ -7,7 +7,7 @@
 //! box that is actually visible, which is what culling needs — an extra box is
 //! cheap to reject downstream; a missing one is a hole in the frame.
 
-use crate::geometry::Box3D;
+use crate::geometry::{Box3D, Overlaps3D};
 
 /// The normalized-device-coordinate depth range a projection matrix targets, for
 /// [`Frustum3D::from_view_projection`]. D3D12, Vulkan, Metal and WebGPU clip `z`
@@ -113,5 +113,17 @@ impl Frustum3D {
             }
         }
         true
+    }
+}
+
+impl Overlaps3D for Frustum3D {
+    #[inline]
+    fn overlaps_box(&self, bx: Box3D) -> bool {
+        self.overlaps_box(bx)
+    }
+
+    #[inline]
+    fn contains_box(&self, bx: Box3D) -> bool {
+        self.contains_box(bx)
     }
 }

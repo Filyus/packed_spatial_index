@@ -7,6 +7,7 @@ mod error;
 mod geoarrow;
 mod manifest;
 mod types;
+mod validation;
 mod wkb;
 
 pub use artifact::{

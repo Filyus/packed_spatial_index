@@ -361,8 +361,6 @@ pub enum RowBoundsSource {
     WkbEnvelope,
     /// Envelope computed by scanning GeoArrow arrays.
     GeoArrowScan,
-    /// Native Parquet geospatial statistics.
-    NativeGeospatialStats,
 }
 
 /// Operations supported by a geometry column.
@@ -515,7 +513,8 @@ pub struct GeometryColumn {
 /// println!("selected {}", column.name);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum GeometrySelector {
     /// GeoParquet primary, else exactly one native Parquet geospatial column.
     Default,
@@ -836,6 +835,197 @@ impl Default for ConvertRequest {
             interleaved: true,
         }
     }
+}
+
+/// Request for [`GeoDataset::validate`](crate::GeoDataset::validate).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, ValidateRequest};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let report = dataset.validate(ValidateRequest {
+///     exact: true,
+///     ..ValidateRequest::default()
+/// })?;
+/// assert!(report.ok);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValidateRequest {
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Scan rows and validate scan/payload behavior instead of metadata only.
+    pub exact: bool,
+    /// Requested index dimensionality to validate.
+    pub dims: IndexDimsRequest,
+    /// Null/empty geometry policy to validate.
+    pub nulls: NullPolicy,
+    /// Envelope interpretation policy to validate.
+    pub envelope: EnvelopePolicy,
+    /// Payload plan to validate.
+    pub payload: PayloadPlan,
+}
+
+impl Default for ValidateRequest {
+    fn default() -> Self {
+        Self {
+            selector: GeometrySelector::Default,
+            exact: false,
+            dims: IndexDimsRequest::Auto,
+            nulls: NullPolicy::Skip,
+            envelope: EnvelopePolicy::Planar,
+            payload: PayloadPlan::RowWkb,
+        }
+    }
+}
+
+/// Structured compatibility validation report for a dataset.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, ValidateRequest, ValidationSeverity};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let report = dataset.validate(ValidateRequest::default())?;
+/// let warnings = report
+///     .issues
+///     .iter()
+///     .filter(|issue| issue.severity == ValidationSeverity::Warning)
+///     .count();
+/// println!("validation ok: {}, warnings: {warnings}", report.ok);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValidationReport {
+    /// Metadata-only geometry discovery.
+    pub discovery: GeoDiscovery,
+    /// Result of resolving the requested geometry selector.
+    pub selected: SelectionStatus,
+    /// Profile of the selected geometry column, if one could be resolved.
+    pub profile: Option<GeometryProfile>,
+    /// Native Parquet row-group geospatial statistics diagnostics.
+    pub native_stats: Vec<NativeGeospatialStatsReport>,
+    /// Validation issues discovered for the requested operation.
+    pub issues: Vec<ValidationIssue>,
+    /// True when no issue has `Error` severity.
+    pub ok: bool,
+}
+
+/// One validation issue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationIssue {
+    /// Issue severity.
+    pub severity: ValidationSeverity,
+    /// Stable issue code.
+    pub code: ValidationCode,
+    /// Geometry column associated with the issue, if applicable.
+    pub column: Option<String>,
+    /// Human-readable explanation.
+    pub message: String,
+}
+
+/// Severity of a validation issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationSeverity {
+    /// Informational note.
+    Info,
+    /// Non-fatal compatibility or accuracy warning.
+    Warning,
+    /// Requested operation is not expected to work.
+    Error,
+}
+
+/// Stable validation issue code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationCode {
+    /// No usable geometry columns were found.
+    NoGeometryColumns,
+    /// Several geometry columns exist and no safe default was selected.
+    AmbiguousGeometryColumn,
+    /// Requested geometry column was not found or is not usable.
+    GeometryColumnNotFound,
+    /// Geometry encoding is unsupported for validation or indexing.
+    UnsupportedEncoding,
+    /// The selected column cannot produce feature envelopes.
+    CannotScanEnvelopes,
+    /// The selected column cannot emit the requested payload.
+    CannotEmitPayload,
+    /// Dimensions are unknown from metadata/statistics.
+    UnknownDimensions,
+    /// Native Parquet geospatial statistics are missing for a native column.
+    MissingNativeGeoStats,
+    /// Native or scanned bounds cross the antimeridian.
+    AntimeridianWrap,
+    /// Geography/non-planar data is indexed as coordinate AABBs.
+    GeographyCoordinateAabb,
+    /// Exact row scan failed.
+    ExactScanFailed,
+    /// Requested `FeatureJson` property column is missing.
+    ProjectedPropertyMissing,
+}
+
+/// Native Parquet geospatial statistics summary for one column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeGeospatialStatsReport {
+    /// Column name.
+    pub column: String,
+    /// Number of row groups in the file.
+    pub row_group_count: usize,
+    /// Number of row groups with any native geospatial statistics.
+    pub groups_with_stats: usize,
+    /// Number of row groups with a geospatial bounding box.
+    pub groups_with_bbox: usize,
+    /// Number of row groups with geospatial type codes.
+    pub groups_with_types: usize,
+    /// Dimensions inferred from geospatial type codes.
+    pub inferred_dims: CoordinateDims,
+    /// Whether any row-group bbox has `xmin > xmax`.
+    pub has_antimeridian_wrap: bool,
+    /// Per-row-group details.
+    pub row_groups: Vec<RowGroupGeospatialStats>,
+}
+
+/// Native Parquet geospatial statistics for one row group.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowGroupGeospatialStats {
+    /// Row group ordinal.
+    pub row_group: u32,
+    /// Optional row-group geospatial bounding box.
+    pub bbox: Option<NativeBoundingBox>,
+    /// Optional WKB/ISO geometry type codes from Parquet statistics.
+    pub geospatial_types: Option<Vec<i32>>,
+    /// Dimensions inferred from the type codes in this row group.
+    pub inferred_dims: CoordinateDims,
+}
+
+/// Native Parquet geospatial bounding box.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeBoundingBox {
+    /// Minimum X / longitude / easting.
+    pub xmin: f64,
+    /// Maximum X / longitude / easting.
+    pub xmax: f64,
+    /// Minimum Y / latitude / northing.
+    pub ymin: f64,
+    /// Maximum Y / latitude / northing.
+    pub ymax: f64,
+    /// Minimum Z, if present.
+    pub zmin: Option<f64>,
+    /// Maximum Z, if present.
+    pub zmax: Option<f64>,
+    /// Minimum M, if present.
+    pub mmin: Option<f64>,
+    /// Maximum M, if present.
+    pub mmax: Option<f64>,
+    /// True when `xmin > xmax`, the Parquet antimeridian wrap convention.
+    pub crosses_antimeridian: bool,
 }
 
 /// Profile of a selected geometry column.

@@ -4,6 +4,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Added
+- Added a structured validation API (`GeoDataset::validate`,
+  `ValidateRequest`, `ValidationReport`) for compatibility diagnostics before
+  building or converting geospatial Parquet inputs.
+- Added native Parquet `GEOMETRY` / `GEOGRAPHY` row-group geospatial statistics
+  diagnostics to validation reports.
+- Added a richer `gp2psindex validate` command with JSON output, exact row-scan
+  validation, strict warning handling, payload checks, and antimeridian options.
+
 ## [0.6.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.6.1...psi-geo-v0.6.2) - 2026-06-28
 
 ### Added

@@ -6,7 +6,8 @@ use std::process::ExitCode;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, ConvertRequest, EnvelopePolicy, GeoDiscovery, GeoError, GeometryProfile,
     GeometrySelector, IndexDimsRequest, InspectRequest, NullPolicy, PayloadPlan,
-    PropertyProjection, StoragePrecision, open,
+    PropertyProjection, StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity,
+    open,
 };
 
 const USAGE: &str = "\
@@ -22,11 +23,20 @@ usage:
       [--properties none|all|include:a,b|exclude:a,b]
       [--antimeridian reject|split|world]
       [--no-interleave]
-  gp2psindex validate <input.parquet> [--geometry-column name]";
+  gp2psindex validate <input.parquet>
+      [--geometry-column name]
+      [--exact]
+      [--json]
+      [--strict]
+      [--dims auto|2d|3d]
+      [--nulls error|skip]
+      [--payload none|row-ref|row-wkb|feature-json]
+      [--properties none|all|include:a,b|exclude:a,b]
+      [--antimeridian reject|split|world]";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err}");
             eprintln!("{USAGE}");
@@ -35,14 +45,14 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+fn run(args: Vec<String>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let Some(command) = args.first().map(String::as_str) else {
         return Err("missing command".into());
     };
     match command {
-        "discover" => discover_cmd(&args[1..]),
-        "inspect" => inspect_cmd(&args[1..]),
-        "build" => build_cmd(&args[1..]),
+        "discover" => discover_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
+        "inspect" => inspect_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
+        "build" => build_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "validate" => validate_cmd(&args[1..]),
         _ => Err(format!("unknown command `{command}`").into()),
     }
@@ -113,21 +123,39 @@ fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn validate_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_cmd(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
     let input = parsed.required_pos(0, "input.parquet")?;
     parsed.no_extra_pos(1)?;
-    let selector = geometry_selector(parsed.option("--geometry-column")?);
+    let payload = parse_payload(
+        parsed.option("--payload")?.as_deref().unwrap_or("row-wkb"),
+        parsed.option("--properties")?,
+    )?;
     let mut dataset = open(File::open(input)?)?;
-    let profile = dataset.inspect(InspectRequest {
-        selector,
-        exact: true,
+    let report = dataset.validate(ValidateRequest {
+        selector: geometry_selector(parsed.option("--geometry-column")?),
+        exact: parsed.flag("--exact"),
+        dims: parse_dims(parsed.option("--dims")?.as_deref().unwrap_or("auto"))?,
+        nulls: parse_nulls(parsed.option("--nulls")?.as_deref().unwrap_or("skip"))?,
+        envelope: parse_antimeridian(parsed.option("--antimeridian")?)?,
+        payload,
     })?;
-    println!(
-        "ok: {} rows, column `{}`, encoding {}",
-        profile.num_rows, profile.column, profile.encoding
-    );
-    Ok(())
+    if parsed.flag("--json") {
+        serde_json::to_writer_pretty(std::io::stdout(), &report)?;
+        println!();
+    } else {
+        print_validation(&report);
+    }
+    let has_warning = report
+        .issues
+        .iter()
+        .any(|issue| issue.severity == ValidationSeverity::Warning);
+    let failed = !report.ok || (parsed.flag("--strict") && has_warning);
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 fn print_discovery(discovery: &GeoDiscovery) {
@@ -185,6 +213,52 @@ fn print_profile(profile: &GeometryProfile) {
     println!("crs: {:?}", profile.crs);
     if let Some(extent) = &profile.extent {
         println!("extent: {:?}", extent.values);
+    }
+}
+
+fn print_validation(report: &ValidationReport) {
+    println!("rows: {}", report.discovery.num_rows);
+    println!("selection: {}", selection_label(&report.selected));
+    println!("status: {}", if report.ok { "ok" } else { "error" });
+    if let Some(profile) = &report.profile {
+        println!("column: {}", profile.column);
+        println!("source: {:?}", profile.source);
+        println!("encoding: {}", profile.encoding);
+        println!("dims: {}", profile.coordinate_dims);
+        println!("edges: {:?}", profile.edges);
+    }
+    if !report.native_stats.is_empty() {
+        println!("native geospatial stats:");
+        println!(
+            "{:<24} {:>8} {:>8} {:>8} {:<8} {:<5}",
+            "column", "groups", "bbox", "types", "dims", "am"
+        );
+        for stats in &report.native_stats {
+            println!(
+                "{:<24} {:>8} {:>8} {:>8} {:<8} {:<5}",
+                stats.column,
+                stats.row_group_count,
+                stats.groups_with_bbox,
+                stats.groups_with_types,
+                stats.inferred_dims.to_string(),
+                yes_no(stats.has_antimeridian_wrap),
+            );
+        }
+    }
+    if report.issues.is_empty() {
+        println!("issues: none");
+    } else {
+        println!("issues:");
+        println!("{:<8} {:<28} {:<24} message", "severity", "code", "column");
+        for issue in &report.issues {
+            println!(
+                "{:<8} {:<28} {:<24} {}",
+                format!("{:?}", issue.severity).to_ascii_lowercase(),
+                format!("{:?}", issue.code),
+                issue.column.as_deref().unwrap_or("-"),
+                issue.message
+            );
+        }
     }
 }
 
@@ -248,6 +322,10 @@ fn parse_payload(
         }),
         _ => Err(format!("invalid --payload `{value}`").into()),
     }
+    .and_then(|payload| match (&payload, properties) {
+        (PayloadPlan::FeatureJson { .. }, _) | (_, None) => Ok(payload),
+        _ => Err("--properties can only be used with --payload feature-json".into()),
+    })
 }
 
 fn parse_properties(value: &str) -> Result<PropertyProjection, Box<dyn std::error::Error>> {

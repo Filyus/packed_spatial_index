@@ -64,6 +64,7 @@ files.
 | List usable geometry columns | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery], [`GeometryColumnInfo`][GeometryColumnInfo] |
 | Select a geometry column | [`GeoDataset::select`][select], [`GeometrySelector`][GeometrySelector], [`GeometryColumn`][GeometryColumn] |
 | Profile the selected column | [`GeoDataset::inspect`][inspect], [`InspectRequest`][InspectRequest], [`GeometryProfile`][GeometryProfile] |
+| Validate compatibility | [`GeoDataset::validate`][validate], [`ValidateRequest`][ValidateRequest], [`ValidationReport`][ValidationReport] |
 | Read feature boxes / payloads | [`GeoDataset::scan`][scan], [`ScanRequest`][ScanRequest], [`GeometryScan`][GeometryScan] |
 | Build an in-memory feature index | [`GeoDataset::build`][build], [`BuildRequest`][BuildRequest], [`GeoIndex`][GeoIndex], [`GeoIndex2D::search_features`][search_features_2d], [`GeoIndex3D::search_features`][search_features_3d] |
 | Convert to streamable `PSINDEX` | [`GeoDataset::convert`][convert], [`GeoDataset::convert_into`][convert_into], [`ConvertRequest`][ConvertRequest], [`GeoArtifact`][GeoArtifact] |
@@ -91,6 +92,33 @@ cargo run --manifest-path geo/Cargo.toml --example build_index
 cargo run --manifest-path geo/Cargo.toml --example convert_and_query
 cargo run --manifest-path geo/Cargo.toml --example feature_json_payload
 ```
+
+## Validate inputs before building
+
+Use [`GeoDataset::validate`][validate] when an input file comes from an
+uncontrolled pipeline and you want a structured compatibility report before
+building or converting:
+
+```rust,no_run
+use std::fs::File;
+use packed_spatial_index_geo::{open, ValidateRequest, ValidationSeverity};
+
+let mut dataset = open(File::open("cities.parquet")?)?;
+let report = dataset.validate(ValidateRequest::default())?;
+
+for issue in &report.issues {
+    if issue.severity == ValidationSeverity::Warning {
+        eprintln!("warning: {}", issue.message);
+    }
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Validation is metadata-only by default. Set `ValidateRequest { exact: true, .. }`
+to scan rows and report malformed WKB, null-policy failures, antimeridian
+rejects, dimension mismatches, or payload projection failures as structured
+issues. Native Parquet geospatial row-group statistics are reported as
+diagnostics; they are not used as per-row index bounds.
 
 ## When to use it
 
@@ -167,7 +195,9 @@ cargo run --bin gp2psindex -- discover path/to/file.parquet --json
 cargo run --bin gp2psindex -- inspect path/to/file.parquet --exact
 cargo run --bin gp2psindex -- build path/to/file.parquet path/to/file.psi \
   --payload row-wkb --dims auto --nulls skip
-cargo run --bin gp2psindex -- validate path/to/file.parquet
+cargo run --bin gp2psindex -- validate path/to/file.parquet --json
+cargo run --bin gp2psindex -- validate path/to/file.parquet \
+  --exact --strict --payload feature-json --properties include:name,pop
 ```
 
 ## Scope
@@ -205,6 +235,7 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [discovery]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.discovery
 [select]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.select
 [inspect]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.inspect
+[validate]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.validate
 [scan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.scan
 [build]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.build
 [convert]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert
@@ -215,6 +246,8 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [GeometryColumn]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeometryColumn.html
 [InspectRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.InspectRequest.html
 [GeometryProfile]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeometryProfile.html
+[ValidateRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ValidateRequest.html
+[ValidationReport]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ValidationReport.html
 [ScanRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ScanRequest.html
 [GeometryScan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometryScan.html
 [BuildRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.BuildRequest.html

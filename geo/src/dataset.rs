@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use crate::geoarrow;
 use crate::manifest;
+use crate::validation;
 use crate::wkb::{self, GeometryBounds};
 use crate::{
     AntimeridianPolicy, BuildRequest, ColumnCapabilities, ConvertRequest, CoordinateDims, CrsInfo,
@@ -25,8 +26,9 @@ use crate::{
     GeoIndex2D, GeoIndex3D, GeoIndexMetadata, GeometryColumn, GeometryColumnInfo, GeometryEncoding,
     GeometryMetadataSource, GeometryProfile, GeometryScan, GeometryScan2D, GeometryScan3D,
     GeometrySelectionReason, GeometrySelector, GeometryTypeSet, IndexBuildOptions,
-    IndexDimsRequest, InspectRequest, NullPolicy, PayloadPlan, PropertyProjection, RowBoundsSource,
-    SelectionStatus, StoragePrecision,
+    IndexDimsRequest, InspectRequest, NativeGeospatialStatsReport, NullPolicy, PayloadPlan,
+    PropertyProjection, RowBoundsSource, SelectionStatus, StoragePrecision, ValidateRequest,
+    ValidationCode, ValidationReport, ValidationSeverity,
 };
 
 /// Content type used for [`PayloadPlan::RowRef`](crate::PayloadPlan::RowRef)
@@ -59,12 +61,21 @@ pub const FEATURE_REF_RECORD_LEN: usize = 24;
 /// ```
 pub fn open<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoError> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
+    let native_stats = validation::native_geospatial_stats(builder.metadata());
     let (discovery, states) = discover_metadata(builder.metadata())?;
     let source_fingerprint = source_fingerprint(builder.metadata());
+    let schema_columns = builder
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
     Ok(GeoDataset {
         builder: Some(builder),
         discovery,
         states,
+        native_stats,
+        schema_columns,
         source_fingerprint,
     })
 }
@@ -98,6 +109,8 @@ pub struct GeoDataset<R: ChunkReader> {
     builder: Option<ParquetRecordBatchReaderBuilder<R>>,
     discovery: GeoDiscovery,
     states: Vec<ColumnState>,
+    native_stats: Vec<NativeGeospatialStatsReport>,
+    schema_columns: HashSet<String>,
     source_fingerprint: String,
 }
 
@@ -382,6 +395,81 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         Ok(out)
     }
 
+    /// Validate compatibility and requested geo operations for this dataset.
+    ///
+    /// The default request is metadata-only and does not consume rows. Set
+    /// [`ValidateRequest::exact`] to scan rows and report scan/payload errors as
+    /// validation issues.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, ValidateRequest};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let report = dataset.validate(ValidateRequest::default())?;
+    /// println!("validation ok: {}", report.ok);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn validate(&mut self, req: ValidateRequest) -> Result<ValidationReport, GeoError> {
+        let selected = self.selection_status(&req.selector);
+        let mut issues = Vec::new();
+        let mut profile = None;
+
+        self.add_discovery_issues(&mut issues);
+        self.add_selection_issues(&selected, &mut issues);
+
+        let state = match &selected {
+            SelectionStatus::Selected { column, .. } => self.state_by_name(column).cloned(),
+            _ => None,
+        };
+
+        if let Some(state) = &state {
+            profile = Some(profile_from_state(state, self.discovery.num_rows));
+            self.add_capability_issues(state, &req, &mut issues);
+            self.add_native_stats_issues(state, &req, &mut issues);
+            add_coordinate_aabb_warning(state, &mut issues);
+
+            if req.exact && !validation::has_errors(&issues) {
+                match self.scan(crate::ScanRequest {
+                    selector: req.selector.clone(),
+                    dims: req.dims,
+                    nulls: req.nulls,
+                    envelope: req.envelope,
+                    payload: req.payload.clone(),
+                }) {
+                    Ok(scan) => {
+                        profile = Some(match scan {
+                            GeometryScan::D2(scan) => scan.profile,
+                            GeometryScan::D3(scan) => scan.profile,
+                        });
+                    }
+                    Err(err) => issues.push(validation::issue(
+                        scan_error_severity(&err),
+                        scan_error_code(&err),
+                        Some(state.info.name.clone()),
+                        format!("exact validation scan failed: {err}"),
+                    )),
+                }
+            }
+
+            if let Some(profile) = &profile {
+                add_profile_unknown_warnings(profile, &self.native_stats, &mut issues);
+            }
+        }
+
+        let ok = !validation::has_errors(&issues);
+        Ok(ValidationReport {
+            discovery: self.discovery.clone(),
+            selected,
+            profile,
+            native_stats: self.native_stats.clone(),
+            issues,
+            ok,
+        })
+    }
+
     fn select_state(&self, selector: &GeometrySelector) -> Result<&ColumnState, GeoError> {
         match selector {
             GeometrySelector::Default => match &self.discovery.default_selection {
@@ -430,6 +518,255 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
 
     fn state_by_name(&self, name: &str) -> Option<&ColumnState> {
         self.states.iter().find(|state| state.info.name == name)
+    }
+
+    fn selection_status(&self, selector: &GeometrySelector) -> SelectionStatus {
+        match selector {
+            GeometrySelector::Default => self.discovery.default_selection.clone(),
+            GeometrySelector::Name(name) => {
+                if self.state_by_name(name).is_some() {
+                    SelectionStatus::Selected {
+                        column: name.clone(),
+                        reason: GeometrySelectionReason::Explicit,
+                    }
+                } else {
+                    SelectionStatus::Missing {
+                        column: name.clone(),
+                    }
+                }
+            }
+            GeometrySelector::GeoParquetPrimary => {
+                let Some(primary) = &self.discovery.file_metadata.geoparquet_primary_column else {
+                    return SelectionStatus::None;
+                };
+                if self.state_by_name(primary).is_some() {
+                    SelectionStatus::Selected {
+                        column: primary.clone(),
+                        reason: GeometrySelectionReason::GeoParquetPrimary,
+                    }
+                } else {
+                    SelectionStatus::Missing {
+                        column: primary.clone(),
+                    }
+                }
+            }
+            GeometrySelector::SingleNativeParquet => {
+                let native: Vec<_> = self
+                    .states
+                    .iter()
+                    .filter(|state| state.info.encoding.is_native_parquet())
+                    .map(|state| state.info.name.clone())
+                    .collect();
+                match native.as_slice() {
+                    [] => SelectionStatus::None,
+                    [one] => SelectionStatus::Selected {
+                        column: one.clone(),
+                        reason: GeometrySelectionReason::SingleNativeParquet,
+                    },
+                    many => SelectionStatus::Ambiguous {
+                        columns: many.to_vec(),
+                    },
+                }
+            }
+            GeometrySelector::FirstUsable => self
+                .states
+                .iter()
+                .find(|state| state.info.capabilities.can_scan_envelopes)
+                .map(|state| SelectionStatus::Selected {
+                    column: state.info.name.clone(),
+                    reason: GeometrySelectionReason::FirstUsable,
+                })
+                .unwrap_or(SelectionStatus::None),
+        }
+    }
+
+    fn add_discovery_issues(&self, issues: &mut Vec<crate::ValidationIssue>) {
+        for warning in &self.discovery.warnings {
+            match warning {
+                DiscoveryWarning::GeoParquetPrimaryMissing { column } => {
+                    issues.push(validation::issue(
+                        ValidationSeverity::Warning,
+                        ValidationCode::GeometryColumnNotFound,
+                        Some(column.clone()),
+                        format!("GeoParquet primary column `{column}` is not usable"),
+                    ));
+                }
+                DiscoveryWarning::UnsupportedGeoParquetEncoding { column, encoding } => {
+                    issues.push(validation::issue(
+                        ValidationSeverity::Warning,
+                        ValidationCode::UnsupportedEncoding,
+                        Some(column.clone()),
+                        format!(
+                            "GeoParquet column `{column}` uses unsupported encoding `{encoding}`"
+                        ),
+                    ));
+                }
+                DiscoveryWarning::UnsupportedNativeColumn { column, reason } => {
+                    issues.push(validation::issue(
+                        ValidationSeverity::Warning,
+                        ValidationCode::UnsupportedEncoding,
+                        Some(column.clone()),
+                        format!("native geospatial column `{column}` is not usable: {reason}"),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn add_selection_issues(
+        &self,
+        selected: &SelectionStatus,
+        issues: &mut Vec<crate::ValidationIssue>,
+    ) {
+        match selected {
+            SelectionStatus::Selected { .. } => {}
+            SelectionStatus::Ambiguous { columns } => issues.push(validation::issue(
+                ValidationSeverity::Error,
+                ValidationCode::AmbiguousGeometryColumn,
+                None,
+                format!("multiple geometry columns are usable; choose one explicitly: {columns:?}"),
+            )),
+            SelectionStatus::Missing { column } => issues.push(validation::issue(
+                ValidationSeverity::Error,
+                ValidationCode::GeometryColumnNotFound,
+                Some(column.clone()),
+                format!("geometry column `{column}` was not found or is not usable"),
+            )),
+            SelectionStatus::None => issues.push(validation::issue(
+                ValidationSeverity::Error,
+                ValidationCode::NoGeometryColumns,
+                None,
+                "no usable geometry column was found",
+            )),
+        }
+    }
+
+    fn add_capability_issues(
+        &self,
+        state: &ColumnState,
+        req: &ValidateRequest,
+        issues: &mut Vec<crate::ValidationIssue>,
+    ) {
+        if !state.info.capabilities.can_scan_envelopes {
+            issues.push(validation::issue(
+                ValidationSeverity::Error,
+                ValidationCode::CannotScanEnvelopes,
+                Some(state.info.name.clone()),
+                format!(
+                    "column `{}` cannot produce feature envelopes from {}",
+                    state.info.name, state.info.encoding
+                ),
+            ));
+        }
+
+        match &req.payload {
+            PayloadPlan::RowWkb if !state.info.capabilities.can_emit_row_wkb => {
+                issues.push(validation::issue(
+                    ValidationSeverity::Error,
+                    ValidationCode::CannotEmitPayload,
+                    Some(state.info.name.clone()),
+                    format!(
+                        "column `{}` cannot emit RowWkb payloads from {}",
+                        state.info.name, state.info.encoding
+                    ),
+                ));
+            }
+            PayloadPlan::FeatureJson { properties } => {
+                if !state.info.capabilities.can_emit_feature_json {
+                    issues.push(validation::issue(
+                        ValidationSeverity::Error,
+                        ValidationCode::CannotEmitPayload,
+                        Some(state.info.name.clone()),
+                        format!(
+                            "column `{}` cannot emit FeatureJson payloads from {}",
+                            state.info.name, state.info.encoding
+                        ),
+                    ));
+                }
+                self.add_property_projection_issues(properties, issues);
+            }
+            PayloadPlan::None | PayloadPlan::RowRef | PayloadPlan::RowWkb => {}
+        }
+    }
+
+    fn add_property_projection_issues(
+        &self,
+        properties: &PropertyProjection,
+        issues: &mut Vec<crate::ValidationIssue>,
+    ) {
+        let PropertyProjection::Include(include) = properties else {
+            return;
+        };
+        for name in include {
+            if !self.schema_columns.contains(name) {
+                issues.push(validation::issue(
+                    ValidationSeverity::Error,
+                    ValidationCode::ProjectedPropertyMissing,
+                    Some(name.clone()),
+                    format!("FeatureJson property projection references missing column `{name}`"),
+                ));
+            }
+        }
+    }
+
+    fn add_native_stats_issues(
+        &self,
+        state: &ColumnState,
+        req: &ValidateRequest,
+        issues: &mut Vec<crate::ValidationIssue>,
+    ) {
+        let Some(stats) = self
+            .native_stats
+            .iter()
+            .find(|stats| stats.column == state.info.name)
+        else {
+            if state.info.encoding.is_native_parquet() {
+                issues.push(validation::issue(
+                    ValidationSeverity::Warning,
+                    ValidationCode::MissingNativeGeoStats,
+                    Some(state.info.name.clone()),
+                    format!(
+                        "native column `{}` has no row-group geospatial statistics",
+                        state.info.name
+                    ),
+                ));
+            }
+            return;
+        };
+
+        if stats.groups_with_stats == 0 {
+            issues.push(validation::issue(
+                ValidationSeverity::Warning,
+                ValidationCode::MissingNativeGeoStats,
+                Some(state.info.name.clone()),
+                format!(
+                    "column `{}` has no row-group geospatial statistics",
+                    state.info.name
+                ),
+            ));
+        } else if stats.groups_with_stats < stats.row_group_count {
+            issues.push(validation::issue(
+                ValidationSeverity::Warning,
+                ValidationCode::MissingNativeGeoStats,
+                Some(state.info.name.clone()),
+                format!(
+                    "column `{}` has geospatial statistics for {}/{} row groups",
+                    state.info.name, stats.groups_with_stats, stats.row_group_count
+                ),
+            ));
+        }
+
+        if stats.has_antimeridian_wrap && !allows_antimeridian_wrap(req.envelope) {
+            issues.push(validation::issue(
+                ValidationSeverity::Warning,
+                ValidationCode::AntimeridianWrap,
+                Some(state.info.name.clone()),
+                format!(
+                    "column `{}` has native geospatial stats with xmin > xmax; use geographic split/world antimeridian handling for conservative indexing",
+                    state.info.name
+                ),
+            ));
+        }
     }
 
     fn take_reader(
@@ -583,6 +920,86 @@ trait PayloadVec {
 impl PayloadVec for crate::ScanRequest {
     fn payload_payloads(&self) -> Option<Vec<Vec<u8>>> {
         (!matches!(self.payload, PayloadPlan::None)).then(Vec::new)
+    }
+}
+
+fn add_profile_unknown_warnings(
+    profile: &GeometryProfile,
+    native_stats: &[NativeGeospatialStatsReport],
+    issues: &mut Vec<crate::ValidationIssue>,
+) {
+    let stats = native_stats
+        .iter()
+        .find(|stats| stats.column == profile.column);
+    if profile.coordinate_dims == CoordinateDims::Unknown {
+        issues.push(validation::issue(
+            ValidationSeverity::Warning,
+            ValidationCode::UnknownDimensions,
+            Some(profile.column.clone()),
+            format!(
+                "column `{}` has unknown coordinate dimensions in metadata/statistics",
+                profile.column
+            ),
+        ));
+    }
+    if profile.geometry_types.types.is_empty()
+        && stats.is_none_or(|stats| stats.groups_with_types == 0)
+    {
+        issues.push(validation::issue(
+            ValidationSeverity::Warning,
+            ValidationCode::UnknownDimensions,
+            Some(profile.column.clone()),
+            format!(
+                "column `{}` has unknown geometry type metadata/statistics",
+                profile.column
+            ),
+        ));
+    }
+}
+
+fn add_coordinate_aabb_warning(state: &ColumnState, issues: &mut Vec<crate::ValidationIssue>) {
+    let warn = matches!(
+        state.info.encoding,
+        GeometryEncoding::ParquetGeography { .. }
+    ) || matches!(
+        state.info.edges,
+        EdgeModel::Spherical | EdgeModel::Ellipsoidal { .. } | EdgeModel::Unknown
+    );
+    if warn {
+        issues.push(validation::issue(
+            ValidationSeverity::Warning,
+            ValidationCode::GeographyCoordinateAabb,
+            Some(state.info.name.clone()),
+            format!(
+                "column `{}` is indexed as coordinate axis-aligned bounding boxes; exact spherical/ellipsoidal predicates are not evaluated",
+                state.info.name
+            ),
+        ));
+    }
+}
+
+fn allows_antimeridian_wrap(policy: EnvelopePolicy) -> bool {
+    matches!(
+        policy,
+        EnvelopePolicy::Geographic {
+            antimeridian: AntimeridianPolicy::Split | AntimeridianPolicy::ExpandToWorld
+        }
+    )
+}
+
+fn scan_error_severity(_err: &GeoError) -> ValidationSeverity {
+    ValidationSeverity::Error
+}
+
+fn scan_error_code(err: &GeoError) -> ValidationCode {
+    match err {
+        GeoError::PropertyColumnNotFound(_) => ValidationCode::ProjectedPropertyMissing,
+        GeoError::UnsupportedEncoding(_) => ValidationCode::UnsupportedEncoding,
+        GeoError::AmbiguousGeometryColumn { .. } => ValidationCode::AmbiguousGeometryColumn,
+        GeoError::GeometryColumnNotFound(_) => ValidationCode::GeometryColumnNotFound,
+        GeoError::NoGeometryColumn => ValidationCode::NoGeometryColumns,
+        GeoError::Antimeridian { .. } => ValidationCode::AntimeridianWrap,
+        _ => ValidationCode::ExactScanFailed,
     }
 }
 
@@ -875,25 +1292,13 @@ fn native_dim_hint(meta: &ParquetMetaData, column_index: usize) -> CoordinateDim
         };
         saw_stats = true;
         for &ty in types {
-            dims = dims.merge(dims_from_wkb_type(ty));
+            dims = dims.merge(validation::coordinate_dims_from_wkb_type(ty));
         }
     }
     if saw_stats {
         dims
     } else {
         CoordinateDims::Unknown
-    }
-}
-
-fn dims_from_wkb_type(ty: i32) -> CoordinateDims {
-    if (3000..4000).contains(&ty) {
-        CoordinateDims::Xyzm
-    } else if (2000..3000).contains(&ty) {
-        CoordinateDims::Xym
-    } else if (1000..2000).contains(&ty) {
-        CoordinateDims::Xyz
-    } else {
-        CoordinateDims::Xy
     }
 }
 

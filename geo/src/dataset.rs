@@ -33,11 +33,11 @@ use crate::{
     DeclaredExtent, DiscoveryWarning, DuplicateFeatureRows, EdgeAlgorithm, EdgeModel,
     EnvelopePolicy, FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRef,
     FeatureRows, FileGeoMetadata, GeoArtifact, GeoArtifactManifest, GeoDiscovery, GeoError,
-    GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata, GeometryColumn, GeometryColumnInfo,
-    GeometryEncoding, GeometryMetadataSource, GeometryProfile, GeometryReadMode, GeometryScan,
-    GeometryScan2D, GeometryScan3D, GeometrySelectionReason, GeometrySelector, GeometryTypeSet,
-    IndexBuildOptions, IndexDimsRequest, InspectRequest, NativeGeospatialStatsReport,
-    NonPlanarExactPolicy, NullPolicy, PayloadPlan, PropertyProjection, QueryGeometry,
+    GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata, GeoQuery2D, GeometryColumn,
+    GeometryColumnInfo, GeometryEncoding, GeometryMetadataSource, GeometryProfile,
+    GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D, GeometrySelectionReason,
+    GeometrySelector, GeometryTypeSet, IndexBuildOptions, IndexDimsRequest, InspectRequest,
+    NativeGeospatialStatsReport, NonPlanarExactPolicy, NullPolicy, PayloadPlan, PropertyProjection,
     RowBoundsSource, SelectionStatus, SpatialPredicate, StoragePrecision, ValidateRequest,
     ValidationCode, ValidationReport, ValidationSeverity,
 };
@@ -248,7 +248,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected 2D geometry");
     /// };
-    /// let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+    /// let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
     /// println!("candidate features: {}", features.len());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -431,7 +431,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// let mut filter_source = open(File::open("cities.parquet")?)?;
     /// let exact = filter_source.filter_features(
-    ///     FeatureFilterRequest::intersects_box2d(candidates, query),
+    ///     FeatureFilterRequest::intersects(candidates, query),
     /// )?;
     ///
     /// let mut read_source = open(File::open("cities.parquet")?)?;
@@ -1607,15 +1607,15 @@ enum PreparedFilterQuery {
 
 fn prepare_filter_query(
     state: &ColumnState,
-    query: QueryGeometry,
+    query: GeoQuery2D,
     non_planar: NonPlanarExactPolicy,
 ) -> Result<PreparedFilterQuery, GeoError> {
     match query {
-        QueryGeometry::Box2D(bbox) => {
+        GeoQuery2D::Box2D(bbox) => {
             reject_non_planar_exact(state, non_planar)?;
             Ok(PreparedFilterQuery::Box2D(bbox))
         }
-        QueryGeometry::SphericalRadius {
+        GeoQuery2D::SphericalRadius {
             lon,
             lat,
             radius_metres,

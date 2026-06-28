@@ -36,7 +36,7 @@ use packed_spatial_index_geo::{open, BuildRequest, Box2D, GeoIndex};
 let mut dataset = open(File::open("cities.parquet")?)?;
 let index = dataset.build(BuildRequest::default())?;
 let GeoIndex::D2(index) = index else { panic!("expected 2D geometry") };
-let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -241,7 +241,7 @@ let mut filter_source = open(File::open("cities.parquet")?)?;
 let filtered = filter_source.filter_features(FeatureFilterRequest {
     selector: selector.clone(),
     expected_source_fingerprint: expected_source_fingerprint.clone(),
-    ..FeatureFilterRequest::from_hits_intersects_box2d(hits, bbox)
+    ..FeatureFilterRequest::intersects_from_hits(hits, bbox)
 })?;
 
 let mut row_source = open(File::open("cities.parquet")?)?;
@@ -399,21 +399,14 @@ let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else 
     panic!("expected a 2D artifact");
 };
 
-let query = packed_spatial_index_geo::QueryGeometry::SphericalRadius {
-    lon: -73.9857,
-    lat: 40.7484,
-    radius_metres: 500.0,
-};
-let mut hits = Vec::new();
-for bbox in query.candidate_boxes_2d()? {
-    hits.extend(index.search_hits(bbox)?);
-}
+let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(
+    -73.9857, 40.7484, 500.0,
+);
+let hits = index.search_hits(query)?;
 
 let mut filter_source = open(File::open("places.parquet")?)?;
 let exact = filter_source.filter_features(
-    FeatureFilterRequest::from_hits_intersects_spherical_radius(
-        hits, -73.9857, 40.7484, 500.0,
-    ),
+    FeatureFilterRequest::intersects_from_hits(hits, query),
 )?;
 
 let mut read_source = open(File::open("places.parquet")?)?;

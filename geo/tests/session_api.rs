@@ -247,7 +247,9 @@ fn geoparquet_primary_discovery_inspect_scan_and_build() {
     let GeoIndex::D2(index) = index else {
         panic!("expected 2D index");
     };
-    let hits = index.search_features(Box2D::new(-1.0, -1.0, 1.0, 1.0));
+    let hits = index
+        .search_features(Box2D::new(-1.0, -1.0, 1.0, 1.0))
+        .unwrap();
     assert_eq!(hits[0].row_number, 0);
 }
 
@@ -307,7 +309,9 @@ fn read_features_returns_projected_rows_and_wkb() {
     let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
         panic!("expected 2D index");
     };
-    let features = index.search_features(Box2D::new(5.0, 5.0, 25.0, 25.0));
+    let features = index
+        .search_features(Box2D::new(5.0, 5.0, 25.0, 25.0))
+        .unwrap();
 
     let mut source = open(data).unwrap();
     let rows = source
@@ -506,7 +510,7 @@ fn filter_features_removes_bbox_false_positive_and_keeps_points() {
     let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
         panic!("expected 2D index");
     };
-    let candidates = index.search_features(query);
+    let candidates = index.search_features(query).unwrap();
     assert_eq!(
         candidates
             .iter()
@@ -517,7 +521,7 @@ fn filter_features_removes_bbox_false_positive_and_keeps_points() {
 
     let mut source = open(data.clone()).unwrap();
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_box2d(candidates, query))
+        .filter_features(FeatureFilterRequest::intersects(candidates, query))
         .unwrap();
     assert_eq!(exact.len(), 1);
     assert_eq!(exact[0].row_number, 1);
@@ -549,7 +553,7 @@ fn filter_features_supports_native_parquet_and_geoarrow_sources() {
     );
     let mut source = open(native).unwrap();
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_box2d(
+        .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
             query,
         ))
@@ -565,7 +569,7 @@ fn filter_features_supports_native_parquet_and_geoarrow_sources() {
     );
     let mut source = open(geoarrow).unwrap();
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_box2d(
+        .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
             query,
         ))
@@ -584,7 +588,7 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
     );
     let mut source = open(data.clone()).unwrap();
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_box2d(
+        .filter_features(FeatureFilterRequest::intersects(
             vec![
                 FeatureRef {
                     row_number: 0,
@@ -618,7 +622,7 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
     );
     let mut source = open(malformed).unwrap();
     assert!(matches!(
-        source.filter_features(FeatureFilterRequest::intersects_box2d(
+        source.filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
             Box2D::new(0.0, 0.0, 1.0, 1.0),
         )),
@@ -634,7 +638,7 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
     );
     let mut source = open(empty).unwrap();
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_box2d(
+        .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
             Box2D::new(0.0, 0.0, 10.0, 10.0),
         ))
@@ -645,7 +649,7 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
     let mismatch = source
         .filter_features(FeatureFilterRequest {
             expected_source_fingerprint: Some("fnv64:0000000000000000".to_string()),
-            ..FeatureFilterRequest::intersects_box2d(
+            ..FeatureFilterRequest::intersects(
                 vec![FeatureRef::row_number(0)],
                 Box2D::new(4.0, 4.0, 6.0, 6.0),
             )
@@ -670,12 +674,11 @@ fn filter_features_spherical_radius_matches_points_and_multipoints() {
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
     let mut source = open(data).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.35, 48.85, 2_000.0);
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_spherical_radius(
+        .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
-            2.35,
-            48.85,
-            2_000.0,
+            query,
         ))
         .unwrap();
     assert_eq!(
@@ -697,12 +700,11 @@ fn filter_features_spherical_radius_matches_points_and_multipoints() {
         geo_meta_wkb_edges(&["MultiPoint"], "spherical"),
     );
     let mut source = open(data).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.35, 48.85, 2_000.0);
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_spherical_radius(
+        .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
-            2.35,
-            48.85,
-            2_000.0,
+            query,
         ))
         .unwrap();
     assert_eq!(
@@ -721,12 +723,11 @@ fn filter_features_spherical_radius_rejects_wrong_edges_and_unsupported_geometry
         geo_meta_wkb(&["Point"]),
     );
     let mut source = open(planar).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     assert!(matches!(
-        source.filter_features(FeatureFilterRequest::intersects_spherical_radius(
+        source.filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
-            2.0,
-            49.0,
-            1_000.0,
+            query,
         )),
         Err(GeoError::NonSphericalExactPredicate { .. })
     ));
@@ -736,12 +737,11 @@ fn filter_features_spherical_radius_rejects_wrong_edges_and_unsupported_geometry
         geo_meta_wkb_edges(&["Point"], "karney"),
     );
     let mut source = open(unknown_edges).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     assert!(matches!(
-        source.filter_features(FeatureFilterRequest::intersects_spherical_radius(
+        source.filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
-            2.0,
-            49.0,
-            1_000.0,
+            query,
         )),
         Err(GeoError::NonSphericalExactPredicate { .. })
     ));
@@ -754,12 +754,11 @@ fn filter_features_spherical_radius_rejects_wrong_edges_and_unsupported_geometry
         geo_meta_wkb_edges(&["LineString"], "spherical"),
     );
     let mut source = open(line).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     assert!(matches!(
-        source.filter_features(FeatureFilterRequest::intersects_spherical_radius(
+        source.filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
-            2.0,
-            49.0,
-            1_000.0,
+            query,
         )),
         Err(GeoError::UnsupportedGeodeticGeometry(kind)) if kind == "LineString"
     ));
@@ -775,12 +774,11 @@ fn filter_features_spherical_radius_handles_empty_malformed_and_candidate_boxes(
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
     let mut source = open(empty).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_spherical_radius(
+        .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
-            2.0,
-            49.0,
-            1_000.0,
+            query,
         ))
         .unwrap();
     assert!(exact.is_empty());
@@ -790,32 +788,24 @@ fn filter_features_spherical_radius_handles_empty_malformed_and_candidate_boxes(
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
     let mut source = open(malformed).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     assert!(matches!(
-        source.filter_features(FeatureFilterRequest::intersects_spherical_radius(
+        source.filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
-            2.0,
-            49.0,
-            1_000.0,
+            query,
         )),
         Err(GeoError::Wkb(_))
     ));
 
-    let antimeridian = packed_spatial_index_geo::QueryGeometry::SphericalRadius {
-        lon: 179.5,
-        lat: 0.0,
-        radius_metres: 200_000.0,
-    }
-    .candidate_boxes_2d()
-    .unwrap();
+    let antimeridian =
+        packed_spatial_index_geo::GeoQuery2D::spherical_radius(179.5, 0.0, 200_000.0)
+            .candidate_boxes_2d()
+            .unwrap();
     assert_eq!(antimeridian.len(), 2);
 
-    let pole = packed_spatial_index_geo::QueryGeometry::SphericalRadius {
-        lon: 0.0,
-        lat: 89.0,
-        radius_metres: 300_000.0,
-    }
-    .candidate_boxes_2d()
-    .unwrap();
+    let pole = packed_spatial_index_geo::GeoQuery2D::spherical_radius(0.0, 89.0, 300_000.0)
+        .candidate_boxes_2d()
+        .unwrap();
     assert_eq!(pole.len(), 1);
     assert_eq!(pole[0].min_x, -180.0);
     assert_eq!(pole[0].max_x, 180.0);
@@ -829,7 +819,7 @@ fn filter_features_rejects_non_planar_edges_unless_opted_in() {
     );
     let mut source = open(data.clone()).unwrap();
     let err = source
-        .filter_features(FeatureFilterRequest::intersects_box2d(
+        .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
             Box2D::new(4.0, 4.0, 6.0, 6.0),
         ))
@@ -840,7 +830,7 @@ fn filter_features_rejects_non_planar_edges_unless_opted_in() {
     let exact = source
         .filter_features(FeatureFilterRequest {
             non_planar: NonPlanarExactPolicy::TreatAsPlanar,
-            ..FeatureFilterRequest::intersects_box2d(
+            ..FeatureFilterRequest::intersects(
                 vec![FeatureRef::row_number(0)],
                 Box2D::new(4.0, 4.0, 6.0, 6.0),
             )
@@ -935,7 +925,7 @@ fn row_ref_artifact_hits_feed_exact_filter_then_read_features() {
         .filter_features(FeatureFilterRequest {
             selector: GeometrySelector::Name(manifest.selected_column.clone()),
             expected_source_fingerprint: Some(manifest.source_fingerprint.clone()),
-            ..FeatureFilterRequest::from_hits_intersects_box2d(hits, query)
+            ..FeatureFilterRequest::intersects_from_hits(hits, query)
         })
         .unwrap();
     assert_eq!(
@@ -1356,7 +1346,7 @@ fn antimeridian_split_duplicates_feature_ref_parts() {
 
     let mut source = open(data).unwrap();
     let exact = source
-        .filter_features(FeatureFilterRequest::intersects_box2d(
+        .filter_features(FeatureFilterRequest::intersects(
             scan.features,
             Box2D::new(-180.0, -1.0, 180.0, 2.0),
         ))

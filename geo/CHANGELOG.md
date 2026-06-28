@@ -4,6 +4,22 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added `GeoQuery2D` and `GeoQuery3D` query values for geo candidate and
+  exact-filter APIs.
+
+### Changed
+
+- Breaking: replaced `QueryGeometry` with `GeoQuery2D`.
+- Breaking: replaced shape-specific exact-filter constructors such as
+  `intersects_box2d`, `from_hits_intersects_box2d`, and
+  `intersects_spherical_radius` with `FeatureFilterRequest::intersects` and
+  `FeatureFilterRequest::intersects_from_hits`.
+- Breaking: in-memory `GeoIndex2D::search_features` and
+  `GeoIndex3D::search_features` now return `Result<Vec<FeatureRef>, GeoError>`,
+  matching artifact search and allowing query validation errors to surface.
+
 ## [0.11.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.10.0...psi-geo-v0.11.0) - 2026-06-28
 
 ### Changed

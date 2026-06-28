@@ -722,7 +722,7 @@ pub enum DuplicateFeatureRows {
 /// let GeoIndex::D2(index) = indexed.build(BuildRequest::default())? else {
 ///     panic!("expected a 2D index");
 /// };
-/// let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+/// let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 ///
 /// let mut source = open(File::open("cities.parquet")?)?;
 /// let rows = source.read_features(FeatureReadRequest::from_features(hits))?;
@@ -779,24 +779,20 @@ impl Default for FeatureReadRequest {
     }
 }
 
-/// Query geometry for exact source filtering.
+/// 2D geospatial query.
 ///
 /// # Example
 ///
 /// ```rust
-/// use packed_spatial_index_geo::{Box2D, QueryGeometry};
+/// use packed_spatial_index_geo::{Box2D, GeoQuery2D};
 ///
-/// let query = QueryGeometry::Box2D(Box2D::new(-10.0, 35.0, 20.0, 60.0));
-/// assert!(matches!(query, QueryGeometry::Box2D(_)));
-/// let radius = QueryGeometry::SphericalRadius {
-///     lon: -73.9857,
-///     lat: 40.7484,
-///     radius_metres: 500.0,
-/// };
-/// assert!(matches!(radius, QueryGeometry::SphericalRadius { .. }));
+/// let query = GeoQuery2D::box2d(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+/// assert!(matches!(query, GeoQuery2D::Box2D(_)));
+/// let radius = GeoQuery2D::spherical_radius(-73.9857, 40.7484, 500.0);
+/// assert!(matches!(radius, GeoQuery2D::SphericalRadius { .. }));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum QueryGeometry {
+pub enum GeoQuery2D {
     /// Query rectangle in source XY coordinates.
     Box2D(Box2D),
     /// Spherical point-radius query in longitude/latitude coordinates.
@@ -810,15 +806,29 @@ pub enum QueryGeometry {
     },
 }
 
-impl QueryGeometry {
+impl GeoQuery2D {
+    /// Create a 2D box query in source XY coordinates.
+    pub fn box2d(bbox: Box2D) -> Self {
+        Self::Box2D(bbox)
+    }
+
+    /// Create a spherical point-radius query in longitude/latitude coordinates.
+    pub fn spherical_radius(lon: f64, lat: f64, radius_metres: f64) -> Self {
+        Self::SphericalRadius {
+            lon,
+            lat,
+            radius_metres,
+        }
+    }
+
     /// Return 2D lon/lat candidate boxes for this query geometry.
     ///
     /// `Box2D` returns itself. `SphericalRadius` returns one or two longitude /
     /// latitude boxes, splitting at the antimeridian when needed.
     pub fn candidate_boxes_2d(&self) -> Result<Vec<Box2D>, crate::GeoError> {
         match *self {
-            QueryGeometry::Box2D(bbox) => Ok(vec![bbox]),
-            QueryGeometry::SphericalRadius {
+            GeoQuery2D::Box2D(bbox) => Ok(vec![bbox]),
+            GeoQuery2D::SphericalRadius {
                 lon,
                 lat,
                 radius_metres,
@@ -829,21 +839,27 @@ impl QueryGeometry {
     }
 }
 
-impl Serialize for QueryGeometry {
+impl From<Box2D> for GeoQuery2D {
+    fn from(value: Box2D) -> Self {
+        Self::Box2D(value)
+    }
+}
+
+impl Serialize for GeoQuery2D {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         match self {
-            QueryGeometry::Box2D(bbox) => {
-                QueryGeometrySerde::Box2D([bbox.min_x, bbox.min_y, bbox.max_x, bbox.max_y])
+            GeoQuery2D::Box2D(bbox) => {
+                GeoQuery2DSerde::Box2D([bbox.min_x, bbox.min_y, bbox.max_x, bbox.max_y])
                     .serialize(serializer)
             }
-            QueryGeometry::SphericalRadius {
+            GeoQuery2D::SphericalRadius {
                 lon,
                 lat,
                 radius_metres,
-            } => QueryGeometrySerde::SphericalRadius {
+            } => GeoQuery2DSerde::SphericalRadius {
                 lon: *lon,
                 lat: *lat,
                 radius_metres: *radius_metres,
@@ -853,20 +869,20 @@ impl Serialize for QueryGeometry {
     }
 }
 
-impl<'de> Deserialize<'de> for QueryGeometry {
+impl<'de> Deserialize<'de> for GeoQuery2D {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Ok(match QueryGeometrySerde::deserialize(deserializer)? {
-            QueryGeometrySerde::Box2D([min_x, min_y, max_x, max_y]) => {
-                QueryGeometry::Box2D(Box2D::new(min_x, min_y, max_x, max_y))
+        Ok(match GeoQuery2DSerde::deserialize(deserializer)? {
+            GeoQuery2DSerde::Box2D([min_x, min_y, max_x, max_y]) => {
+                GeoQuery2D::Box2D(Box2D::new(min_x, min_y, max_x, max_y))
             }
-            QueryGeometrySerde::SphericalRadius {
+            GeoQuery2DSerde::SphericalRadius {
                 lon,
                 lat,
                 radius_metres,
-            } => QueryGeometry::SphericalRadius {
+            } => GeoQuery2D::SphericalRadius {
                 lon,
                 lat,
                 radius_metres,
@@ -877,13 +893,75 @@ impl<'de> Deserialize<'de> for QueryGeometry {
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-enum QueryGeometrySerde {
+enum GeoQuery2DSerde {
     Box2D([f64; 4]),
     SphericalRadius {
         lon: f64,
         lat: f64,
         radius_metres: f64,
     },
+}
+
+/// 3D geospatial query.
+///
+/// 3D geo artifacts currently support box/envelope candidate queries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GeoQuery3D {
+    /// Query box in source XYZ coordinates.
+    Box3D(Box3D),
+}
+
+impl GeoQuery3D {
+    /// Create a 3D box query in source XYZ coordinates.
+    pub fn box3d(bbox: Box3D) -> Self {
+        Self::Box3D(bbox)
+    }
+
+    /// Return the core 3D candidate box for this query.
+    pub fn candidate_box_3d(self) -> Box3D {
+        match self {
+            GeoQuery3D::Box3D(bbox) => bbox,
+        }
+    }
+}
+
+impl From<Box3D> for GeoQuery3D {
+    fn from(value: Box3D) -> Self {
+        Self::Box3D(value)
+    }
+}
+
+impl Serialize for GeoQuery3D {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            GeoQuery3D::Box3D(bbox) => GeoQuery3DSerde::Box3D([
+                bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z,
+            ])
+            .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GeoQuery3D {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match GeoQuery3DSerde::deserialize(deserializer)? {
+            GeoQuery3DSerde::Box3D([min_x, min_y, min_z, max_x, max_y, max_z]) => {
+                GeoQuery3D::Box3D(Box3D::new(min_x, min_y, min_z, max_x, max_y, max_z))
+            }
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum GeoQuery3DSerde {
+    Box3D([f64; 6]),
 }
 
 /// Exact source-filtering predicate.
@@ -915,7 +993,7 @@ pub enum NonPlanarExactPolicy {
 /// };
 ///
 /// let mut source = open(File::open("cities.parquet")?)?;
-/// let exact = source.filter_features(FeatureFilterRequest::intersects_box2d(
+/// let exact = source.filter_features(FeatureFilterRequest::intersects(
 ///     vec![FeatureRef::row_number(42)],
 ///     Box2D::new(-10.0, 35.0, 20.0, 60.0),
 /// ))?;
@@ -929,7 +1007,7 @@ pub struct FeatureFilterRequest {
     /// Geometry column selector.
     pub selector: GeometrySelector,
     /// Query geometry.
-    pub query: QueryGeometry,
+    pub query: GeoQuery2D,
     /// Predicate to evaluate.
     pub predicate: SpatialPredicate,
     /// Non-planar edge handling.
@@ -939,57 +1017,21 @@ pub struct FeatureFilterRequest {
 }
 
 impl FeatureFilterRequest {
-    /// Create an `intersects` request from candidate feature refs and a 2D box.
-    pub fn intersects_box2d(features: Vec<FeatureRef>, bbox: Box2D) -> Self {
+    /// Create an `intersects` request from candidate feature refs and a 2D query.
+    pub fn intersects<Q: Into<GeoQuery2D>>(features: Vec<FeatureRef>, query: Q) -> Self {
         Self {
             features,
             selector: GeometrySelector::Default,
-            query: QueryGeometry::Box2D(bbox),
+            query: query.into(),
             predicate: SpatialPredicate::Intersects,
             non_planar: NonPlanarExactPolicy::Reject,
             expected_source_fingerprint: None,
         }
     }
 
-    /// Create an `intersects` request from artifact hits and a 2D box.
-    pub fn from_hits_intersects_box2d(hits: Vec<crate::GeoHit>, bbox: Box2D) -> Self {
-        Self::intersects_box2d(hits.into_iter().map(|hit| hit.feature).collect(), bbox)
-    }
-
-    /// Create an `intersects` request from candidate feature refs and a spherical radius.
-    pub fn intersects_spherical_radius(
-        features: Vec<FeatureRef>,
-        lon: f64,
-        lat: f64,
-        radius_metres: f64,
-    ) -> Self {
-        Self {
-            features,
-            selector: GeometrySelector::Default,
-            query: QueryGeometry::SphericalRadius {
-                lon,
-                lat,
-                radius_metres,
-            },
-            predicate: SpatialPredicate::Intersects,
-            non_planar: NonPlanarExactPolicy::Reject,
-            expected_source_fingerprint: None,
-        }
-    }
-
-    /// Create an `intersects` spherical-radius request from artifact hits.
-    pub fn from_hits_intersects_spherical_radius(
-        hits: Vec<crate::GeoHit>,
-        lon: f64,
-        lat: f64,
-        radius_metres: f64,
-    ) -> Self {
-        Self::intersects_spherical_radius(
-            hits.into_iter().map(|hit| hit.feature).collect(),
-            lon,
-            lat,
-            radius_metres,
-        )
+    /// Create an `intersects` request from artifact hits and a 2D query.
+    pub fn intersects_from_hits<Q: Into<GeoQuery2D>>(hits: Vec<crate::GeoHit>, query: Q) -> Self {
+        Self::intersects(hits.into_iter().map(|hit| hit.feature).collect(), query)
     }
 }
 
@@ -1459,7 +1501,7 @@ pub struct GeometryScan3D {
 /// let mut dataset = open(File::open("cities.parquet")?)?;
 /// match dataset.build(BuildRequest::default())? {
 ///     GeoIndex::D2(index) => {
-///         let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+///         let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 ///         println!("{} candidate features", hits.len());
 ///     }
 ///     GeoIndex::D3(_) => println!("3D index"),
@@ -1485,12 +1527,21 @@ pub struct GeoIndex2D {
 
 impl GeoIndex2D {
     /// Search and return source feature references.
-    pub fn search_features(&self, query: Box2D) -> Vec<FeatureRef> {
-        self.index
-            .search(query)
-            .into_iter()
-            .filter_map(|id| self.features.get(id).cloned())
-            .collect()
+    pub fn search_features<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, crate::GeoError> {
+        let mut features = Vec::new();
+        for bbox in query.into().candidate_boxes_2d()? {
+            for id in self.index.search(bbox) {
+                if let Some(feature) = self.features.get(id)
+                    && !features.contains(feature)
+                {
+                    features.push(feature.clone());
+                }
+            }
+        }
+        Ok(features)
     }
 
     /// Access the underlying core index.
@@ -1511,12 +1562,16 @@ pub struct GeoIndex3D {
 
 impl GeoIndex3D {
     /// Search and return source feature references.
-    pub fn search_features(&self, query: Box3D) -> Vec<FeatureRef> {
-        self.index
-            .search(query)
+    pub fn search_features<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, crate::GeoError> {
+        Ok(self
+            .index
+            .search(query.into().candidate_box_3d())
             .into_iter()
             .filter_map(|id| self.features.get(id).cloned())
-            .collect()
+            .collect())
     }
 
     /// Access the underlying core index.

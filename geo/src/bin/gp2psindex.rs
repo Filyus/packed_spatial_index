@@ -12,9 +12,9 @@ use base64::Engine as _;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, ConvertRequest, DuplicateFeatureRows, EnvelopePolicy,
     FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRows, GeoArtifactIndex,
-    GeoDiscovery, GeoError, GeometryProfile, GeometryReadMode, GeometrySelector, IndexDimsRequest,
-    InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan, PropertyProjection,
-    QueryGeometry, SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest,
+    GeoDiscovery, GeoError, GeoQuery2D, GeometryProfile, GeometryReadMode, GeometrySelector,
+    IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
+    PropertyProjection, SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest,
     ValidationReport, ValidationSeverity, open, open_geo_index,
 };
 
@@ -187,14 +187,10 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let radius = parsed.option("--radius")?;
     let query = match (bbox, radius) {
         (Some(_), Some(_)) => return Err("--bbox and --radius are mutually exclusive".into()),
-        (Some(value), None) => QueryGeometry::Box2D(parse_bbox(&value)?),
+        (Some(value), None) => GeoQuery2D::box2d(parse_bbox(&value)?),
         (None, Some(value)) => {
             let (lon, lat, radius_metres) = parse_radius(&value)?;
-            QueryGeometry::SphericalRadius {
-                lon,
-                lat,
-                radius_metres,
-            }
+            GeoQuery2D::spherical_radius(lon, lat, radius_metres)
         }
         (None, None) => return Err("--bbox or --radius is required".into()),
     };
@@ -203,7 +199,7 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let order = parse_feature_order(parsed.option("--order")?.as_deref().unwrap_or("source"))?;
     let duplicates =
         parse_duplicates(parsed.option("--duplicates")?.as_deref().unwrap_or("dedup"))?;
-    let radius_query = matches!(query, QueryGeometry::SphericalRadius { .. });
+    let radius_query = matches!(query, GeoQuery2D::SphericalRadius { .. });
     let exact = parsed.flag("--exact") || radius_query;
     let predicate = parsed.option("--predicate")?;
     let treat_nonplanar = parsed.flag("--treat-nonplanar-as-planar");
@@ -221,19 +217,8 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(index_path)?;
     let artifact = open_geo_index(SliceReader::new(bytes))?;
     let manifest = artifact.manifest().clone();
-    let candidate_boxes = query.candidate_boxes_2d()?;
     let features = match artifact {
-        GeoArtifactIndex::D2(index) => {
-            let mut features = Vec::new();
-            for bbox in candidate_boxes {
-                for feature in index.search_features(bbox)? {
-                    if !features.contains(&feature) {
-                        features.push(feature);
-                    }
-                }
-            }
-            features
-        }
+        GeoArtifactIndex::D2(index) => index.search_features(query)?,
         GeoArtifactIndex::D3(_) => {
             return Err("query CLI currently accepts only 2D --bbox/--radius queries".into());
         }

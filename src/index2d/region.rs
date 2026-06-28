@@ -7,10 +7,14 @@ use crate::{
     traversal::SearchWorkspace,
 };
 
-use super::{Index2D, Index2DView};
+use super::{Index2D, Index2DView, RegionSearch2DIter, Search2DIter};
 
 #[doc(hidden)]
 pub trait SearchQuery2D: Sized {
+    type Iter<'a>: Iterator<Item = usize> + std::iter::FusedIterator
+    where
+        Self: 'a;
+
     fn search_into_index(self, index: &Index2D, out: &mut Vec<usize>);
     fn search_with_index<'a>(
         self,
@@ -22,6 +26,9 @@ pub trait SearchQuery2D: Sized {
     fn visit_index<B, F>(self, index: &Index2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>;
+    fn search_iter_index<'a>(self, index: &'a Index2D) -> Self::Iter<'a>
+    where
+        Self: 'a;
 
     fn search_into_view(self, view: &Index2DView<'_>, out: &mut Vec<usize>);
     fn search_with_view<'a>(
@@ -37,6 +44,8 @@ pub trait SearchQuery2D: Sized {
 }
 
 impl SearchQuery2D for Box2D {
+    type Iter<'a> = Search2DIter<'a>;
+
     #[inline]
     fn search_into_index(self, index: &Index2D, out: &mut Vec<usize>) {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
@@ -76,6 +85,14 @@ impl SearchQuery2D for Box2D {
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         index.visit_with_stack(self, &mut stack, visitor)
+    }
+
+    #[inline]
+    fn search_iter_index<'a>(self, index: &'a Index2D) -> Self::Iter<'a>
+    where
+        Self: 'a,
+    {
+        Search2DIter::new(index, self)
     }
 
     #[inline]
@@ -120,6 +137,11 @@ impl SearchQuery2D for Box2D {
 }
 
 impl<Q: Overlaps2D> SearchQuery2D for &Q {
+    type Iter<'a>
+        = RegionSearch2DIter<'a, Self>
+    where
+        Self: 'a;
+
     #[inline]
     fn search_into_index(self, index: &Index2D, out: &mut Vec<usize>) {
         out.clear();
@@ -167,6 +189,14 @@ impl<Q: Overlaps2D> SearchQuery2D for &Q {
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         index.visit_region_with_stack(self, &mut stack, visitor)
+    }
+
+    #[inline]
+    fn search_iter_index<'a>(self, index: &'a Index2D) -> Self::Iter<'a>
+    where
+        Self: 'a,
+    {
+        RegionSearch2DIter::new(index, self)
     }
 
     #[inline]

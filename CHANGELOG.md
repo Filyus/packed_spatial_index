@@ -4,6 +4,19 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Search
+- **BREAKING:** `Index2D::search_iter` and `Index3D::search_iter` now dispatch
+  through the same query API as `search` / `search_into` / `any` / `first` /
+  `visit`: box queries return the box iterator, while borrowed geometry queries
+  such as `&Triangle2D`, `&ConvexPolygon2D`, and `&Frustum3D` return a region
+  iterator with contained-subtree fast paths. Existing call sites that simply
+  iterate the result keep the same `index.search_iter(query)` shape; code that
+  names the concrete iterator type may need to use `impl Iterator` or the new
+  region iterator type.
+- Lazy region iteration is much faster for broad shape queries because fully
+  contained subtrees skip per-item geometry predicates; box iteration keeps a
+  separate lightweight traversal path.
+
 ## [0.18.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.18.0...psi-v0.18.1) - 2026-06-20
 
 ### Raycast

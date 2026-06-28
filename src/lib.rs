@@ -117,7 +117,7 @@ pub use frustum::{ClipSpaceZ, Frustum3D};
 pub use geometry::{BoundsError, Box2D, Box3D, Overlaps2D, Overlaps3D, Point2D, Point3D};
 #[doc(hidden)]
 pub use index2d::SearchQuery2D;
-pub use index2d::{Index2D, Index2DView, Search2DIter, Serializer2D};
+pub use index2d::{Index2D, Index2DView, RegionSearch2DIter, Search2DIter, Serializer2D};
 #[cfg(feature = "f32-storage")]
 pub use index2d_f32::{Index2DF32, Serializer2DF32};
 #[cfg(all(feature = "f32-storage", feature = "simd"))]
@@ -126,7 +126,7 @@ pub use index2d_f32::{SimdIndex2DF32, SimdIndex2DF32View};
 pub use index2d_soa::{SimdIndex2D, SimdIndex2DView};
 #[doc(hidden)]
 pub use index3d::SearchQuery3D;
-pub use index3d::{Index3D, Index3DView, Search3DIter, Serializer3D};
+pub use index3d::{Index3D, Index3DView, RegionSearch3DIter, Search3DIter, Serializer3D};
 #[cfg(feature = "f32-storage")]
 pub use index3d_f32::{Index3DF32, Serializer3DF32};
 #[cfg(all(feature = "f32-storage", feature = "simd"))]

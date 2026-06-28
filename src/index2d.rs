@@ -769,8 +769,8 @@ impl Index2D {
     /// hits.sort_unstable();
     /// assert_eq!(hits, vec![0, 1]);
     /// ```
-    pub fn search_iter<Q: Overlaps2D>(&self, query: Q) -> Search2DIter<'_, Q> {
-        Search2DIter::new(self, query)
+    pub fn search_iter<Q: SearchQuery2D>(&self, query: Q) -> Q::Iter<'_> {
+        query.search_iter_index(self)
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
@@ -1978,23 +1978,30 @@ impl TreeAccess for Index2DView<'_> {
 /// Yields original insertion indices in tree-traversal order, descending the
 /// tree only as far as the consumer pulls. Holds a small traversal stack
 /// (`O(depth)`); it allocates no result `Vec`.
-pub struct Search2DIter<'a, Q = Box2D> {
+pub struct Search2DIter<'a> {
     index: &'a Index2D,
-    query: Q,
-    // (node_index, level) pairs still to visit, same encoding as the search stack.
-    stack: Vec<usize>,
+    query: Box2D,
+    stack: Vec<Search2DFrame>,
     // Half-open entry range of the leaf node currently being scanned.
     leaf_pos: usize,
     leaf_end: usize,
 }
 
-impl<'a, Q: Overlaps2D> Search2DIter<'a, Q> {
-    fn new(index: &'a Index2D, query: Q) -> Self {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+#[derive(Clone, Copy)]
+struct Search2DFrame {
+    node_index: usize,
+    level: usize,
+}
+
+impl<'a> Search2DIter<'a> {
+    fn new(index: &'a Index2D, query: Box2D) -> Self {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY / 2);
         if index.num_items != 0 {
             // Seed with the root so `next` drives the descent uniformly.
-            stack.push(index.entries.len() - 1);
-            stack.push(index.level_bounds.len() - 1);
+            stack.push(Search2DFrame {
+                node_index: index.entries.len() - 1,
+                level: index.level_bounds.len() - 1,
+            });
         }
         Self {
             index,
@@ -2006,7 +2013,7 @@ impl<'a, Q: Overlaps2D> Search2DIter<'a, Q> {
     }
 }
 
-impl<Q: Overlaps2D> Iterator for Search2DIter<'_, Q> {
+impl Iterator for Search2DIter<'_> {
     type Item = usize;
 
     fn next(&mut self) -> Option<usize> {
@@ -2021,30 +2028,27 @@ impl<Q: Overlaps2D> Iterator for Search2DIter<'_, Q> {
                 }
             }
 
-            // Pop the next node. The stack holds (node_index, level) pairs.
-            if self.stack.len() < 2 {
-                return None;
-            }
-            let level = self.stack.pop().unwrap();
-            let node_index = self.stack.pop().unwrap();
-            let end = (node_index + index.node_size).min(index.level_bounds[level]);
+            let frame = self.stack.pop()?;
+            let end = (frame.node_index + index.node_size).min(index.level_bounds[frame.level]);
 
-            if node_index < index.num_items {
+            if frame.node_index < index.num_items {
                 // Leaf node: scan its entries on the next loop turns.
-                self.leaf_pos = node_index;
+                self.leaf_pos = frame.node_index;
                 self.leaf_end = end;
             } else {
                 // Internal node: push overlapping children reversed so they pop
                 // in forward order (matching `visit`).
-                let child_level = level - 1;
-                for (b, &child) in index.entries[node_index..end]
+                let child_level = frame.level - 1;
+                for (b, &child) in index.entries[frame.node_index..end]
                     .iter()
-                    .zip(&index.indices[node_index..end])
+                    .zip(&index.indices[frame.node_index..end])
                     .rev()
                 {
                     if self.query.overlaps_box(*b) {
-                        self.stack.push(child);
-                        self.stack.push(child_level);
+                        self.stack.push(Search2DFrame {
+                            node_index: child,
+                            level: child_level,
+                        });
                     }
                 }
             }
@@ -2057,4 +2061,99 @@ impl<Q: Overlaps2D> Iterator for Search2DIter<'_, Q> {
     }
 }
 
-impl<Q: Overlaps2D> std::iter::FusedIterator for Search2DIter<'_, Q> {}
+impl std::iter::FusedIterator for Search2DIter<'_> {}
+
+#[doc(hidden)]
+pub struct RegionSearch2DIter<'a, Q> {
+    index: &'a Index2D,
+    query: Q,
+    stack: Vec<RegionSearch2DFrame>,
+    leaf_pos: usize,
+    leaf_end: usize,
+    leaf_contained: bool,
+}
+
+#[derive(Clone, Copy)]
+struct RegionSearch2DFrame {
+    node_index: usize,
+    level: usize,
+    contained: bool,
+}
+
+impl<'a, Q: Overlaps2D> RegionSearch2DIter<'a, Q> {
+    fn new(index: &'a Index2D, query: Q) -> Self {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY / 2);
+        if index.num_items != 0 {
+            let root = index.entries.len() - 1;
+            stack.push(RegionSearch2DFrame {
+                node_index: root,
+                level: index.level_bounds.len() - 1,
+                contained: query.contains_box(index.entries[root]),
+            });
+        }
+        Self {
+            index,
+            query,
+            stack,
+            leaf_pos: 0,
+            leaf_end: 0,
+            leaf_contained: false,
+        }
+    }
+}
+
+impl<Q: Overlaps2D> Iterator for RegionSearch2DIter<'_, Q> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        let index = self.index;
+        loop {
+            while self.leaf_pos < self.leaf_end {
+                let at = self.leaf_pos;
+                self.leaf_pos += 1;
+                if self.leaf_contained || self.query.overlaps_box(index.entries[at]) {
+                    return Some(index.indices[at]);
+                }
+            }
+
+            let frame = self.stack.pop()?;
+            let end = (frame.node_index + index.node_size).min(index.level_bounds[frame.level]);
+
+            if frame.node_index < index.num_items {
+                self.leaf_pos = frame.node_index;
+                self.leaf_end = end;
+                self.leaf_contained = frame.contained;
+            } else if frame.contained {
+                let child_level = frame.level - 1;
+                for &child in index.indices[frame.node_index..end].iter().rev() {
+                    self.stack.push(RegionSearch2DFrame {
+                        node_index: child,
+                        level: child_level,
+                        contained: true,
+                    });
+                }
+            } else {
+                let child_level = frame.level - 1;
+                for (b, &child) in index.entries[frame.node_index..end]
+                    .iter()
+                    .zip(&index.indices[frame.node_index..end])
+                    .rev()
+                {
+                    if self.query.overlaps_box(*b) {
+                        self.stack.push(RegionSearch2DFrame {
+                            node_index: child,
+                            level: child_level,
+                            contained: self.query.contains_box(*b),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.index.num_items))
+    }
+}
+
+impl<Q: Overlaps2D> std::iter::FusedIterator for RegionSearch2DIter<'_, Q> {}

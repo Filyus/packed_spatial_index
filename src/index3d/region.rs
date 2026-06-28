@@ -7,10 +7,14 @@ use crate::{
     traversal::SearchWorkspace,
 };
 
-use super::{Index3D, Index3DView};
+use super::{Index3D, Index3DView, RegionSearch3DIter, Search3DIter};
 
 #[doc(hidden)]
 pub trait SearchQuery3D: Sized {
+    type Iter<'a>: Iterator<Item = usize> + std::iter::FusedIterator
+    where
+        Self: 'a;
+
     fn search_into_index(self, index: &Index3D, out: &mut Vec<usize>);
     fn search_with_index<'a>(
         self,
@@ -22,6 +26,9 @@ pub trait SearchQuery3D: Sized {
     fn visit_index<B, F>(self, index: &Index3D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>;
+    fn search_iter_index<'a>(self, index: &'a Index3D) -> Self::Iter<'a>
+    where
+        Self: 'a;
 
     fn search_into_view(self, view: &Index3DView<'_>, out: &mut Vec<usize>);
     fn search_with_view<'a>(
@@ -37,6 +44,8 @@ pub trait SearchQuery3D: Sized {
 }
 
 impl SearchQuery3D for Box3D {
+    type Iter<'a> = Search3DIter<'a>;
+
     #[inline]
     fn search_into_index(self, index: &Index3D, out: &mut Vec<usize>) {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
@@ -76,6 +85,14 @@ impl SearchQuery3D for Box3D {
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         index.visit_with_stack(self, &mut stack, visitor)
+    }
+
+    #[inline]
+    fn search_iter_index<'a>(self, index: &'a Index3D) -> Self::Iter<'a>
+    where
+        Self: 'a,
+    {
+        Search3DIter::new(index, self)
     }
 
     #[inline]
@@ -120,6 +137,11 @@ impl SearchQuery3D for Box3D {
 }
 
 impl<Q: Overlaps3D> SearchQuery3D for &Q {
+    type Iter<'a>
+        = RegionSearch3DIter<'a, Self>
+    where
+        Self: 'a;
+
     #[inline]
     fn search_into_index(self, index: &Index3D, out: &mut Vec<usize>) {
         out.clear();
@@ -167,6 +189,14 @@ impl<Q: Overlaps3D> SearchQuery3D for &Q {
     {
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         index.visit_region_with_stack(self, &mut stack, visitor)
+    }
+
+    #[inline]
+    fn search_iter_index<'a>(self, index: &'a Index3D) -> Self::Iter<'a>
+    where
+        Self: 'a,
+    {
+        RegionSearch3DIter::new(index, self)
     }
 
     #[inline]

@@ -1,3 +1,4 @@
+use arrow::record_batch::RecordBatch;
 use packed_spatial_index::{Box2D, Box3D, Index2D, Index3D};
 use serde::{Deserialize, Serialize};
 
@@ -607,11 +608,11 @@ pub struct FeatureRef {
 }
 
 impl FeatureRef {
-    pub(crate) fn row(row_number: u64) -> Self {
+    pub(crate) fn row_in_group(row_number: u64, row_group: u32, row_in_group: u32) -> Self {
         Self {
             row_number,
-            row_group: None,
-            row_in_group: None,
+            row_group: Some(row_group),
+            row_in_group: Some(row_in_group),
             part: None,
             feature_id: None,
         }
@@ -664,6 +665,140 @@ pub enum PropertyProjection {
     Include(Vec<String>),
     /// Emit all non-geometry columns except these.
     Exclude(Vec<String>),
+}
+
+/// Geometry materialization mode for [`GeoDataset::read_features`](crate::GeoDataset::read_features).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometryReadMode {
+    /// Do not include geometry in the returned rows.
+    Omit,
+    /// Append a `geometry_wkb` binary column.
+    Wkb,
+}
+
+/// Output order for [`GeoDataset::read_features`](crate::GeoDataset::read_features).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeatureReadOrder {
+    /// Return rows sorted by source row number.
+    SourceOrder,
+    /// Return rows in the requested hit/feature order.
+    RequestOrder,
+}
+
+/// Duplicate handling for feature refs that point at the same source row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicateFeatureRows {
+    /// Return each source row once, keeping the first feature ref for that row.
+    DedupRows,
+    /// Return one output row per requested feature ref, including split parts.
+    KeepParts,
+}
+
+/// Request for [`GeoDataset::read_features`](crate::GeoDataset::read_features).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{
+///     open, Box2D, BuildRequest, FeatureReadRequest, GeoIndex,
+/// };
+///
+/// let mut indexed = open(File::open("cities.parquet")?)?;
+/// let GeoIndex::D2(index) = indexed.build(BuildRequest::default())? else {
+///     panic!("expected a 2D index");
+/// };
+/// let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+///
+/// let mut source = open(File::open("cities.parquet")?)?;
+/// let rows = source.read_features(FeatureReadRequest::from_features(hits))?;
+/// println!("{} source rows", rows.features.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeatureReadRequest {
+    /// Feature refs to read from the source Parquet file.
+    pub features: Vec<FeatureRef>,
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Property columns to project into the returned batch.
+    pub properties: PropertyProjection,
+    /// Optional geometry materialization.
+    pub geometry: GeometryReadMode,
+    /// Output row order.
+    pub order: FeatureReadOrder,
+    /// Duplicate source-row handling.
+    pub duplicates: DuplicateFeatureRows,
+    /// Optional source fingerprint expected by the caller or artifact manifest.
+    pub expected_source_fingerprint: Option<String>,
+}
+
+impl FeatureReadRequest {
+    /// Create a default read request from feature refs.
+    pub fn from_features(features: Vec<FeatureRef>) -> Self {
+        Self {
+            features,
+            ..Self::default()
+        }
+    }
+
+    /// Create a default read request from artifact hits.
+    pub fn from_hits(hits: Vec<crate::GeoHit>) -> Self {
+        Self {
+            features: hits.into_iter().map(|hit| hit.feature).collect(),
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for FeatureReadRequest {
+    fn default() -> Self {
+        Self {
+            features: Vec::new(),
+            selector: GeometrySelector::Default,
+            properties: PropertyProjection::AllNonGeometry,
+            geometry: GeometryReadMode::Omit,
+            order: FeatureReadOrder::SourceOrder,
+            duplicates: DuplicateFeatureRows::DedupRows,
+            expected_source_fingerprint: None,
+        }
+    }
+}
+
+/// Rows fetched from a Parquet source for feature refs.
+///
+/// `features[i]` describes the source feature represented by row `i` in
+/// `batch`. The batch contains the requested property columns and, when
+/// requested, a `geometry_wkb` binary column.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, FeatureReadRequest, FeatureRef};
+///
+/// let mut source = open(File::open("cities.parquet")?)?;
+/// let rows = source.read_features(FeatureReadRequest::from_features(vec![
+///     FeatureRef {
+///         row_number: 42,
+///         row_group: None,
+///         row_in_group: None,
+///         part: None,
+///         feature_id: None,
+///     },
+/// ]))?;
+/// assert_eq!(rows.features.len(), rows.batch.num_rows());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct FeatureRows {
+    /// Feature refs aligned with returned batch rows.
+    pub features: Vec<FeatureRef>,
+    /// Projected source rows.
+    pub batch: RecordBatch,
 }
 
 /// Coordinate storage precision for converted artifacts.

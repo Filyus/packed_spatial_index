@@ -2,18 +2,21 @@ use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;
 use std::sync::Arc;
+use std::{env, fs};
 
 use arrow::array::{ArrayRef, BinaryArray, Float64Array, ListArray, StringArray, StructArray};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
 use arrow::record_batch::RecordBatch;
+use base64::Engine as _;
 use bytes::Bytes;
 use packed_spatial_index_geo::{
-    AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, EnvelopePolicy,
-    FEATURE_REF_RECORD_LEN, GeoArtifactIndex, GeoError, GeoIndex, GeoPayload, GeometryEncoding,
-    GeometryMetadataSource, GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest,
-    NullPolicy, PayloadPlan, PropertyProjection, RangeReader, SliceReader, StoragePrecision,
-    StreamIndex2D, decode_feature_ref_payload, decode_feature_wkb_payload, open, open_geo_index,
+    AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, DuplicateFeatureRows,
+    EnvelopePolicy, FEATURE_REF_RECORD_LEN, FeatureReadOrder, FeatureReadRequest, FeatureRef,
+    GeoArtifactIndex, GeoError, GeoIndex, GeoPayload, GeometryEncoding, GeometryMetadataSource,
+    GeometryReadMode, GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NullPolicy,
+    PayloadPlan, PropertyProjection, RangeReader, SliceReader, StoragePrecision, StreamIndex2D,
+    decode_feature_ref_payload, decode_feature_wkb_payload, open, open_geo_index,
     read_geo_manifest,
 };
 use parquet::arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions};
@@ -74,6 +77,23 @@ fn write_geoparquet(cols: Vec<(&str, ArrayRef)>, geo_json: String) -> Bytes {
     let batch = RecordBatch::try_from_iter(cols).unwrap();
     let props = WriterProperties::builder()
         .set_key_value_metadata(Some(vec![KeyValue::new("geo".to_string(), geo_json)]))
+        .build();
+    let mut buf = Vec::new();
+    let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    Bytes::from(buf)
+}
+
+fn write_geoparquet_with_row_group_size(
+    cols: Vec<(&str, ArrayRef)>,
+    geo_json: String,
+    row_group_rows: usize,
+) -> Bytes {
+    let batch = RecordBatch::try_from_iter(cols).unwrap();
+    let props = WriterProperties::builder()
+        .set_key_value_metadata(Some(vec![KeyValue::new("geo".to_string(), geo_json)]))
+        .set_max_row_group_row_count(Some(row_group_rows))
         .build();
     let mut buf = Vec::new();
     let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props)).unwrap();
@@ -206,6 +226,322 @@ fn geoparquet_primary_discovery_inspect_scan_and_build() {
     };
     let hits = index.search_features(Box2D::new(-1.0, -1.0, 1.0, 1.0));
     assert_eq!(hits[0].row_number, 0);
+}
+
+#[test]
+fn feature_refs_include_row_group_positions() {
+    let data = write_geoparquet_with_row_group_size(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(0.0, 0.0)),
+                    Some(wkb_point_2d(1.0, 1.0)),
+                    Some(wkb_point_2d(2.0, 2.0)),
+                    Some(wkb_point_2d(3.0, 3.0)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+        2,
+    );
+    let mut dataset = open(data).unwrap();
+    let GeometryScan::D2(scan) = dataset.scan(Default::default()).unwrap() else {
+        panic!("expected 2D scan");
+    };
+    assert_eq!(scan.features[0].row_group, Some(0));
+    assert_eq!(scan.features[0].row_in_group, Some(0));
+    assert_eq!(scan.features[2].row_group, Some(1));
+    assert_eq!(scan.features[2].row_in_group, Some(0));
+}
+
+#[test]
+fn read_features_returns_projected_rows_and_wkb() {
+    let data = write_geoparquet_with_row_group_size(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(0.0, 0.0)),
+                    Some(wkb_point_2d(10.0, 10.0)),
+                    Some(wkb_point_2d(20.0, 20.0)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+        2,
+    );
+
+    let mut indexed = open(data.clone()).unwrap();
+    let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
+        panic!("expected 2D index");
+    };
+    let features = index.search_features(Box2D::new(5.0, 5.0, 25.0, 25.0));
+
+    let mut source = open(data).unwrap();
+    let rows = source
+        .read_features(FeatureReadRequest {
+            features,
+            properties: PropertyProjection::Include(vec!["name".to_string()]),
+            geometry: GeometryReadMode::Wkb,
+            ..FeatureReadRequest::default()
+        })
+        .unwrap();
+
+    assert_eq!(
+        rows.features
+            .iter()
+            .map(|feature| feature.row_number)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    let names = rows
+        .batch
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(names.value(0), "b");
+    assert_eq!(names.value(1), "c");
+    let wkbs = rows
+        .batch
+        .column_by_name("geometry_wkb")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .unwrap();
+    assert_eq!(wkbs.value(0), wkb_point_2d(10.0, 10.0));
+    assert_eq!(wkbs.value(1), wkb_point_2d(20.0, 20.0));
+}
+
+#[test]
+fn read_features_empty_request_keeps_requested_schema() {
+    let data = write_geoparquet(
+        vec![
+            ("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))])),
+            ("name", Arc::new(StringArray::from(vec!["a"])) as ArrayRef),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut source = open(data).unwrap();
+    let rows = source
+        .read_features(FeatureReadRequest {
+            properties: PropertyProjection::Include(vec!["name".to_string()]),
+            geometry: GeometryReadMode::Wkb,
+            ..FeatureReadRequest::default()
+        })
+        .unwrap();
+    assert_eq!(rows.features.len(), 0);
+    assert_eq!(rows.batch.num_rows(), 0);
+    assert!(rows.batch.column_by_name("name").is_some());
+    assert!(rows.batch.column_by_name("geometry_wkb").is_some());
+}
+
+#[test]
+fn read_features_can_preserve_request_order_and_duplicate_parts() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(0.0, 0.0)),
+                    Some(wkb_point_2d(10.0, 10.0)),
+                    Some(wkb_point_2d(20.0, 20.0)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut source = open(data).unwrap();
+    let rows = source
+        .read_features(FeatureReadRequest {
+            features: vec![
+                FeatureRef {
+                    row_number: 2,
+                    row_group: None,
+                    row_in_group: None,
+                    part: Some(0),
+                    feature_id: None,
+                },
+                FeatureRef {
+                    row_number: 1,
+                    row_group: None,
+                    row_in_group: None,
+                    part: None,
+                    feature_id: None,
+                },
+                FeatureRef {
+                    row_number: 2,
+                    row_group: None,
+                    row_in_group: None,
+                    part: Some(1),
+                    feature_id: None,
+                },
+            ],
+            properties: PropertyProjection::Include(vec!["name".to_string()]),
+            order: FeatureReadOrder::RequestOrder,
+            duplicates: DuplicateFeatureRows::KeepParts,
+            ..FeatureReadRequest::default()
+        })
+        .unwrap();
+    assert_eq!(
+        rows.features
+            .iter()
+            .map(|feature| (feature.row_number, feature.part))
+            .collect::<Vec<_>>(),
+        vec![(2, Some(0)), (1, None), (2, Some(1))]
+    );
+    let names = rows
+        .batch
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(names.value(0), "c");
+    assert_eq!(names.value(1), "b");
+    assert_eq!(names.value(2), "c");
+}
+
+#[test]
+fn read_features_reports_fingerprint_and_bounds_errors() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut source = open(data.clone()).unwrap();
+    let mismatch = source
+        .read_features(FeatureReadRequest {
+            features: vec![FeatureRef {
+                row_number: 0,
+                row_group: None,
+                row_in_group: None,
+                part: None,
+                feature_id: None,
+            }],
+            expected_source_fingerprint: Some("fnv64:0000000000000000".to_string()),
+            ..FeatureReadRequest::default()
+        })
+        .unwrap_err();
+    assert!(matches!(
+        mismatch,
+        GeoError::SourceFingerprintMismatch { .. }
+    ));
+
+    let mut source = open(data).unwrap();
+    let out_of_bounds = source
+        .read_features(FeatureReadRequest {
+            features: vec![FeatureRef {
+                row_number: 9,
+                row_group: None,
+                row_in_group: None,
+                part: None,
+                feature_id: None,
+            }],
+            ..FeatureReadRequest::default()
+        })
+        .unwrap_err();
+    assert!(matches!(
+        out_of_bounds,
+        GeoError::FeatureRowOutOfBounds { row_number: 9, .. }
+    ));
+}
+
+#[test]
+fn row_ref_artifact_hits_feed_read_features() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[Some(wkb_point_2d(1.0, 1.0)), Some(wkb_point_2d(9.0, 9.0))]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["near", "far"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data.clone()).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let manifest = index.manifest().clone();
+    let hits = index.search_hits(Box2D::new(9.0, 9.0, 9.0, 9.0)).unwrap();
+
+    let mut source = open(data).unwrap();
+    let rows = source
+        .read_features(FeatureReadRequest {
+            selector: GeometrySelector::Name(manifest.selected_column),
+            expected_source_fingerprint: Some(manifest.source_fingerprint),
+            properties: PropertyProjection::Include(vec!["name".to_string()]),
+            ..FeatureReadRequest::from_hits(hits)
+        })
+        .unwrap();
+    let names = rows
+        .batch
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(rows.features[0].row_number, 1);
+    assert_eq!(names.value(0), "far");
+}
+
+#[test]
+fn read_features_emits_wkb_for_geoarrow_geometry() {
+    let data = write_geoparquet(
+        vec![
+            ("geometry", geoarrow_points(&[(2.0, 3.0)])),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["geoarrow"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_arrow("point", "Point"),
+    );
+    let mut source = open(data).unwrap();
+    let rows = source
+        .read_features(FeatureReadRequest {
+            features: vec![FeatureRef {
+                row_number: 0,
+                row_group: None,
+                row_in_group: None,
+                part: None,
+                feature_id: None,
+            }],
+            geometry: GeometryReadMode::Wkb,
+            ..FeatureReadRequest::default()
+        })
+        .unwrap();
+    let wkbs = rows
+        .batch
+        .column_by_name("geometry_wkb")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .unwrap();
+    assert_eq!(wkbs.value(0), wkb_point_2d(2.0, 3.0));
 }
 
 #[test]
@@ -644,6 +980,68 @@ fn cli_discover_json_smoke() {
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["columns"][0]["source"], "parquet_geospatial");
+}
+
+#[test]
+fn cli_query_json_smoke() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[Some(wkb_point_2d(1.0, 1.0)), Some(wkb_point_2d(8.0, 8.0))]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["near", "far"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data.clone()).unwrap();
+    let psindex = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+
+    let dir = env::temp_dir().join(format!(
+        "psi_geo_query_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.parquet");
+    let index_path = dir.join("source.psi");
+    fs::write(&source_path, &data).unwrap();
+    fs::write(&index_path, &psindex).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("8,8,8,8")
+        .arg("--properties")
+        .arg("include:name")
+        .arg("--geometry")
+        .arg("wkb")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(json[0]["feature"]["row_number"], 1);
+    assert_eq!(json[0]["properties"]["name"], "far");
+    assert_eq!(
+        json[0]["geometry_wkb"],
+        base64::engine::general_purpose::STANDARD.encode(wkb_point_2d(8.0, 8.0))
+    );
 }
 
 #[test]

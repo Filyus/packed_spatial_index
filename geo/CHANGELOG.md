@@ -4,6 +4,17 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Added
+- Added source read-back from `FeatureRef` values through
+  `GeoDataset::read_features`, including projected properties, optional WKB
+  geometry, source fingerprint checks, and request-order / duplicate handling.
+- Added `gp2psindex query` to query a `PSINDEX` sidecar and emit projected source
+  rows as JSON / NDJSON.
+
+### Changed
+- `FeatureRef` values produced by scan/build/convert now include row-group and
+  row-in-group positions when available from Parquet metadata.
+
 ## [0.7.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.7.0...psi-geo-v0.7.1) - 2026-06-28
 
 ### Changed

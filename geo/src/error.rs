@@ -76,4 +76,32 @@ pub enum GeoError {
     /// A `FeatureJson` property projection references a missing column.
     #[error("properties projection references missing column `{0}`")]
     PropertyColumnNotFound(String),
+    /// Expected source fingerprint does not match the opened dataset.
+    #[error("source fingerprint mismatch: expected {expected}, found {actual}")]
+    SourceFingerprintMismatch {
+        /// Expected fingerprint.
+        expected: String,
+        /// Actual fingerprint of the opened source.
+        actual: String,
+    },
+    /// A feature reference points outside the source row count.
+    #[error("feature ref row {row_number} is outside source row count {num_rows}")]
+    FeatureRowOutOfBounds {
+        /// Referenced absolute source row.
+        row_number: u64,
+        /// Number of rows in the opened source.
+        num_rows: u64,
+    },
+    /// A feature reference carries inconsistent row-group coordinates.
+    #[error(
+        "feature ref row {row_number} does not match row group {row_group} offset {row_in_group}"
+    )]
+    FeatureRowPositionMismatch {
+        /// Referenced absolute source row.
+        row_number: u64,
+        /// Referenced row group.
+        row_group: u32,
+        /// Referenced row offset within the row group.
+        row_in_group: u32,
+    },
 }

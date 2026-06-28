@@ -2,12 +2,19 @@
 
 use std::fs::File;
 use std::process::ExitCode;
+use std::sync::Arc;
 
+use arrow::array::{Array, BinaryArray, BinaryViewArray, LargeBinaryArray};
+use arrow::datatypes::Schema;
+use arrow::record_batch::RecordBatch;
+use arrow_json::LineDelimitedWriter;
+use base64::Engine as _;
 use packed_spatial_index_geo::{
-    AntimeridianPolicy, ConvertRequest, EnvelopePolicy, GeoDiscovery, GeoError, GeometryProfile,
-    GeometrySelector, IndexDimsRequest, InspectRequest, NullPolicy, PayloadPlan,
-    PropertyProjection, StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity,
-    open,
+    AntimeridianPolicy, Box2D, ConvertRequest, DuplicateFeatureRows, EnvelopePolicy,
+    FeatureReadOrder, FeatureReadRequest, FeatureRows, GeoArtifactIndex, GeoDiscovery, GeoError,
+    GeometryProfile, GeometryReadMode, GeometrySelector, IndexDimsRequest, InspectRequest,
+    NullPolicy, PayloadPlan, PropertyProjection, SliceReader, StoragePrecision, ValidateRequest,
+    ValidationReport, ValidationSeverity, open, open_geo_index,
 };
 
 const USAGE: &str = "\
@@ -32,7 +39,15 @@ usage:
       [--nulls error|skip]
       [--payload none|row-ref|row-wkb|feature-json]
       [--properties none|all|include:a,b|exclude:a,b]
-      [--antimeridian reject|split|world]";
+      [--antimeridian reject|split|world]
+  gp2psindex query <source.parquet> <index.psi>
+      --bbox xmin,ymin,xmax,ymax
+      [--geometry none|wkb]
+      [--properties none|all|include:a,b|exclude:a,b]
+      [--order source|hit]
+      [--duplicates dedup|parts]
+      [--json|--ndjson]
+      [--allow-source-mismatch]";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -54,6 +69,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, Box<dyn std::error::Error>> {
         "inspect" => inspect_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "build" => build_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "validate" => validate_cmd(&args[1..]),
+        "query" => query_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         _ => Err(format!("unknown command `{command}`").into()),
     }
 }
@@ -156,6 +172,50 @@ fn validate_cmd(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>>
     } else {
         ExitCode::SUCCESS
     })
+}
+
+fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    let source = parsed.required_pos(0, "source.parquet")?;
+    let index_path = parsed.required_pos(1, "index.psi")?;
+    parsed.no_extra_pos(2)?;
+    let query = parse_bbox(
+        parsed
+            .option("--bbox")?
+            .ok_or("--bbox xmin,ymin,xmax,ymax is required")?
+            .as_str(),
+    )?;
+    let geometry = parse_geometry_read(parsed.option("--geometry")?.as_deref().unwrap_or("none"))?;
+    let properties = parse_properties(parsed.option("--properties")?.as_deref().unwrap_or("all"))?;
+    let order = parse_feature_order(parsed.option("--order")?.as_deref().unwrap_or("source"))?;
+    let duplicates =
+        parse_duplicates(parsed.option("--duplicates")?.as_deref().unwrap_or("dedup"))?;
+
+    if parsed.flag("--json") && parsed.flag("--ndjson") {
+        return Err("--json and --ndjson are mutually exclusive".into());
+    }
+
+    let bytes = std::fs::read(index_path)?;
+    let artifact = open_geo_index(SliceReader::new(bytes))?;
+    let manifest = artifact.manifest().clone();
+    let features = match artifact {
+        GeoArtifactIndex::D2(index) => index.search_features(query)?,
+        GeoArtifactIndex::D3(_) => return Err("query CLI currently accepts a 2D --bbox".into()),
+    };
+
+    let mut dataset = open(File::open(source)?)?;
+    let rows = dataset.read_features(FeatureReadRequest {
+        features,
+        selector: GeometrySelector::Name(manifest.selected_column.clone()),
+        properties,
+        geometry,
+        order,
+        duplicates,
+        expected_source_fingerprint: (!parsed.flag("--allow-source-mismatch"))
+            .then_some(manifest.source_fingerprint),
+    })?;
+    print_query_rows(&rows, parsed.flag("--json"))?;
+    Ok(())
 }
 
 fn print_discovery(discovery: &GeoDiscovery) {
@@ -296,6 +356,41 @@ fn parse_precision(value: &str) -> Result<StoragePrecision, Box<dyn std::error::
     }
 }
 
+fn parse_geometry_read(value: &str) -> Result<GeometryReadMode, Box<dyn std::error::Error>> {
+    match value {
+        "none" => Ok(GeometryReadMode::Omit),
+        "wkb" => Ok(GeometryReadMode::Wkb),
+        _ => Err(format!("invalid --geometry `{value}`").into()),
+    }
+}
+
+fn parse_feature_order(value: &str) -> Result<FeatureReadOrder, Box<dyn std::error::Error>> {
+    match value {
+        "source" => Ok(FeatureReadOrder::SourceOrder),
+        "hit" => Ok(FeatureReadOrder::RequestOrder),
+        _ => Err(format!("invalid --order `{value}`").into()),
+    }
+}
+
+fn parse_duplicates(value: &str) -> Result<DuplicateFeatureRows, Box<dyn std::error::Error>> {
+    match value {
+        "dedup" => Ok(DuplicateFeatureRows::DedupRows),
+        "parts" => Ok(DuplicateFeatureRows::KeepParts),
+        _ => Err(format!("invalid --duplicates `{value}`").into()),
+    }
+}
+
+fn parse_bbox(value: &str) -> Result<Box2D, Box<dyn std::error::Error>> {
+    let parts = value
+        .split(',')
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()?;
+    if parts.len() != 4 {
+        return Err("--bbox expects four comma-separated numbers".into());
+    }
+    Ok(Box2D::new(parts[0], parts[1], parts[2], parts[3]))
+}
+
 fn parse_antimeridian(value: Option<String>) -> Result<EnvelopePolicy, Box<dyn std::error::Error>> {
     let Some(value) = value else {
         return Ok(EnvelopePolicy::Planar);
@@ -348,6 +443,104 @@ fn split_names(value: &str) -> Vec<String> {
         .filter(|name| !name.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn print_query_rows(
+    rows: &FeatureRows,
+    as_json_array: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let values = query_row_values(rows)?;
+    if as_json_array {
+        serde_json::to_writer_pretty(std::io::stdout(), &values)?;
+        println!();
+    } else {
+        for value in values {
+            serde_json::to_writer(std::io::stdout(), &value)?;
+            println!();
+        }
+    }
+    Ok(())
+}
+
+fn query_row_values(
+    rows: &FeatureRows,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    (0..rows.features.len())
+        .map(|row| {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "feature".to_string(),
+                serde_json::to_value(&rows.features[row])?,
+            );
+            obj.insert("properties".to_string(), row_properties(&rows.batch, row)?);
+            if let Some(wkb) = geometry_wkb_at(&rows.batch, row)? {
+                obj.insert(
+                    "geometry_wkb".to_string(),
+                    serde_json::Value::String(
+                        base64::engine::general_purpose::STANDARD.encode(wkb),
+                    ),
+                );
+            }
+            Ok(serde_json::Value::Object(obj))
+        })
+        .collect()
+}
+
+fn row_properties(
+    batch: &RecordBatch,
+    row: usize,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut fields = Vec::new();
+    let mut arrays = Vec::new();
+    for (idx, field) in batch.schema().fields().iter().enumerate() {
+        if field.name() == "geometry_wkb" {
+            continue;
+        }
+        fields.push(field.as_ref().clone());
+        arrays.push(batch.column(idx).slice(row, 1));
+    }
+    if fields.is_empty() {
+        return Ok(serde_json::Value::Object(serde_json::Map::new()));
+    }
+    let projected = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)?;
+    let mut buf = Vec::new();
+    let mut writer = LineDelimitedWriter::new(&mut buf);
+    writer.write(&projected)?;
+    writer.finish()?;
+    Ok(serde_json::from_slice(trim_ascii(&buf))?)
+}
+
+fn geometry_wkb_at(
+    batch: &RecordBatch,
+    row: usize,
+) -> Result<Option<&[u8]>, Box<dyn std::error::Error>> {
+    let Some(array) = batch.column_by_name("geometry_wkb") else {
+        return Ok(None);
+    };
+    if array.is_null(row) {
+        return Ok(None);
+    }
+    if let Some(binary) = array.as_any().downcast_ref::<BinaryArray>() {
+        Ok(Some(binary.value(row)))
+    } else if let Some(binary) = array.as_any().downcast_ref::<LargeBinaryArray>() {
+        Ok(Some(binary.value(row)))
+    } else if let Some(binary) = array.as_any().downcast_ref::<BinaryViewArray>() {
+        Ok(Some(binary.value(row)))
+    } else {
+        Err("geometry_wkb column is not binary".into())
+    }
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let mut start = 0;
+    let mut end = bytes.len();
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &bytes[start..end]
 }
 
 struct Parsed<'a> {
@@ -427,6 +620,10 @@ fn option_takes_value(arg: &str) -> bool {
             | "--payload"
             | "--properties"
             | "--antimeridian"
+            | "--bbox"
+            | "--geometry"
+            | "--order"
+            | "--duplicates"
     )
 }
 

@@ -69,14 +69,16 @@ files.
 | Build an index | [`GeoDataset::build`][build], [`GeoIndex`][GeoIndex] |
 | Convert to `PSINDEX` | [`GeoDataset::convert`][convert] |
 | Open a `PSINDEX` | [`open_geo_index`][open_geo_index] |
+| Read source rows | [`GeoDataset::read_features`][read_features], [`FeatureReadRequest`][FeatureReadRequest] |
 | Tune requests | [`IndexDimsRequest`][IndexDimsRequest], [`NullPolicy`][NullPolicy] |
 | Pick payloads | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
 | Use the CLI | See [CLI](#cli) |
 
 The in-memory `GeoIndex` search methods return [`FeatureRef`][FeatureRef]
-values. A feature ref always carries the source `row_number`; `part` is set when
-one source row becomes multiple index entries, for example after antimeridian
-splitting.
+values. A feature ref always carries the source `row_number`; scans and converted
+artifacts also fill `row_group` / `row_in_group` so source rows can be read back
+efficiently. `part` is set when one source row becomes multiple index entries,
+for example after antimeridian splitting.
 
 ## Examples
 
@@ -209,6 +211,45 @@ Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `packed_spatial_index` readers skip it; this crate reads it through
 `open_geo_index` or, when only metadata is needed, `read_geo_manifest`.
 
+## Query source rows
+
+Use [`GeoDataset::read_features`][read_features] when a `PSINDEX` sidecar stores
+only row refs, or when you want attributes from the original Parquet file after
+an index query:
+
+```rust,no_run
+use std::fs::File;
+use packed_spatial_index_geo::{
+    open, open_geo_index, Box2D, FeatureReadRequest, GeoArtifactIndex,
+    GeometryReadMode, PropertyProjection, SliceReader,
+};
+
+let bytes = std::fs::read("cities.psindex")?;
+let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    panic!("expected a 2D artifact");
+};
+let manifest = index.manifest().clone();
+let hits = index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+
+let mut source = open(File::open("cities.parquet")?)?;
+let rows = source.read_features(FeatureReadRequest {
+    selector: packed_spatial_index_geo::GeometrySelector::Name(
+        manifest.selected_column,
+    ),
+    expected_source_fingerprint: Some(manifest.source_fingerprint),
+    properties: PropertyProjection::Include(vec!["name".to_string()]),
+    geometry: GeometryReadMode::Wkb,
+    ..FeatureReadRequest::from_hits(hits)
+})?;
+
+println!("{} rows", rows.batch.num_rows());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+This reads selected Parquet row groups and projected columns. It is not a
+single-row byte seek into Parquet, and bbox hits are still candidate hits unless
+you run an exact geometry predicate afterwards.
+
 ## CLI
 
 Install the command with Cargo:
@@ -252,6 +293,24 @@ gp2psindex build input.parquet output.psi \
   --payload row-wkb \
   --dims auto \
   --nulls skip
+```
+
+Query a sidecar and read projected source properties back as NDJSON:
+
+```text
+gp2psindex query input.parquet output.psi \
+  --bbox -10,35,20,60 \
+  --properties include:name,pop
+```
+
+Add WKB bytes to JSON output when a downstream step needs the geometry:
+
+```text
+gp2psindex query input.parquet output.psi \
+  --bbox -10,35,20,60 \
+  --properties include:name \
+  --geometry wkb \
+  --json
 ```
 
 If the artifact should carry GeoJSON Feature payloads, name the properties you
@@ -308,6 +367,7 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [build]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.build
 [convert]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert
 [convert_into]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert_into
+[read_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.read_features
 [GeoDiscovery]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDiscovery.html
 [GeometryColumnInfo]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeometryColumnInfo.html
 [GeometrySelector]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometrySelector.html
@@ -336,6 +396,11 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [PayloadPlan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.PayloadPlan.html
 [PropertyProjection]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.PropertyProjection.html
 [FeatureRef]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureRef.html
+[FeatureReadRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureReadRequest.html
+[FeatureRows]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureRows.html
+[GeometryReadMode]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometryReadMode.html
+[FeatureReadOrder]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.FeatureReadOrder.html
+[DuplicateFeatureRows]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.DuplicateFeatureRows.html
 [decode_feature_ref_payload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.decode_feature_ref_payload.html
 [decode_feature_wkb_payload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.decode_feature_wkb_payload.html
 [read_geo_manifest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.read_geo_manifest.html

@@ -79,6 +79,21 @@ pub fn open<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoErr
 /// A dataset is consumed the first time rows are read. Call
 /// [`GeoDataset::discovery`] and [`GeoDataset::select`] freely before scanning;
 /// open a new dataset if you need to run multiple independent scans.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let index = dataset.build(BuildRequest::default())?;
+/// match index {
+///     GeoIndex::D2(index) => println!("2D features: {}", index.metadata.feature_count),
+///     GeoIndex::D3(index) => println!("3D features: {}", index.metadata.feature_count),
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct GeoDataset<R: ChunkReader> {
     builder: Option<ParquetRecordBatchReaderBuilder<R>>,
     discovery: GeoDiscovery,
@@ -93,6 +108,19 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// types in this value mean “not declared in metadata”; use
     /// [`GeoDataset::inspect`] with [`InspectRequest::exact`] when exact row
     /// inspection is needed.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, SelectionStatus};
+    ///
+    /// let dataset = open(File::open("cities.parquet")?)?;
+    /// if let SelectionStatus::Selected { column, reason } = &dataset.discovery().default_selection {
+    ///     println!("default geometry column: {column} ({reason:?})");
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn discovery(&self) -> &GeoDiscovery {
         &self.discovery
     }
@@ -102,6 +130,18 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// This is a metadata-only operation. It applies the same default selection
     /// policy used by scan/build/convert: GeoParquet primary column first, then
     /// exactly one native Parquet geospatial column.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, GeometrySelector};
+    ///
+    /// let dataset = open(File::open("cities.parquet")?)?;
+    /// let column = dataset.select(GeometrySelector::Name("geometry".to_string()))?;
+    /// println!("selected {}", column.name);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn select(&self, selector: GeometrySelector) -> Result<GeometryColumn, GeoError> {
         let state = self.select_state(&selector)?;
         Ok(GeometryColumn {
@@ -115,6 +155,21 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// With the default request this returns metadata-derived information. Set
     /// [`InspectRequest::exact`] to scan rows when dimensions are unknown from
     /// metadata.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, InspectRequest};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let profile = dataset.inspect(InspectRequest {
+    ///     exact: true,
+    ///     ..InspectRequest::default()
+    /// })?;
+    /// println!("{}: {}", profile.column, profile.coordinate_dims);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn inspect(&mut self, req: InspectRequest) -> Result<GeometryProfile, GeoError> {
         let state = self.select_state(&req.selector)?.clone();
         if req.exact && state.info.coordinate_dims == CoordinateDims::Unknown {
@@ -133,6 +188,21 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// antimeridian splitting enabled, one source row may produce multiple
     /// entries with the same row number and different [`FeatureRef::part`]
     /// values.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, GeometryScan, ScanRequest};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let scan = dataset.scan(ScanRequest::default())?;
+    /// match scan {
+    ///     GeometryScan::D2(scan) => println!("2D entries: {}", scan.boxes.len()),
+    ///     GeometryScan::D3(scan) => println!("3D entries: {}", scan.boxes.len()),
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn scan(&mut self, req: crate::ScanRequest) -> Result<GeometryScan, GeoError> {
         let state = self.select_state(&req.selector)?.clone();
         self.scan_selected(&state, req)
@@ -143,6 +213,21 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// The returned index maps candidate hits back to [`FeatureRef`] values
     /// rather than compact item ids. Use [`GeoIndex2D::raw_index`] or
     /// [`GeoIndex3D::raw_index`] when you need direct access to the core index.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, Box2D, BuildRequest, GeoIndex};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
+    ///     panic!("expected 2D geometry");
+    /// };
+    /// let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+    /// println!("candidate features: {}", features.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError> {
         let scan = self.scan(crate::ScanRequest {
             selector: req.selector,
@@ -194,6 +279,19 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// The generated bytes include the core index, optional payloads, and a
     /// `geoM` manifest describing the selected column, CRS, dimensions, payload
     /// plan, and feature-entry mapping. Existing contents of `out` are replaced.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, ConvertRequest};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut bytes = Vec::new();
+    /// let artifact = dataset.convert_into(ConvertRequest::default(), &mut bytes)?;
+    /// println!("{} bytes, {} features", artifact.bytes_len, artifact.manifest.feature_count);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn convert_into(
         &mut self,
         req: ConvertRequest,
@@ -266,6 +364,18 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// Convert the selected geometry column into a new `Vec<u8>`.
     ///
     /// This is a convenience wrapper around [`GeoDataset::convert_into`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, ConvertRequest};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let bytes = dataset.convert(ConvertRequest::default())?;
+    /// std::fs::write("cities.psindex", bytes)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn convert(&mut self, req: ConvertRequest) -> Result<Vec<u8>, GeoError> {
         let mut out = Vec::new();
         self.convert_into(req, &mut out)?;

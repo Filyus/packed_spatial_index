@@ -4,9 +4,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.6.0...psi-geo-v0.6.1) - 2026-06-28
+
 ### Added
 - Added runnable examples for discovery, in-memory index building, artifact
   conversion/querying, and `FeatureJson` payloads.
+
+### Changed
+- Added rustdoc coverage for the public session, artifact reader, request, and
+  metadata types, with a missing-docs lint to keep future public API documented.
 
 ## [0.6.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.5.1...psi-geo-v0.6.0) - 2026-06-28
 

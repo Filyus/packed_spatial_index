@@ -1,7 +1,7 @@
 //! 2D convex-polygon queries on `Index2D`: the traversal must return exactly the
 //! boxes the exact `ConvexPolygon2D::overlaps_box` predicate accepts, the
 //! contained fast path must not change that, and a 3-vertex polygon must agree
-//! with the specialized `search_triangle`.
+//! with the triangle `search` query.
 
 use packed_spatial_index::{Box2D, ConvexPolygon2D, Index2D, Index2DBuilder, Triangle2D};
 
@@ -26,7 +26,7 @@ fn build(boxes: &[Box2D]) -> Index2D {
 }
 
 #[test]
-fn search_polygon_matches_predicate() {
+fn polygon_search_matches_predicate() {
     let boxes = scattered_boxes(4000);
     let index = build(&boxes);
 
@@ -55,20 +55,20 @@ fn search_polygon_matches_predicate() {
             .collect();
         expected.sort_unstable();
 
-        let mut got = index.search_polygon(poly);
+        let mut got = index.search(poly);
         got.sort_unstable();
         assert_eq!(got, expected);
 
-        assert_eq!(index.any_polygon(poly), !got.is_empty());
+        assert_eq!(index.any(poly), !got.is_empty());
         let mut buf = vec![usize::MAX; 3];
-        index.search_polygon_into(poly, &mut buf);
+        index.search_into(poly, &mut buf);
         buf.sort_unstable();
         assert_eq!(buf, got);
     }
 }
 
 #[test]
-fn polygon_with_three_vertices_equals_search_triangle() {
+fn polygon_with_three_vertices_equals_triangle_search() {
     let boxes = scattered_boxes(4000);
     let index = build(&boxes);
 
@@ -76,15 +76,15 @@ fn polygon_with_three_vertices_equals_search_triangle() {
     let poly = ConvexPolygon2D::new(verts.to_vec());
     let tri = Triangle2D::new(verts[0], verts[1], verts[2]);
 
-    let mut a = index.search_polygon(&poly);
-    let mut b = index.search_triangle(tri);
+    let mut a = index.search(&poly);
+    let mut b = index.search(&tri);
     a.sort_unstable();
     b.sort_unstable();
     assert_eq!(a, b);
 }
 
 #[test]
-fn search_polygon_contained_fast_path_is_correct() {
+fn polygon_search_contained_fast_path_is_correct() {
     let boxes = scattered_boxes(3000);
     let index = build(&boxes);
 
@@ -95,17 +95,13 @@ fn search_polygon_contained_fast_path_is_correct() {
         [1000.0, 1000.0],
         [-1000.0, 1000.0],
     ]);
-    let mut got = index.search_polygon(&poly);
+    let mut got = index.search(&poly);
     got.sort_unstable();
     let all: Vec<usize> = (0..boxes.len())
         .filter(|&i| poly.overlaps_box(boxes[i]))
         .collect();
     assert_eq!(got, all);
     assert_eq!(got.len(), boxes.len());
-
-    let (results, _v, _s, contained) = index.search_polygon_visited(&poly);
-    assert_eq!(results, boxes.len());
-    assert!(contained > 0, "expected contained subtrees to be accepted");
 }
 
 #[test]
@@ -117,29 +113,24 @@ fn degenerate_polygon_behaves_like_its_predicate() {
     // SAT (no filled area), so the query equals the brute-force predicate, and
     // `contains_box` never fires (no fast-accept) — same as a degenerate triangle.
     let collinear = ConvexPolygon2D::new(vec![[0.0, 0.0], [80.0, 80.0], [160.0, 160.0]]);
-    let mut got = index.search_polygon(&collinear);
+    let mut got = index.search(&collinear);
     got.sort_unstable();
     let mut expected: Vec<usize> = (0..boxes.len())
         .filter(|&i| collinear.overlaps_box(boxes[i]))
         .collect();
     expected.sort_unstable();
     assert_eq!(got, expected);
-    let (_r, _v, _s, contained) = index.search_polygon_visited(&collinear);
-    assert_eq!(
-        contained, 0,
-        "a zero-area polygon must not fast-accept subtrees"
-    );
 
     // Fewer than three vertices is not a region: matches nothing.
     let two = ConvexPolygon2D::new(vec![[0.0, 0.0], [100.0, 100.0]]);
-    assert!(index.search_polygon(&two).is_empty());
-    assert!(!index.any_polygon(&two));
+    assert!(index.search(&two).is_empty());
+    assert!(!index.any(&two));
 }
 
 #[test]
-fn search_polygon_empty_index() {
+fn polygon_search_empty_index() {
     let index = Index2DBuilder::new(0).finish().unwrap();
     let poly = ConvexPolygon2D::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
-    assert!(index.search_polygon(&poly).is_empty());
-    assert!(!index.any_polygon(&poly));
+    assert!(index.search(&poly).is_empty());
+    assert!(!index.any(&poly));
 }

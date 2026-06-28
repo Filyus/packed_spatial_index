@@ -57,10 +57,10 @@ file; `search_iter` is the lazy iterator form of range search.
 | `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
 
-Region / culling queries are not a column above: 2D triangle and convex-polygon
-(`Index2D` / `Index2DView`) and 3D frustum (`Index3D` / `Index3DView`) are
-covered in their own sections below. They are f64-only and not on the SIMD, f32,
-or streaming frontends.
+The same range methods also accept 2D triangle and convex-polygon queries
+(`Index2D` / `Index2DView`) and 3D frustum queries (`Index3D` / `Index3DView`);
+those examples are covered below. These shape queries are f64-only and are not
+available on the SIMD, f32, or streaming frontends.
 
 The empty cells are intentional, not gaps to fill:
 
@@ -80,9 +80,10 @@ The empty cells are intentional, not gaps to fill:
 
 ## Query by a triangle (2D)
 
-`Index2D` answers a triangle region query directly:
-`search_triangle` / `search_triangle_into` (collect), `any_triangle` (boolean,
-short-circuits), and `visit_triangle` (fold without collecting). Each returns the
+`Index2D` answers a triangle region query through the generic overlap API:
+`search(&tri)` / `search_into(&tri, ...)` (collect),
+`any(&tri)` (boolean, short-circuits), and
+`visit(&tri, ...)` (fold without collecting). Each returns the
 items whose box overlaps the triangle's filled area — the bounding-box corners
 the triangle misses are rejected during the traversal.
 
@@ -93,7 +94,7 @@ the triangle misses are rejected during the traversal.
 # b.add(Box2D::new(9.0, 9.0, 9.5, 9.5));
 # let index = b.finish()?;
 let tri = Triangle2D::new([0.0, 0.0], [10.0, 0.0], [0.0, 10.0]);
-assert_eq!(index.search_triangle(tri), vec![0]);
+assert_eq!(index.search(&tri), vec![0]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
@@ -102,15 +103,17 @@ faster: in a 200k-box field it rejects roughly 2× (fat triangle) to 7× (sliver
 of the bounding-box hits, and runs ~2.5×–5× faster than collect-then-filter —
 internal nodes are pruned with a cheap box-vs-bbox test, subtrees fully inside
 the triangle are accepted whole without per-item tests, and the full
-triangle-AABB separating-axis test runs only at boundary leaves. `any_triangle`
-is the exact-culling analogue of `any`. The same methods are on the zero-copy
-`Index2DView`, so you can run triangle queries straight over serialized bytes.
+triangle-AABB separating-axis test runs only at boundary leaves.
+`any(&tri)` is the exact-culling analogue of `any`. The same methods
+are on the zero-copy `Index2DView`, so you can run triangle queries straight
+over serialized bytes.
 
 ## Query by a convex polygon (2D)
 
 `Index2D` also answers an arbitrary **convex polygon** region query — the N-gon
-generalization of the triangle query: `search_polygon` / `search_polygon_into`
-(collect), `any_polygon` (boolean, short-circuits), and `visit_polygon` (fold).
+generalization of the triangle query via `search(&poly)` /
+`search_into(&poly, ...)` (collect), `any(&poly)` (boolean,
+short-circuits), and `visit(&poly, ...)` (fold).
 A four-vertex polygon is a 2D view frustum / FOV trapezoid; any convex shape
 works.
 
@@ -124,7 +127,7 @@ works.
 let trapezoid = ConvexPolygon2D::new(vec![
     [0.0, 0.0], [10.0, -4.0], [10.0, 8.0], [0.0, 3.0],
 ]);
-assert_eq!(index.search_polygon(&trapezoid), vec![0]);
+assert_eq!(index.search(&trapezoid), vec![0]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
@@ -136,21 +139,23 @@ measured in a 200k-box field:
 - **Tighter:** ~1.5x fewer hits for a near-round polygon (hexagon/octagon), up to
   ~4.6x for a narrow trapezoid — the win tracks how much slimmer the shape is
   than its bounding box.
-- **Faster anyway:** `search_polygon` beats collecting `search(bbox)` and
+- **Faster anyway:** `search(&poly)` beats collecting `search(bbox)` and
   filtering by hand by **~2.2x even for the round octagon** (its weakest
   selectivity case) and up to **~13x for a wide trapezoid** — internal nodes are
   pruned with the polygon test and subtrees fully inside are accepted whole,
   instead of materializing the whole bounding-box result and filtering every box.
 
-For a triangle, `Triangle2D` + `search_triangle` is ~1.4x faster than a
-three-vertex polygon (fixed vertices, no per-edge loop) and returns the same set.
-`search_polygon` and friends are also on the zero-copy `Index2DView`.
+For triangles, use `Triangle2D` with `search(&tri)` rather than
+representing the same shape as a three-vertex polygon. The same generic overlap
+methods are also on the zero-copy `Index2DView`.
 
 ## Frustum culling (3D)
 
-`Index3D` answers a view-frustum query directly: `search_frustum` /
-`search_frustum_into` (collect), `any_frustum` (boolean, short-circuits), and
-`visit_frustum` (fold without collecting). Build a [`Frustum3D`] from six
+`Index3D` answers a view-frustum query through the generic overlap API:
+`search(&frustum)` / `search_into(&frustum, ...)` (collect),
+`any(&frustum)` (boolean, short-circuits), and
+`visit(&frustum, ...)` (fold without collecting). Build a
+[`Frustum3D`] from six
 inward-pointing planes, or from a row-major view-projection matrix via
 `Frustum3D::from_view_projection` (column-major engines pass the transpose).
 
@@ -166,7 +171,7 @@ let identity = [
     [0.0, 0.0, 0.0, 1.0],
 ];
 let frustum = Frustum3D::from_view_projection(identity, ClipSpaceZ::NegOneToOne); // OpenGL clip cube
-assert_eq!(index.search_frustum(frustum), vec![0]);
+assert_eq!(index.search(&frustum), vec![0]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
@@ -179,7 +184,7 @@ returns ~2x-4x fewer boxes and runs ~3x-14x faster (the slanted sides prune
 internal nodes, and subtrees fully inside the frustum are accepted whole). It is
 also *more* correct than a hand-rolled bounding-box-plus-filter, which can miss
 boxes the conservative test accepts just outside the frustum's tight bbox. The
-same methods are on the zero-copy `Index3DView`.
+same generic overlap methods are on the zero-copy `Index3DView`.
 
 ## Find boxes that contain a point
 
@@ -359,3 +364,4 @@ It uses `wasm-pack` with `RUSTFLAGS=-Ctarget-feature=+simd128` and
 `packed_spatial_index` with `default-features = false, features = ["simd"]`,
 supports range and nearest-neighbor modes, and is excluded from the published
 crates.io package.
+

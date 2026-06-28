@@ -17,10 +17,10 @@
 //!
 //! * **Range / overlap** — [`search`](Index2D::search) (plus `search_into`
 //!   / `search_with` / lazy [`search_iter`](Index2D::search_iter)),
-//!   [`any`](Index2D::any), [`first`](Index2D::first),
-//!   [`visit`](Index2D::visit), and generic
-//!   [`search_overlaps`](Index2D::search_overlaps) for any geometry
-//!   implementing [`Overlaps2D`].
+//!   [`any`](Index2D::any), [`first`](Index2D::first), and
+//!   [`visit`](Index2D::visit) accept `Box2D` / `Box3D` and borrowed region
+//!   geometry implementing [`Overlaps2D`] or [`Overlaps3D`] (`Triangle2D`,
+//!   `ConvexPolygon2D`, `Frustum3D`).
 //! * **Nearest neighbors** — from a point [`neighbors`](Index2D::neighbors)
 //!   (plus `_within` / `_into` / `_with` /
 //!   [`visit_neighbors`](Index2D::visit_neighbors)) or from a box
@@ -34,14 +34,6 @@
 //!   [`join_with`](Index2D::join_with) between two indexes,
 //!   [`self_join`](Index2D::self_join) /
 //!   [`self_join_with`](Index2D::self_join_with) within one.
-//! * **Region / culling** — prune to a non-box shape instead of its bounding box:
-//!   2D triangle [`search_triangle`](Index2D::search_triangle) and convex polygon
-//!   [`search_polygon`](Index2D::search_polygon) on [`Index2D`], 3D view frustum
-//!   [`search_frustum`](Index3D::search_frustum) on [`Index3D`] (each with
-//!   `any_*` / `visit_*` / `_into`, and on the zero-copy [`Index2DView`] /
-//!   [`Index3DView`]). Region geometry types implement [`Overlaps2D`] or
-//!   [`Overlaps3D`] for generic queries via `search_overlaps`.
-//!
 //! # Quick Start
 //! ```
 //! use packed_spatial_index::{Index2DBuilder, Box2D};
@@ -123,6 +115,8 @@ pub use config::DEFAULT_NODE_SIZE;
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use frustum::{ClipSpaceZ, Frustum3D};
 pub use geometry::{BoundsError, Box2D, Box3D, Overlaps2D, Overlaps3D, Point2D, Point3D};
+#[doc(hidden)]
+pub use index2d::SearchQuery2D;
 pub use index2d::{Index2D, Index2DView, Search2DIter, Serializer2D};
 #[cfg(feature = "f32-storage")]
 pub use index2d_f32::{Index2DF32, Serializer2DF32};
@@ -130,6 +124,8 @@ pub use index2d_f32::{Index2DF32, Serializer2DF32};
 pub use index2d_f32::{SimdIndex2DF32, SimdIndex2DF32View};
 #[cfg(feature = "simd")]
 pub use index2d_soa::{SimdIndex2D, SimdIndex2DView};
+#[doc(hidden)]
+pub use index3d::SearchQuery3D;
 pub use index3d::{Index3D, Index3DView, Search3DIter, Serializer3D};
 #[cfg(feature = "f32-storage")]
 pub use index3d_f32::{Index3DF32, Serializer3DF32};

@@ -64,15 +64,15 @@ fn view_triangle_matches_owned() {
         Triangle2D::new([20.0, 20.0], [190.0, 25.0], [100.0, 28.0]), // sliver
         Triangle2D::new([-500.0, -500.0], [900.0, -500.0], [-500.0, 900.0]), // contains all
     ] {
-        let mut o = owned.search_triangle(tri);
-        let mut v = view.search_triangle(tri);
+        let mut o = owned.search(&tri);
+        let mut v = view.search(&tri);
         o.sort_unstable();
         v.sort_unstable();
         assert_eq!(v, o, "triangle {tri:?}");
-        assert_eq!(view.any_triangle(tri), !v.is_empty());
+        assert_eq!(view.any(&tri), !v.is_empty());
 
         let mut buf = vec![usize::MAX; 2];
-        view.search_triangle_into(tri, &mut buf);
+        view.search_into(&tri, &mut buf);
         buf.sort_unstable();
         assert_eq!(buf, v);
     }
@@ -106,12 +106,12 @@ fn view_polygon_matches_owned() {
         ]), // contains all
     ];
     for poly in &polys {
-        let mut o = owned.search_polygon(poly);
-        let mut v = view.search_polygon(poly);
+        let mut o = owned.search(poly);
+        let mut v = view.search(poly);
         o.sort_unstable();
         v.sort_unstable();
         assert_eq!(v, o);
-        assert_eq!(view.any_polygon(poly), !v.is_empty());
+        assert_eq!(view.any(poly), !v.is_empty());
     }
 }
 
@@ -140,15 +140,15 @@ fn view_frustum_matches_owned() {
         ])
     };
     for frustum in [box_frustum(20.0, 160.0), box_frustum(-1000.0, 1000.0)] {
-        let mut o = owned.search_frustum(frustum);
-        let mut v = view.search_frustum(frustum);
+        let mut o = owned.search(&frustum);
+        let mut v = view.search(&frustum);
         o.sort_unstable();
         v.sort_unstable();
         assert_eq!(v, o);
-        assert_eq!(view.any_frustum(frustum), !v.is_empty());
+        assert_eq!(view.any(&frustum), !v.is_empty());
 
         let mut buf = vec![usize::MAX; 2];
-        view.search_frustum_into(frustum, &mut buf);
+        view.search_into(&frustum, &mut buf);
         buf.sort_unstable();
         assert_eq!(buf, v);
     }
@@ -159,11 +159,11 @@ fn view_region_empty_index() {
     let bytes2 = build2d(&[]);
     let v2 = Index2DView::from_bytes(&bytes2).unwrap();
     assert!(
-        v2.search_triangle(Triangle2D::new([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]))
+        v2.search(&Triangle2D::new([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]))
             .is_empty()
     );
     assert!(
-        v2.search_polygon(&ConvexPolygon2D::new(vec![
+        v2.search(&ConvexPolygon2D::new(vec![
             [0.0, 0.0],
             [1.0, 0.0],
             [0.0, 1.0]
@@ -174,6 +174,6 @@ fn view_region_empty_index() {
     let bytes3 = build3d(&[]);
     let v3 = Index3DView::from_bytes(&bytes3).unwrap();
     let f = Frustum3D::from_planes([[1.0, 0.0, 0.0, 0.0]; 6]);
-    assert!(v3.search_frustum(f).is_empty());
-    assert!(!v3.any_frustum(f));
+    assert!(v3.search(&f).is_empty());
+    assert!(!v3.any(&f));
 }

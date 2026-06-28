@@ -1,7 +1,6 @@
 //! A 3D view frustum: six inward-pointing planes for conservative culling.
 //!
-//! [`Frustum3D`] backs [`Index3D::search_frustum`](crate::Index3D::search_frustum)
-//! and friends. The query is *conservative*: it returns every item whose box
+//! [`Frustum3D`] can be queried with [`Index3D::search`](crate::Index3D::search). The query is *conservative*: it returns every item whose box
 //! overlaps the frustum, and may include a few boxes that lie just outside an
 //! edge or corner (the standard frustum-culling p-vertex test). It never drops a
 //! box that is actually visible, which is what culling needs — an extra box is

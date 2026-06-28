@@ -22,7 +22,7 @@
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
-use crate::geometry::{Box2D, Point2D};
+use crate::geometry::{Box2D, Overlaps2D, Point2D};
 use crate::join::{join_core, self_join_core};
 use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first, metric_knn,
@@ -39,6 +39,8 @@ use crate::triangle::{Triangle2, blobs_as_records};
 mod raycast;
 mod region;
 mod serializer;
+#[doc(hidden)]
+pub use region::SearchQuery2D;
 pub use serializer::Serializer2D;
 
 #[inline]
@@ -274,7 +276,11 @@ impl Index2D {
         })
     }
 
-    /// Return the indices of all items whose boxes intersect `query`.
+    /// Return the indices of all items whose boxes overlap `query`.
+    ///
+    /// Accepts a [`Box2D`] by value or borrowed region geometry implementing
+    /// [`Overlaps2D`], such as [`Triangle2D`](crate::Triangle2D) or
+    /// [`ConvexPolygon2D`](crate::ConvexPolygon2D).
     ///
     /// # Example
     ///
@@ -286,16 +292,15 @@ impl Index2D {
     /// # let index = builder.finish().unwrap();
     /// assert_eq!(index.search(Box2D::new(0.0, 0.0, 2.0, 2.0)), vec![0]);
     /// ```
-    pub fn search(&self, query: Box2D) -> Vec<usize> {
+    pub fn search<Q: SearchQuery2D>(&self, query: Q) -> Vec<usize> {
         let mut results = Vec::new();
         self.search_into(query, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, query: Box2D, results: &mut Vec<usize>) {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(query, results, &mut stack);
+    pub fn search_into<Q: SearchQuery2D>(&self, query: Q, results: &mut Vec<usize>) {
+        query.search_into_index(self, results);
     }
 
     /// Search with reusable result and traversal buffers.
@@ -314,12 +319,15 @@ impl Index2D {
     /// assert_eq!(hits, &[0]);
     /// assert_eq!(workspace.results(), &[0]);
     /// ```
-    pub fn search_with<'a>(&self, query: Box2D, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
-        self.search_into_stack(query, &mut workspace.results, &mut workspace.stack);
-        &workspace.results
+    pub fn search_with<'a, Q: SearchQuery2D>(
+        &self,
+        query: Q,
+        workspace: &'a mut SearchWorkspace,
+    ) -> &'a [usize] {
+        query.search_with_index(self, workspace)
     }
 
-    /// Return `true` if at least one item intersects `query`.
+    /// Return `true` if at least one item overlaps `query`.
     ///
     /// This is an early-exit path: traversal stops at the first hit and does not
     /// allocate a result `Vec`.
@@ -335,11 +343,11 @@ impl Index2D {
     /// assert!(index.any(Box2D::new(0.0, 0.0, 2.0, 2.0)));
     /// assert!(!index.any(Box2D::new(20.0, 20.0, 21.0, 21.0)));
     /// ```
-    pub fn any(&self, query: Box2D) -> bool {
-        self.visit(query, |_| ControlFlow::Break(())).is_break()
+    pub fn any<Q: SearchQuery2D>(&self, query: Q) -> bool {
+        query.any_index(self)
     }
 
-    /// Return one intersecting item, if any.
+    /// Return one overlapping item, if any.
     ///
     /// Tree traversal order is not part of the API, so this returns just some first
     /// found item, not the minimum insertion index.
@@ -355,11 +363,8 @@ impl Index2D {
     /// assert_eq!(index.first(Box2D::new(0.0, 0.0, 2.0, 2.0)), Some(0));
     /// assert_eq!(index.first(Box2D::new(20.0, 20.0, 21.0, 21.0)), None);
     /// ```
-    pub fn first(&self, query: Box2D) -> Option<usize> {
-        match self.visit(query, ControlFlow::Break) {
-            ControlFlow::Break(index) => Some(index),
-            ControlFlow::Continue(()) => None,
-        }
+    pub fn first<Q: SearchQuery2D>(&self, query: Q) -> Option<usize> {
+        query.first_index(self)
     }
 
     /// Return up to `max_results` item indices nearest to `point`.
@@ -711,7 +716,7 @@ impl Index2D {
         )
     }
 
-    /// Visit intersecting items without collecting a result `Vec`.
+    /// Visit overlapping items without collecting a result `Vec`.
     ///
     /// The visitor receives item positions in the original insertion order. Return
     /// [`ControlFlow::Continue`] to continue traversal or [`ControlFlow::Break`] for
@@ -732,15 +737,15 @@ impl Index2D {
     /// let found = index.visit(Box2D::new(5.0, 5.0, 6.0, 6.0), ControlFlow::Break);
     /// assert_eq!(found, ControlFlow::Break(1));
     /// ```
-    pub fn visit<B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, Q, F>(&self, query: Q, visitor: F) -> ControlFlow<B>
     where
+        Q: SearchQuery2D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(query, &mut stack, visitor)
+        query.visit_index(self, visitor)
     }
 
-    /// Return a lazy iterator over the items intersecting `query`.
+    /// Return a lazy iterator over the items overlapping `query`.
     ///
     /// The tree is descended on demand, so consuming only a prefix
     /// (`.next()`, `.take(k)`, `.find(..)`) stops the traversal early and never
@@ -764,7 +769,7 @@ impl Index2D {
     /// hits.sort_unstable();
     /// assert_eq!(hits, vec![0, 1]);
     /// ```
-    pub fn search_iter(&self, query: Box2D) -> Search2DIter<'_> {
+    pub fn search_iter<Q: Overlaps2D>(&self, query: Q) -> Search2DIter<'_, Q> {
         Search2DIter::new(self, query)
     }
 
@@ -1376,36 +1381,35 @@ impl<'a> Index2DView<'a> {
         self.node_size
     }
 
-    /// Return the indices of all items whose boxes intersect `query`.
-    pub fn search(&self, query: Box2D) -> Vec<usize> {
+    /// Return the indices of all items whose boxes overlap `query`.
+    pub fn search<Q: SearchQuery2D>(&self, query: Q) -> Vec<usize> {
         let mut results = Vec::new();
         self.search_into(query, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, query: Box2D, results: &mut Vec<usize>) {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(query, results, &mut stack);
+    pub fn search_into<Q: SearchQuery2D>(&self, query: Q, results: &mut Vec<usize>) {
+        query.search_into_view(self, results);
     }
 
     /// Search with reusable result and traversal buffers.
-    pub fn search_with<'b>(&self, query: Box2D, workspace: &'b mut SearchWorkspace) -> &'b [usize] {
-        self.search_into_stack(query, &mut workspace.results, &mut workspace.stack);
-        &workspace.results
+    pub fn search_with<'b, Q: SearchQuery2D>(
+        &self,
+        query: Q,
+        workspace: &'b mut SearchWorkspace,
+    ) -> &'b [usize] {
+        query.search_with_view(self, workspace)
     }
 
-    /// Return `true` if at least one item intersects `query`.
-    pub fn any(&self, query: Box2D) -> bool {
-        self.visit(query, |_| ControlFlow::Break(())).is_break()
+    /// Return `true` if at least one item overlaps `query`.
+    pub fn any<Q: SearchQuery2D>(&self, query: Q) -> bool {
+        query.any_view(self)
     }
 
-    /// Return one intersecting item, if any.
-    pub fn first(&self, query: Box2D) -> Option<usize> {
-        match self.visit(query, ControlFlow::Break) {
-            ControlFlow::Break(index) => Some(index),
-            ControlFlow::Continue(()) => None,
-        }
+    /// Return one overlapping item, if any.
+    pub fn first<Q: SearchQuery2D>(&self, query: Q) -> Option<usize> {
+        query.first_view(self)
     }
 
     /// Return up to `max_results` item indices nearest to `point`.
@@ -1713,13 +1717,13 @@ impl<'a> Index2DView<'a> {
         )
     }
 
-    /// Visit intersecting items without collecting a result `Vec`.
-    pub fn visit<B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
+    /// Visit overlapping items without collecting a result `Vec`.
+    pub fn visit<B, Q, F>(&self, query: Q, visitor: F) -> ControlFlow<B>
     where
+        Q: SearchQuery2D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(query, &mut stack, visitor)
+        query.visit_view(self, visitor)
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
@@ -1968,15 +1972,15 @@ impl TreeAccess for Index2DView<'_> {
     }
 }
 
-/// Lazy iterator over the items intersecting a query box, returned by
+/// Lazy iterator over the items overlapping a query, returned by
 /// [`Index2D::search_iter`].
 ///
 /// Yields original insertion indices in tree-traversal order, descending the
 /// tree only as far as the consumer pulls. Holds a small traversal stack
 /// (`O(depth)`); it allocates no result `Vec`.
-pub struct Search2DIter<'a> {
+pub struct Search2DIter<'a, Q = Box2D> {
     index: &'a Index2D,
-    query: Box2D,
+    query: Q,
     // (node_index, level) pairs still to visit, same encoding as the search stack.
     stack: Vec<usize>,
     // Half-open entry range of the leaf node currently being scanned.
@@ -1984,8 +1988,8 @@ pub struct Search2DIter<'a> {
     leaf_end: usize,
 }
 
-impl<'a> Search2DIter<'a> {
-    fn new(index: &'a Index2D, query: Box2D) -> Self {
+impl<'a, Q: Overlaps2D> Search2DIter<'a, Q> {
+    fn new(index: &'a Index2D, query: Q) -> Self {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         if index.num_items != 0 {
             // Seed with the root so `next` drives the descent uniformly.
@@ -2002,7 +2006,7 @@ impl<'a> Search2DIter<'a> {
     }
 }
 
-impl Iterator for Search2DIter<'_> {
+impl<Q: Overlaps2D> Iterator for Search2DIter<'_, Q> {
     type Item = usize;
 
     fn next(&mut self) -> Option<usize> {
@@ -2012,7 +2016,7 @@ impl Iterator for Search2DIter<'_> {
             while self.leaf_pos < self.leaf_end {
                 let at = self.leaf_pos;
                 self.leaf_pos += 1;
-                if index.entries[at].overlaps(self.query) {
+                if self.query.overlaps_box(index.entries[at]) {
                     return Some(index.indices[at]);
                 }
             }
@@ -2038,7 +2042,7 @@ impl Iterator for Search2DIter<'_> {
                     .zip(&index.indices[node_index..end])
                     .rev()
                 {
-                    if b.overlaps(self.query) {
+                    if self.query.overlaps_box(*b) {
                         self.stack.push(child);
                         self.stack.push(child_level);
                     }
@@ -2053,4 +2057,4 @@ impl Iterator for Search2DIter<'_> {
     }
 }
 
-impl std::iter::FusedIterator for Search2DIter<'_> {}
+impl<Q: Overlaps2D> std::iter::FusedIterator for Search2DIter<'_, Q> {}

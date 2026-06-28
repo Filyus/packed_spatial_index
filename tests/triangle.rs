@@ -126,10 +126,10 @@ fn triangle_aabb_bounds_vertices() {
 }
 
 /// A scattered field of small boxes and an assortment of query triangles (fat,
-/// thin, axis-aligned, degenerate). `search_triangle` must equal the brute-force
+/// thin, axis-aligned, degenerate). `triangle_search` must equal the brute-force
 /// triangle-AABB overlap, and stay a subset of the bounding-box query.
 #[test]
-fn search_triangle_matches_brute_force() {
+fn triangle_search_matches_brute_force() {
     let extent = 200.0;
     let n = 4000;
     let boxes: Vec<Box2D> = (0..n)
@@ -174,7 +174,7 @@ fn search_triangle_matches_brute_force() {
             .collect();
         expected.sort_unstable();
 
-        let mut got = index.search_triangle(tri);
+        let mut got = index.search(&tri);
         got.sort_unstable();
         assert_eq!(got, expected, "triangle {tri:?}");
 
@@ -186,12 +186,12 @@ fn search_triangle_matches_brute_force() {
             "triangle result must be a subset of the bbox result"
         );
 
-        // `any_triangle` agrees with `search_triangle` being non-empty.
-        assert_eq!(index.any_triangle(tri), !got.is_empty(), "any {tri:?}");
+        // `any` agrees with `triangle_search` being non-empty.
+        assert_eq!(index.any(&tri), !got.is_empty(), "any {tri:?}");
 
-        // `search_triangle_into` matches `search_triangle`.
+        // `search_into` matches `triangle_search`.
         let mut buf = vec![usize::MAX; 3];
-        index.search_triangle_into(tri, &mut buf);
+        index.search_into(&tri, &mut buf);
         buf.sort_unstable();
         assert_eq!(buf, got);
     }
@@ -200,7 +200,7 @@ fn search_triangle_matches_brute_force() {
 /// The contained-subtree fast path must not change results: a triangle large
 /// enough to swallow whole subtrees returns exactly the brute-force set.
 #[test]
-fn search_triangle_contained_fast_path_is_correct() {
+fn triangle_search_contained_fast_path_is_correct() {
     let n = 2000;
     let boxes: Vec<Box2D> = (0..n)
         .map(|i| {
@@ -218,21 +218,16 @@ fn search_triangle_contained_fast_path_is_correct() {
     // Huge triangle containing the entire point field — exercises the root and
     // subtree fast-accept paths.
     let tri = Triangle2D::new([-1000.0, -1000.0], [3000.0, -1000.0], [-1000.0, 3000.0]);
-    let mut got = index.search_triangle(tri);
+    let mut got = index.search(&tri);
     got.sort_unstable();
     let all: Vec<usize> = (0..n).filter(|&i| tri.overlaps_box(boxes[i])).collect();
     assert_eq!(got, all);
-
-    // The diagnostics confirm the fast path actually fired.
-    let (results, _visited, _sat, contained) = index.search_triangle_visited(tri);
-    assert_eq!(results, all.len());
-    assert!(contained > 0, "expected contained subtrees to be accepted");
 }
 
 #[test]
-fn search_triangle_empty_index() {
+fn triangle_search_empty_index() {
     let index = Index2DBuilder::new(0).finish().unwrap();
     let tri = Triangle2D::new([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]);
-    assert!(index.search_triangle(tri).is_empty());
-    assert!(!index.any_triangle(tri));
+    assert!(index.search(&tri).is_empty());
+    assert!(!index.any(&tri));
 }

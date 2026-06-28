@@ -299,7 +299,7 @@ proptest! {
     /// Triangle region search returns exactly the boxes overlapping the triangle
     /// (oracle is `Triangle2D::overlaps_box`) — scalar index and view (f64-only).
     #[test]
-    fn search_triangle_matches_predicate(tri in triangle_strategy(), boxes in boxes_strategy()) {
+    fn triangle_search_matches_predicate(tri in triangle_strategy(), boxes in boxes_strategy()) {
         let mut expected: Vec<usize> = boxes
             .iter()
             .enumerate()
@@ -309,13 +309,13 @@ proptest! {
         expected.sort_unstable();
 
         let index = build(&boxes);
-        let mut got = index.search_triangle(tri);
+        let mut got = index.search(&tri);
         got.sort_unstable();
         prop_assert_eq!(&got, &expected);
 
         let bytes = index.to_bytes();
         let view = Index2DView::from_bytes(&bytes).unwrap();
-        let mut got_v = view.search_triangle(tri);
+        let mut got_v = view.search(&tri);
         got_v.sort_unstable();
         prop_assert_eq!(&got_v, &expected);
     }
@@ -323,7 +323,7 @@ proptest! {
     /// Convex-polygon region search returns exactly the boxes overlapping the
     /// polygon (oracle is `ConvexPolygon2D::overlaps_box`) — scalar index and view.
     #[test]
-    fn search_polygon_matches_predicate(poly in polygon_strategy(), boxes in boxes_strategy()) {
+    fn polygon_search_matches_predicate(poly in polygon_strategy(), boxes in boxes_strategy()) {
         let mut expected: Vec<usize> = boxes
             .iter()
             .enumerate()
@@ -333,13 +333,13 @@ proptest! {
         expected.sort_unstable();
 
         let index = build(&boxes);
-        let mut got = index.search_polygon(&poly);
+        let mut got = index.search(&poly);
         got.sort_unstable();
         prop_assert_eq!(&got, &expected);
 
         let bytes = index.to_bytes();
         let view = Index2DView::from_bytes(&bytes).unwrap();
-        let mut got_v = view.search_polygon(&poly);
+        let mut got_v = view.search(&poly);
         got_v.sort_unstable();
         prop_assert_eq!(&got_v, &expected);
     }

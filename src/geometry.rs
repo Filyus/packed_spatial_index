@@ -440,8 +440,8 @@ impl Point3D {
 /// Geometry that can be tested for overlap with 2D boxes.
 ///
 /// Implement this trait to enable generic 2D region queries through
-/// [`Index2D::search_overlaps`](crate::Index2D::search_overlaps) and
-/// [`Index2D::visit_overlaps`](crate::Index2D::visit_overlaps).
+/// [`Index2D::search`](crate::Index2D::search) and
+/// [`Index2D::visit`](crate::Index2D::visit).
 ///
 /// # Example
 ///
@@ -454,7 +454,7 @@ impl Point3D {
 ///
 /// // Works with any geometry implementing Overlaps2D.
 /// let tri = Triangle2D::new([0.0, 0.0], [2.0, 0.0], [0.0, 2.0]);
-/// assert_eq!(index.search_overlaps(&tri), vec![0]);
+/// assert_eq!(index.search(&tri), vec![0]);
 /// ```
 pub trait Overlaps2D {
     /// Return `true` when this query geometry accepts or overlaps `bx`.
@@ -484,11 +484,23 @@ impl Overlaps2D for Box2D {
     }
 }
 
+impl<T: Overlaps2D + ?Sized> Overlaps2D for &T {
+    #[inline]
+    fn overlaps_box(&self, bx: Box2D) -> bool {
+        (**self).overlaps_box(bx)
+    }
+
+    #[inline]
+    fn contains_box(&self, bx: Box2D) -> bool {
+        (**self).contains_box(bx)
+    }
+}
+
 /// Geometry that can be tested for overlap with 3D boxes.
 ///
 /// Implement this trait to enable generic 3D region queries through
-/// [`Index3D::search_overlaps`](crate::Index3D::search_overlaps) and
-/// [`Index3D::visit_overlaps`](crate::Index3D::visit_overlaps). The overlap
+/// [`Index3D::search`](crate::Index3D::search) and
+/// [`Index3D::visit`](crate::Index3D::visit). The overlap
 /// predicate follows the query geometry's semantics; conservative query types
 /// such as [`Frustum3D`](crate::Frustum3D) may accept boxes just outside the
 /// exact shape.
@@ -510,7 +522,7 @@ impl Overlaps2D for Box2D {
 ///     [0.0, 0.0, 1.0, 0.0],
 ///     [0.0, 0.0, -1.0, 2.0],
 /// ]);
-/// assert_eq!(index.search_overlaps(&frustum), vec![0]);
+/// assert_eq!(index.search(&frustum), vec![0]);
 /// ```
 pub trait Overlaps3D {
     /// Return `true` when this query geometry accepts or overlaps `bx`.
@@ -535,6 +547,18 @@ impl Overlaps3D for Box3D {
     #[inline]
     fn contains_box(&self, other: Box3D) -> bool {
         self.contains(other)
+    }
+}
+
+impl<T: Overlaps3D + ?Sized> Overlaps3D for &T {
+    #[inline]
+    fn overlaps_box(&self, bx: Box3D) -> bool {
+        (**self).overlaps_box(bx)
+    }
+
+    #[inline]
+    fn contains_box(&self, bx: Box3D) -> bool {
+        (**self).contains_box(bx)
     }
 }
 

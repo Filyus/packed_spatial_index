@@ -96,8 +96,10 @@ buffer (`search_into` / `search_with`) or fold with `visit`. See the
 | Geographic / custom-metric kNN | [`neighbors_metric`][neighbors_metric], [`neighbors_metric_into`][neighbors_metric_into], [`visit_neighbors_metric`][visit_neighbors_metric] — pass a `\|box\| -> f64` distance (e.g. [`haversine_distance_2d`][haversine_distance_2d] for lon/lat) |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
 | Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
-| Region / culling | Generic [`search_overlaps`][search_overlaps] / [`any_overlaps`][any_overlaps] / [`visit_overlaps`][visit_overlaps] for `Overlaps2D` / `Overlaps3D`. Named conveniences: 2D triangle [`search_triangle`][search_triangle] / [`any_triangle`][any_triangle] / [`visit_triangle`][visit_triangle], convex polygon [`search_polygon`][search_polygon] / [`any_polygon`][any_polygon] / [`visit_polygon`][visit_polygon] (+`_into`); 3D frustum [`search_frustum`][search_frustum] / [`any_frustum`][any_frustum] / [`visit_frustum`][visit_frustum] (+`_into`) |
 | Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
+
+The range / overlap methods accept `Box2D` / `Box3D` queries and borrowed
+region geometry such as `Triangle2D`, `ConvexPolygon2D`, and `Frustum3D`.
 
 ```rust
 # use packed_spatial_index::{Index2DBuilder, Box2D, Point2D, Ray2D};
@@ -310,20 +312,6 @@ Licensed under the Apache License, Version 2.0.
 [ConvexPolygon2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.ConvexPolygon2D.html
 [Frustum3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Frustum3D.html
 [ClipSpaceZ]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.ClipSpaceZ.html
-[search_overlaps]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_overlaps
-[any_overlaps]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any_overlaps
-[visit_overlaps]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_overlaps
-[search_polygon]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_polygon
-[any_polygon]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any_polygon
-[visit_polygon]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_polygon
-[search_triangle]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_triangle
-[search_triangle_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_triangle_into
-[any_triangle]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any_triangle
-[visit_triangle]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_triangle
-[search_frustum]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html#method.search_frustum
-[search_frustum_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html#method.search_frustum_into
-[any_frustum]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html#method.any_frustum
-[visit_frustum]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html#method.visit_frustum
 [Index2DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html
 [Index3DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DBuilder.html
 [Index2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html
@@ -349,3 +337,4 @@ Licensed under the Apache License, Version 2.0.
 [BoundsError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BoundsError.html
 [BuildError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BuildError.html
 [LoadError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.LoadError.html
+

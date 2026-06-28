@@ -308,7 +308,7 @@ proptest! {
     /// Frustum culling returns exactly the boxes overlapping the frustum (oracle is
     /// `Frustum3D::overlaps_box`) — scalar index and view (f64-only).
     #[test]
-    fn search_frustum_matches_predicate(frustum in frustum_strategy(), boxes in boxes_strategy()) {
+    fn frustum_search_matches_predicate(frustum in frustum_strategy(), boxes in boxes_strategy()) {
         let mut expected: Vec<usize> = boxes
             .iter()
             .enumerate()
@@ -318,13 +318,13 @@ proptest! {
         expected.sort_unstable();
 
         let index = build(&boxes);
-        let mut got = index.search_frustum(frustum);
+        let mut got = index.search(&frustum);
         got.sort_unstable();
         prop_assert_eq!(&got, &expected);
 
         let bytes = index.to_bytes();
         let view = Index3DView::from_bytes(&bytes).unwrap();
-        let mut got_v = view.search_frustum(frustum);
+        let mut got_v = view.search(&frustum);
         got_v.sort_unstable();
         prop_assert_eq!(&got_v, &expected);
     }

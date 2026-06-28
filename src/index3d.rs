@@ -8,7 +8,7 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Box3D, Point3D},
+    geometry::{Box3D, Overlaps3D, Point3D},
     join::{join_core, self_join_core},
     neighbors::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first,
@@ -27,6 +27,8 @@ use crate::{
 mod raycast;
 mod region;
 mod serializer;
+#[doc(hidden)]
+pub use region::SearchQuery3D;
 pub use serializer::Serializer3D;
 
 #[inline]
@@ -216,7 +218,10 @@ impl Index3D {
         })
     }
 
-    /// Return the indices of all items whose boxes intersect `query`.
+    /// Return the indices of all items whose boxes overlap `query`.
+    ///
+    /// Accepts a [`Box3D`] by value or borrowed region geometry implementing
+    /// [`Overlaps3D`], such as [`Frustum3D`](crate::Frustum3D).
     ///
     /// # Example
     ///
@@ -228,16 +233,15 @@ impl Index3D {
     /// # let index = builder.finish().unwrap();
     /// assert_eq!(index.search(Box3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)), vec![0]);
     /// ```
-    pub fn search(&self, query: Box3D) -> Vec<usize> {
+    pub fn search<Q: SearchQuery3D>(&self, query: Q) -> Vec<usize> {
         let mut results = Vec::new();
         self.search_into(query, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, query: Box3D, results: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(query, results, &mut stack);
+    pub fn search_into<Q: SearchQuery3D>(&self, query: Q, results: &mut Vec<usize>) {
+        query.search_into_index(self, results);
     }
 
     /// Search with reusable result and traversal buffers.
@@ -258,12 +262,15 @@ impl Index3D {
     /// );
     /// assert_eq!(hits, &[0]);
     /// ```
-    pub fn search_with<'a>(&self, query: Box3D, workspace: &'a mut SearchWorkspace) -> &'a [usize] {
-        self.search_into_stack(query, &mut workspace.results, &mut workspace.stack);
-        &workspace.results
+    pub fn search_with<'a, Q: SearchQuery3D>(
+        &self,
+        query: Q,
+        workspace: &'a mut SearchWorkspace,
+    ) -> &'a [usize] {
+        query.search_with_index(self, workspace)
     }
 
-    /// Return `true` if at least one item intersects `query`.
+    /// Return `true` if at least one item overlaps `query`.
     ///
     /// This is an early-exit path: traversal stops at the first hit and does not
     /// allocate a result `Vec`.
@@ -279,11 +286,11 @@ impl Index3D {
     /// assert!(index.any(Box3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)));
     /// assert!(!index.any(Box3D::new(20.0, 20.0, 20.0, 21.0, 21.0, 21.0)));
     /// ```
-    pub fn any(&self, query: Box3D) -> bool {
-        self.visit(query, |_| ControlFlow::Break(())).is_break()
+    pub fn any<Q: SearchQuery3D>(&self, query: Q) -> bool {
+        query.any_index(self)
     }
 
-    /// Return one intersecting item, if any.
+    /// Return one overlapping item, if any.
     ///
     /// Tree traversal order is not part of the API, so this returns just some
     /// first found item, not the minimum insertion index.
@@ -299,11 +306,8 @@ impl Index3D {
     /// assert_eq!(index.first(Box3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)), Some(0));
     /// assert_eq!(index.first(Box3D::new(20.0, 20.0, 20.0, 21.0, 21.0, 21.0)), None);
     /// ```
-    pub fn first(&self, query: Box3D) -> Option<usize> {
-        match self.visit(query, ControlFlow::Break) {
-            ControlFlow::Break(index) => Some(index),
-            ControlFlow::Continue(()) => None,
-        }
+    pub fn first<Q: SearchQuery3D>(&self, query: Q) -> Option<usize> {
+        query.first_index(self)
     }
 
     /// Return up to `max_results` item indices nearest to `point`.
@@ -630,20 +634,20 @@ impl Index3D {
         )
     }
 
-    /// Visit intersecting items without collecting a result `Vec`.
+    /// Visit overlapping items without collecting a result `Vec`.
     ///
     /// The visitor receives item positions in the original insertion order.
     /// Return [`ControlFlow::Continue`] to continue traversal or
     /// [`ControlFlow::Break`] for early exit with a user-provided value.
-    pub fn visit<B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
+    pub fn visit<B, Q, F>(&self, query: Q, visitor: F) -> ControlFlow<B>
     where
+        Q: SearchQuery3D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(query, &mut stack, visitor)
+        query.visit_index(self, visitor)
     }
 
-    /// Return a lazy iterator over the items intersecting `query`.
+    /// Return a lazy iterator over the items overlapping `query`.
     ///
     /// The tree is descended on demand, so consuming only a prefix
     /// (`.next()`, `.take(k)`, `.find(..)`) stops the traversal early and never
@@ -668,7 +672,7 @@ impl Index3D {
     /// hits.sort_unstable();
     /// assert_eq!(hits, vec![0, 1]);
     /// ```
-    pub fn search_iter(&self, query: Box3D) -> Search3DIter<'_> {
+    pub fn search_iter<Q: Overlaps3D>(&self, query: Q) -> Search3DIter<'_, Q> {
         Search3DIter::new(self, query)
     }
 
@@ -1110,36 +1114,35 @@ impl<'a> Index3DView<'a> {
         self.node_size
     }
 
-    /// Return the indices of all items whose boxes intersect `query`.
-    pub fn search(&self, query: Box3D) -> Vec<usize> {
+    /// Return the indices of all items whose boxes overlap `query`.
+    pub fn search<Q: SearchQuery3D>(&self, query: Q) -> Vec<usize> {
         let mut results = Vec::new();
         self.search_into(query, &mut results);
         results
     }
 
     /// Search with a reusable result buffer.
-    pub fn search_into(&self, query: Box3D, results: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.search_into_stack(query, results, &mut stack);
+    pub fn search_into<Q: SearchQuery3D>(&self, query: Q, results: &mut Vec<usize>) {
+        query.search_into_view(self, results);
     }
 
     /// Search with reusable result and traversal buffers.
-    pub fn search_with<'b>(&self, query: Box3D, workspace: &'b mut SearchWorkspace) -> &'b [usize] {
-        self.search_into_stack(query, &mut workspace.results, &mut workspace.stack);
-        &workspace.results
+    pub fn search_with<'b, Q: SearchQuery3D>(
+        &self,
+        query: Q,
+        workspace: &'b mut SearchWorkspace,
+    ) -> &'b [usize] {
+        query.search_with_view(self, workspace)
     }
 
-    /// Return `true` if at least one item intersects `query`.
-    pub fn any(&self, query: Box3D) -> bool {
-        self.visit(query, |_| ControlFlow::Break(())).is_break()
+    /// Return `true` if at least one item overlaps `query`.
+    pub fn any<Q: SearchQuery3D>(&self, query: Q) -> bool {
+        query.any_view(self)
     }
 
-    /// Return one intersecting item, if any.
-    pub fn first(&self, query: Box3D) -> Option<usize> {
-        match self.visit(query, ControlFlow::Break) {
-            ControlFlow::Break(index) => Some(index),
-            ControlFlow::Continue(()) => None,
-        }
+    /// Return one overlapping item, if any.
+    pub fn first<Q: SearchQuery3D>(&self, query: Q) -> Option<usize> {
+        query.first_view(self)
     }
 
     /// Return up to `max_results` item indices nearest to `point`.
@@ -1445,13 +1448,13 @@ impl<'a> Index3DView<'a> {
         )
     }
 
-    /// Visit intersecting items without collecting a result `Vec`.
-    pub fn visit<B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
+    /// Visit overlapping items without collecting a result `Vec`.
+    pub fn visit<B, Q, F>(&self, query: Q, visitor: F) -> ControlFlow<B>
     where
+        Q: SearchQuery3D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        self.visit_with_stack(query, &mut stack, visitor)
+        query.visit_view(self, visitor)
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` intersects item `j`
@@ -1703,15 +1706,15 @@ impl TreeAccess for Index3DView<'_> {
     }
 }
 
-/// Lazy iterator over the items intersecting a query box, returned by
+/// Lazy iterator over the items overlapping a query, returned by
 /// [`Index3D::search_iter`].
 ///
 /// Yields original insertion indices in tree-traversal order, descending the
 /// tree only as far as the consumer pulls. Holds a small traversal stack
 /// (`O(depth)`); it allocates no result `Vec`.
-pub struct Search3DIter<'a> {
+pub struct Search3DIter<'a, Q = Box3D> {
     index: &'a Index3D,
-    query: Box3D,
+    query: Q,
     // (node_index, level) pairs still to visit, same encoding as the search stack.
     stack: Vec<usize>,
     // Half-open entry range of the leaf node currently being scanned.
@@ -1719,8 +1722,8 @@ pub struct Search3DIter<'a> {
     leaf_end: usize,
 }
 
-impl<'a> Search3DIter<'a> {
-    fn new(index: &'a Index3D, query: Box3D) -> Self {
+impl<'a, Q: Overlaps3D> Search3DIter<'a, Q> {
+    fn new(index: &'a Index3D, query: Q) -> Self {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         if index.num_items != 0 {
             // Seed with the root so `next` drives the descent uniformly.
@@ -1737,7 +1740,7 @@ impl<'a> Search3DIter<'a> {
     }
 }
 
-impl Iterator for Search3DIter<'_> {
+impl<Q: Overlaps3D> Iterator for Search3DIter<'_, Q> {
     type Item = usize;
 
     fn next(&mut self) -> Option<usize> {
@@ -1747,7 +1750,7 @@ impl Iterator for Search3DIter<'_> {
             while self.leaf_pos < self.leaf_end {
                 let at = self.leaf_pos;
                 self.leaf_pos += 1;
-                if index.entries[at].overlaps(self.query) {
+                if self.query.overlaps_box(index.entries[at]) {
                     return Some(index.indices[at]);
                 }
             }
@@ -1773,7 +1776,7 @@ impl Iterator for Search3DIter<'_> {
                     .zip(&index.indices[node_index..end])
                     .rev()
                 {
-                    if b.overlaps(self.query) {
+                    if self.query.overlaps_box(*b) {
                         self.stack.push(child);
                         self.stack.push(child_level);
                     }
@@ -1788,4 +1791,4 @@ impl Iterator for Search3DIter<'_> {
     }
 }
 
-impl std::iter::FusedIterator for Search3DIter<'_> {}
+impl<Q: Overlaps3D> std::iter::FusedIterator for Search3DIter<'_, Q> {}

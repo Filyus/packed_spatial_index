@@ -4,124 +4,157 @@
 core API. Это не документ про `geo`: внешний GIS-словарь не должен определять
 форму core.
 
-## Принятый словарь
+## Принятый публичный API
 
-Core AABB hot path остается коротким:
+Для range/region overlap в core публично используется одна короткая семья:
 
-- `search(Box2D)` / `search(Box3D)`
+- `search`
+- `search_iter`
 - `search_into`
 - `search_with`
 - `any`
 - `first`
 - `visit`
 
-Generic region API говорит через `overlap`:
-
-- `search_overlaps`
-- `search_overlaps_into`
-- `any_overlaps`
-- `visit_overlaps`
-- `Overlaps2D` / `Overlaps3D`
-- `overlaps_box`
-- `contains_box`
-
-Shape-specific helpers остаются именованными:
-
-- `search_triangle`
-- `search_polygon`
-- `search_frustum`
-
-Raycast остается отдельным словарем:
-
-- `raycast`
-- `visit_raycast`
-- `Ray2D::intersects_box`
-- `Ray3D::intersects_box`
-
-## Где core API несимметричен
-
-### `search(Box2D)` vs `search_overlaps(&query)`
-
-Это намеренная несимметрия.
-
-`search(Box2D)` - главный primitive индекса. Он короткий, привычный и находится
-на hot path. Полное имя вроде `search_overlapping_box` или `search_box_overlaps`
-сделало бы самый частый вызов тяжелее без выигрыша в ясности.
-
-`search_overlaps(&query)` - generic extension point для query geometry. Здесь
-слово `overlaps` полезно, потому что вызывающий передает не box query напрямую,
-а объект, реализующий overlap-контракт:
+Эти методы принимают обычный AABB query по значению:
 
 ```rust
 index.search(Box2D::new(...));
-
-index.search_overlaps(&triangle);
-index.search_overlaps(&polygon);
-index.search_overlaps(&frustum);
+index.search(Box3D::new(...));
 ```
 
-То есть короткое имя оставлено за базовым AABB query, а явное имя - за generic
-region query.
+И те же методы принимают borrowed region geometry:
 
-### `search_overlaps` vs `search_triangle` / `search_polygon` / `search_frustum`
+```rust
+index.search(&triangle);
+index.search(&polygon);
+index.search(&frustum);
 
-Это тоже намеренная несимметрия.
+index.search_into(&triangle, &mut out);
+index.search_with(&frustum, &mut workspace);
+index.any(&polygon);
+index.first(&triangle);
+index.visit(&frustum, |id| ...);
+index.search_iter(&triangle);
+```
 
-`search_overlaps` - общий механизм для любого типа, который реализует
-`Overlaps2D` или `Overlaps3D`.
+Старые публичные `search_overlaps`, `search_overlaps_into`,
+`search_overlaps_with`, `any_overlaps`, `first_overlap`, `visit_overlaps`
+удалены. Они создавали вторую параллельную систему имен рядом с уже
+существующими `search` / `any` / `first` / `visit`.
 
-Именованные методы - не просто aliases. Они дают discoverability и фиксируют
-shape-specific смысл:
+## Где core API намеренно несимметричен
 
-- `search_triangle` - точный 2D triangle-vs-box SAT region query.
-- `search_polygon` - выпуклый polygon-vs-box region query.
-- `search_frustum` - conservative 3D frustum culling query.
+### `search(query)` vs `query.overlaps_box(box)`
 
-Их стоит держать рядом с generic API, потому что пользователь часто ищет
-конкретную форму, а не trait extension point.
+Это главная оставшаяся несимметрия, и она полезная.
 
-### `Overlaps2D::overlaps_box` vs `Box2D::overlaps`
+`search` на индексе называет действие пользователя: найти элементы индекса.
+Слово `overlap` там не нужно, потому что в core `search` уже исторически означает
+AABB overlap search.
 
-Здесь есть небольшая асимметрия имени, но она полезная.
+`overlaps_box` на query type называет внутренний predicate contract: принимает ли
+эта query geometry конкретный AABB. Здесь suffix `_box` нужен, потому что query
+может быть не box: triangle, polygon или frustum.
+
+```rust
+index.search(&query);
+query.overlaps_box(candidate_box);
+query.contains_box(subtree_box);
+```
+
+Иными словами: публичный action короткий, predicate layer точный.
+
+### `Box2D::overlaps(other)` vs `Overlaps2D::overlaps_box(box)`
 
 `Box2D::overlaps(other)` симметричен: box overlap box.
 
-`Overlaps2D::overlaps_box(bx)` не обязательно симметричен в реализации и
-семантике. Query type может быть triangle, polygon или frustum; индекс
-спрашивает у него: "принимаешь ли ты этот AABB?". Поэтому suffix `_box` полезен:
-он явно называет primitive, против которого тестируется query geometry.
+`Overlaps2D::overlaps_box(box)` не обязан быть симметричным в реализации и
+семантике. Индекс спрашивает query geometry: "принимаешь ли ты этот AABB?".
+Поэтому `_box` здесь делает контракт яснее, чем абстрактное `overlaps`.
 
-### `search_overlaps` vs `overlaps_box`
-
-Эта пара теперь симметрична по смыслу:
+То же самое для 3D:
 
 ```rust
-index.search_overlaps(&query);
-query.overlaps_box(node_or_item_box);
+Box3D::overlaps(other_box);
+query.overlaps_box(candidate_box);
 ```
 
-Именно это было причиной не оставлять форму `search_intersects(&query)` с
-внутренним контрактом `overlaps_box`: она создавала бы два слова для одной и той
-же broad-phase операции.
+### 2D vs 3D различаются типами, не именами методов
+
+Методы остаются одинаковыми:
+
+```rust
+index2d.search(Box2D::new(...));
+index2d.search(&triangle);
+index2d.search(&polygon);
+
+index3d.search(Box3D::new(...));
+index3d.search(&frustum);
+```
+
+Размерность выражена типами:
+
+- `Index2D` / `Index3D`
+- `Box2D` / `Box3D`
+- `Overlaps2D` / `Overlaps3D`
+- скрытые dispatch traits `SearchQuery2D` / `SearchQuery3D`
+
+В имени метода не появляется `2d`, `3d`, `circle`, `sphere`, `polygon` или
+`frustum`, потому что shape-specific смысл уже живет в типе query.
 
 ### `Ray2D::intersects_box` vs `Overlaps2D::overlaps_box`
 
-Raycast - отдельная операция, не region overlap.
+Raycast остается отдельным словарем.
 
-`Ray2D::intersects_box` отвечает на вопрос: пересекает ли луч AABB вдоль своего
-параметра. Для raycast слово `intersects` естественно: результат связан с hit
-distance и traversal по лучу.
+`Ray2D::intersects_box` / `Ray3D::intersects_box` отвечают на вопрос:
+пересекает ли луч AABB вдоль своего параметра. Для raycast слово `intersects`
+естественно: результат связан с hit distance и traversal по лучу.
 
-`Overlaps2D::overlaps_box` отвечает на другой вопрос: должна ли region query
-принять AABB как candidate/overlap. Это broad-phase overlap, не ray hit.
+`Overlaps2D::overlaps_box` / `Overlaps3D::overlaps_box` отвечают на другой
+вопрос: должна ли region query принять AABB как overlap candidate. Это
+broad-phase overlap, не ray hit.
 
 Переименовывать ray в `overlaps_box` ради симметрии было бы хуже: луч не
 "overlaps" box как область.
 
+## Почему не `search_overlaps`
+
+`search_overlaps` точнее проговаривает relation, но в core он проигрывает как
+публичная форма:
+
+- рядом уже есть короткие `search`, `any`, `first`, `visit`;
+- box query и region query тогда получают разные имена при одинаковой операции;
+- `search_overlaps(Box2D)` дублирует `search(Box2D)`;
+- пользователю приходится помнить, когда нужен short API, а когда generic API.
+
+После того как `search(Box2D)` и `search(&triangle)` dispatch-ятся через одну
+короткую семью, отдельный `search_overlaps` больше не несет полезной роли.
+
+## Почему не shape-specific methods
+
+Старые named conveniences удалены:
+
+- `search_triangle`
+- `search_polygon`
+- `search_frustum`
+- соответствующие `*_into`, `any_*`, `visit_*`
+
+Они почти не экономят символы, но создают вторую систему имен:
+
+```rust
+index.search(&triangle);
+index.search(&polygon);
+index.search(&frustum);
+```
+
+Так короче и согласованнее: форма запроса стабильная, shape-specific смысл живет
+в query type и его документации.
+
 ## Почему не `search_intersects`
 
 `intersects` звучит математически шире, но в core оно хуже связывается с уже
-существующим box API:
+существующим box API и predicate layer:
 
 - `Box2D::overlaps`
 - `Box3D::overlaps`
@@ -129,29 +162,23 @@ distance и traversal по лучу.
 - `ConvexPolygon2D::overlaps_box`
 - `Frustum3D::overlaps_box`
 
-Если generic API назвать `search_intersects`, получится разрыв:
+Если публичный метод назвать `search_intersects`, получится разрыв:
 
 ```rust
 index.search_intersects(&query); // публично "intersects"
 query.overlaps_box(bbox);        // контракт реально "overlaps"
 ```
 
-Для core broad-phase лучше одно слово: **overlap**.
-
-## Что не делаем
-
-Не переименовываем `search(Box2D)` в более длинное имя: это главный primitive.
-
-Не удаляем `search_triangle`, `search_polygon`, `search_frustum`: generic API не
-заменяет discoverability и shape-specific документацию.
-
-Не переименовываем `Ray2D::intersects_box` / `Ray3D::intersects_box`: для raycast
-это правильный термин.
+Для core broad-phase лучше одно relation word: **overlap**. Но в публичном
+action-method оно опущено ради короткой универсальной формы `search`.
 
 ## Рабочая формула
 
 В core:
 
-- box/range/region traversal говорит на языке **overlap**;
-- raycast говорит на языке **intersect**;
-- короткое `search` зарезервировано за самым частым AABB query.
+- public action API: `search`, `search_into`, `search_with`, `search_iter`,
+  `any`, `first`, `visit`;
+- region predicate API: `Overlaps2D` / `Overlaps3D`, `overlaps_box`,
+  `contains_box`;
+- raycast API: `raycast`, `visit_raycast`, `intersects_box`.
+

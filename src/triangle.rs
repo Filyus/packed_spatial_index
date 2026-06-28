@@ -114,8 +114,7 @@ impl Triangle2D {
     /// Whether this triangle's filled area overlaps the axis-aligned box `bx`.
     ///
     /// The 2D separating-axis test: the box's two axes plus the triangle's three
-    /// edge normals. This is the predicate behind `Index2D::search_triangle` /
-    /// `any_triangle` / `visit_triangle`.
+    /// edge normals. This is the predicate behind `Index2D::search(&triangle)` and related overlap queries.
     #[inline]
     pub fn overlaps_box(&self, bx: Box2D) -> bool {
         let v = [self.a, self.b, self.c];

@@ -503,6 +503,18 @@ pub struct GeometryColumn {
 }
 
 /// Geometry column selector.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, GeometrySelector};
+///
+/// let dataset = open(File::open("cities.parquet")?)?;
+/// let column = dataset.select(GeometrySelector::Name("geometry".to_string()))?;
+/// println!("selected {}", column.name);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GeometrySelector {
     /// GeoParquet primary, else exactly one native Parquet geospatial column.
@@ -565,6 +577,22 @@ pub enum EnvelopePolicy {
 }
 
 /// Stable reference back to a source feature.
+///
+/// # Example
+///
+/// ```rust
+/// use packed_spatial_index_geo::FeatureRef;
+///
+/// let feature = FeatureRef {
+///     row_number: 42,
+///     row_group: None,
+///     row_in_group: None,
+///     part: Some(1),
+///     feature_id: None,
+/// };
+/// assert_eq!(feature.row_number, 42);
+/// assert_eq!(feature.part, Some(1));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeatureRef {
     /// Absolute source row number.
@@ -592,6 +620,23 @@ impl FeatureRef {
 }
 
 /// Payload to attach to converted artifact entries or scan results.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, ConvertRequest, PayloadPlan, PropertyProjection};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let bytes = dataset.convert(ConvertRequest {
+///     payload: PayloadPlan::FeatureJson {
+///         properties: PropertyProjection::AllNonGeometry,
+///     },
+///     ..ConvertRequest::default()
+/// })?;
+/// println!("{} bytes", bytes.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PayloadPlan {
@@ -696,6 +741,25 @@ impl Default for IndexBuildOptions {
 }
 
 /// Request for [`GeoDataset::build`](crate::GeoDataset::build).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{
+///     open, BuildRequest, GeometrySelector, IndexDimsRequest, NullPolicy,
+/// };
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let index = dataset.build(BuildRequest {
+///     selector: GeometrySelector::Name("geometry".to_string()),
+///     dims: IndexDimsRequest::D2,
+///     nulls: NullPolicy::Skip,
+///     ..BuildRequest::default()
+/// })?;
+/// # let _ = index;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct BuildRequest {
     /// Geometry column selector.
@@ -724,6 +788,21 @@ impl Default for BuildRequest {
 
 /// Request for [`GeoDataset::convert`](crate::GeoDataset::convert) and
 /// [`GeoDataset::convert_into`](crate::GeoDataset::convert_into).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, ConvertRequest, StoragePrecision};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let bytes = dataset.convert(ConvertRequest {
+///     precision: StoragePrecision::F32,
+///     ..ConvertRequest::default()
+/// })?;
+/// std::fs::write("cities.psindex", bytes)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct ConvertRequest {
     /// Geometry column selector.
@@ -820,6 +899,23 @@ pub struct GeometryScan3D {
 }
 
 /// In-memory geospatial index.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, Box2D, BuildRequest, GeoIndex};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// match dataset.build(BuildRequest::default())? {
+///     GeoIndex::D2(index) => {
+///         let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0));
+///         println!("{} candidate features", hits.len());
+///     }
+///     GeoIndex::D3(_) => println!("3D index"),
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub enum GeoIndex {
     /// 2D index.
     D2(GeoIndex2D),
@@ -902,6 +998,22 @@ pub struct GeoArtifact {
 }
 
 /// Geospatial manifest embedded in a converted `PSINDEX` artifact.
+///
+/// # Example
+///
+/// ```no_run
+/// use packed_spatial_index_geo::read_geo_manifest;
+///
+/// let bytes = std::fs::read("cities.psindex")?;
+/// if let Some(manifest) = read_geo_manifest(&bytes)? {
+///     println!(
+///         "{}: {} features",
+///         manifest.selected_column,
+///         manifest.feature_count
+///     );
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeoArtifactManifest {
     /// Manifest schema version.

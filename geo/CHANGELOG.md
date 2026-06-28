@@ -7,6 +7,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 ### Added
 - Added compile-checked rustdoc examples directly on `GeoDataset` and its main
   workflow methods.
+- Added compile-checked rustdoc examples for the main request, selector,
+  payload, index, feature reference, and artifact manifest types.
 
 ## [0.6.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.6.0...psi-geo-v0.6.1) - 2026-06-28
 

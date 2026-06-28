@@ -4,15 +4,30 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.18.1...psi-v0.19.0) - 2026-06-28
+
+### API
+- **BREAKING:** overlap region queries now use the same short method family as
+  box range queries. Use `index.search(&triangle)`, `index.search(&polygon)`,
+  or `index.search(&frustum)` plus the matching `search_into`, `search_with`,
+  `search_iter`, `any`, `first`, and `visit` forms. The older shape-specific
+  convenience methods such as `search_triangle`, `search_polygon`,
+  `search_frustum`, and their `*_into` / `any_*` / `visit_*` variants have been
+  removed.
+- Added `Overlaps2D` and `Overlaps3D` as the shared predicate traits behind
+  borrowed region queries. `Box2D` / `Box3D`, `Triangle2D`,
+  `ConvexPolygon2D`, and `Frustum3D` implement these traits, including
+  `contains_box` for contained-subtree pruning.
+
 ### Search
 - **BREAKING:** `Index2D::search_iter` and `Index3D::search_iter` now dispatch
   through the same query API as `search` / `search_into` / `any` / `first` /
-  `visit`: box queries return the box iterator, while borrowed geometry queries
-  such as `&Triangle2D`, `&ConvexPolygon2D`, and `&Frustum3D` return a region
-  iterator with contained-subtree fast paths. Existing call sites that simply
-  iterate the result keep the same `index.search_iter(query)` shape; code that
-  names the concrete iterator type may need to use `impl Iterator` or the new
-  region iterator type.
+  `visit`: box queries return the lightweight box iterator, while borrowed
+  geometry queries such as `&Triangle2D`, `&ConvexPolygon2D`, and `&Frustum3D`
+  return a region iterator with contained-subtree fast paths. Existing call
+  sites that simply iterate the result keep the same `index.search_iter(query)`
+  shape; code that names the concrete iterator type may need to use
+  `impl Iterator` or the new region iterator type.
 - Lazy region iteration is much faster for broad shape queries because fully
   contained subtrees skip per-item geometry predicates; box iteration keeps a
   separate lightweight traversal path.

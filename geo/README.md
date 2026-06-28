@@ -58,23 +58,20 @@ matters: use [`GeometrySelector::Name`][GeometrySelector] for a named column, or
 the default policy for GeoParquet primary / single native Parquet geospatial
 files.
 
-| Task | API |
+| Task | Start here |
 | --- | --- |
 | Open a source | [`open`][open] |
-| List usable geometry columns | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery], [`GeometryColumnInfo`][GeometryColumnInfo] |
-| Select a geometry column | [`GeoDataset::select`][select], [`GeometrySelector`][GeometrySelector], [`GeometryColumn`][GeometryColumn] |
-| Profile the selected column | [`GeoDataset::inspect`][inspect], [`InspectRequest`][InspectRequest], [`GeometryProfile`][GeometryProfile] |
-| Validate compatibility | [`GeoDataset::validate`][validate], [`ValidateRequest`][ValidateRequest], [`ValidationReport`][ValidationReport] |
-| Read feature boxes / payloads | [`GeoDataset::scan`][scan], [`ScanRequest`][ScanRequest], [`GeometryScan`][GeometryScan] |
-| Build an in-memory feature index | [`GeoDataset::build`][build], [`BuildRequest`][BuildRequest], [`GeoIndex`][GeoIndex], [`GeoIndex2D::search_features`][search_features_2d], [`GeoIndex3D::search_features`][search_features_3d] |
-| Convert to streamable `PSINDEX` | [`GeoDataset::convert`][convert], [`GeoDataset::convert_into`][convert_into], [`ConvertRequest`][ConvertRequest], [`GeoArtifact`][GeoArtifact] |
-| Open a converted geo artifact | [`open_geo_index`][open_geo_index], [`GeoArtifactIndex`][GeoArtifactIndex], [`GeoHit`][GeoHit], [`GeoPayload`][GeoPayload] |
-| Choose index dimensions / precision | [`IndexDimsRequest`][IndexDimsRequest], [`StoragePrecision`][StoragePrecision] |
-| Control nulls and antimeridian behavior | [`NullPolicy`][NullPolicy], [`EnvelopePolicy`][EnvelopePolicy], [`AntimeridianPolicy`][AntimeridianPolicy] |
-| Pick artifact payloads | [`PayloadPlan`][PayloadPlan], [`PropertyProjection`][PropertyProjection], [`FeatureRef`][FeatureRef] |
-| Decode default payloads | [`decode_feature_ref_payload`][decode_feature_ref_payload], [`decode_feature_wkb_payload`][decode_feature_wkb_payload] |
-| Read the geo artifact manifest | [`read_geo_manifest`][read_geo_manifest], [`GeoArtifactManifest`][GeoArtifactManifest] |
-| Use the CLI | `gp2psindex discover`, `inspect`, `build`, `validate` |
+| Discover columns | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery] |
+| Select a column | [`GeoDataset::select`][select], [`GeometrySelector`][GeometrySelector] |
+| Inspect metadata | [`GeoDataset::inspect`][inspect], [`InspectRequest`][InspectRequest] |
+| Validate input | [`GeoDataset::validate`][validate] |
+| Scan boxes / payloads | [`GeoDataset::scan`][scan], [`ScanRequest`][ScanRequest] |
+| Build an index | [`GeoDataset::build`][build], [`GeoIndex`][GeoIndex] |
+| Convert to `PSINDEX` | [`GeoDataset::convert`][convert] |
+| Open a `PSINDEX` | [`open_geo_index`][open_geo_index] |
+| Tune requests | [`IndexDimsRequest`][IndexDimsRequest], [`NullPolicy`][NullPolicy] |
+| Pick payloads | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
+| Use the CLI | See [CLI](#cli) |
 
 The in-memory `GeoIndex` search methods return [`FeatureRef`][FeatureRef]
 values. A feature ref always carries the source `row_number`; `part` is set when
@@ -87,10 +84,11 @@ The crate includes small runnable examples that use the bundled Apache Parquet
 geospatial fixtures:
 
 ```text
-cargo run --manifest-path geo/Cargo.toml --example discover
-cargo run --manifest-path geo/Cargo.toml --example build_index
-cargo run --manifest-path geo/Cargo.toml --example convert_and_query
-cargo run --manifest-path geo/Cargo.toml --example feature_json_payload
+cd geo
+cargo run --example discover
+cargo run --example build_index
+cargo run --example convert_and_query
+cargo run --example feature_json_payload
 ```
 
 ## Validate inputs before building
@@ -134,12 +132,35 @@ Use `PayloadPlan::RowRef` when you want only a compact sidecar index that points
 back to the original source rows.
 
 ```text
-GeoParquet / Parquet geo  ──(this crate, native)──►  index / PSINDEX  ──(core, anywhere)──►  queries
+GeoParquet / Parquet geo
+  -> packed_spatial_index_geo
+  -> index / PSINDEX
+  -> core queries
 ```
 
 The two phases need not share a runtime: convert on a server, query from the edge.
 
-## Converter — a self-describing, streamable index
+## How it differs from `oxigdal-geoparquet`
+
+[`oxigdal-geoparquet`](https://crates.io/crates/oxigdal-geoparquet) is a
+GeoParquet driver: it reads and writes GeoParquet, exposes metadata, and can
+push bbox / attribute filters into a read. It is the right layer when your next
+step is to open a Parquet file and read matching rows or row groups.
+
+This crate is an index layer. It builds a per-feature spatial index from
+GeoParquet or native Parquet geospatial columns, then keeps that index in memory
+or writes it as a reusable `PSINDEX` sidecar / artifact. That matters when the
+source Parquet is large, remote, or slow to scan repeatedly: object storage,
+network filesystems, cold HDD archives, and lakehouse datasets all benefit from
+answering the spatial lookup from a compact index first.
+
+Use `oxigdal-geoparquet` when you need a GeoParquet reader or writer. Use this
+crate when the file already exists and repeated bbox, kNN, or raycast lookups
+should avoid scanning geometry rows again. The two can be used together: this
+crate can identify candidate feature rows, and a Parquet reader can fetch the
+attributes or full geometries from the source file.
+
+## Converter: streamable index
 
 ```rust,no_run
 use std::fs::File;
@@ -188,16 +209,63 @@ Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `packed_spatial_index` readers skip it; this crate reads it through
 `open_geo_index` or, when only metadata is needed, `read_geo_manifest`.
 
-The crate ships a CLI, `gp2psindex`, for the file-to-file path:
+## CLI
+
+Install the command with Cargo:
 
 ```text
-cargo run --bin gp2psindex -- discover path/to/file.parquet --json
-cargo run --bin gp2psindex -- inspect path/to/file.parquet --exact
-cargo run --bin gp2psindex -- build path/to/file.parquet path/to/file.psi \
-  --payload row-wkb --dims auto --nulls skip
-cargo run --bin gp2psindex -- validate path/to/file.parquet --json
-cargo run --bin gp2psindex -- validate path/to/file.parquet \
-  --exact --strict --payload feature-json --properties include:name,pop
+cargo install packed_spatial_index_geo --locked
+```
+
+Run it directly after install, or prefix the same arguments with
+`cargo run --bin gp2psindex --` from a repository checkout.
+
+Start with discovery when you do not know which geometry columns the file
+contains:
+
+```text
+gp2psindex discover input.parquet --json
+```
+
+Inspect the selected column when you want the resolved encoding, CRS, dimensions,
+edge model, and extent:
+
+```text
+gp2psindex inspect input.parquet --exact
+```
+
+Validate before building an artifact from files produced by another pipeline.
+Default validation is metadata-only; `--exact` also scans rows and reports bad
+WKB, null-policy failures, antimeridian rejects, and payload projection errors:
+
+```text
+gp2psindex validate input.parquet --json
+gp2psindex validate input.parquet \
+  --exact \
+  --strict
+```
+
+Build a reusable `PSINDEX` sidecar for repeated queries:
+
+```text
+gp2psindex build input.parquet output.psi \
+  --payload row-wkb \
+  --dims auto \
+  --nulls skip
+```
+
+If the artifact should carry GeoJSON Feature payloads, name the properties you
+want to keep:
+
+```text
+gp2psindex validate input.parquet \
+  --exact \
+  --strict \
+  --payload feature-json \
+  --properties include:name,pop
+gp2psindex build input.parquet output.psi \
+  --payload feature-json \
+  --properties include:name,pop
 ```
 
 ## Scope
@@ -205,7 +273,7 @@ cargo run --bin gp2psindex -- validate path/to/file.parquet \
 - Inputs may be GeoParquet files with `geo` metadata or native Apache Parquet
   `GEOMETRY` / `GEOGRAPHY` logical-type columns. When both are present,
   GeoParquet `primary_column` is the default; use `GeometrySelector::Name` or
-  `gp2psindex --geometry-column` to select explicitly.
+  the CLI's `--geometry-column` option to select explicitly.
 - Use `open(...).discovery()` when a file may contain several geometry
   candidates and you want metadata-only selection status before reading rows.
 - Boxes come from the **bbox covering** column when present, otherwise from each

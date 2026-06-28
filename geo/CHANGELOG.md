@@ -4,6 +4,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Clarified the crate's role compared with `oxigdal-geoparquet` and tightened
+  README command/table formatting for crates.io.
+
 ## [0.7.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.6.2...psi-geo-v0.7.0) - 2026-06-28
 
 ### Added

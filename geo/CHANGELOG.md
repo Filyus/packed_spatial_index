@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.9.0...psi-geo-v0.10.0) - 2026-06-28
+
 ### Added
 - Added spherical point-radius exact filtering for spherical geography
   `Point` / `MultiPoint` data through `QueryGeometry::SphericalRadius`,

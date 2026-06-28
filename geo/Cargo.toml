@@ -1,6 +1,6 @@
 [package]
 name = "packed_spatial_index_geo"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Build streamable PSINDEX spatial indexes from GeoParquet and native Parquet geospatial data."

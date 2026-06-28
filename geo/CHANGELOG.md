@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.6.2...psi-geo-v0.7.0) - 2026-06-28
+
 ### Added
 - Added a structured validation API (`GeoDataset::validate`,
   `ValidateRequest`, `ValidationReport`) for compatibility diagnostics before

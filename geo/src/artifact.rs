@@ -1,8 +1,10 @@
+use geo::Intersects;
+use geo_types::{Coord, MultiPolygon, Rect};
 use geozero::ToGeo;
 use geozero::geojson::GeoJson;
 use packed_spatial_index::{
-    RangeReader, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32,
-    StreamLimits,
+    Box2D, Overlaps2D, RangeReader, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D,
+    StreamIndex3DF32, StreamLimits,
 };
 
 use crate::{
@@ -15,6 +17,27 @@ use crate::{
         read_geo_manifest_content, read_u32, read_u64,
     },
 };
+
+/// Adapts a geo polygon query to the core [`Overlaps2D`] trait so a polygon can
+/// drive the streaming region traversal — pruning subtrees outside the polygon
+/// during the descent, instead of fetching everything in its bounding box.
+struct PolygonRegion<'a>(&'a MultiPolygon<f64>);
+
+impl Overlaps2D for PolygonRegion<'_> {
+    fn overlaps_box(&self, bx: Box2D) -> bool {
+        let rect = Rect::new(
+            Coord {
+                x: bx.min_x,
+                y: bx.min_y,
+            },
+            Coord {
+                x: bx.max_x,
+                y: bx.max_y,
+            },
+        );
+        self.0.intersects(&rect)
+    }
+}
 
 /// Open a converted geospatial `PSINDEX` artifact.
 ///
@@ -159,8 +182,23 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     ///
     /// Each hit includes the compact item id, the source [`FeatureRef`], and
     /// the decoded [`GeoPayload`] described by the artifact manifest.
+    ///
+    /// A [`GeoQuery2D::Polygon`] query prunes subtrees that fall outside the
+    /// polygon during the streamed descent, so it fetches only the leaves the
+    /// polygon overlaps — fewer reads than its bounding box. Box and
+    /// spherical-radius queries narrow by candidate bounding boxes.
     pub fn search_hits<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<GeoHit>, GeoError> {
-        let boxes = query.into().candidate_boxes_2d()?;
+        let query = query.into();
+        if let GeoQuery2D::Polygon(multi_polygon) = &query {
+            let region = PolygonRegion(multi_polygon);
+            let hits = match &self.index {
+                GeoStreamIndex2D::F64(index) => index.search_payloads_region(&region)?,
+                GeoStreamIndex2D::F32(index) => index.search_payloads_region(&region)?,
+            };
+            return decode_hits(&self.manifest.payload_plan, hits);
+        }
+
+        let boxes = query.candidate_boxes_2d()?;
         // Duplicates only arise across multiple candidate boxes; a single box
         // yields each item once. Skip dedup bookkeeping in the common single-box
         // case, and dedup by item id in O(1) (not O(K^2) `iter().any`) otherwise.

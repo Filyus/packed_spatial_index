@@ -611,7 +611,7 @@ fn filter_features_supports_polygon_query() {
 }
 
 #[test]
-fn filter_hits_filters_artifact_search_by_polygon() {
+fn polygon_search_prunes_and_filter_hits_removes_bbox_fp() {
     use packed_spatial_index_geo::SpatialPredicate;
     use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 
@@ -651,10 +651,23 @@ fn filter_hits_filters_artifact_search_by_polygon() {
         vec![],
     );
 
-    // Streaming search narrows by bbox (rows 0,1,2); order is leaf-based, compare as sets.
-    let hits = index
+    // A polygon query prunes by the polygon during the streamed descent: for point
+    // data the per-item test is point-in-polygon, so it returns only the in-polygon
+    // points directly (row 1 is in the bbox but outside the triangle). Order is
+    // leaf-based, so compare as sets.
+    let pruned = index
         .search_hits(GeoQuery2D::polygon(triangle.clone()))
         .unwrap();
+    let mut pruned_rows = pruned
+        .iter()
+        .map(|hit| hit.feature.row_number)
+        .collect::<Vec<_>>();
+    pruned_rows.sort_unstable();
+    assert_eq!(pruned_rows, vec![0, 2]);
+
+    // A plain box search keeps the bbox false-positive (row 1); filter_hits then
+    // removes it with the exact geometry from the payload.
+    let hits = index.search_hits(Box2D::new(0.0, 0.0, 10.0, 10.0)).unwrap();
     let mut candidate_rows = hits
         .iter()
         .map(|hit| hit.feature.row_number)
@@ -662,7 +675,6 @@ fn filter_hits_filters_artifact_search_by_polygon() {
     candidate_rows.sort_unstable();
     assert_eq!(candidate_rows, vec![0, 1, 2]);
 
-    // filter_hits removes the bbox false-positive (row 1) using the payload geometry.
     let exact = index
         .filter_hits(
             hits,

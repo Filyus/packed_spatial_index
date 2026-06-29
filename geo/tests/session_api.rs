@@ -13,7 +13,7 @@ use bytes::Bytes;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, DuplicateFeatureRows,
     EnvelopePolicy, FEATURE_REF_RECORD_LEN, FeatureFilterRequest, FeatureReadOrder,
-    FeatureReadRequest, FeatureRef, GeoArtifactIndex, GeoError, GeoIndex, GeoPayload,
+    FeatureReadRequest, FeatureRef, GeoArtifactIndex, GeoError, GeoIndex, GeoPayload, GeoQuery2D,
     GeometryEncoding, GeometryMetadataSource, GeometryReadMode, GeometryScan, GeometrySelector,
     IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
     PropertyProjection, RangeReader, SliceReader, StoragePrecision, StreamIndex2D,
@@ -541,6 +541,73 @@ fn filter_features_removes_bbox_false_positive_and_keeps_points() {
         .downcast_ref::<StringArray>()
         .unwrap();
     assert_eq!(names.value(0), "point");
+}
+
+#[test]
+fn filter_features_supports_polygon_query() {
+    use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
+
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(1.0, 1.0)),   // 0: inside the triangle
+                    Some(wkb_point_2d(8.0, 8.0)),   // 1: in bbox, outside the triangle
+                    Some(wkb_point_2d(2.0, 2.0)),   // 2: inside the triangle
+                    Some(wkb_point_2d(20.0, 20.0)), // 3: outside the bbox
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+
+    // Right triangle (0,0)-(10,0)-(0,10): bbox is [0,10]^2, but x+y <= 10 inside.
+    let triangle = Polygon::new(
+        LineString::new(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 10.0, y: 0.0 },
+            Coord { x: 0.0, y: 10.0 },
+            Coord { x: 0.0, y: 0.0 },
+        ]),
+        vec![],
+    );
+
+    // A polygon query narrows index candidates by its bounding box: rows 0,1,2.
+    let mut indexed = open(data.clone()).unwrap();
+    let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
+        panic!("expected 2D index");
+    };
+    let candidates = index
+        .search_features(GeoQuery2D::polygon(triangle.clone()))
+        .unwrap();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|feature| feature.row_number)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+
+    // Exact filtering drops the bbox false-positive (row 1 is outside the triangle).
+    let mut source = open(data).unwrap();
+    let exact = source
+        .filter_features(FeatureFilterRequest::intersects(
+            candidates,
+            GeoQuery2D::polygon(triangle),
+        ))
+        .unwrap();
+    assert_eq!(
+        exact
+            .iter()
+            .map(|feature| feature.row_number)
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
 }
 
 #[test]

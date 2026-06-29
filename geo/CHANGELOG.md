@@ -4,6 +4,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Search
+
+- Added arbitrary polygon / multipolygon queries through `GeoQuery2D::polygon`,
+  `GeoQuery2D::multi_polygon`, and `From` conversions. Index search narrows
+  candidates by the query's bounding box; exact `filter_features` then keeps only
+  geometries that truly intersect the polygon, removing the bbox false-positives
+  over holes and concavities. `geo_types` is re-exported for building queries.
+- Breaking: `GeoQuery2D` is no longer `Copy` (it can carry a polygon); it stays
+  `Clone`.
+
 ### Performance
 
 - `GeoIndex2D::search_features` and `GeoArtifactIndex2D::search_hits` now

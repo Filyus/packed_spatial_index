@@ -1,4 +1,6 @@
 use arrow::record_batch::RecordBatch;
+use geo::BoundingRect;
+use geo_types::{Coord, LineString, MultiPolygon, Polygon};
 use packed_spatial_index::{Box2D, Box3D, Index2D, Index3D};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -785,16 +787,34 @@ impl Default for FeatureReadRequest {
 ///
 /// ```rust
 /// use packed_spatial_index_geo::{Box2D, GeoQuery2D};
+/// use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 ///
 /// let query = GeoQuery2D::box2d(Box2D::new(-10.0, 35.0, 20.0, 60.0));
 /// assert!(matches!(query, GeoQuery2D::Box2D(_)));
+/// let triangle = Polygon::new(
+///     LineString::new(vec![
+///         Coord { x: 0.0, y: 0.0 },
+///         Coord { x: 4.0, y: 0.0 },
+///         Coord { x: 0.0, y: 4.0 },
+///         Coord { x: 0.0, y: 0.0 },
+///     ]),
+///     vec![],
+/// );
+/// let poly = GeoQuery2D::polygon(triangle);
+/// assert!(matches!(poly, GeoQuery2D::Polygon(_)));
 /// let radius = GeoQuery2D::spherical_radius(-73.9857, 40.7484, 500.0);
 /// assert!(matches!(radius, GeoQuery2D::SphericalRadius { .. }));
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GeoQuery2D {
     /// Query rectangle in source XY coordinates.
     Box2D(Box2D),
+    /// Arbitrary planar polygon / multipolygon query in source XY coordinates.
+    ///
+    /// The index narrows candidates by this geometry's bounding box; exact
+    /// filtering then keeps only candidates whose geometry actually intersects
+    /// the polygon, removing the bbox false-positives over holes and concavities.
+    Polygon(MultiPolygon<f64>),
     /// Spherical point-radius query in longitude/latitude coordinates.
     SphericalRadius {
         /// Query longitude in degrees.
@@ -812,6 +832,16 @@ impl GeoQuery2D {
         Self::Box2D(bbox)
     }
 
+    /// Create a planar polygon query in source XY coordinates.
+    pub fn polygon(polygon: Polygon<f64>) -> Self {
+        Self::Polygon(MultiPolygon::new(vec![polygon]))
+    }
+
+    /// Create a planar multipolygon query in source XY coordinates.
+    pub fn multi_polygon(multi_polygon: MultiPolygon<f64>) -> Self {
+        Self::Polygon(multi_polygon)
+    }
+
     /// Create a spherical point-radius query in longitude/latitude coordinates.
     pub fn spherical_radius(lon: f64, lat: f64, radius_metres: f64) -> Self {
         Self::SphericalRadius {
@@ -826,14 +856,26 @@ impl GeoQuery2D {
     /// `Box2D` returns itself. `SphericalRadius` returns one or two longitude /
     /// latitude boxes, splitting at the antimeridian when needed.
     pub fn candidate_boxes_2d(&self) -> Result<Vec<Box2D>, crate::GeoError> {
-        match *self {
-            GeoQuery2D::Box2D(bbox) => Ok(vec![bbox]),
+        match self {
+            GeoQuery2D::Box2D(bbox) => Ok(vec![*bbox]),
+            GeoQuery2D::Polygon(multi_polygon) => {
+                let rect = multi_polygon
+                    .bounding_rect()
+                    .ok_or(crate::GeoError::EmptyQueryPolygon)?;
+                Ok(vec![Box2D::new(
+                    rect.min().x,
+                    rect.min().y,
+                    rect.max().x,
+                    rect.max().y,
+                )])
+            }
             GeoQuery2D::SphericalRadius {
                 lon,
                 lat,
                 radius_metres,
             } => Ok(
-                crate::geodetic::SphericalRadius::new(lon, lat, radius_metres)?.candidate_boxes(),
+                crate::geodetic::SphericalRadius::new(*lon, *lat, *radius_metres)?
+                    .candidate_boxes(),
             ),
         }
     }
@@ -845,6 +887,18 @@ impl From<Box2D> for GeoQuery2D {
     }
 }
 
+impl From<Polygon<f64>> for GeoQuery2D {
+    fn from(value: Polygon<f64>) -> Self {
+        Self::polygon(value)
+    }
+}
+
+impl From<MultiPolygon<f64>> for GeoQuery2D {
+    fn from(value: MultiPolygon<f64>) -> Self {
+        Self::Polygon(value)
+    }
+}
+
 impl Serialize for GeoQuery2D {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -853,6 +907,10 @@ impl Serialize for GeoQuery2D {
         match self {
             GeoQuery2D::Box2D(bbox) => {
                 GeoQuery2DSerde::Box2D([bbox.min_x, bbox.min_y, bbox.max_x, bbox.max_y])
+                    .serialize(serializer)
+            }
+            GeoQuery2D::Polygon(multi_polygon) => {
+                GeoQuery2DSerde::Polygon(multi_polygon_to_rings(multi_polygon))
                     .serialize(serializer)
             }
             GeoQuery2D::SphericalRadius {
@@ -878,6 +936,7 @@ impl<'de> Deserialize<'de> for GeoQuery2D {
             GeoQuery2DSerde::Box2D([min_x, min_y, max_x, max_y]) => {
                 GeoQuery2D::Box2D(Box2D::new(min_x, min_y, max_x, max_y))
             }
+            GeoQuery2DSerde::Polygon(rings) => GeoQuery2D::Polygon(rings_to_multi_polygon(rings)),
             GeoQuery2DSerde::SphericalRadius {
                 lon,
                 lat,
@@ -895,11 +954,48 @@ impl<'de> Deserialize<'de> for GeoQuery2D {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 enum GeoQuery2DSerde {
     Box2D([f64; 4]),
+    /// Nested `[polygon][ring][x, y]` coordinate arrays; ring 0 is the exterior.
+    Polygon(Vec<Vec<Vec<[f64; 2]>>>),
     SphericalRadius {
         lon: f64,
         lat: f64,
         radius_metres: f64,
     },
+}
+
+/// Flatten a [`MultiPolygon`] into serde-friendly `[polygon][ring][x, y]` arrays.
+fn multi_polygon_to_rings(multi_polygon: &MultiPolygon<f64>) -> Vec<Vec<Vec<[f64; 2]>>> {
+    multi_polygon
+        .iter()
+        .map(|polygon| {
+            let mut rings = Vec::with_capacity(1 + polygon.interiors().len());
+            rings.push(ring_to_coords(polygon.exterior()));
+            rings.extend(polygon.interiors().iter().map(ring_to_coords));
+            rings
+        })
+        .collect()
+}
+
+fn ring_to_coords(ring: &LineString<f64>) -> Vec<[f64; 2]> {
+    ring.coords().map(|coord| [coord.x, coord.y]).collect()
+}
+
+/// Rebuild a [`MultiPolygon`] from `[polygon][ring][x, y]` arrays (ring 0 = exterior).
+fn rings_to_multi_polygon(polygons: Vec<Vec<Vec<[f64; 2]>>>) -> MultiPolygon<f64> {
+    MultiPolygon::new(
+        polygons
+            .into_iter()
+            .map(|rings| {
+                let mut rings = rings.into_iter().map(coords_to_ring);
+                let exterior = rings.next().unwrap_or_else(|| LineString::new(Vec::new()));
+                Polygon::new(exterior, rings.collect())
+            })
+            .collect(),
+    )
+}
+
+fn coords_to_ring(coords: Vec<[f64; 2]>) -> LineString<f64> {
+    LineString::new(coords.into_iter().map(|[x, y]| Coord { x, y }).collect())
 }
 
 /// 3D geospatial query.

@@ -262,6 +262,12 @@ the final read-back step can work with true hits instead of bbox candidates. It
 reads geometry WKB internally; open a fresh dataset session for `read_features`
 after filtering.
 
+The query is not limited to a rectangle. Pass `GeoQuery2D::polygon` or
+`GeoQuery2D::multi_polygon` (the `geo_types` crate is re-exported) to query an
+arbitrary planar polygon: index search still narrows candidates by the polygon's
+bounding box; the exact step then drops the bbox false-positives that fall in
+holes or concavities.
+
 If candidate filtering is enough, skip the exact step and read the hit refs
 directly:
 
@@ -402,7 +408,7 @@ let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else 
 let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(
     -73.9857, 40.7484, 500.0,
 );
-let hits = index.search_hits(query)?;
+let hits = index.search_hits(query.clone())?;
 
 let mut filter_source = open(File::open("places.parquet")?)?;
 let exact = filter_source.filter_features(

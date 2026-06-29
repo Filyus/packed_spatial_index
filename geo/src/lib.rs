@@ -24,6 +24,10 @@ pub use error::GeoError;
 pub use manifest::read_geo_manifest;
 pub use types::*;
 
+// Re-export `geo_types` so callers can build `GeoQuery2D::Polygon` queries
+// without adding `geo-types` as a second direct dependency.
+pub use geo_types;
+
 // Re-export the core types this crate produces or names, so a caller can build,
 // convert, load, and query entirely through `packed_spatial_index_geo` without
 // adding `packed_spatial_index` as a second direct dependency.

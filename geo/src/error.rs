@@ -82,6 +82,9 @@ pub enum GeoError {
     /// Spherical radius query parameters are invalid.
     #[error("invalid spherical query: {0}")]
     InvalidSphericalQuery(String),
+    /// A polygon query geometry has no coordinates.
+    #[error("polygon query geometry is empty")]
+    EmptyQueryPolygon,
     /// The geometry type is not supported for spherical exact filtering.
     #[error("unsupported geometry for spherical exact filtering: {0}")]
     UnsupportedGeodeticGeometry(String),

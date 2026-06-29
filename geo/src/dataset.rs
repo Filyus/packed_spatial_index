@@ -410,9 +410,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// This is the post-filter step after an index query. It reads only the
     /// selected source geometry rows, materializes WKB, and evaluates the
-    /// requested predicate. Box queries are exact planar XY predicates.
-    /// Spherical-radius queries are accepted only for spherical geography and
-    /// currently support `Point` / `MultiPoint` geometries.
+    /// requested predicate. Box and polygon queries are exact planar XY
+    /// predicates. Spherical-radius queries are accepted only for spherical
+    /// geography and currently support `Point` / `MultiPoint` geometries.
     ///
     /// Like [`GeoDataset::read_features`], this consumes the dataset reader.
     /// Open a fresh source dataset if you want to read projected rows after
@@ -476,7 +476,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
             let Some(geometry) = decode_geo_geometry(wkb.value(row))? else {
                 continue;
             };
-            if exact_predicate_matches(&geometry, query, req.predicate)? {
+            if exact_predicate_matches(&geometry, &query, req.predicate)? {
                 exact.push(rows.features[row].clone());
             }
         }
@@ -1599,9 +1599,10 @@ fn reject_non_planar_exact(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum PreparedFilterQuery {
     Box2D(Box2D),
+    Polygon(geo_types::MultiPolygon<f64>),
     SphericalRadius(SphericalRadius),
 }
 
@@ -1614,6 +1615,10 @@ fn prepare_filter_query(
         GeoQuery2D::Box2D(bbox) => {
             reject_non_planar_exact(state, non_planar)?;
             Ok(PreparedFilterQuery::Box2D(bbox))
+        }
+        GeoQuery2D::Polygon(multi_polygon) => {
+            reject_non_planar_exact(state, non_planar)?;
+            Ok(PreparedFilterQuery::Polygon(multi_polygon))
         }
         GeoQuery2D::SphericalRadius {
             lon,
@@ -1662,7 +1667,7 @@ fn decode_geo_geometry(bytes: &[u8]) -> Result<Option<geo_types::Geometry<f64>>,
 
 fn exact_predicate_matches(
     geometry: &geo_types::Geometry<f64>,
-    query: PreparedFilterQuery,
+    query: &PreparedFilterQuery,
     predicate: SpatialPredicate,
 ) -> Result<bool, GeoError> {
     match (query, predicate) {
@@ -1679,8 +1684,11 @@ fn exact_predicate_matches(
             );
             Ok(geometry.intersects(&rect))
         }
+        (PreparedFilterQuery::Polygon(multi_polygon), SpatialPredicate::Intersects) => {
+            Ok(geometry.intersects(multi_polygon))
+        }
         (PreparedFilterQuery::SphericalRadius(query), SpatialPredicate::Intersects) => {
-            spherical_radius_matches(geometry, query)
+            spherical_radius_matches(geometry, *query)
         }
     }
 }

@@ -218,7 +218,7 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let artifact = open_geo_index(SliceReader::new(bytes))?;
     let manifest = artifact.manifest().clone();
     let features = match artifact {
-        GeoArtifactIndex::D2(index) => index.search_features(query)?,
+        GeoArtifactIndex::D2(index) => index.search_features(query.clone())?,
         GeoArtifactIndex::D3(_) => {
             return Err("query CLI currently accepts only 2D --bbox/--radius queries".into());
         }

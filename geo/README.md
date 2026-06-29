@@ -268,6 +268,23 @@ arbitrary planar polygon: index search still narrows candidates by the polygon's
 bounding box; the exact step then drops the bbox false-positives that fall in
 holes or concavities.
 
+**When to filter exactly** — it is a correctness tool, not a read-time speedup
+(the index narrows only by bounding box):
+
+- **Filter** when you need the exact non-rectangular shape; without it the result
+  is the bbox superset.
+- **Skip** when a bbox superset is acceptable — e.g. point data, where the bbox
+  *is* the geometry.
+- **Not for speed (local):** `filter_features` re-reads every candidate's
+  geometry, costing about as much as reading the rows. Measured (~100k points,
+  `examples/end_to_end_box_vs_polygon.rs`): read-all beat filter-then-read in
+  every case, even 93% rejection × 40 columns (44 vs 48 ms).
+- **Not for speed (R2 / remote):** the streaming `search_hits` path already
+  fetches candidate payloads during the bbox traversal, so exact filtering trims
+  the result client-side without cutting range requests. It saves fetches only
+  under a two-tier design — stream a geometry-only payload, fetch heavy rows for
+  the survivors separately.
+
 If candidate filtering is enough, skip the exact step and read the hit refs
 directly:
 

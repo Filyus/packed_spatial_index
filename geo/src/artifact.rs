@@ -156,17 +156,20 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// Each hit includes the compact item id, the source [`FeatureRef`], and
     /// the decoded [`GeoPayload`] described by the artifact manifest.
     pub fn search_hits<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<GeoHit>, GeoError> {
+        let boxes = query.into().candidate_boxes_2d()?;
+        // Duplicates only arise across multiple candidate boxes; a single box
+        // yields each item once. Skip dedup bookkeeping in the common single-box
+        // case, and dedup by item id in O(1) (not O(K^2) `iter().any`) otherwise.
+        let dedup = boxes.len() > 1;
         let mut decoded = Vec::new();
-        for bbox in query.into().candidate_boxes_2d()? {
+        let mut seen = std::collections::HashSet::new();
+        for bbox in boxes {
             let hits = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search_payloads(bbox)?,
                 GeoStreamIndex2D::F32(index) => index.search_payloads(bbox)?,
             };
             for hit in decode_hits(&self.manifest.payload_plan, hits)? {
-                if !decoded
-                    .iter()
-                    .any(|existing: &GeoHit| existing.item == hit.item)
-                {
+                if !dedup || seen.insert(hit.item) {
                     decoded.push(hit);
                 }
             }

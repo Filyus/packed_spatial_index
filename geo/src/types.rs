@@ -1531,13 +1531,28 @@ impl GeoIndex2D {
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, crate::GeoError> {
+        let boxes = query.into().candidate_boxes_2d()?;
         let mut features = Vec::new();
-        for bbox in query.into().candidate_boxes_2d()? {
-            for id in self.index.search(bbox) {
-                if let Some(feature) = self.features.get(id)
-                    && !features.contains(feature)
-                {
+        // A single core search yields each item id at most once, so duplicates
+        // only arise across multiple candidate boxes (e.g. antimeridian splits).
+        // Fast-path the common single-box query with no dedup bookkeeping; for
+        // multi-box queries dedup by item id in O(1) via a set rather than the
+        // former O(K^2) `Vec::contains` scan.
+        if boxes.len() == 1 {
+            for id in self.index.search(boxes[0]) {
+                if let Some(feature) = self.features.get(id) {
                     features.push(feature.clone());
+                }
+            }
+        } else {
+            let mut seen = std::collections::HashSet::new();
+            for bbox in boxes {
+                for id in self.index.search(bbox) {
+                    if seen.insert(id)
+                        && let Some(feature) = self.features.get(id)
+                    {
+                        features.push(feature.clone());
+                    }
                 }
             }
         }

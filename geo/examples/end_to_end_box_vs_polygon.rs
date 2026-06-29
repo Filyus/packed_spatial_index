@@ -1,17 +1,21 @@
 //! When does exact polygon filtering pay off? Full end-to-end query time.
 //!
 //! For a non-rectangular (polygon) query the exact step is REQUIRED for a correct
-//! answer — the index only narrows by bounding box. This bench instead measures
-//! the *cost/benefit as a perf refinement*: it compares two full-query paths that
-//! both start from the same bbox candidates, across query selectivity (rejection
-//! rate) and row width (number of property columns):
+//! answer — the index only narrows by bounding box. This bench measures the
+//! cost/benefit as a perf refinement, across query selectivity (rejection rate)
+//! and row width (property columns), for three full-query paths off the same
+//! bbox candidates:
 //!
-//!   A (no exact filter): materialize ALL bbox candidates.
-//!   B (exact filter):    `filter_features(GeoQuery2D::polygon(..))`, then
-//!                        materialize only the survivors.
+//!   A  read-all       — materialize ALL bbox candidates (no exact step).
+//!   B  filter_features — exact-filter by RE-READING source geometry, then read
+//!                        survivors.
+//!   C  filter_hits     — exact-filter the geometry already in the artifact
+//!                        payload (`search_hits` → `filter_hits`), then read
+//!                        survivors. No source geometry re-read.
 //!
-//! B wins when the rows it avoids materializing (rejection × row width) outweigh
-//! the geometry read + predicate over all candidates that filtering costs.
+//! B's filter re-reads every candidate's geometry (≈ the cost of reading the
+//! rows), so it loses. C reuses the geometry the index already produced, so it
+//! only pays to read the survivors.
 //!
 //! Run: cargo run -p packed_spatial_index_geo --release --example end_to_end_box_vs_polygon
 
@@ -27,28 +31,33 @@ use parquet::file::properties::WriterProperties;
 
 use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 use packed_spatial_index_geo::{
-    FeatureFilterRequest, FeatureReadRequest, GeoIndex, GeoQuery2D, GeometryReadMode,
-    PropertyProjection, open,
+    ConvertRequest, FeatureFilterRequest, FeatureReadRequest, FeatureRef, GeoArtifactIndex,
+    GeoArtifactIndex2D, GeoQuery2D, GeometryReadMode, NonPlanarExactPolicy, PropertyProjection,
+    SliceReader, SpatialPredicate, open, open_geo_index,
 };
 
 const N: usize = 100_000;
 
 fn main() {
-    println!("=== exact polygon filtering: full query time, path A vs B ===");
+    println!("=== exact polygon filtering: full query time, A vs B vs C ===");
     println!(
-        "N={N} points uniform over [-10,10]^2. A = read all bbox candidates; \
-         B = filter_features(polygon) then read survivors. B/A > 1 means exact wins.\n"
+        "N={N} points uniform over [-10,10]^2. A=read-all, B=filter_features (re-reads geometry), \
+         C=filter_hits (geometry from artifact payload). Lower is better.\n"
     );
     println!(
-        "{:>4}  {:<6} {:>6} {:>8} {:>8} {:>13} {:>15} {:>7}",
-        "f64", "query", "reject", "K", "M", "A read-all ms", "B filter+read ms", "B/A"
+        "{:>4}  {:<6} {:>6} {:>8} {:>8} {:>10} {:>10} {:>10} {:>7}",
+        "f64", "query", "reject", "K", "M", "A read", "B feat", "C hits", "C/A"
     );
-    println!("{}", "-".repeat(76));
+    println!("{}", "-".repeat(82));
 
     for &cols in &[2usize, 40] {
         let data = build_dataset(N, cols);
-        let mut indexed = open(data.clone()).unwrap();
-        let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
+        let artifact = open(data.clone())
+            .unwrap()
+            .convert(ConvertRequest::default())
+            .unwrap();
+        let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(artifact)).unwrap()
+        else {
             panic!("2D");
         };
 
@@ -56,7 +65,7 @@ fn main() {
             let mut k = 0usize;
             let mut m = 0usize;
 
-            // Path A: materialize ALL bbox candidates (skip the exact step).
+            // A: materialize ALL bbox candidates.
             let a_ms = best_ms(5, || {
                 let cands = index
                     .search_features(GeoQuery2D::polygon(poly.clone()))
@@ -65,7 +74,7 @@ fn main() {
                 read_full(&data, cands)
             });
 
-            // Path B: exact-filter the candidates, then materialize survivors.
+            // B: exact-filter by re-reading source geometry, then read survivors.
             let b_ms = best_ms(5, || {
                 let cands = index
                     .search_features(GeoQuery2D::polygon(poly.clone()))
@@ -77,14 +86,19 @@ fn main() {
                         GeoQuery2D::polygon(poly.clone()),
                     ))
                     .unwrap();
+                read_full(&data, survivors)
+            });
+
+            // C: exact-filter the geometry already in the payload, then read survivors.
+            let c_ms = best_ms(5, || {
+                let survivors = filter_hits_refs(&index, &poly);
                 m = survivors.len();
                 read_full(&data, survivors)
             });
 
             let reject = 100.0 * (1.0 - m as f64 / k as f64);
-            let verdict = if a_ms / b_ms >= 1.0 { "win" } else { "loss" };
             println!(
-                "{:>4}  {:<6} {:>5.0}% {:>8} {:>8} {:>13.1} {:>15.1} {:>5.2}x {}",
+                "{:>4}  {:<6} {:>5.0}% {:>8} {:>8} {:>10.1} {:>10.1} {:>10.1} {:>5.2}x",
                 cols,
                 name,
                 reject,
@@ -92,8 +106,8 @@ fn main() {
                 m,
                 a_ms,
                 b_ms,
-                a_ms / b_ms,
-                verdict
+                c_ms,
+                a_ms / c_ms
             );
         }
         println!();
@@ -102,8 +116,29 @@ fn main() {
     phase_breakdown();
 }
 
+/// `search_hits` → `filter_hits`, returning surviving feature refs.
+fn filter_hits_refs<R: packed_spatial_index_geo::RangeReader>(
+    index: &GeoArtifactIndex2D<R>,
+    poly: &Polygon<f64>,
+) -> Vec<FeatureRef> {
+    let hits = index
+        .search_hits(GeoQuery2D::polygon(poly.clone()))
+        .unwrap();
+    index
+        .filter_hits(
+            hits,
+            GeoQuery2D::polygon(poly.clone()),
+            SpatialPredicate::Intersects,
+            NonPlanarExactPolicy::Reject,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.feature)
+        .collect()
+}
+
 /// Materialize the given feature refs with all property columns + WKB geometry.
-fn read_full(data: &Bytes, features: Vec<packed_spatial_index_geo::FeatureRef>) -> usize {
+fn read_full(data: &Bytes, features: Vec<FeatureRef>) -> usize {
     let mut source = open(data.clone()).unwrap();
     source
         .read_features(FeatureReadRequest {
@@ -120,52 +155,63 @@ fn read_full(data: &Bytes, features: Vec<packed_spatial_index_geo::FeatureRef>) 
 fn phase_breakdown() {
     let cols = 40;
     let data = build_dataset(N, cols);
-    let mut indexed = open(data.clone()).unwrap();
-    let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
+    let artifact = open(data.clone())
+        .unwrap()
+        .convert(ConvertRequest::default())
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(artifact)).unwrap() else {
         panic!("2D");
     };
     let poly = band(-10.0, -10.0, 10.0, 10.0, 0.5);
 
-    let t = Instant::now();
-    let cands = index
-        .search_features(GeoQuery2D::polygon(poly.clone()))
-        .unwrap();
-    let t_search = ms(t);
-    let k = cands.len();
+    // Warm caches so the per-phase single-run timings below are comparable.
+    std::hint::black_box(filter_hits_refs(&index, &poly));
+    std::hint::black_box(read_full(
+        &data,
+        index
+            .search_features(GeoQuery2D::polygon(poly.clone()))
+            .unwrap(),
+    ));
 
     let t = Instant::now();
-    let mut filter_source = open(data.clone()).unwrap();
-    let survivors = filter_source
-        .filter_features(FeatureFilterRequest::intersects(
-            cands.clone(),
-            GeoQuery2D::polygon(poly),
-        ))
+    let hits = index
+        .search_hits(GeoQuery2D::polygon(poly.clone()))
         .unwrap();
-    let t_filter = ms(t);
+    let t_search_hits = ms(t);
+    let k = hits.len();
+
+    let t = Instant::now();
+    let survivors: Vec<FeatureRef> = index
+        .filter_hits(
+            hits,
+            GeoQuery2D::polygon(poly.clone()),
+            SpatialPredicate::Intersects,
+            NonPlanarExactPolicy::Reject,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.feature)
+        .collect();
+    let t_filter_hits = ms(t);
     let m = survivors.len();
 
     let t = Instant::now();
     read_full(&data, survivors);
     let t_read_m = ms(t);
 
+    let cands = index.search_features(GeoQuery2D::polygon(poly)).unwrap();
     let t = Instant::now();
     read_full(&data, cands);
     let t_read_k = ms(t);
 
     println!("=== phase breakdown (f64 cols=40, query=band, K={k}, M={m}) ===");
-    println!("  search bbox            {t_search:>8.2} ms   -> K candidates (in-memory index)");
+    println!("  search_hits (geom payload)  {t_search_hits:>8.2} ms");
+    println!("  filter_hits (no re-read)    {t_filter_hits:>8.2} ms");
+    println!("  read survivors (M)          {t_read_m:>8.2} ms");
+    println!("  read candidates (K)         {t_read_k:>8.2} ms");
     println!(
-        "  filter_features        {t_filter:>8.2} ms   -> M survivors (reads geom of all K + predicate)"
-    );
-    println!("  read survivors (M)     {t_read_m:>8.2} ms   <- path B materialize");
-    println!("  read candidates (K)    {t_read_k:>8.2} ms   <- path A materialize");
-    println!(
-        "\n  path A = search + read(K)     = {:.1} ms",
-        t_search + t_read_k
-    );
-    println!(
-        "  path B = search + filter + read(M) = {:.1} ms",
-        t_search + t_filter + t_read_m
+        "\n  C trades a cheap geometry pass (search_hits + filter_hits) for reading M rows\n  \
+         instead of K. It wins once read(K) - read(M) exceeds that pass — see the matrix."
     );
 }
 

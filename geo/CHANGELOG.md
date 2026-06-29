@@ -13,6 +13,11 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   over holes and concavities. `geo_types` is re-exported for building queries.
 - Breaking: `GeoQuery2D` is no longer `Copy` (it can carry a polygon); it stays
   `Clone`.
+- Added `GeoArtifactIndex2D::filter_hits` to exact-filter `search_hits` results by
+  the geometry already in their `RowWkb` payloads, with no source re-read. Unlike
+  `filter_features` (which re-reads candidate geometry and so never beats reading
+  all candidates), `filter_hits` reuses the geometry the index produced, so it
+  wins above roughly 60% rejection.
 
 ### Performance
 

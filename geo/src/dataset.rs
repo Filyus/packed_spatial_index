@@ -452,7 +452,13 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                 actual: self.source_fingerprint.clone(),
             });
         }
-        let query = prepare_filter_query(&state, req.query, req.non_planar)?;
+        let query = prepare_filter_query(
+            &state.info.encoding,
+            state.info.edges,
+            &state.info.name,
+            req.query,
+            req.non_planar,
+        )?;
 
         let rows = self.read_features(FeatureReadRequest {
             features: req.features,
@@ -1580,44 +1586,50 @@ fn profile_from_state(state: &ColumnState, num_rows: u64) -> GeometryProfile {
 }
 
 fn reject_non_planar_exact(
-    state: &ColumnState,
+    encoding: &GeometryEncoding,
+    edges: EdgeModel,
+    column: &str,
     policy: NonPlanarExactPolicy,
 ) -> Result<(), GeoError> {
     if matches!(policy, NonPlanarExactPolicy::TreatAsPlanar) {
         return Ok(());
     }
-    if matches!(
-        state.info.encoding,
-        GeometryEncoding::ParquetGeography { .. }
-    ) || !matches!(state.info.edges, EdgeModel::Planar)
+    if matches!(encoding, GeometryEncoding::ParquetGeography { .. })
+        || !matches!(edges, EdgeModel::Planar)
     {
         return Err(GeoError::NonPlanarExactPredicate {
-            column: state.info.name.clone(),
-            edges: state.info.edges,
+            column: column.to_string(),
+            edges,
         });
     }
     Ok(())
 }
 
 #[derive(Debug, Clone)]
-enum PreparedFilterQuery {
+pub(crate) enum PreparedFilterQuery {
     Box2D(Box2D),
     Polygon(geo_types::MultiPolygon<f64>),
     SphericalRadius(SphericalRadius),
 }
 
-fn prepare_filter_query(
-    state: &ColumnState,
+/// Validate a query against the column's edge/encoding model and lower it to a
+/// `PreparedFilterQuery`. Takes the column facts directly so both the source
+/// dataset (from `ColumnState`) and the artifact path (from the `geoM` manifest)
+/// can share it.
+pub(crate) fn prepare_filter_query(
+    encoding: &GeometryEncoding,
+    edges: EdgeModel,
+    column: &str,
     query: GeoQuery2D,
     non_planar: NonPlanarExactPolicy,
 ) -> Result<PreparedFilterQuery, GeoError> {
     match query {
         GeoQuery2D::Box2D(bbox) => {
-            reject_non_planar_exact(state, non_planar)?;
+            reject_non_planar_exact(encoding, edges, column, non_planar)?;
             Ok(PreparedFilterQuery::Box2D(bbox))
         }
         GeoQuery2D::Polygon(multi_polygon) => {
-            reject_non_planar_exact(state, non_planar)?;
+            reject_non_planar_exact(encoding, edges, column, non_planar)?;
             Ok(PreparedFilterQuery::Polygon(multi_polygon))
         }
         GeoQuery2D::SphericalRadius {
@@ -1625,19 +1637,17 @@ fn prepare_filter_query(
             lat,
             radius_metres,
         } => {
-            let compatible_native = !matches!(
-                state.info.encoding,
-                GeometryEncoding::ParquetGeography { .. }
-            ) || matches!(
-                state.info.encoding,
-                GeometryEncoding::ParquetGeography {
-                    algorithm: EdgeAlgorithm::Spherical
-                }
-            );
-            if !matches!(state.info.edges, EdgeModel::Spherical) || !compatible_native {
+            let compatible_native = !matches!(encoding, GeometryEncoding::ParquetGeography { .. })
+                || matches!(
+                    encoding,
+                    GeometryEncoding::ParquetGeography {
+                        algorithm: EdgeAlgorithm::Spherical
+                    }
+                );
+            if !matches!(edges, EdgeModel::Spherical) || !compatible_native {
                 return Err(GeoError::NonSphericalExactPredicate {
-                    column: state.info.name.clone(),
-                    edges: state.info.edges,
+                    column: column.to_string(),
+                    edges,
                 });
             }
             Ok(PreparedFilterQuery::SphericalRadius(SphericalRadius::new(
@@ -1649,7 +1659,9 @@ fn prepare_filter_query(
     }
 }
 
-fn decode_geo_geometry(bytes: &[u8]) -> Result<Option<geo_types::Geometry<f64>>, GeoError> {
+pub(crate) fn decode_geo_geometry(
+    bytes: &[u8],
+) -> Result<Option<geo_types::Geometry<f64>>, GeoError> {
     let mut cursor = Cursor::new(bytes);
     match geo_types::Geometry::<f64>::from_wkb(&mut cursor, WkbDialect::Wkb) {
         Ok(geometry) => Ok(Some(geometry)),
@@ -1665,7 +1677,7 @@ fn decode_geo_geometry(bytes: &[u8]) -> Result<Option<geo_types::Geometry<f64>>,
     }
 }
 
-fn exact_predicate_matches(
+pub(crate) fn exact_predicate_matches(
     geometry: &geo_types::Geometry<f64>,
     query: &PreparedFilterQuery,
     predicate: SpatialPredicate,

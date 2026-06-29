@@ -4,8 +4,10 @@ use packed_spatial_index::{
 };
 
 use crate::{
-    FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D, PayloadPlan,
-    StoragePrecision, decode_feature_ref_payload, decode_feature_wkb_payload,
+    FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy,
+    PayloadPlan, SpatialPredicate, StoragePrecision,
+    dataset::{decode_geo_geometry, exact_predicate_matches, prepare_filter_query},
+    decode_feature_ref_payload, decode_feature_wkb_payload,
     manifest::{
         CHUNK_ENTRY_LEN, FORMAT_MAGIC, FORMAT_VERSION, SUPERBLOCK_LEN, TAG_GEO_MANIFEST,
         read_geo_manifest_content, read_u32, read_u64,
@@ -175,6 +177,50 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             }
         }
         Ok(decoded)
+    }
+
+    /// Exactly filter geo hits by the geometry stored in their `RowWkb` payloads
+    /// — the post-filter step for the streaming path, with no source re-read.
+    ///
+    /// Index search narrows by bounding box; this keeps only the hits whose
+    /// geometry actually satisfies `query` under `predicate`, removing the bbox
+    /// false-positives over holes and concavities. Because it tests the geometry
+    /// already fetched by [`GeoArtifactIndex2D::search_hits`], it avoids the
+    /// candidate geometry re-read that [`GeoDataset::filter_features`] performs.
+    ///
+    /// Requires a `RowWkb` payload plan (the geometry must be in the artifact);
+    /// hits decoded as `RowRef` or `FeatureJson` return [`GeoError::PayloadDecode`].
+    ///
+    /// [`GeoDataset::filter_features`]: crate::GeoDataset::filter_features
+    pub fn filter_hits<Q: Into<GeoQuery2D>>(
+        &self,
+        hits: Vec<GeoHit>,
+        query: Q,
+        predicate: SpatialPredicate,
+        non_planar: NonPlanarExactPolicy,
+    ) -> Result<Vec<GeoHit>, GeoError> {
+        let prepared = prepare_filter_query(
+            &self.manifest.encoding,
+            self.manifest.edges,
+            &self.manifest.selected_column,
+            query.into(),
+            non_planar,
+        )?;
+        let mut kept = Vec::new();
+        for hit in hits {
+            let GeoPayload::RowWkb(wkb) = &hit.payload else {
+                return Err(GeoError::PayloadDecode(
+                    "filter_hits requires RowWkb geometry payloads".to_string(),
+                ));
+            };
+            let Some(geometry) = decode_geo_geometry(wkb)? else {
+                continue;
+            };
+            if exact_predicate_matches(&geometry, &prepared, predicate)? {
+                kept.push(hit);
+            }
+        }
+        Ok(kept)
     }
 }
 

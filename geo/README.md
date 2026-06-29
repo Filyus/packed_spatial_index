@@ -268,22 +268,21 @@ arbitrary planar polygon: index search still narrows candidates by the polygon's
 bounding box; the exact step then drops the bbox false-positives that fall in
 holes or concavities.
 
-**When to filter exactly** — it is a correctness tool, not a read-time speedup
-(the index narrows only by bounding box):
+**When to filter exactly** — a non-rectangular query leaves bbox false-positives
+(the index narrows only by bounding box); the exact step removes them:
 
-- **Filter** when you need the exact non-rectangular shape; without it the result
-  is the bbox superset.
-- **Skip** when a bbox superset is acceptable — e.g. point data, where the bbox
-  *is* the geometry.
-- **Not for speed (local):** `filter_features` re-reads every candidate's
-  geometry, costing about as much as reading the rows. Measured (~100k points,
-  `examples/end_to_end_box_vs_polygon.rs`): read-all beat filter-then-read in
-  every case, even 93% rejection × 40 columns (44 vs 48 ms).
-- **Not for speed (R2 / remote):** the streaming `search_hits` path already
-  fetches candidate payloads during the bbox traversal, so exact filtering trims
-  the result client-side without cutting range requests. It saves fetches only
-  under a two-tier design — stream a geometry-only payload, fetch heavy rows for
-  the survivors separately.
+- **Filter** when you need the exact shape; without it the result is the bbox
+  superset (everything in the bounding box).
+- **Use `filter_hits`, not `filter_features`, for speed.**
+  `GeoArtifactIndex2D::filter_hits` tests the geometry that
+  `search_hits` already fetched, so it adds no source re-read. Measured
+  (~100k points, `examples/end_to_end_box_vs_polygon.rs`) it beats reading all
+  candidates above ~60% rejection (93% × 40 columns ≈ 1.3×). `filter_features`
+  re-reads every candidate's geometry from the source, so it loses to read-all in
+  every case — use it only without a converted artifact.
+- **Skip** when a bbox superset is acceptable (point data, where the bbox *is*
+  the geometry) or rejection is low (below ~50%, where reading all candidates is
+  faster anyway).
 
 If candidate filtering is enough, skip the exact step and read the hit refs
 directly:

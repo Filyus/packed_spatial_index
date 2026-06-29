@@ -611,6 +611,75 @@ fn filter_features_supports_polygon_query() {
 }
 
 #[test]
+fn filter_hits_filters_artifact_search_by_polygon() {
+    use packed_spatial_index_geo::SpatialPredicate;
+    use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
+
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(1.0, 1.0)),   // 0: inside the triangle
+                    Some(wkb_point_2d(8.0, 8.0)),   // 1: in bbox, outside the triangle
+                    Some(wkb_point_2d(2.0, 2.0)),   // 2: inside the triangle
+                    Some(wkb_point_2d(20.0, 20.0)), // 3: outside the bbox
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+
+    // Convert to a PSINDEX artifact carrying WKB geometry payloads, then open it.
+    let mut dataset = open(data).unwrap();
+    let artifact = dataset.convert(ConvertRequest::default()).unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(artifact)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+
+    let triangle = Polygon::new(
+        LineString::new(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 10.0, y: 0.0 },
+            Coord { x: 0.0, y: 10.0 },
+            Coord { x: 0.0, y: 0.0 },
+        ]),
+        vec![],
+    );
+
+    // Streaming search narrows by bbox (rows 0,1,2); order is leaf-based, compare as sets.
+    let hits = index
+        .search_hits(GeoQuery2D::polygon(triangle.clone()))
+        .unwrap();
+    let mut candidate_rows = hits
+        .iter()
+        .map(|hit| hit.feature.row_number)
+        .collect::<Vec<_>>();
+    candidate_rows.sort_unstable();
+    assert_eq!(candidate_rows, vec![0, 1, 2]);
+
+    // filter_hits removes the bbox false-positive (row 1) using the payload geometry.
+    let exact = index
+        .filter_hits(
+            hits,
+            GeoQuery2D::polygon(triangle),
+            SpatialPredicate::Intersects,
+            NonPlanarExactPolicy::Reject,
+        )
+        .unwrap();
+    let mut exact_rows = exact
+        .iter()
+        .map(|hit| hit.feature.row_number)
+        .collect::<Vec<_>>();
+    exact_rows.sort_unstable();
+    assert_eq!(exact_rows, vec![0, 2]);
+}
+
+#[test]
 fn filter_features_supports_native_parquet_and_geoarrow_sources() {
     let query = Box2D::new(4.0, 4.0, 6.0, 6.0);
 

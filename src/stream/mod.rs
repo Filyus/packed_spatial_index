@@ -21,7 +21,7 @@
 //! at untrusted data. Available behind the `stream` feature. See [`RangeReader`]
 //! for implementing a remote (e.g. HTTP range) source.
 
-use crate::geometry::{Box2D, Box3D};
+use crate::geometry::{Box2D, Box3D, Overlaps2D, Overlaps3D};
 use crate::persistence::{read_f32_le_unchecked, read_f64_le_unchecked};
 
 #[cfg(feature = "async")]
@@ -204,6 +204,53 @@ impl<R: RangeReader> StreamIndex2D<R> {
         self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
+
+    /// Stream the indices of every item whose box overlaps the region `query` —
+    /// any [`Overlaps2D`] shape (a polygon, triangle, …), not just a box.
+    ///
+    /// Subtrees whose node box falls outside `query` are pruned during the
+    /// streamed descent, so a region query touches (and fetches) only the leaves
+    /// it overlaps — fewer reads than its bounding box would take.
+    pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize),
+    {
+        self.core
+            .visit_ids(|record| query.overlaps_box(parse_box2d(record)), visitor)
+    }
+
+    /// Collect the indices of every item whose box overlaps the region `query`.
+    pub fn search_region<Q: Overlaps2D>(&self, query: &Q) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_region(query, |index| out.push(index))?;
+        Ok(out)
+    }
+
+    /// Visit `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`. Like [`visit_payloads`](Self::visit_payloads) but for a
+    /// custom [`Overlaps2D`] shape; node-box pruning fetches only the leaves the
+    /// region touches.
+    pub fn visit_payloads_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize, &[u8]),
+    {
+        self.core
+            .visit_payloads(|record| query.overlaps_box(parse_box2d(record)), visitor)
+    }
+
+    /// Collect `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`. The owning counterpart of
+    /// [`visit_payloads_region`](Self::visit_payloads_region).
+    pub fn search_payloads_region<Q: Overlaps2D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
+        Ok(out)
+    }
 }
 
 /// Parse one 2D box record (`[min_x, min_y, max_x, max_y]` little-endian f64).
@@ -329,6 +376,48 @@ impl<R: RangeReader> StreamIndex3D<R> {
     pub fn search_payloads(&self, query: Box3D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
         self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        Ok(out)
+    }
+
+    /// Stream the indices of every item whose box overlaps the region `query` —
+    /// any [`Overlaps3D`] shape (e.g. a [`Frustum3D`](crate::Frustum3D)), not just
+    /// a box. Subtrees outside `query` are pruned during the streamed descent.
+    pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize),
+    {
+        self.core
+            .visit_ids(|record| query.overlaps_box(parse_box3d(record)), visitor)
+    }
+
+    /// Collect the indices of every item whose box overlaps the region `query`.
+    pub fn search_region<Q: Overlaps3D>(&self, query: &Q) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_region(query, |index| out.push(index))?;
+        Ok(out)
+    }
+
+    /// Visit `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`; node-box pruning fetches only the leaves it touches.
+    pub fn visit_payloads_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize, &[u8]),
+    {
+        self.core
+            .visit_payloads(|record| query.overlaps_box(parse_box3d(record)), visitor)
+    }
+
+    /// Collect `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`. The owning counterpart of
+    /// [`visit_payloads_region`](Self::visit_payloads_region).
+    pub fn search_payloads_region<Q: Overlaps3D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 }
@@ -482,6 +571,50 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
         self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
+
+    /// Stream the indices of every item whose (rounded) box overlaps the region
+    /// `query` — any [`Overlaps2D`] shape. Subtrees outside `query` are pruned.
+    pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize),
+    {
+        self.core.visit_ids(
+            |record| query.overlaps_box(parse_box2d_f32(record)),
+            visitor,
+        )
+    }
+
+    /// Collect the indices of every item whose box overlaps the region `query`.
+    pub fn search_region<Q: Overlaps2D>(&self, query: &Q) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_region(query, |index| out.push(index))?;
+        Ok(out)
+    }
+
+    /// Visit `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`; node-box pruning fetches only the leaves it touches.
+    pub fn visit_payloads_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize, &[u8]),
+    {
+        self.core.visit_payloads(
+            |record| query.overlaps_box(parse_box2d_f32(record)),
+            visitor,
+        )
+    }
+
+    /// Collect `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`.
+    pub fn search_payloads_region<Q: Overlaps2D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
+        Ok(out)
+    }
 }
 
 /// Streaming reader for a compact `f32` 3D index. The 3D counterpart of
@@ -589,6 +722,50 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
     pub fn search_payloads(&self, query: Box3D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
         self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        Ok(out)
+    }
+
+    /// Stream the indices of every item whose (rounded) box overlaps the region
+    /// `query` — any [`Overlaps3D`] shape. Subtrees outside `query` are pruned.
+    pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize),
+    {
+        self.core.visit_ids(
+            |record| query.overlaps_box(parse_box3d_f32(record)),
+            visitor,
+        )
+    }
+
+    /// Collect the indices of every item whose box overlaps the region `query`.
+    pub fn search_region<Q: Overlaps3D>(&self, query: &Q) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_region(query, |index| out.push(index))?;
+        Ok(out)
+    }
+
+    /// Visit `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`; node-box pruning fetches only the leaves it touches.
+    pub fn visit_payloads_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize, &[u8]),
+    {
+        self.core.visit_payloads(
+            |record| query.overlaps_box(parse_box3d_f32(record)),
+            visitor,
+        )
+    }
+
+    /// Collect `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`.
+    pub fn search_payloads_region<Q: Overlaps3D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 }

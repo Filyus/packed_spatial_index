@@ -387,6 +387,74 @@ fn query_streams_only_a_small_part_of_the_leaves() {
 }
 
 #[test]
+fn streamed_region_matches_owned_and_prunes() {
+    use crate::ConvexPolygon2D;
+
+    let (owned, bytes) = random_owned(20_000, 0x0E6107);
+    let stream = open_slice(bytes.clone());
+    assert!(stream.core.dir_node_start > 0, "leaves should be streamed");
+
+    // A right triangle filling half of its [100, 100, 500, 500] bounding box.
+    let poly = ConvexPolygon2D::new(vec![[100.0, 100.0], [500.0, 100.0], [100.0, 500.0]]);
+
+    // Correctness: streamed region search matches the in-memory region search.
+    let mut streamed = stream.search_region(&poly).unwrap();
+    let mut owned_hits = owned.search(&poly);
+    streamed.sort_unstable();
+    owned_hits.sort_unstable();
+    assert_eq!(streamed, owned_hits);
+
+    // Pruning: the triangle reads fewer bytes than its full bounding box, since
+    // subtrees that fall outside it are pruned during the streamed descent.
+    let region_bytes = {
+        let s = StreamIndex2D::open(CountingReader::new(SliceReader::new(bytes.clone()))).unwrap();
+        let base = *s.core.reader.bytes.borrow();
+        let _ = s.search_region(&poly).unwrap();
+        *s.core.reader.bytes.borrow() - base
+    };
+    let bbox = Box2D::new(100.0, 100.0, 500.0, 500.0);
+    let bbox_bytes = {
+        let s = StreamIndex2D::open(CountingReader::new(SliceReader::new(bytes))).unwrap();
+        let base = *s.core.reader.bytes.borrow();
+        let _ = s.search(bbox).unwrap();
+        *s.core.reader.bytes.borrow() - base
+    };
+    assert!(
+        region_bytes < bbox_bytes,
+        "region read {region_bytes} bytes, bbox read {bbox_bytes}"
+    );
+}
+
+#[test]
+fn streamed_region_3d_box_query_matches_box_search() {
+    use crate::{Box3D, Index3DBuilder};
+
+    let mut builder = Index3DBuilder::new(4000).node_size(16);
+    let mut seed = 0x3D_5EEDu64;
+    let mut rnd = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for _ in 0..4000 {
+        let (x, y, z) = (rnd() * 100.0, rnd() * 100.0, rnd() * 100.0);
+        builder.add(Box3D::new(x, y, z, x + 1.0, y + 1.0, z + 1.0));
+    }
+    let bytes = builder.finish().unwrap().to_bytes();
+    let stream = StreamIndex3D::open(SliceReader::new(bytes)).unwrap();
+
+    // `Box3D` implements `Overlaps3D`, so the region query with a box must equal
+    // the plain box query — confirms the 3D region wrapper is wired up.
+    let q = Box3D::new(10.0, 10.0, 10.0, 40.0, 40.0, 40.0);
+    let mut region = stream.search_region(&q).unwrap();
+    let mut boxed = stream.search(q).unwrap();
+    region.sort_unstable();
+    boxed.sort_unstable();
+    assert_eq!(region, boxed);
+}
+
+#[test]
 #[cfg(any(unix, windows))]
 fn file_reader_search_matches_owned() {
     let (owned, bytes) = random_owned(20_000, 0xF11E);

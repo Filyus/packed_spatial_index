@@ -4,6 +4,16 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Search
+
+- Added region queries to the streaming indexes. `StreamIndex2D` / `StreamIndex3D`
+  (and the `f32` variants) gained `search_region` / `visit_region` /
+  `search_payloads_region` / `visit_payloads_region`, taking any `Overlaps2D` /
+  `Overlaps3D` shape (polygon, triangle, frustum, …) instead of only a box.
+  Subtrees outside the query shape are pruned during the streamed descent, so a
+  region fetches only the leaves it overlaps — fewer reads than its bounding box,
+  the key win for out-of-core / remote region queries.
+
 ## [0.19.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.18.1...psi-v0.19.0) - 2026-06-28
 
 ### API

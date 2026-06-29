@@ -4,6 +4,14 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Performance
+
+- `GeoIndex2D::search_features` and `GeoArtifactIndex2D::search_hits` now
+  deduplicate candidates in O(K) rather than O(K²), so queries returning many
+  candidates no longer spend quadratic time in the index (the artifact
+  `search_features` wrapper inherits the fix). A box query returning 100k
+  candidates drops from roughly 2 s to 3 ms.
+
 ## [0.12.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.11.0...psi-geo-v0.12.0) - 2026-06-29
 
 ### Added

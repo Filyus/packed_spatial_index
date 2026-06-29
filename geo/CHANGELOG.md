@@ -14,13 +14,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.12.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.11.0...psi-geo-v0.12.0) - 2026-06-29
 
-### Added
+### Search
 
 - Added `GeoQuery2D` and `GeoQuery3D` query values for geo candidate and
   exact-filter APIs.
-
-### Changed
-
 - Breaking: replaced `QueryGeometry` with `GeoQuery2D`.
 - Breaking: replaced shape-specific exact-filter constructors such as
   `intersects_box2d`, `from_hits_intersects_box2d`, and
@@ -32,14 +29,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.11.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.10.0...psi-geo-v0.11.0) - 2026-06-28
 
-### Changed
+### Search
 
 - Updated the public `packed_spatial_index` dependency to 0.19, keeping the geo
   crate aligned with the core overlap-query API and iterator type changes.
 
 ## [0.10.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.9.0...psi-geo-v0.10.0) - 2026-06-28
 
-### Added
+### Search
+
 - Added spherical point-radius exact filtering for spherical geography
   `Point` / `MultiPoint` data through `QueryGeometry::SphericalRadius`,
   `FeatureFilterRequest::intersects_spherical_radius`, and
@@ -47,33 +45,35 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.9.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.8.0...psi-geo-v0.9.0) - 2026-06-28
 
-### Added
+### Search
+
 - Added exact planar post-filtering with `GeoDataset::filter_features`,
   `FeatureFilterRequest`, and `gp2psindex query --exact`, so bbox candidates can
   be reduced against source geometries before reading final rows.
 
 ## [0.8.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.7.1...psi-geo-v0.8.0) - 2026-06-28
 
-### Added
+### Persistence
+
 - Added source read-back from `FeatureRef` values through
   `GeoDataset::read_features`, including projected properties, optional WKB
   geometry, source fingerprint checks, and request-order / duplicate handling.
 - Added `gp2psindex query` to query a `PSINDEX` sidecar and emit projected source
   rows as JSON / NDJSON.
-
-### Changed
 - `FeatureRef` values produced by scan/build/convert now include row-group and
   row-in-group positions when available from Parquet metadata.
 
 ## [0.7.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.7.0...psi-geo-v0.7.1) - 2026-06-28
 
-### Changed
+### Documentation
+
 - Clarified the crate's role compared with `oxigdal-geoparquet` and tightened
   README command/table formatting for crates.io.
 
 ## [0.7.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.6.2...psi-geo-v0.7.0) - 2026-06-28
 
-### Added
+### Validation
+
 - Added a structured validation API (`GeoDataset::validate`,
   `ValidateRequest`, `ValidationReport`) for compatibility diagnostics before
   building or converting geospatial Parquet inputs.
@@ -84,7 +84,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.6.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.6.1...psi-geo-v0.6.2) - 2026-06-28
 
-### Added
+### Documentation
+
 - Added compile-checked rustdoc examples directly on `GeoDataset` and its main
   workflow methods.
 - Added compile-checked rustdoc examples for the main request, selector,
@@ -92,22 +93,20 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.6.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.6.0...psi-geo-v0.6.1) - 2026-06-28
 
-### Added
+### Documentation
+
 - Added runnable examples for discovery, in-memory index building, artifact
   conversion/querying, and `FeatureJson` payloads.
-
-### Changed
 - Added rustdoc coverage for the public session, artifact reader, request, and
   metadata types, with a missing-docs lint to keep future public API documented.
 
 ## [0.6.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.5.1...psi-geo-v0.6.0) - 2026-06-28
 
-### Added
+### Persistence
+
 - Added a geo artifact reader API (`open_geo_index`, `GeoArtifactIndex`,
   `GeoHit`, `GeoPayload`) for querying converted `PSINDEX` files through the
   geospatial contract instead of manually decoding core payload bytes.
-
-### Changed
 - Extended generated `geoM` manifests with index storage precision so readers
   can open 2D/3D and f64/f32 artifacts from the manifest alone.
 - `FeatureJson` payloads now include a `feature_ref` member, allowing artifact
@@ -115,7 +114,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.5.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.5.0...psi-geo-v0.5.1) - 2026-06-28
 
-### Changed
+### Documentation
+
 - Refined the crate description, README heading, and README opening copy so the
   crates.io landing page explains the GeoParquet/native Parquet indexing use
   case more cleanly.
@@ -124,15 +124,14 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.5.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.4.1...psi-geo-v0.5.0) - 2026-06-28
 
-### Changed
+### API
+
 - Replaced the function-oriented public API with the `open(...) -> GeoDataset`
   session API. Discovery, inspection, scanning, building, and conversion now hang
   off the dataset, and geo-level search returns `FeatureRef` values rather than
   raw compact item ids.
 - Made the CLI explicit-subcommand only: `discover`, `inspect`, `build`, and
   `validate`.
-
-### Added
 - Typed geometry discovery/profile metadata, GeoArrow envelope scanning without
   covering columns, GeoArrow-to-WKB payload emission, antimeridian split handling,
   `FeatureJson` payloads with projected properties, and the optional `geoM`
@@ -140,14 +139,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.4.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.4.0...psi-geo-v0.4.1) - 2026-06-27
 
-### Changed
+### Persistence
+
 - Updated the Arrow / Parquet reader stack to `59` and parse the GeoParquet
   `geo` metadata directly, avoiding a stale `parquet` dependency in the
   companion reader.
 
 ## [0.4.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.3.1...psi-geo-v0.4.0) - 2026-06-27
 
-### Added
+### Discovery
+
 - Metadata-only geometry discovery API (`discover`, `discover_with_opts`) that
   reports GeoParquet/native Parquet geospatial candidates, default selection
   status, and per-column index/payload capabilities.
@@ -156,34 +157,33 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [0.3.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.3.0...psi-geo-v0.3.1) - 2026-06-27
 
-### Changed
+### Documentation
+
 - Refined README and rustdoc wording to describe GeoParquet and native Parquet
   geospatial inputs consistently.
 
 ## [0.3.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.2.0...psi-geo-v0.3.0) - 2026-06-27
 
-### Added
+### Geometry
+
 - Native Apache Parquet `GEOMETRY` / `GEOGRAPHY` logical-type support, including
   files that have no GeoParquet `geo` metadata.
 - Explicit geometry-column selection for readers, builders, converter options,
   and `gp2psindex --geometry-column`.
 - `GeometryMetadataSource` on `GeoParquetInfo` to distinguish GeoParquet metadata
   from native Parquet geospatial logical types.
-
-### Changed
 - `GEOGRAPHY` inputs are indexed as coordinate bounding boxes over their WKB
   coordinates; exact spherical or ellipsoidal predicates remain the caller's
   responsibility after candidate lookup.
 
 ## [0.2.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.1.0...psi-geo-v0.2.0) - 2026-06-27
 
-### Added
+### Persistence
+
 - `ConvertPayload` payload modes for the converter: no payload, row-id-only
   sidecar payload, or original row id + WKB.
 - Decode helpers and content-type constants for Geo converter payloads.
 - `gp2psindex --payload none|row-id|row-wkb`.
-
-### Changed
 - The default converter payload now stores `u64le original_row_id` followed by
   WKB, so outputs created with `skip_null` can still point back to source
   GeoParquet rows.
@@ -195,15 +195,22 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 Initial release: build a [`packed_spatial_index`](https://crates.io/crates/packed_spatial_index)
 spatial index from a GeoParquet file.
 
-### Added
-- **Accelerator** — `build_index_2d` / `build_index_3d` build an in-memory index
-  over the row bounding boxes; item id equals the GeoParquet row index.
-- **Converter** — `convert_2d` / `convert_3d` (and the buffer-reusing `_into`
-  variants) build the index, attach each row's WKB geometry as a leaf-ordered
-  payload, and record the CRS, serialized to a streamable `PSINDEX` blob.
+### Geometry
+
 - **Primitive / introspection** — `read_bboxes_2d` / `read_bboxes_3d`,
   `inspect` + `GeoParquetInfo`, `detect_dims`.
-- **`gp2psindex` CLI** for the file-to-file path.
 - Boxes from the GeoParquet 1.1 bbox covering column when present, otherwise from
   the WKB envelope; `Binary` / `LargeBinary` / `BinaryView` geometry columns; 2D
   and 3D; optional `f32` storage; `skip_null`; interleaved payload.
+
+### Indexes
+
+- **Accelerator** — `build_index_2d` / `build_index_3d` build an in-memory index
+  over the row bounding boxes; item id equals the GeoParquet row index.
+
+### Persistence
+
+- **Converter** — `convert_2d` / `convert_3d` (and the buffer-reusing `_into`
+  variants) build the index, attach each row's WKB geometry as a leaf-ordered
+  payload, and record the CRS, serialized to a streamable `PSINDEX` blob.
+- **`gp2psindex` CLI** for the file-to-file path.

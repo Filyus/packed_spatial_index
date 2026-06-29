@@ -208,6 +208,8 @@ by which files the commit touched.
 | 10 | WASM | web / the touched crate | `wasm`, `wasm-demo`, `demo` | depends |
 | 11 | Performance | the touched crate | `perf`, `parallel`, `radix`, `node-size`, `prefetch` | keep if measured and user-facing |
 | 12 | Sorting and Encoding | `packed_spatial_index` | `sort`, `sortkey`, `hilbert`, `morton`, `encoders` | keep |
+| 13 | Discovery | `packed_spatial_index_geo` | `discovery`, `discover`, `inspect` | keep |
+| 14 | Validation | `packed_spatial_index_geo` | `validation`, `validate`, `diagnostics` | keep |
 | 20 | Benchmarks | — | `bench`, `benches`, `flatgeobuf`, `static-aabb`, `compare` | drop |
 | 90 | Documentation | the touched crate | `docs`, `readme`, `rustdoc`, `examples` | case-by-case |
 | 91 | Tests | — | `test`, `tests`, `correctness`, `fuzz` | drop |
@@ -219,6 +221,10 @@ by which files the commit touched.
 Rules of thumb:
 
 - "keep" groups are crate-user-facing; write a clear bullet per change.
+- Both `CHANGELOG.md` and `geo/CHANGELOG.md` use these domain `###` headers — not
+  Keep-a-Changelog `Added`/`Changed`/`Fixed`. (geo's pre-0.13 history was
+  back-filled to the taxonomy on 2026-06-29; `Discovery` and `Validation` are
+  geo-companion domains.)
 - Include `geo:` changes in `geo/CHANGELOG.md` when they touch the companion
   crate or its package/release behavior.
 - Omit browser-demo-only polish even if the prefix looks user-facing.

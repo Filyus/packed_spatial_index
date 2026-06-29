@@ -680,6 +680,73 @@ fn filter_hits_filters_artifact_search_by_polygon() {
 }
 
 #[test]
+fn filter_hits_supports_feature_json_payload() {
+    use packed_spatial_index_geo::SpatialPredicate;
+    use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
+
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(1.0, 1.0)), // 0: inside the triangle
+                    Some(wkb_point_2d(8.0, 8.0)), // 1: in bbox, outside the triangle
+                    Some(wkb_point_2d(2.0, 2.0)), // 2: inside the triangle
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+
+    // Artifact with GeoJSON Feature payloads (geometry embedded as GeoJSON, not WKB).
+    let mut dataset = open(data).unwrap();
+    let artifact = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::FeatureJson {
+                properties: PropertyProjection::None,
+            },
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(artifact)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+
+    let triangle = Polygon::new(
+        LineString::new(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 10.0, y: 0.0 },
+            Coord { x: 0.0, y: 10.0 },
+            Coord { x: 0.0, y: 0.0 },
+        ]),
+        vec![],
+    );
+
+    // filter_hits decodes geometry from the GeoJSON payload, no source re-read.
+    let hits = index
+        .search_hits(GeoQuery2D::polygon(triangle.clone()))
+        .unwrap();
+    let exact = index
+        .filter_hits(
+            hits,
+            GeoQuery2D::polygon(triangle),
+            SpatialPredicate::Intersects,
+            NonPlanarExactPolicy::Reject,
+        )
+        .unwrap();
+    let mut rows = exact
+        .iter()
+        .map(|hit| hit.feature.row_number)
+        .collect::<Vec<_>>();
+    rows.sort_unstable();
+    assert_eq!(rows, vec![0, 2]);
+}
+
+#[test]
 fn filter_features_supports_native_parquet_and_geoarrow_sources() {
     let query = Box2D::new(4.0, 4.0, 6.0, 6.0);
 

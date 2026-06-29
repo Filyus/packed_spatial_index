@@ -1,3 +1,5 @@
+use geozero::ToGeo;
+use geozero::geojson::GeoJson;
 use packed_spatial_index::{
     RangeReader, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32,
     StreamLimits,
@@ -188,8 +190,9 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// already fetched by [`GeoArtifactIndex2D::search_hits`], it avoids the
     /// candidate geometry re-read that [`GeoDataset::filter_features`] performs.
     ///
-    /// Requires a `RowWkb` payload plan (the geometry must be in the artifact);
-    /// hits decoded as `RowRef` or `FeatureJson` return [`GeoError::PayloadDecode`].
+    /// Needs a payload that carries geometry — `RowWkb` or `FeatureJson`. A
+    /// `RowRef` payload stores no geometry, so it returns
+    /// [`GeoError::PayloadDecode`].
     ///
     /// [`GeoDataset::filter_features`]: crate::GeoDataset::filter_features
     pub fn filter_hits<Q: Into<GeoQuery2D>>(
@@ -208,12 +211,17 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
         )?;
         let mut kept = Vec::new();
         for hit in hits {
-            let GeoPayload::RowWkb(wkb) = &hit.payload else {
-                return Err(GeoError::PayloadDecode(
-                    "filter_hits requires RowWkb geometry payloads".to_string(),
-                ));
+            let geometry = match &hit.payload {
+                GeoPayload::RowWkb(wkb) => decode_geo_geometry(wkb)?,
+                GeoPayload::FeatureJson(feature) => feature_json_geometry(feature)?,
+                GeoPayload::RowRef => {
+                    return Err(GeoError::PayloadDecode(
+                        "filter_hits needs a geometry payload (RowWkb or FeatureJson); RowRef has none"
+                            .to_string(),
+                    ));
+                }
             };
-            let Some(geometry) = decode_geo_geometry(wkb)? else {
+            let Some(geometry) = geometry else {
                 continue;
             };
             if exact_predicate_matches(&geometry, &prepared, predicate)? {
@@ -222,6 +230,25 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
         }
         Ok(kept)
     }
+}
+
+/// Decode the geometry of a `FeatureJson` payload (a GeoJSON `Feature`) into
+/// `geo_types`. Returns `Ok(None)` for a missing or null geometry member.
+fn feature_json_geometry(
+    feature: &serde_json::Value,
+) -> Result<Option<geo_types::Geometry<f64>>, GeoError> {
+    let Some(geometry) = feature.get("geometry") else {
+        return Ok(None);
+    };
+    if geometry.is_null() {
+        return Ok(None);
+    }
+    let json =
+        serde_json::to_string(geometry).map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
+    GeoJson(&json)
+        .to_geo()
+        .map(Some)
+        .map_err(|e| GeoError::PayloadDecode(e.to_string()))
 }
 
 /// A 3D geospatial artifact index.

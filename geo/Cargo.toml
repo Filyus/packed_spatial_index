@@ -22,7 +22,7 @@ arrow-json = "59"
 arrow-select = "59"
 parquet = { version = "59", features = ["geospatial"] }
 # WKB envelope fallback when a file has no bbox covering column.
-geozero = { version = "0.15", features = ["with-wkb", "with-geojson"] }
+geozero = { version = "0.15", features = ["with-wkb", "with-geojson", "with-geo"] }
 # Pure-Rust planar predicates for exact post-filtering of bbox candidates.
 geo = { version = "0.33", default-features = false }
 geo-types = "0.7"

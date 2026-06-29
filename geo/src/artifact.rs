@@ -181,8 +181,8 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
         Ok(decoded)
     }
 
-    /// Exactly filter geo hits by the geometry stored in their `RowWkb` payloads
-    /// — the post-filter step for the streaming path, with no source re-read.
+    /// Exactly filter geo hits by the geometry stored in their payloads — the
+    /// post-filter step for the streaming path, with no source re-read.
     ///
     /// Index search narrows by bounding box; this keeps only the hits whose
     /// geometry actually satisfies `query` under `predicate`, removing the bbox
@@ -193,6 +193,43 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// Needs a payload that carries geometry — `RowWkb` or `FeatureJson`. A
     /// `RowRef` payload stores no geometry, so it returns
     /// [`GeoError::PayloadDecode`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{
+    ///     GeoArtifactIndex, GeoQuery2D, NonPlanarExactPolicy, SliceReader, SpatialPredicate,
+    ///     open_geo_index,
+    /// };
+    /// use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
+    ///
+    /// let bytes = std::fs::read("places.psi")?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    ///
+    /// let triangle = Polygon::new(
+    ///     LineString::new(vec![
+    ///         Coord { x: 0.0, y: 0.0 },
+    ///         Coord { x: 10.0, y: 0.0 },
+    ///         Coord { x: 0.0, y: 10.0 },
+    ///         Coord { x: 0.0, y: 0.0 },
+    ///     ]),
+    ///     vec![],
+    /// );
+    ///
+    /// // Bounding-box candidates from the artifact, then exact polygon filtering
+    /// // on the geometry already in their payloads (no source re-read).
+    /// let hits = index.search_hits(GeoQuery2D::polygon(triangle.clone()))?;
+    /// let exact = index.filter_hits(
+    ///     hits,
+    ///     GeoQuery2D::polygon(triangle),
+    ///     SpatialPredicate::Intersects,
+    ///     NonPlanarExactPolicy::Reject,
+    /// )?;
+    /// println!("{} exact hits", exact.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     ///
     /// [`GeoDataset::filter_features`]: crate::GeoDataset::filter_features
     pub fn filter_hits<Q: Into<GeoQuery2D>>(

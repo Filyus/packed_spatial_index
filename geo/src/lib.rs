@@ -12,6 +12,7 @@ mod geodetic;
 mod manifest;
 mod payload;
 mod query;
+mod scan;
 mod validation;
 mod wkb;
 
@@ -26,8 +27,8 @@ pub use build::{
 pub use dataset::{
     DuplicateFeatureRows, FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE,
     FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE, FeatureReadOrder, FeatureReadRequest,
-    FeatureRows, GeoDataset, GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D,
-    IndexDimsRequest, InspectRequest, PropertyProjection, ScanRequest, ValidateRequest, open,
+    FeatureRows, GeoDataset, GeometryReadMode, IndexDimsRequest, InspectRequest,
+    PropertyProjection, ValidateRequest, open,
 };
 pub use discovery::{
     ColumnCapabilities, CoordinateDims, CoordinateLayout, CrsInfo, DeclaredExtent,
@@ -44,6 +45,7 @@ pub use payload::{
     FeatureRef, PayloadPlan, decode_feature_ref_payload, decode_feature_wkb_payload,
 };
 pub use query::{GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy, SpatialPredicate};
+pub use scan::{GeometryScan, GeometryScan2D, GeometryScan3D, ScanRequest};
 pub use validation::{
     NativeBoundingBox, NativeGeospatialStatsReport, RowGroupGeospatialStats, ValidationCode,
     ValidationIssue, ValidationReport, ValidationSeverity,

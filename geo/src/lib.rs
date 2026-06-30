@@ -2,6 +2,7 @@
 #![warn(missing_docs)]
 
 mod artifact;
+mod build;
 mod dataset;
 mod discovery;
 mod error;
@@ -18,13 +19,15 @@ pub use artifact::{
     GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoHit, GeoPayload, open_geo_index,
     open_geo_index_with_limits,
 };
+pub use build::{
+    BuildRequest, ConvertRequest, GeoArtifact, GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata,
+    IndexBuildOptions, StoragePrecision,
+};
 pub use dataset::{
-    BuildRequest, ConvertRequest, DuplicateFeatureRows, FEATURE_JSON_CONTENT_TYPE,
-    FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE, FeatureReadOrder,
-    FeatureReadRequest, FeatureRows, GeoArtifact, GeoDataset, GeoIndex, GeoIndex2D, GeoIndex3D,
-    GeoIndexMetadata, GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D,
-    IndexBuildOptions, IndexDimsRequest, InspectRequest, PropertyProjection, ScanRequest,
-    StoragePrecision, ValidateRequest, open,
+    DuplicateFeatureRows, FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE,
+    FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE, FeatureReadOrder, FeatureReadRequest,
+    FeatureRows, GeoDataset, GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D,
+    IndexDimsRequest, InspectRequest, PropertyProjection, ScanRequest, ValidateRequest, open,
 };
 pub use discovery::{
     ColumnCapabilities, CoordinateDims, CoordinateLayout, CrsInfo, DeclaredExtent,

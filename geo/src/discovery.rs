@@ -1,4 +1,12 @@
+use std::collections::{HashMap, HashSet};
+
+use parquet::basic::{EdgeInterpolationAlgorithm, LogicalType, Type as ParquetPhysicalType};
+use parquet::file::metadata::{FileMetaData, ParquetMetaData};
 use serde::{Deserialize, Serialize};
+
+use crate::GeoError;
+use crate::geoarrow;
+use crate::validation;
 
 /// Source that made a geometry column discoverable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,4 +558,361 @@ pub struct GeometryProfile {
     pub row_bounds: Vec<RowBoundsSource>,
     /// Source row count.
     pub num_rows: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ColumnState {
+    pub(crate) info: GeometryColumnInfo,
+    pub(crate) covering: Option<GeoParquetBboxCovering>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeoParquetMetadata {
+    version: String,
+    primary_column: String,
+    columns: HashMap<String, GeoParquetColumnMetadata>,
+}
+
+impl GeoParquetMetadata {
+    fn from_parquet_meta(metadata: &FileMetaData) -> Option<Result<Self, GeoError>> {
+        let value = metadata
+            .key_value_metadata()?
+            .iter()
+            .find(|kv| kv.key == "geo")?
+            .value
+            .as_ref()?;
+        Some(serde_json::from_str(value).map_err(|e| GeoError::Metadata(e.to_string())))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeoParquetColumnMetadata {
+    encoding: String,
+    #[serde(default)]
+    geometry_types: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_present_value")]
+    crs: Option<Option<serde_json::Value>>,
+    #[serde(default)]
+    edges: Option<String>,
+    #[serde(default)]
+    bbox: Option<Vec<f64>>,
+    #[serde(default)]
+    covering: Option<GeoParquetCovering>,
+}
+
+fn deserialize_present_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<serde_json::Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer)
+        .map(|value| Some(if value.is_null() { None } else { Some(value) }))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeoParquetCovering {
+    bbox: GeoParquetBboxCovering,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct GeoParquetBboxCovering {
+    pub(crate) xmin: Vec<String>,
+    pub(crate) ymin: Vec<String>,
+    #[serde(default)]
+    pub(crate) zmin: Option<Vec<String>>,
+    pub(crate) xmax: Vec<String>,
+    pub(crate) ymax: Vec<String>,
+    #[serde(default)]
+    pub(crate) zmax: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+struct NativeColumn {
+    name: String,
+    encoding: GeometryEncoding,
+    crs: CrsInfo,
+    edges: EdgeModel,
+    dims: CoordinateDims,
+}
+
+pub(crate) fn discover_metadata(
+    meta: &ParquetMetaData,
+) -> Result<(GeoDiscovery, Vec<ColumnState>), GeoError> {
+    let file_meta = meta.file_metadata();
+    let geo_meta = match GeoParquetMetadata::from_parquet_meta(file_meta) {
+        Some(Ok(value)) => Some(value),
+        Some(Err(err)) => return Err(err),
+        None => None,
+    };
+    let native = native_geo_columns(meta);
+    let mut states = Vec::new();
+    let mut warnings = Vec::new();
+    let mut geo_names = HashSet::new();
+
+    if let Some(gpq) = &geo_meta {
+        let mut names: Vec<_> = gpq.columns.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            let col = &gpq.columns[&name];
+            let encoding = geoarrow::encoding_from_geoparquet(&col.encoding);
+            if !geoarrow::is_supported_encoding(&encoding) {
+                warnings.push(DiscoveryWarning::UnsupportedGeoParquetEncoding {
+                    column: name.clone(),
+                    encoding: col.encoding.clone(),
+                });
+            }
+            let covering = col.covering.as_ref().map(|covering| covering.bbox.clone());
+            let has_covering = covering.is_some();
+            let dims = covering
+                .as_ref()
+                .and_then(|covering| {
+                    (covering.zmin.is_some() && covering.zmax.is_some())
+                        .then_some(CoordinateDims::Xyz)
+                })
+                .unwrap_or_else(|| CoordinateDims::from_geometry_types(&col.geometry_types));
+            let can_scan = geoarrow::is_supported_encoding(&encoding) || has_covering;
+            let info = GeometryColumnInfo {
+                name: name.clone(),
+                source: GeometryMetadataSource::GeoParquet,
+                encoding: encoding.clone(),
+                crs: geoparquet_crs(&col.crs),
+                edges: geoparquet_edges(col.edges.as_deref()),
+                coordinate_dims: dims,
+                geometry_types: GeometryTypeSet {
+                    types: col.geometry_types.clone(),
+                },
+                extent: col.bbox.clone().map(|values| DeclaredExtent { values }),
+                row_bounds: row_bounds_sources(&encoding, has_covering),
+                capabilities: ColumnCapabilities {
+                    can_scan_envelopes: can_scan,
+                    can_build_index: can_scan,
+                    can_emit_row_wkb: encoding.is_wkb_payload()
+                        || matches!(encoding, GeometryEncoding::GeoArrow { .. }),
+                    can_emit_feature_json: encoding.is_wkb_payload()
+                        || matches!(encoding, GeometryEncoding::GeoArrow { .. }),
+                },
+            };
+            geo_names.insert(name);
+            states.push(ColumnState { info, covering });
+        }
+    }
+
+    let mut native_names = Vec::new();
+    for candidate in native {
+        if geo_names.contains(&candidate.name) {
+            continue;
+        }
+        native_names.push(candidate.name.clone());
+        states.push(ColumnState {
+            info: GeometryColumnInfo {
+                name: candidate.name,
+                source: GeometryMetadataSource::ParquetGeospatial,
+                encoding: candidate.encoding,
+                crs: candidate.crs,
+                edges: candidate.edges,
+                coordinate_dims: candidate.dims,
+                geometry_types: GeometryTypeSet::unknown(),
+                extent: None,
+                row_bounds: vec![RowBoundsSource::WkbEnvelope],
+                capabilities: ColumnCapabilities {
+                    can_scan_envelopes: true,
+                    can_build_index: true,
+                    can_emit_row_wkb: true,
+                    can_emit_feature_json: true,
+                },
+            },
+            covering: None,
+        });
+    }
+
+    let default_selection = default_selection(&states, geo_meta.as_ref(), &native_names);
+    if let Some(gpq) = &geo_meta
+        && !states.iter().any(|state| {
+            state.info.source == GeometryMetadataSource::GeoParquet
+                && state.info.name == gpq.primary_column
+        })
+    {
+        warnings.push(DiscoveryWarning::GeoParquetPrimaryMissing {
+            column: gpq.primary_column.clone(),
+        });
+    }
+    Ok((
+        GeoDiscovery {
+            num_rows: file_meta.num_rows().max(0) as u64,
+            file_metadata: FileGeoMetadata {
+                geoparquet_version: geo_meta.as_ref().map(|gpq| gpq.version.clone()),
+                geoparquet_primary_column: geo_meta.as_ref().map(|gpq| gpq.primary_column.clone()),
+                has_geoparquet_metadata: geo_meta.is_some(),
+            },
+            columns: states.iter().map(|state| state.info.clone()).collect(),
+            default_selection,
+            warnings,
+        },
+        states,
+    ))
+}
+
+fn default_selection(
+    states: &[ColumnState],
+    geo_meta: Option<&GeoParquetMetadata>,
+    native_names: &[String],
+) -> SelectionStatus {
+    if let Some(gpq) = geo_meta {
+        return if states.iter().any(|state| {
+            state.info.source == GeometryMetadataSource::GeoParquet
+                && state.info.name == gpq.primary_column
+        }) {
+            SelectionStatus::Selected {
+                column: gpq.primary_column.clone(),
+                reason: GeometrySelectionReason::GeoParquetPrimary,
+            }
+        } else {
+            SelectionStatus::None
+        };
+    }
+    match native_names {
+        [] => SelectionStatus::None,
+        [one] => SelectionStatus::Selected {
+            column: one.clone(),
+            reason: GeometrySelectionReason::SingleNativeParquet,
+        },
+        many => SelectionStatus::Ambiguous {
+            columns: many.to_vec(),
+        },
+    }
+}
+
+fn native_geo_columns(meta: &ParquetMetaData) -> Vec<NativeColumn> {
+    meta.file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .enumerate()
+        .filter_map(|(column_index, col)| {
+            let parts = col.path().parts();
+            if parts.len() != 1
+                || col.max_rep_level() != 0
+                || col.physical_type() != ParquetPhysicalType::BYTE_ARRAY
+            {
+                return None;
+            }
+            match col.logical_type_ref()? {
+                LogicalType::Geometry(geometry) => Some(NativeColumn {
+                    name: parts[0].clone(),
+                    encoding: GeometryEncoding::ParquetGeometry,
+                    crs: native_crs(&geometry.crs),
+                    edges: EdgeModel::Planar,
+                    dims: native_dim_hint(meta, column_index),
+                }),
+                LogicalType::Geography(geography) => {
+                    let algorithm = geography
+                        .algorithm()
+                        .map(edge_algorithm)
+                        .unwrap_or(EdgeAlgorithm::Spherical);
+                    Some(NativeColumn {
+                        name: parts[0].clone(),
+                        encoding: GeometryEncoding::ParquetGeography { algorithm },
+                        crs: native_crs(&geography.crs),
+                        edges: EdgeModel::Spherical,
+                        dims: native_dim_hint(meta, column_index),
+                    })
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn native_dim_hint(meta: &ParquetMetaData, column_index: usize) -> CoordinateDims {
+    let mut saw_stats = false;
+    let mut dims = CoordinateDims::Unknown;
+    for row_group in meta.row_groups() {
+        let Some(types) = row_group
+            .column(column_index)
+            .geo_statistics()
+            .and_then(|stats| stats.geospatial_types())
+        else {
+            return CoordinateDims::Unknown;
+        };
+        saw_stats = true;
+        for &ty in types {
+            dims = dims.merge(validation::coordinate_dims_from_wkb_type(ty));
+        }
+    }
+    if saw_stats {
+        dims
+    } else {
+        CoordinateDims::Unknown
+    }
+}
+
+fn edge_algorithm(value: EdgeInterpolationAlgorithm) -> EdgeAlgorithm {
+    match value {
+        EdgeInterpolationAlgorithm::SPHERICAL => EdgeAlgorithm::Spherical,
+        EdgeInterpolationAlgorithm::VINCENTY => EdgeAlgorithm::Vincenty,
+        EdgeInterpolationAlgorithm::THOMAS => EdgeAlgorithm::Thomas,
+        EdgeInterpolationAlgorithm::ANDOYER => EdgeAlgorithm::Andoyer,
+        EdgeInterpolationAlgorithm::KARNEY => EdgeAlgorithm::Karney,
+        EdgeInterpolationAlgorithm::_Unknown(_) => EdgeAlgorithm::Unknown,
+    }
+}
+
+fn native_crs(value: &Option<String>) -> CrsInfo {
+    value
+        .as_ref()
+        .map(|value| CrsInfo::PresentString {
+            value: value.clone(),
+        })
+        .unwrap_or_else(|| CrsInfo::ImpliedDefault {
+            value: "OGC:CRS84".to_string(),
+        })
+}
+
+fn geoparquet_crs(value: &Option<Option<serde_json::Value>>) -> CrsInfo {
+    match value {
+        Some(Some(value)) => CrsInfo::Present {
+            value: value.clone(),
+        },
+        Some(None) => CrsInfo::ExplicitNone,
+        None => CrsInfo::ImpliedDefault {
+            value: "OGC:CRS84".to_string(),
+        },
+    }
+}
+
+fn geoparquet_edges(value: Option<&str>) -> EdgeModel {
+    match value {
+        Some(edge) if edge.eq_ignore_ascii_case("spherical") => EdgeModel::Spherical,
+        Some(edge) if edge.eq_ignore_ascii_case("planar") => EdgeModel::Planar,
+        Some(_) => EdgeModel::Unknown,
+        None => EdgeModel::Planar,
+    }
+}
+
+fn row_bounds_sources(encoding: &GeometryEncoding, has_covering: bool) -> Vec<RowBoundsSource> {
+    if has_covering {
+        vec![RowBoundsSource::Covering]
+    } else if encoding.is_wkb_payload() {
+        vec![RowBoundsSource::WkbEnvelope]
+    } else if matches!(encoding, GeometryEncoding::GeoArrow { .. }) {
+        vec![RowBoundsSource::GeoArrowScan]
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn profile_from_state(state: &ColumnState, num_rows: u64) -> GeometryProfile {
+    GeometryProfile {
+        column: state.info.name.clone(),
+        source: state.info.source,
+        encoding: state.info.encoding.clone(),
+        crs: state.info.crs.clone(),
+        edges: state.info.edges,
+        coordinate_dims: state.info.coordinate_dims,
+        geometry_types: state.info.geometry_types.clone(),
+        extent: state.info.extent.clone(),
+        row_bounds: state.info.row_bounds.clone(),
+        num_rows,
+    }
 }

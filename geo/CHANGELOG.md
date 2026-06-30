@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.13.0...psi-geo-v0.14.0) - 2026-06-30
+
 ### Search
 
 - A `GeoQuery2D::Polygon` query passed to `GeoArtifactIndex2D::search_hits` now

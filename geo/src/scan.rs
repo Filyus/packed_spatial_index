@@ -6,8 +6,9 @@ use arrow::record_batch::RecordBatch;
 use packed_spatial_index::{Box2D, Box3D};
 use parquet::file::reader::ChunkReader;
 
-use crate::dataset::{self, GeoDataset};
+use crate::dataset::GeoDataset;
 use crate::discovery::{self, ColumnState, GeoParquetBboxCovering};
+use crate::feature_read;
 use crate::geoarrow;
 use crate::payload::{self, FeatureRef};
 use crate::wkb::{self, GeometryBounds};
@@ -26,7 +27,7 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
     req: ScanRequest,
 ) -> Result<GeometryScan, GeoError> {
     let builder = dataset.take_builder()?;
-    let row_groups = dataset::row_group_spans(builder.metadata());
+    let row_groups = feature_read::row_group_spans(builder.metadata());
     let batches = builder.build().map_err(GeoError::from)?;
     let mut entries = Vec::new();
     let mut detected_dims = state.info.coordinate_dims;
@@ -45,11 +46,12 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
             .then(|| binary_column(&batch, &state.info.name))
             .transpose()?;
         let covering = covering_arrays(&batch, state.covering.as_ref())?;
-        let property_columns = dataset::projection_columns(&batch, &state.info.name, &req.payload)?;
+        let property_columns =
+            feature_read::projection_columns(&batch, &state.info.name, &req.payload)?;
         for row in 0..batch.num_rows() {
             let row_number = row_base + row as u64;
             let (row_group, row_in_group) =
-                dataset::row_group_for_row(row_number, &row_groups, &mut row_group_cursor)?;
+                feature_read::row_group_for_row(row_number, &row_groups, &mut row_group_cursor)?;
             let scanned = scan_one_row(
                 state,
                 &geom,
@@ -72,14 +74,16 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
             detected_dims = detected_dims.merge(bounds.dims);
             let feature = FeatureRef::row_in_group(row_number, row_group, row_in_group);
             let property_json = match &req.payload {
-                PayloadPlan::FeatureJson { properties } => Some(dataset::feature_json_payload(
-                    &feature,
-                    wkb.as_deref(),
-                    &batch,
-                    row,
-                    properties,
-                    &property_columns,
-                )?),
+                PayloadPlan::FeatureJson { properties } => {
+                    Some(feature_read::feature_json_payload(
+                        &feature,
+                        wkb.as_deref(),
+                        &batch,
+                        row,
+                        properties,
+                        &property_columns,
+                    )?)
+                }
                 PayloadPlan::RowRef => Some(payload::encode_feature_ref(&feature)),
                 PayloadPlan::RowWkb => Some(payload::encode_feature_wkb(
                     &feature,

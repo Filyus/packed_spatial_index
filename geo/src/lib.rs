@@ -6,6 +6,7 @@ mod build;
 mod dataset;
 mod discovery;
 mod error;
+mod feature_read;
 mod filter;
 mod geoarrow;
 mod geodetic;
@@ -25,10 +26,8 @@ pub use build::{
     IndexBuildOptions, StoragePrecision,
 };
 pub use dataset::{
-    DuplicateFeatureRows, FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE,
-    FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE, FeatureReadOrder, FeatureReadRequest,
-    FeatureRows, GeoDataset, GeometryReadMode, IndexDimsRequest, InspectRequest,
-    PropertyProjection, ValidateRequest, open,
+    FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN,
+    FEATURE_WKB_CONTENT_TYPE, GeoDataset, IndexDimsRequest, InspectRequest, ValidateRequest, open,
 };
 pub use discovery::{
     ColumnCapabilities, CoordinateDims, CoordinateLayout, CrsInfo, DeclaredExtent,
@@ -38,6 +37,10 @@ pub use discovery::{
     WkbFlavor,
 };
 pub use error::GeoError;
+pub use feature_read::{
+    DuplicateFeatureRows, FeatureReadOrder, FeatureReadRequest, FeatureRows, GeometryReadMode,
+    PropertyProjection,
+};
 pub use filter::FeatureFilterRequest;
 pub use geodetic::{AntimeridianPolicy, EnvelopePolicy, NullPolicy};
 pub use manifest::{GeoArtifactManifest, read_geo_manifest};

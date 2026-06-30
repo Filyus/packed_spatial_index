@@ -13,7 +13,9 @@ use arrow_select::concat::concat_batches;
 use arrow_select::take::take;
 use geo::Intersects;
 use geozero::wkb::{FromWkb, WkbDialect};
-use packed_spatial_index::{Box2D, Box3D, Index2DBuilder, Index2DF32, Index3DBuilder, Index3DF32};
+use packed_spatial_index::{
+    Box2D, Box3D, Index2D, Index2DBuilder, Index2DF32, Index3D, Index3DBuilder, Index3DF32,
+};
 use parquet::arrow::{
     ProjectionMask,
     arrow_reader::{ParquetRecordBatchReaderBuilder, RowSelection},
@@ -21,7 +23,7 @@ use parquet::arrow::{
 use parquet::basic::{EdgeInterpolationAlgorithm, LogicalType, Type as ParquetPhysicalType};
 use parquet::file::metadata::{FileMetaData, ParquetMetaData};
 use parquet::file::reader::ChunkReader;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::geoarrow;
 use crate::geodetic::SphericalRadius;
@@ -29,16 +31,12 @@ use crate::manifest;
 use crate::validation;
 use crate::wkb::{self, GeometryBounds};
 use crate::{
-    AntimeridianPolicy, BuildRequest, ColumnCapabilities, ConvertRequest, CoordinateDims, CrsInfo,
-    DeclaredExtent, DiscoveryWarning, DuplicateFeatureRows, EdgeAlgorithm, EdgeModel,
-    EnvelopePolicy, FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRef,
-    FeatureRows, FileGeoMetadata, GeoArtifact, GeoArtifactManifest, GeoDiscovery, GeoError,
-    GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata, GeoQuery2D, GeometryColumn,
+    AntimeridianPolicy, ColumnCapabilities, CoordinateDims, CrsInfo, DeclaredExtent,
+    DiscoveryWarning, EdgeAlgorithm, EdgeModel, EnvelopePolicy, FileGeoMetadata,
+    GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D, GeoQuery3D, GeometryColumn,
     GeometryColumnInfo, GeometryEncoding, GeometryMetadataSource, GeometryProfile,
-    GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D, GeometrySelectionReason,
-    GeometrySelector, GeometryTypeSet, IndexBuildOptions, IndexDimsRequest, InspectRequest,
-    NativeGeospatialStatsReport, NonPlanarExactPolicy, NullPolicy, PayloadPlan, PropertyProjection,
-    RowBoundsSource, SelectionStatus, SpatialPredicate, StoragePrecision, ValidateRequest,
+    GeometrySelectionReason, GeometrySelector, GeometryTypeSet, NativeGeospatialStatsReport,
+    NonPlanarExactPolicy, NullPolicy, RowBoundsSource, SelectionStatus, SpatialPredicate,
     ValidationCode, ValidationReport, ValidationSeverity,
 };
 
@@ -227,7 +225,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn scan(&mut self, req: crate::ScanRequest) -> Result<GeometryScan, GeoError> {
+    pub fn scan(&mut self, req: ScanRequest) -> Result<GeometryScan, GeoError> {
         let state = self.select_state(&req.selector)?.clone();
         self.scan_selected(&state, req)
     }
@@ -253,7 +251,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError> {
-        let scan = self.scan(crate::ScanRequest {
+        let scan = self.scan(ScanRequest {
             selector: req.selector,
             dims: req.dims,
             nulls: req.nulls,
@@ -322,7 +320,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         out: &mut Vec<u8>,
     ) -> Result<GeoArtifact, GeoError> {
         let selector = req.selector.clone();
-        let scan = self.scan(crate::ScanRequest {
+        let scan = self.scan(ScanRequest {
             selector,
             dims: req.dims,
             nulls: req.nulls,
@@ -633,7 +631,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
             add_coordinate_aabb_warning(state, &mut issues);
 
             if req.exact && !validation::has_errors(&issues) {
-                match self.scan(crate::ScanRequest {
+                match self.scan(ScanRequest {
                     selector: req.selector.clone(),
                     dims: req.dims,
                     nulls: req.nulls,
@@ -984,7 +982,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     fn scan_selected(
         &mut self,
         state: &ColumnState,
-        req: crate::ScanRequest,
+        req: ScanRequest,
     ) -> Result<GeometryScan, GeoError> {
         let row_groups = self
             .builder
@@ -1130,7 +1128,7 @@ trait PayloadVec {
     fn payload_payloads(&self) -> Option<Vec<Vec<u8>>>;
 }
 
-impl PayloadVec for crate::ScanRequest {
+impl PayloadVec for ScanRequest {
     fn payload_payloads(&self) -> Option<Vec<Vec<u8>>> {
         (!matches!(self.payload, PayloadPlan::None)).then(Vec::new)
     }
@@ -1219,8 +1217,8 @@ fn scan_error_code(err: &GeoError) -> ValidationCode {
 struct ScanRequestForInspect;
 
 impl ScanRequestForInspect {
-    fn from_request(req: InspectRequest) -> crate::ScanRequest {
-        crate::ScanRequest {
+    fn from_request(req: InspectRequest) -> ScanRequest {
+        ScanRequest {
             selector: req.selector,
             dims: IndexDimsRequest::Auto,
             nulls: NullPolicy::Skip,
@@ -2870,4 +2868,683 @@ impl TrimAscii for Vec<u8> {
         }
         &self[start..end]
     }
+}
+
+/// Requested index dimensionality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexDimsRequest {
+    /// Infer dimensions.
+    Auto,
+    /// Force 2D envelopes.
+    D2,
+    /// Force 3D envelopes.
+    D3,
+}
+
+/// Stable reference back to a source feature.
+///
+/// # Example
+///
+/// ```rust
+/// use packed_spatial_index_geo::FeatureRef;
+///
+/// let feature = FeatureRef {
+///     row_number: 42,
+///     row_group: None,
+///     row_in_group: None,
+///     part: Some(1),
+///     feature_id: None,
+/// };
+/// assert_eq!(feature.row_number, 42);
+/// assert_eq!(feature.part, Some(1));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureRef {
+    /// Absolute source row number.
+    pub row_number: u64,
+    /// Source row group when known.
+    pub row_group: Option<u32>,
+    /// Row offset within the row group when known.
+    pub row_in_group: Option<u32>,
+    /// Split part for duplicated index entries.
+    pub part: Option<u16>,
+    /// Optional feature identifier.
+    pub feature_id: Option<String>,
+}
+
+impl FeatureRef {
+    /// Create a feature ref from an absolute source row number.
+    pub fn row_number(row_number: u64) -> Self {
+        Self {
+            row_number,
+            row_group: None,
+            row_in_group: None,
+            part: None,
+            feature_id: None,
+        }
+    }
+
+    pub(crate) fn row_in_group(row_number: u64, row_group: u32, row_in_group: u32) -> Self {
+        Self {
+            row_number,
+            row_group: Some(row_group),
+            row_in_group: Some(row_in_group),
+            part: None,
+            feature_id: None,
+        }
+    }
+}
+
+/// Payload to attach to converted artifact entries or scan results.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, ConvertRequest, PayloadPlan, PropertyProjection};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let bytes = dataset.convert(ConvertRequest {
+///     payload: PayloadPlan::FeatureJson {
+///         properties: PropertyProjection::AllNonGeometry,
+///     },
+///     ..ConvertRequest::default()
+/// })?;
+/// println!("{} bytes", bytes.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PayloadPlan {
+    /// Emit no payloads.
+    None,
+    /// Emit only fixed-width `FeatureRef` records.
+    RowRef,
+    /// Emit fixed-width `FeatureRef` records followed by WKB bytes.
+    RowWkb,
+    /// Emit GeoJSON Feature bytes with projected properties.
+    FeatureJson {
+        /// Property projection.
+        properties: PropertyProjection,
+    },
+}
+
+/// Property projection for `FeatureJson` payloads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PropertyProjection {
+    /// Emit an empty properties object.
+    None,
+    /// Emit all non-geometry columns.
+    AllNonGeometry,
+    /// Emit only these property columns.
+    Include(Vec<String>),
+    /// Emit all non-geometry columns except these.
+    Exclude(Vec<String>),
+}
+
+/// Geometry materialization mode for [`GeoDataset::read_features`](crate::GeoDataset::read_features).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometryReadMode {
+    /// Do not include geometry in the returned rows.
+    Omit,
+    /// Append a `geometry_wkb` binary column.
+    Wkb,
+}
+
+/// Output order for [`GeoDataset::read_features`](crate::GeoDataset::read_features).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeatureReadOrder {
+    /// Return rows sorted by source row number.
+    SourceOrder,
+    /// Return rows in the requested hit/feature order.
+    RequestOrder,
+}
+
+/// Duplicate handling for feature refs that point at the same source row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicateFeatureRows {
+    /// Return each source row once, keeping the first feature ref for that row.
+    DedupRows,
+    /// Return one output row per requested feature ref, including split parts.
+    KeepParts,
+}
+
+/// Request for [`GeoDataset::read_features`](crate::GeoDataset::read_features).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{
+///     open, Box2D, BuildRequest, FeatureReadRequest, GeoIndex,
+/// };
+///
+/// let mut indexed = open(File::open("cities.parquet")?)?;
+/// let GeoIndex::D2(index) = indexed.build(BuildRequest::default())? else {
+///     panic!("expected a 2D index");
+/// };
+/// let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+///
+/// let mut source = open(File::open("cities.parquet")?)?;
+/// let rows = source.read_features(FeatureReadRequest::from_features(hits))?;
+/// println!("{} source rows", rows.features.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeatureReadRequest {
+    /// Feature refs to read from the source Parquet file.
+    pub features: Vec<FeatureRef>,
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Property columns to project into the returned batch.
+    pub properties: PropertyProjection,
+    /// Optional geometry materialization.
+    pub geometry: GeometryReadMode,
+    /// Output row order.
+    pub order: FeatureReadOrder,
+    /// Duplicate source-row handling.
+    pub duplicates: DuplicateFeatureRows,
+    /// Optional source fingerprint expected by the caller or artifact manifest.
+    pub expected_source_fingerprint: Option<String>,
+}
+
+impl FeatureReadRequest {
+    /// Create a default read request from feature refs.
+    pub fn from_features(features: Vec<FeatureRef>) -> Self {
+        Self {
+            features,
+            ..Self::default()
+        }
+    }
+
+    /// Create a default read request from artifact hits.
+    pub fn from_hits(hits: Vec<crate::GeoHit>) -> Self {
+        Self {
+            features: hits.into_iter().map(|hit| hit.feature).collect(),
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for FeatureReadRequest {
+    fn default() -> Self {
+        Self {
+            features: Vec::new(),
+            selector: GeometrySelector::Default,
+            properties: PropertyProjection::AllNonGeometry,
+            geometry: GeometryReadMode::Omit,
+            order: FeatureReadOrder::SourceOrder,
+            duplicates: DuplicateFeatureRows::DedupRows,
+            expected_source_fingerprint: None,
+        }
+    }
+}
+
+/// Request for [`GeoDataset::filter_features`](crate::GeoDataset::filter_features).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{
+///     open, Box2D, FeatureFilterRequest, FeatureRef,
+/// };
+///
+/// let mut source = open(File::open("cities.parquet")?)?;
+/// let exact = source.filter_features(FeatureFilterRequest::intersects(
+///     vec![FeatureRef::row_number(42)],
+///     Box2D::new(-10.0, 35.0, 20.0, 60.0),
+/// ))?;
+/// println!("{} exact hits", exact.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeatureFilterRequest {
+    /// Candidate feature refs to filter against source geometry.
+    pub features: Vec<FeatureRef>,
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Query geometry.
+    pub query: GeoQuery2D,
+    /// Predicate to evaluate.
+    pub predicate: SpatialPredicate,
+    /// Non-planar edge handling.
+    pub non_planar: NonPlanarExactPolicy,
+    /// Optional source fingerprint expected by the caller or artifact manifest.
+    pub expected_source_fingerprint: Option<String>,
+}
+
+impl FeatureFilterRequest {
+    /// Create an `intersects` request from candidate feature refs and a 2D query.
+    pub fn intersects<Q: Into<GeoQuery2D>>(features: Vec<FeatureRef>, query: Q) -> Self {
+        Self {
+            features,
+            selector: GeometrySelector::Default,
+            query: query.into(),
+            predicate: SpatialPredicate::Intersects,
+            non_planar: NonPlanarExactPolicy::Reject,
+            expected_source_fingerprint: None,
+        }
+    }
+
+    /// Create an `intersects` request from artifact hits and a 2D query.
+    pub fn intersects_from_hits<Q: Into<GeoQuery2D>>(hits: Vec<crate::GeoHit>, query: Q) -> Self {
+        Self::intersects(hits.into_iter().map(|hit| hit.feature).collect(), query)
+    }
+}
+
+/// Rows fetched from a Parquet source for feature refs.
+///
+/// `features[i]` describes the source feature represented by row `i` in
+/// `batch`. The batch contains the requested property columns and, when
+/// requested, a `geometry_wkb` binary column.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, FeatureReadRequest, FeatureRef};
+///
+/// let mut source = open(File::open("cities.parquet")?)?;
+/// let rows = source.read_features(FeatureReadRequest::from_features(vec![
+///     FeatureRef {
+///         row_number: 42,
+///         row_group: None,
+///         row_in_group: None,
+///         part: None,
+///         feature_id: None,
+///     },
+/// ]))?;
+/// assert_eq!(rows.features.len(), rows.batch.num_rows());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct FeatureRows {
+    /// Feature refs aligned with returned batch rows.
+    pub features: Vec<FeatureRef>,
+    /// Projected source rows.
+    pub batch: RecordBatch,
+}
+
+/// Coordinate storage precision for converted artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoragePrecision {
+    /// Store coordinates as `f64`.
+    F64,
+    /// Store coordinates as `f32`; queries return a conservative superset.
+    F32,
+}
+
+/// Request for [`GeoDataset::inspect`](crate::GeoDataset::inspect).
+#[derive(Debug, Clone)]
+pub struct InspectRequest {
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Scan rows when metadata alone cannot provide exact profile details.
+    pub exact: bool,
+}
+
+impl Default for InspectRequest {
+    fn default() -> Self {
+        Self {
+            selector: GeometrySelector::Default,
+            exact: false,
+        }
+    }
+}
+
+/// Request for [`GeoDataset::scan`](crate::GeoDataset::scan).
+#[derive(Debug, Clone)]
+pub struct ScanRequest {
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Requested envelope dimensionality.
+    pub dims: IndexDimsRequest,
+    /// Null/empty geometry policy.
+    pub nulls: NullPolicy,
+    /// Envelope interpretation policy.
+    pub envelope: EnvelopePolicy,
+    /// Payloads to emit for each scanned entry.
+    pub payload: PayloadPlan,
+}
+
+impl Default for ScanRequest {
+    fn default() -> Self {
+        Self {
+            selector: GeometrySelector::Default,
+            dims: IndexDimsRequest::Auto,
+            nulls: NullPolicy::Error,
+            envelope: EnvelopePolicy::Planar,
+            payload: PayloadPlan::None,
+        }
+    }
+}
+
+/// Options passed to the core index builder.
+#[derive(Debug, Clone)]
+pub struct IndexBuildOptions {
+    /// Optional node size override.
+    pub node_size: Option<usize>,
+    /// Whether to use parallel build when supported by the core crate.
+    pub parallel: bool,
+}
+
+impl Default for IndexBuildOptions {
+    fn default() -> Self {
+        Self {
+            node_size: None,
+            parallel: true,
+        }
+    }
+}
+
+/// Request for [`GeoDataset::build`](crate::GeoDataset::build).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{
+///     open, BuildRequest, GeometrySelector, IndexDimsRequest, NullPolicy,
+/// };
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let index = dataset.build(BuildRequest {
+///     selector: GeometrySelector::Name("geometry".to_string()),
+///     dims: IndexDimsRequest::D2,
+///     nulls: NullPolicy::Skip,
+///     ..BuildRequest::default()
+/// })?;
+/// # let _ = index;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct BuildRequest {
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Requested index dimensionality.
+    pub dims: IndexDimsRequest,
+    /// Null/empty geometry policy.
+    pub nulls: NullPolicy,
+    /// Envelope interpretation policy.
+    pub envelope: EnvelopePolicy,
+    /// Core build options.
+    pub build: IndexBuildOptions,
+}
+
+impl Default for BuildRequest {
+    fn default() -> Self {
+        Self {
+            selector: GeometrySelector::Default,
+            dims: IndexDimsRequest::Auto,
+            nulls: NullPolicy::Error,
+            envelope: EnvelopePolicy::Planar,
+            build: IndexBuildOptions::default(),
+        }
+    }
+}
+
+/// Request for [`GeoDataset::convert`](crate::GeoDataset::convert) and
+/// [`GeoDataset::convert_into`](crate::GeoDataset::convert_into).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, ConvertRequest, StoragePrecision};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let bytes = dataset.convert(ConvertRequest {
+///     precision: StoragePrecision::F32,
+///     ..ConvertRequest::default()
+/// })?;
+/// std::fs::write("cities.psindex", bytes)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct ConvertRequest {
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Requested index dimensionality.
+    pub dims: IndexDimsRequest,
+    /// Null/empty geometry policy.
+    pub nulls: NullPolicy,
+    /// Envelope interpretation policy.
+    pub envelope: EnvelopePolicy,
+    /// Core build options.
+    pub build: IndexBuildOptions,
+    /// Artifact coordinate precision.
+    pub precision: StoragePrecision,
+    /// Payload plan.
+    pub payload: PayloadPlan,
+    /// Whether to use the stream-optimized interleaved artifact layout.
+    pub interleaved: bool,
+}
+
+impl Default for ConvertRequest {
+    fn default() -> Self {
+        Self {
+            selector: GeometrySelector::Default,
+            dims: IndexDimsRequest::Auto,
+            nulls: NullPolicy::Skip,
+            envelope: EnvelopePolicy::Planar,
+            build: IndexBuildOptions::default(),
+            precision: StoragePrecision::F64,
+            payload: PayloadPlan::RowWkb,
+            interleaved: true,
+        }
+    }
+}
+
+/// Request for [`GeoDataset::validate`](crate::GeoDataset::validate).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, ValidateRequest};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let report = dataset.validate(ValidateRequest {
+///     exact: true,
+///     ..ValidateRequest::default()
+/// })?;
+/// assert!(report.ok);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValidateRequest {
+    /// Geometry column selector.
+    pub selector: GeometrySelector,
+    /// Scan rows and validate scan/payload behavior instead of metadata only.
+    pub exact: bool,
+    /// Requested index dimensionality to validate.
+    pub dims: IndexDimsRequest,
+    /// Null/empty geometry policy to validate.
+    pub nulls: NullPolicy,
+    /// Envelope interpretation policy to validate.
+    pub envelope: EnvelopePolicy,
+    /// Payload plan to validate.
+    pub payload: PayloadPlan,
+}
+
+impl Default for ValidateRequest {
+    fn default() -> Self {
+        Self {
+            selector: GeometrySelector::Default,
+            exact: false,
+            dims: IndexDimsRequest::Auto,
+            nulls: NullPolicy::Skip,
+            envelope: EnvelopePolicy::Planar,
+            payload: PayloadPlan::RowWkb,
+        }
+    }
+}
+
+/// Result of scanning feature envelopes.
+#[derive(Debug, Clone)]
+pub enum GeometryScan {
+    /// 2D scan result.
+    D2(GeometryScan2D),
+    /// 3D scan result.
+    D3(GeometryScan3D),
+}
+
+/// 2D scan result.
+#[derive(Debug, Clone)]
+pub struct GeometryScan2D {
+    /// One bounding box per index entry.
+    pub boxes: Vec<Box2D>,
+    /// Feature reference for each box.
+    pub features: Vec<FeatureRef>,
+    /// Optional payload for each box.
+    pub payloads: Option<Vec<Vec<u8>>>,
+    /// Profile of the scanned column.
+    pub profile: GeometryProfile,
+}
+
+/// 3D scan result.
+#[derive(Debug, Clone)]
+pub struct GeometryScan3D {
+    /// One bounding box per index entry.
+    pub boxes: Vec<Box3D>,
+    /// Feature reference for each box.
+    pub features: Vec<FeatureRef>,
+    /// Optional payload for each box.
+    pub payloads: Option<Vec<Vec<u8>>>,
+    /// Profile of the scanned column.
+    pub profile: GeometryProfile,
+}
+
+/// In-memory geospatial index.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, Box2D, BuildRequest, GeoIndex};
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// match dataset.build(BuildRequest::default())? {
+///     GeoIndex::D2(index) => {
+///         let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+///         println!("{} candidate features", hits.len());
+///     }
+///     GeoIndex::D3(_) => println!("3D index"),
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub enum GeoIndex {
+    /// 2D index.
+    D2(GeoIndex2D),
+    /// 3D index.
+    D3(GeoIndex3D),
+}
+
+/// 2D in-memory geospatial index.
+pub struct GeoIndex2D {
+    /// Core index.
+    pub index: Index2D,
+    /// Feature reference per compact item id.
+    pub features: Vec<FeatureRef>,
+    /// Build metadata.
+    pub metadata: GeoIndexMetadata,
+}
+
+impl GeoIndex2D {
+    /// Search and return source feature references.
+    pub fn search_features<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        let boxes = query.into().candidate_boxes_2d()?;
+        let mut features = Vec::new();
+        // A single core search yields each item id at most once, so duplicates
+        // only arise across multiple candidate boxes (e.g. antimeridian splits).
+        // Fast-path the common single-box query with no dedup bookkeeping; for
+        // multi-box queries dedup by item id in O(1) via a set rather than the
+        // former O(K^2) `Vec::contains` scan.
+        if boxes.len() == 1 {
+            for id in self.index.search(boxes[0]) {
+                if let Some(feature) = self.features.get(id) {
+                    features.push(feature.clone());
+                }
+            }
+        } else {
+            let mut seen = std::collections::HashSet::new();
+            for bbox in boxes {
+                for id in self.index.search(bbox) {
+                    if seen.insert(id)
+                        && let Some(feature) = self.features.get(id)
+                    {
+                        features.push(feature.clone());
+                    }
+                }
+            }
+        }
+        Ok(features)
+    }
+
+    /// Access the underlying core index.
+    pub fn raw_index(&self) -> &Index2D {
+        &self.index
+    }
+}
+
+/// 3D in-memory geospatial index.
+pub struct GeoIndex3D {
+    /// Core index.
+    pub index: Index3D,
+    /// Feature reference per compact item id.
+    pub features: Vec<FeatureRef>,
+    /// Build metadata.
+    pub metadata: GeoIndexMetadata,
+}
+
+impl GeoIndex3D {
+    /// Search and return source feature references.
+    pub fn search_features<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        Ok(self
+            .index
+            .search(query.into().candidate_box_3d())
+            .into_iter()
+            .filter_map(|id| self.features.get(id).cloned())
+            .collect())
+    }
+
+    /// Access the underlying core index.
+    pub fn raw_index(&self) -> &Index3D {
+        &self.index
+    }
+}
+
+/// Metadata for a built in-memory index.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoIndexMetadata {
+    /// Profile of the indexed column.
+    pub profile: GeometryProfile,
+    /// Number of unique source features represented.
+    pub feature_count: usize,
+    /// Number of index entries.
+    pub index_entry_count: usize,
+    /// Whether one source row may map to multiple entries.
+    pub entries_may_duplicate_rows: bool,
+}
+
+/// Result metadata from converting to a `PSINDEX` artifact.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoArtifact {
+    /// Manifest embedded in the artifact.
+    pub manifest: GeoArtifactManifest,
+    /// Length of the generated byte buffer.
+    pub bytes_len: usize,
 }

@@ -1,4 +1,60 @@
-use crate::{GeoArtifactManifest, GeoError};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    AntimeridianPolicy, CoordinateDims, CrsInfo, EdgeModel, GeoError, GeometryEncoding, NullPolicy,
+    PayloadPlan, StoragePrecision,
+};
+
+/// Geospatial manifest embedded in a converted `PSINDEX` artifact.
+///
+/// # Example
+///
+/// ```no_run
+/// use packed_spatial_index_geo::read_geo_manifest;
+///
+/// let bytes = std::fs::read("cities.psindex")?;
+/// if let Some(manifest) = read_geo_manifest(&bytes)? {
+///     println!(
+///         "{}: {} features",
+///         manifest.selected_column,
+///         manifest.feature_count
+///     );
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoArtifactManifest {
+    /// Manifest schema version.
+    pub schema_version: u32,
+    /// Source format label.
+    pub source_format: String,
+    /// Stable source metadata fingerprint.
+    pub source_fingerprint: String,
+    /// Selected geometry column name.
+    pub selected_column: String,
+    /// CRS metadata.
+    pub crs: CrsInfo,
+    /// Edge model.
+    pub edges: EdgeModel,
+    /// Geometry encoding.
+    pub encoding: GeometryEncoding,
+    /// Coordinate dimensions.
+    pub dims: CoordinateDims,
+    /// Artifact coordinate precision.
+    pub storage_precision: StoragePrecision,
+    /// Null policy used during conversion.
+    pub null_policy: NullPolicy,
+    /// Antimeridian policy used during conversion.
+    pub antimeridian_policy: AntimeridianPolicy,
+    /// Payload plan used during conversion.
+    pub payload_plan: PayloadPlan,
+    /// Number of unique source features represented.
+    pub feature_count: usize,
+    /// Number of index entries.
+    pub index_entry_count: usize,
+    /// Whether one source row may map to multiple entries.
+    pub entries_may_duplicate_rows: bool,
+}
 
 pub(crate) const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
 pub(crate) const FORMAT_VERSION: u64 = 2;

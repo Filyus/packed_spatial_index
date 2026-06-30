@@ -1,0 +1,553 @@
+use serde::{Deserialize, Serialize};
+
+/// Source that made a geometry column discoverable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometryMetadataSource {
+    /// GeoParquet `geo` file metadata.
+    GeoParquet,
+    /// Apache Parquet native `GEOMETRY` or `GEOGRAPHY` logical type.
+    ParquetGeospatial,
+}
+
+/// Geometry encoding advertised by metadata or discovered from native Parquet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "encoding", rename_all = "snake_case")]
+pub enum GeometryEncoding {
+    /// WKB bytes.
+    Wkb {
+        /// WKB dialect.
+        flavor: WkbFlavor,
+    },
+    /// GeoArrow nested/list encoding.
+    GeoArrow {
+        /// Geometry kind.
+        kind: GeometryKind,
+        /// Coordinate array layout.
+        layout: CoordinateLayout,
+    },
+    /// Native Parquet `GEOMETRY` logical type.
+    ParquetGeometry,
+    /// Native Parquet `GEOGRAPHY` logical type.
+    ParquetGeography {
+        /// Declared geography edge interpolation algorithm.
+        algorithm: EdgeAlgorithm,
+    },
+    /// Unknown or unsupported encoding string.
+    Unknown(String),
+}
+
+impl GeometryEncoding {
+    pub(crate) fn is_wkb_payload(&self) -> bool {
+        matches!(
+            self,
+            GeometryEncoding::Wkb { .. }
+                | GeometryEncoding::ParquetGeometry
+                | GeometryEncoding::ParquetGeography { .. }
+        )
+    }
+
+    pub(crate) fn is_native_parquet(&self) -> bool {
+        matches!(
+            self,
+            GeometryEncoding::ParquetGeometry | GeometryEncoding::ParquetGeography { .. }
+        )
+    }
+}
+
+impl std::fmt::Display for GeometryEncoding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GeometryEncoding::Wkb { flavor } => write!(f, "{flavor}"),
+            GeometryEncoding::GeoArrow { kind, .. } => write!(f, "{kind}"),
+            GeometryEncoding::ParquetGeometry => f.write_str("GEOMETRY"),
+            GeometryEncoding::ParquetGeography {
+                algorithm: EdgeAlgorithm::Spherical,
+            } => f.write_str("GEOGRAPHY(SPHERICAL)"),
+            GeometryEncoding::ParquetGeography { algorithm } => {
+                write!(f, "GEOGRAPHY({algorithm})")
+            }
+            GeometryEncoding::Unknown(value) => f.write_str(value),
+        }
+    }
+}
+
+/// WKB dialect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WkbFlavor {
+    /// ISO WKB.
+    Iso,
+    /// Extended WKB.
+    Ewkb,
+    /// Not specified.
+    Unknown,
+}
+
+impl std::fmt::Display for WkbFlavor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WkbFlavor::Iso => f.write_str("WKB"),
+            WkbFlavor::Ewkb => f.write_str("EWKB"),
+            WkbFlavor::Unknown => f.write_str("WKB"),
+        }
+    }
+}
+
+/// Geometry kind for GeoArrow and profile metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometryKind {
+    /// Point geometry.
+    Point,
+    /// LineString geometry.
+    LineString,
+    /// Polygon geometry.
+    Polygon,
+    /// MultiPoint geometry.
+    MultiPoint,
+    /// MultiLineString geometry.
+    MultiLineString,
+    /// MultiPolygon geometry.
+    MultiPolygon,
+    /// Unknown geometry kind.
+    Unknown,
+}
+
+impl GeometryKind {
+    pub(crate) fn from_geoarrow_encoding(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "point" => Self::Point,
+            "linestring" => Self::LineString,
+            "polygon" => Self::Polygon,
+            "multipoint" => Self::MultiPoint,
+            "multilinestring" => Self::MultiLineString,
+            "multipolygon" => Self::MultiPolygon,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub(crate) fn list_depth(self) -> Option<usize> {
+        match self {
+            GeometryKind::Point => Some(0),
+            GeometryKind::LineString | GeometryKind::MultiPoint => Some(1),
+            GeometryKind::Polygon | GeometryKind::MultiLineString => Some(2),
+            GeometryKind::MultiPolygon => Some(3),
+            GeometryKind::Unknown => None,
+        }
+    }
+}
+
+impl std::fmt::Display for GeometryKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GeometryKind::Point => f.write_str("point"),
+            GeometryKind::LineString => f.write_str("linestring"),
+            GeometryKind::Polygon => f.write_str("polygon"),
+            GeometryKind::MultiPoint => f.write_str("multipoint"),
+            GeometryKind::MultiLineString => f.write_str("multilinestring"),
+            GeometryKind::MultiPolygon => f.write_str("multipolygon"),
+            GeometryKind::Unknown => f.write_str("unknown"),
+        }
+    }
+}
+
+/// Coordinate array layout for GeoArrow encodings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinateLayout {
+    /// Separate `x`, `y`, optional `z` / `m` fields.
+    Struct,
+    /// Fixed-size-list style interleaved coordinates.
+    Interleaved,
+    /// Layout is not known or not supported.
+    Unknown,
+}
+
+/// Coordinate dimensionality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinateDims {
+    /// X/Y coordinates.
+    Xy,
+    /// X/Y/Z coordinates.
+    Xyz,
+    /// X/Y/M coordinates.
+    Xym,
+    /// X/Y/Z/M coordinates.
+    Xyzm,
+    /// Dimensions are not known from metadata.
+    Unknown,
+}
+
+impl CoordinateDims {
+    pub(crate) fn has_z(self) -> bool {
+        matches!(self, CoordinateDims::Xyz | CoordinateDims::Xyzm)
+    }
+
+    pub(crate) fn has_m(self) -> bool {
+        matches!(self, CoordinateDims::Xym | CoordinateDims::Xyzm)
+    }
+
+    pub(crate) fn index_dims(self) -> Option<u8> {
+        match self {
+            CoordinateDims::Xy | CoordinateDims::Xym => Some(2),
+            CoordinateDims::Xyz | CoordinateDims::Xyzm => Some(3),
+            CoordinateDims::Unknown => None,
+        }
+    }
+
+    pub(crate) fn merge(self, other: Self) -> Self {
+        use CoordinateDims::{Unknown, Xy, Xym, Xyz, Xyzm};
+        match (self, other) {
+            (Unknown, v) | (v, Unknown) => v,
+            (Xyzm, _) | (_, Xyzm) => Xyzm,
+            (Xyz, Xym) | (Xym, Xyz) => Xyzm,
+            (Xyz, _) | (_, Xyz) => Xyz,
+            (Xym, _) | (_, Xym) => Xym,
+            (Xy, Xy) => Xy,
+        }
+    }
+
+    pub(crate) fn from_geometry_types(types: &[String]) -> Self {
+        if types.is_empty() {
+            return Self::Unknown;
+        }
+        let mut dims = Self::Xy;
+        for ty in types {
+            let lower = ty.to_ascii_lowercase();
+            let one = if lower.ends_with(" zm") {
+                Self::Xyzm
+            } else if lower.ends_with(" z") {
+                Self::Xyz
+            } else if lower.ends_with(" m") {
+                Self::Xym
+            } else {
+                Self::Xy
+            };
+            dims = dims.merge(one);
+        }
+        dims
+    }
+}
+
+impl std::fmt::Display for CoordinateDims {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CoordinateDims::Xy => f.write_str("XY"),
+            CoordinateDims::Xyz => f.write_str("XYZ"),
+            CoordinateDims::Xym => f.write_str("XYM"),
+            CoordinateDims::Xyzm => f.write_str("XYZM"),
+            CoordinateDims::Unknown => f.write_str("unknown"),
+        }
+    }
+}
+
+/// Edge interpolation algorithm for native Parquet `GEOGRAPHY`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeAlgorithm {
+    /// Spherical interpolation.
+    Spherical,
+    /// Vincenty interpolation.
+    Vincenty,
+    /// Thomas interpolation.
+    Thomas,
+    /// Andoyer interpolation.
+    Andoyer,
+    /// Karney interpolation.
+    Karney,
+    /// Unknown interpolation algorithm.
+    Unknown,
+}
+
+impl std::fmt::Display for EdgeAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EdgeAlgorithm::Spherical => f.write_str("SPHERICAL"),
+            EdgeAlgorithm::Vincenty => f.write_str("VINCENTY"),
+            EdgeAlgorithm::Thomas => f.write_str("THOMAS"),
+            EdgeAlgorithm::Andoyer => f.write_str("ANDOYER"),
+            EdgeAlgorithm::Karney => f.write_str("KARNEY"),
+            EdgeAlgorithm::Unknown => f.write_str("UNKNOWN"),
+        }
+    }
+}
+
+/// Edge model used by the geometry column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeModel {
+    /// Planar coordinate edges.
+    Planar,
+    /// Great-circle/spherical geography edges.
+    Spherical,
+    /// Ellipsoidal geography edges.
+    Ellipsoidal {
+        /// Declared ellipsoidal interpolation algorithm.
+        algorithm: EdgeAlgorithm,
+    },
+    /// Edge model is not known.
+    Unknown,
+}
+
+/// CRS metadata for a geometry column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CrsInfo {
+    /// CRS was present as structured JSON metadata.
+    Present {
+        /// CRS JSON value.
+        value: serde_json::Value,
+    },
+    /// CRS was present as a string.
+    PresentString {
+        /// CRS string.
+        value: String,
+    },
+    /// CRS was implied by the format default.
+    ImpliedDefault {
+        /// Implied CRS value.
+        value: String,
+    },
+    /// Metadata explicitly declares no CRS.
+    ExplicitNone,
+    /// CRS metadata is absent.
+    Missing,
+    /// CRS state is unknown.
+    Unknown,
+}
+
+impl CrsInfo {
+    pub(crate) fn as_index_crs(&self) -> Option<String> {
+        match self {
+            CrsInfo::Present { value } => Some(value.to_string()),
+            CrsInfo::PresentString { value } | CrsInfo::ImpliedDefault { value } => {
+                Some(value.clone())
+            }
+            CrsInfo::ExplicitNone | CrsInfo::Missing | CrsInfo::Unknown => None,
+        }
+    }
+}
+
+/// Geometry type names known for a column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeometryTypeSet {
+    /// Type names such as `"Point"`, `"Polygon"`, or `"Point Z"`.
+    pub types: Vec<String>,
+}
+
+impl GeometryTypeSet {
+    pub(crate) fn unknown() -> Self {
+        Self { types: Vec::new() }
+    }
+}
+
+/// Declared dataset or column extent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeclaredExtent {
+    /// Extent values as declared by metadata.
+    pub values: Vec<f64>,
+}
+
+/// Source used to produce per-row bounds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowBoundsSource {
+    /// GeoParquet bbox covering column.
+    Covering,
+    /// Envelope computed from WKB bytes.
+    WkbEnvelope,
+    /// Envelope computed by scanning GeoArrow arrays.
+    GeoArrowScan,
+}
+
+/// Operations supported by a geometry column.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnCapabilities {
+    /// Column can be scanned into per-feature envelopes.
+    pub can_scan_envelopes: bool,
+    /// Column can build an in-memory feature index.
+    pub can_build_index: bool,
+    /// Column can emit `RowWkb` payloads.
+    pub can_emit_row_wkb: bool,
+    /// Column can emit `FeatureJson` payloads.
+    pub can_emit_feature_json: bool,
+}
+
+/// File-level geospatial metadata summary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileGeoMetadata {
+    /// GeoParquet metadata version, if present.
+    pub geoparquet_version: Option<String>,
+    /// GeoParquet primary column name, if present.
+    pub geoparquet_primary_column: Option<String>,
+    /// Whether the file contains GeoParquet `geo` metadata.
+    pub has_geoparquet_metadata: bool,
+}
+
+/// Metadata-only discovery result for a dataset.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoDiscovery {
+    /// Number of rows in the Parquet file.
+    pub num_rows: u64,
+    /// File-level metadata.
+    pub file_metadata: FileGeoMetadata,
+    /// Usable geometry columns.
+    pub columns: Vec<GeometryColumnInfo>,
+    /// Default selection status.
+    pub default_selection: SelectionStatus,
+    /// Non-fatal discovery warnings.
+    pub warnings: Vec<DiscoveryWarning>,
+}
+
+/// Metadata and capabilities for one geometry column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeometryColumnInfo {
+    /// Column name.
+    pub name: String,
+    /// Metadata source.
+    pub source: GeometryMetadataSource,
+    /// Geometry encoding.
+    pub encoding: GeometryEncoding,
+    /// CRS metadata.
+    pub crs: CrsInfo,
+    /// Edge model.
+    pub edges: EdgeModel,
+    /// Coordinate dimensions known from metadata.
+    pub coordinate_dims: CoordinateDims,
+    /// Geometry type names known from metadata.
+    pub geometry_types: GeometryTypeSet,
+    /// Declared extent, if any.
+    pub extent: Option<DeclaredExtent>,
+    /// Available row-bounds sources.
+    pub row_bounds: Vec<RowBoundsSource>,
+    /// Supported operations.
+    pub capabilities: ColumnCapabilities,
+}
+
+/// Result of resolving a selector or default selection policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SelectionStatus {
+    /// A column was selected.
+    Selected {
+        /// Selected column name.
+        column: String,
+        /// Why the column was selected.
+        reason: GeometrySelectionReason,
+    },
+    /// Several candidates exist and no safe default is available.
+    Ambiguous {
+        /// Candidate column names.
+        columns: Vec<String>,
+    },
+    /// Explicit column selection referenced a missing column.
+    Missing {
+        /// Missing column name.
+        column: String,
+    },
+    /// No usable geometry columns were found.
+    None,
+}
+
+/// Why a geometry column was selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometrySelectionReason {
+    /// Explicit selector.
+    Explicit,
+    /// GeoParquet primary column.
+    GeoParquetPrimary,
+    /// Only native Parquet geospatial column.
+    SingleNativeParquet,
+    /// First usable column.
+    FirstUsable,
+}
+
+/// Non-fatal issue found during discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiscoveryWarning {
+    /// GeoParquet primary column was referenced but not usable.
+    GeoParquetPrimaryMissing {
+        /// Column name.
+        column: String,
+    },
+    /// GeoParquet column encoding is not supported.
+    UnsupportedGeoParquetEncoding {
+        /// Column name.
+        column: String,
+        /// Encoding string.
+        encoding: String,
+    },
+    /// Native Parquet column looked geospatial but did not satisfy reader rules.
+    UnsupportedNativeColumn {
+        /// Column name.
+        column: String,
+        /// Reason it was ignored.
+        reason: String,
+    },
+}
+
+/// Concrete selected geometry column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeometryColumn {
+    /// Column name.
+    pub name: String,
+    /// Full column metadata.
+    pub info: GeometryColumnInfo,
+}
+
+/// Geometry column selector.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{open, GeometrySelector};
+///
+/// let dataset = open(File::open("cities.parquet")?)?;
+/// let column = dataset.select(GeometrySelector::Name("geometry".to_string()))?;
+/// println!("selected {}", column.name);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum GeometrySelector {
+    /// GeoParquet primary, else exactly one native Parquet geospatial column.
+    Default,
+    /// Select by column name.
+    Name(String),
+    /// Select the GeoParquet primary column.
+    GeoParquetPrimary,
+    /// Select only if exactly one native Parquet geospatial column exists.
+    SingleNativeParquet,
+    /// Select the first usable geometry column.
+    FirstUsable,
+}
+
+/// Profile of a selected geometry column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeometryProfile {
+    /// Selected column name.
+    pub column: String,
+    /// Metadata source.
+    pub source: GeometryMetadataSource,
+    /// Geometry encoding.
+    pub encoding: GeometryEncoding,
+    /// CRS metadata.
+    pub crs: CrsInfo,
+    /// Edge model.
+    pub edges: EdgeModel,
+    /// Coordinate dimensions.
+    pub coordinate_dims: CoordinateDims,
+    /// Geometry types.
+    pub geometry_types: GeometryTypeSet,
+    /// Declared extent.
+    pub extent: Option<DeclaredExtent>,
+    /// Row-bounds sources used or available.
+    pub row_bounds: Vec<RowBoundsSource>,
+    /// Source row count.
+    pub num_rows: u64,
+}

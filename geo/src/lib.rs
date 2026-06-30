@@ -3,11 +3,12 @@
 
 mod artifact;
 mod dataset;
+mod discovery;
 mod error;
 mod geoarrow;
 mod geodetic;
 mod manifest;
-mod types;
+mod query;
 mod validation;
 mod wkb;
 
@@ -16,13 +17,29 @@ pub use artifact::{
     open_geo_index_with_limits,
 };
 pub use dataset::{
-    FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN,
-    FEATURE_WKB_CONTENT_TYPE, GeoDataset, decode_feature_ref_payload, decode_feature_wkb_payload,
-    open,
+    BuildRequest, ConvertRequest, DuplicateFeatureRows, FEATURE_JSON_CONTENT_TYPE,
+    FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE,
+    FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRef, FeatureRows,
+    GeoArtifact, GeoDataset, GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata, GeometryReadMode,
+    GeometryScan, GeometryScan2D, GeometryScan3D, IndexBuildOptions, IndexDimsRequest,
+    InspectRequest, PayloadPlan, PropertyProjection, ScanRequest, StoragePrecision,
+    ValidateRequest, decode_feature_ref_payload, decode_feature_wkb_payload, open,
+};
+pub use discovery::{
+    ColumnCapabilities, CoordinateDims, CoordinateLayout, CrsInfo, DeclaredExtent,
+    DiscoveryWarning, EdgeAlgorithm, EdgeModel, FileGeoMetadata, GeoDiscovery, GeometryColumn,
+    GeometryColumnInfo, GeometryEncoding, GeometryKind, GeometryMetadataSource, GeometryProfile,
+    GeometrySelectionReason, GeometrySelector, GeometryTypeSet, RowBoundsSource, SelectionStatus,
+    WkbFlavor,
 };
 pub use error::GeoError;
-pub use manifest::read_geo_manifest;
-pub use types::*;
+pub use geodetic::{AntimeridianPolicy, EnvelopePolicy, NullPolicy};
+pub use manifest::{GeoArtifactManifest, read_geo_manifest};
+pub use query::{GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy, SpatialPredicate};
+pub use validation::{
+    NativeBoundingBox, NativeGeospatialStatsReport, RowGroupGeospatialStats, ValidationCode,
+    ValidationIssue, ValidationReport, ValidationSeverity,
+};
 
 // Re-export `geo_types` so callers can build `GeoQuery2D::Polygon` queries
 // without adding `geo-types` as a second direct dependency.

@@ -1,4 +1,40 @@
 use crate::{Box2D, GeoError};
+use serde::{Deserialize, Serialize};
+
+/// Handling for null or empty geometries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NullPolicy {
+    /// Return an error.
+    Error,
+    /// Skip the geometry and preserve source row numbers in `FeatureRef`.
+    Skip,
+}
+
+/// How to handle envelopes crossing the antimeridian.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AntimeridianPolicy {
+    /// Return an error for antimeridian-crossing envelopes.
+    Reject,
+    /// Split the feature into two index entries.
+    Split,
+    /// Expand the longitude interval to the whole world.
+    ExpandToWorld,
+}
+
+/// Envelope interpretation policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EnvelopePolicy {
+    /// Treat coordinates as ordinary planar axes.
+    Planar,
+    /// Treat x as longitude and apply an antimeridian policy.
+    Geographic {
+        /// Antimeridian handling.
+        antimeridian: AntimeridianPolicy,
+    },
+}
 
 pub(crate) const EARTH_RADIUS_METRES: f64 = 6_371_008.8;
 

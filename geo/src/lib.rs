@@ -5,6 +5,7 @@ mod artifact;
 mod dataset;
 mod discovery;
 mod error;
+mod filter;
 mod geoarrow;
 mod geodetic;
 mod manifest;
@@ -18,12 +19,12 @@ pub use artifact::{
 };
 pub use dataset::{
     BuildRequest, ConvertRequest, DuplicateFeatureRows, FEATURE_JSON_CONTENT_TYPE,
-    FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE,
-    FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRef, FeatureRows,
-    GeoArtifact, GeoDataset, GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata, GeometryReadMode,
-    GeometryScan, GeometryScan2D, GeometryScan3D, IndexBuildOptions, IndexDimsRequest,
-    InspectRequest, PayloadPlan, PropertyProjection, ScanRequest, StoragePrecision,
-    ValidateRequest, decode_feature_ref_payload, decode_feature_wkb_payload, open,
+    FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE, FeatureReadOrder,
+    FeatureReadRequest, FeatureRef, FeatureRows, GeoArtifact, GeoDataset, GeoIndex, GeoIndex2D,
+    GeoIndex3D, GeoIndexMetadata, GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D,
+    IndexBuildOptions, IndexDimsRequest, InspectRequest, PayloadPlan, PropertyProjection,
+    ScanRequest, StoragePrecision, ValidateRequest, decode_feature_ref_payload,
+    decode_feature_wkb_payload, open,
 };
 pub use discovery::{
     ColumnCapabilities, CoordinateDims, CoordinateLayout, CrsInfo, DeclaredExtent,
@@ -33,6 +34,7 @@ pub use discovery::{
     WkbFlavor,
 };
 pub use error::GeoError;
+pub use filter::FeatureFilterRequest;
 pub use geodetic::{AntimeridianPolicy, EnvelopePolicy, NullPolicy};
 pub use manifest::{GeoArtifactManifest, read_geo_manifest};
 pub use query::{GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy, SpatialPredicate};

@@ -9,9 +9,9 @@ use packed_spatial_index::{
 
 use crate::{
     FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy,
-    PayloadPlan, SpatialPredicate, StoragePrecision,
-    dataset::{decode_geo_geometry, exact_predicate_matches, prepare_filter_query},
-    decode_feature_ref_payload, decode_feature_wkb_payload,
+    PayloadPlan, SpatialPredicate, StoragePrecision, decode_feature_ref_payload,
+    decode_feature_wkb_payload,
+    filter::{decode_geo_geometry, exact_predicate_matches, prepare_filter_query},
     manifest::{
         CHUNK_ENTRY_LEN, FORMAT_MAGIC, FORMAT_VERSION, SUPERBLOCK_LEN, TAG_GEO_MANIFEST,
         read_geo_manifest_content, read_u32, read_u64,

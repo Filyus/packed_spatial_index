@@ -209,8 +209,9 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// any [`Overlaps2D`] shape (a polygon, triangle, …), not just a box.
     ///
     /// Subtrees whose node box falls outside `query` are pruned during the
-    /// streamed descent, so a region query touches (and fetches) only the leaves
-    /// it overlaps — fewer reads than its bounding box would take.
+    /// streamed descent, so a region query fetches only the leaves it overlaps —
+    /// less data than its bounding box. (Pruning can fragment the coalesced runs,
+    /// so the range-request count is shape-dependent; the bytes always shrink.)
     pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps2D,

@@ -185,7 +185,7 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     ///
     /// A [`GeoQuery2D::Polygon`] query prunes subtrees that fall outside the
     /// polygon during the streamed descent, so it fetches only the leaves the
-    /// polygon overlaps — fewer reads than its bounding box. Box and
+    /// polygon overlaps — less data than its bounding box. Box and
     /// spherical-radius queries narrow by candidate bounding boxes.
     pub fn search_hits<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<GeoHit>, GeoError> {
         let query = query.into();

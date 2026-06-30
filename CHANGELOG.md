@@ -13,8 +13,10 @@ All notable changes to this crate are documented here.
   `search_payloads_region` / `visit_payloads_region`, taking any `Overlaps2D` /
   `Overlaps3D` shape (polygon, triangle, frustum, …) instead of only a box.
   Subtrees outside the query shape are pruned during the streamed descent, so a
-  region fetches only the leaves it overlaps — fewer reads than its bounding box,
-  the key win for out-of-core / remote region queries.
+  region fetches only the leaves it overlaps — less data than its bounding box,
+  the key win for out-of-core / remote region queries. (Pruning can fragment the
+  coalesced runs, so the range-request count is shape-dependent; the bytes always
+  shrink.)
 
 ## [0.19.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.18.1...psi-v0.19.0) - 2026-06-28
 

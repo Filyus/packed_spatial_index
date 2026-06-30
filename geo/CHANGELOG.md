@@ -11,10 +11,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 - A `GeoQuery2D::Polygon` query passed to `GeoArtifactIndex2D::search_hits` now
   prunes subtrees that fall outside the polygon during the streamed descent (via
   the core's new streaming region queries), so it fetches only the leaves the
-  polygon overlaps — fewer reads than its bounding box, the win for polygon
-  queries over a remote artifact. For point data the result is already the exact
-  in-polygon set; `filter_hits` remains the exact step for line / polygon
-  geometries.
+  polygon overlaps — less data than its bounding box (e.g. ~50–80% fewer bytes at
+  high rejection), the win for polygon queries over a remote artifact. For point
+  data the result is already the exact in-polygon set; `filter_hits` remains the
+  exact step for line / polygon geometries.
 
 ## [0.13.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.12.0...psi-geo-v0.13.0) - 2026-06-30
 

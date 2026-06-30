@@ -9,6 +9,9 @@ repository = "https://github.com/Filyus/packed_spatial_index"
 readme = "README.md"
 keywords = ["geoparquet", "spatial", "rtree", "geoarrow", "index"]
 categories = ["science::geo", "data-structures"]
+# Dev-only verification scripts (e.g. the pyarrow cross-check) stay out of the
+# published crate.
+exclude = ["/scripts/"]
 
 [dependencies]
 # Query/build engine. `stream` + `f32-storage` so the converter can emit compact

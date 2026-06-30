@@ -25,14 +25,15 @@ use crate::discovery::{self, ColumnState, GeoParquetBboxCovering};
 use crate::filter;
 use crate::geoarrow;
 use crate::manifest;
+use crate::payload;
 use crate::validation;
 use crate::wkb::{self, GeometryBounds};
 use crate::{
     AntimeridianPolicy, CoordinateDims, DiscoveryWarning, EdgeModel, EnvelopePolicy,
-    FeatureFilterRequest, GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D, GeoQuery3D,
-    GeometryColumn, GeometryEncoding, GeometryMetadataSource, GeometryProfile,
+    FeatureFilterRequest, FeatureRef, GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D,
+    GeoQuery3D, GeometryColumn, GeometryEncoding, GeometryMetadataSource, GeometryProfile,
     GeometrySelectionReason, GeometrySelector, NativeGeospatialStatsReport, NullPolicy,
-    SelectionStatus, ValidationCode, ValidationReport, ValidationSeverity,
+    PayloadPlan, SelectionStatus, ValidationCode, ValidationReport, ValidationSeverity,
 };
 
 /// Content type used for [`PayloadPlan::RowRef`](crate::PayloadPlan::RowRef)
@@ -67,7 +68,7 @@ pub fn open<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoErr
     let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
     let native_stats = validation::native_geospatial_stats(builder.metadata());
     let (discovery, states) = discovery::discover_metadata(builder.metadata())?;
-    let source_fingerprint = source_fingerprint(builder.metadata());
+    let source_fingerprint = payload::source_fingerprint(builder.metadata());
     let schema_columns = builder
         .schema()
         .fields()
@@ -264,9 +265,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                 }
                 let metadata = GeoIndexMetadata {
                     profile: scan.profile,
-                    feature_count: unique_feature_count(&scan.features),
+                    feature_count: payload::unique_feature_count(&scan.features),
                     index_entry_count: scan.boxes.len(),
-                    entries_may_duplicate_rows: entries_may_duplicate_rows(&scan.features),
+                    entries_may_duplicate_rows: payload::entries_may_duplicate_rows(&scan.features),
                 };
                 GeoIndex::D2(GeoIndex2D {
                     index: builder.finish()?,
@@ -281,9 +282,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                 }
                 let metadata = GeoIndexMetadata {
                     profile: scan.profile,
-                    feature_count: unique_feature_count(&scan.features),
+                    feature_count: payload::unique_feature_count(&scan.features),
                     index_entry_count: scan.boxes.len(),
-                    entries_may_duplicate_rows: entries_may_duplicate_rows(&scan.features),
+                    entries_may_duplicate_rows: payload::entries_may_duplicate_rows(&scan.features),
                 };
                 GeoIndex::D3(GeoIndex3D {
                     index: builder.finish()?,
@@ -343,9 +344,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                 artifact_manifest(
                     &scan.profile,
                     &req,
-                    unique_feature_count(&scan.features),
+                    payload::unique_feature_count(&scan.features),
                     scan.boxes.len(),
-                    entries_may_duplicate_rows(&scan.features),
+                    payload::entries_may_duplicate_rows(&scan.features),
                     &self.source_fingerprint,
                 )
             }
@@ -366,9 +367,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                 artifact_manifest(
                     &scan.profile,
                     &req,
-                    unique_feature_count(&scan.features),
+                    payload::unique_feature_count(&scan.features),
                     scan.boxes.len(),
-                    entries_may_duplicate_rows(&scan.features),
+                    payload::entries_may_duplicate_rows(&scan.features),
                     &self.source_fingerprint,
                 )
             }
@@ -1043,8 +1044,8 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                         properties,
                         &property_columns,
                     )?),
-                    PayloadPlan::RowRef => Some(encode_feature_ref(&feature)),
-                    PayloadPlan::RowWkb => Some(encode_feature_wkb(
+                    PayloadPlan::RowRef => Some(payload::encode_feature_ref(&feature)),
+                    PayloadPlan::RowWkb => Some(payload::encode_feature_wkb(
                         &feature,
                         wkb.as_deref().ok_or_else(|| {
                             GeoError::UnsupportedEncoding(format!(
@@ -2224,99 +2225,6 @@ fn row_properties_json(
     Ok(value)
 }
 
-fn encode_feature_ref(feature: &FeatureRef) -> Vec<u8> {
-    let mut out = Vec::with_capacity(FEATURE_REF_RECORD_LEN);
-    out.extend_from_slice(&feature.row_number.to_le_bytes());
-    out.extend_from_slice(&feature.row_group.unwrap_or(u32::MAX).to_le_bytes());
-    out.extend_from_slice(&feature.row_in_group.unwrap_or(u32::MAX).to_le_bytes());
-    out.extend_from_slice(&feature.part.unwrap_or(u16::MAX).to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out
-}
-
-fn encode_feature_wkb(feature: &FeatureRef, wkb: &[u8]) -> Vec<u8> {
-    let mut out = encode_feature_ref(feature);
-    out.extend_from_slice(wkb);
-    out
-}
-
-/// Decode a fixed-width [`FeatureRef`] payload.
-///
-/// Returns `None` if the payload is shorter than [`FEATURE_REF_RECORD_LEN`].
-pub fn decode_feature_ref_payload(payload: &[u8]) -> Option<FeatureRef> {
-    if payload.len() < FEATURE_REF_RECORD_LEN {
-        return None;
-    }
-    let row_number = u64::from_le_bytes(payload[0..8].try_into().ok()?);
-    let row_group = decode_u32_option(payload[8..12].try_into().ok()?);
-    let row_in_group = decode_u32_option(payload[12..16].try_into().ok()?);
-    let part = decode_u16_option(payload[16..18].try_into().ok()?);
-    Some(FeatureRef {
-        row_number,
-        row_group,
-        row_in_group,
-        part,
-        feature_id: None,
-    })
-}
-
-/// Decode a [`FeatureRef`] followed by WKB bytes.
-///
-/// This is the payload shape generated by [`PayloadPlan::RowWkb`]. Returns
-/// `None` when the fixed feature-ref prefix is truncated.
-pub fn decode_feature_wkb_payload(payload: &[u8]) -> Option<(FeatureRef, &[u8])> {
-    let feature = decode_feature_ref_payload(payload)?;
-    Some((feature, &payload[FEATURE_REF_RECORD_LEN..]))
-}
-
-fn decode_u32_option(bytes: [u8; 4]) -> Option<u32> {
-    match u32::from_le_bytes(bytes) {
-        u32::MAX => None,
-        value => Some(value),
-    }
-}
-
-fn decode_u16_option(bytes: [u8; 2]) -> Option<u16> {
-    match u16::from_le_bytes(bytes) {
-        u16::MAX => None,
-        value => Some(value),
-    }
-}
-
-fn unique_feature_count(features: &[FeatureRef]) -> usize {
-    features
-        .iter()
-        .map(|feature| feature.row_number)
-        .collect::<HashSet<_>>()
-        .len()
-}
-
-fn entries_may_duplicate_rows(features: &[FeatureRef]) -> bool {
-    let mut seen = HashSet::new();
-    features
-        .iter()
-        .any(|feature| !seen.insert(feature.row_number))
-}
-
-fn source_fingerprint(meta: &ParquetMetaData) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    hash = fnv(hash, &meta.file_metadata().num_rows().to_le_bytes());
-    for col in meta.file_metadata().schema_descr().columns() {
-        hash = fnv(hash, col.path().string().as_bytes());
-        hash = fnv(hash, format!("{:?}", col.logical_type_ref()).as_bytes());
-    }
-    format!("fnv64:{hash:016x}")
-}
-
-fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
-    for b in bytes {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(0x100_0000_01b3);
-    }
-    hash
-}
-
 trait TrimAscii {
     fn trim_ascii(&self) -> &[u8];
 }
@@ -2345,94 +2253,6 @@ pub enum IndexDimsRequest {
     D2,
     /// Force 3D envelopes.
     D3,
-}
-
-/// Stable reference back to a source feature.
-///
-/// # Example
-///
-/// ```rust
-/// use packed_spatial_index_geo::FeatureRef;
-///
-/// let feature = FeatureRef {
-///     row_number: 42,
-///     row_group: None,
-///     row_in_group: None,
-///     part: Some(1),
-///     feature_id: None,
-/// };
-/// assert_eq!(feature.row_number, 42);
-/// assert_eq!(feature.part, Some(1));
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FeatureRef {
-    /// Absolute source row number.
-    pub row_number: u64,
-    /// Source row group when known.
-    pub row_group: Option<u32>,
-    /// Row offset within the row group when known.
-    pub row_in_group: Option<u32>,
-    /// Split part for duplicated index entries.
-    pub part: Option<u16>,
-    /// Optional feature identifier.
-    pub feature_id: Option<String>,
-}
-
-impl FeatureRef {
-    /// Create a feature ref from an absolute source row number.
-    pub fn row_number(row_number: u64) -> Self {
-        Self {
-            row_number,
-            row_group: None,
-            row_in_group: None,
-            part: None,
-            feature_id: None,
-        }
-    }
-
-    pub(crate) fn row_in_group(row_number: u64, row_group: u32, row_in_group: u32) -> Self {
-        Self {
-            row_number,
-            row_group: Some(row_group),
-            row_in_group: Some(row_in_group),
-            part: None,
-            feature_id: None,
-        }
-    }
-}
-
-/// Payload to attach to converted artifact entries or scan results.
-///
-/// # Example
-///
-/// ```no_run
-/// use std::fs::File;
-/// use packed_spatial_index_geo::{open, ConvertRequest, PayloadPlan, PropertyProjection};
-///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
-/// let bytes = dataset.convert(ConvertRequest {
-///     payload: PayloadPlan::FeatureJson {
-///         properties: PropertyProjection::AllNonGeometry,
-///     },
-///     ..ConvertRequest::default()
-/// })?;
-/// println!("{} bytes", bytes.len());
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PayloadPlan {
-    /// Emit no payloads.
-    None,
-    /// Emit only fixed-width `FeatureRef` records.
-    RowRef,
-    /// Emit fixed-width `FeatureRef` records followed by WKB bytes.
-    RowWkb,
-    /// Emit GeoJSON Feature bytes with projected properties.
-    FeatureJson {
-        /// Property projection.
-        properties: PropertyProjection,
-    },
 }
 
 /// Property projection for `FeatureJson` payloads.

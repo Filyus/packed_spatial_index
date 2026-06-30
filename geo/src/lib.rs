@@ -9,6 +9,7 @@ mod filter;
 mod geoarrow;
 mod geodetic;
 mod manifest;
+mod payload;
 mod query;
 mod validation;
 mod wkb;
@@ -20,11 +21,10 @@ pub use artifact::{
 pub use dataset::{
     BuildRequest, ConvertRequest, DuplicateFeatureRows, FEATURE_JSON_CONTENT_TYPE,
     FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE, FeatureReadOrder,
-    FeatureReadRequest, FeatureRef, FeatureRows, GeoArtifact, GeoDataset, GeoIndex, GeoIndex2D,
-    GeoIndex3D, GeoIndexMetadata, GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D,
-    IndexBuildOptions, IndexDimsRequest, InspectRequest, PayloadPlan, PropertyProjection,
-    ScanRequest, StoragePrecision, ValidateRequest, decode_feature_ref_payload,
-    decode_feature_wkb_payload, open,
+    FeatureReadRequest, FeatureRows, GeoArtifact, GeoDataset, GeoIndex, GeoIndex2D, GeoIndex3D,
+    GeoIndexMetadata, GeometryReadMode, GeometryScan, GeometryScan2D, GeometryScan3D,
+    IndexBuildOptions, IndexDimsRequest, InspectRequest, PropertyProjection, ScanRequest,
+    StoragePrecision, ValidateRequest, open,
 };
 pub use discovery::{
     ColumnCapabilities, CoordinateDims, CoordinateLayout, CrsInfo, DeclaredExtent,
@@ -37,6 +37,9 @@ pub use error::GeoError;
 pub use filter::FeatureFilterRequest;
 pub use geodetic::{AntimeridianPolicy, EnvelopePolicy, NullPolicy};
 pub use manifest::{GeoArtifactManifest, read_geo_manifest};
+pub use payload::{
+    FeatureRef, PayloadPlan, decode_feature_ref_payload, decode_feature_wkb_payload,
+};
 pub use query::{GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy, SpatialPredicate};
 pub use validation::{
     NativeBoundingBox, NativeGeospatialStatsReport, RowGroupGeospatialStats, ValidationCode,

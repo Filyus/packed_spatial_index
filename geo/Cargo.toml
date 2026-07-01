@@ -1,6 +1,6 @@
 [package]
 name = "packed_spatial_index_geo"
-version = "0.14.1"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Build streamable PSINDEX spatial indexes from GeoParquet and native Parquet geospatial data."
@@ -17,7 +17,7 @@ exclude = ["/scripts/"]
 # Query/build engine. `stream` + `f32-storage` so the converter can emit compact
 # files and tests can load them back over a RangeReader. The heavy geo deps below
 # stay OUT of this core — that is the whole point of a separate crate.
-packed_spatial_index = { path = "..", version = "0.21.0", features = ["stream", "f32-storage"] }
+packed_spatial_index = { path = "..", version = "0.21.1", features = ["stream", "f32-storage"] }
 
 # Arrow arrays + the synchronous Parquet record-batch reader.
 arrow = "59"

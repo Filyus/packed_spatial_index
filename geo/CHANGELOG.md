@@ -4,107 +4,63 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.14.1...psi-geo-v0.15.0) - 2026-07-01
+
 ### API
 
 - Added `GeoIndex::from_scan`, `GeoArtifact::from_scan`, and
-  `GeoDataset::source_fingerprint`. `GeoDataset::build` and
-  `GeoDataset::convert_into` each call `GeoDataset::scan` internally, so
-  getting both an in-memory index and a converted artifact from one
-  `GeoDataset` used to scan the source twice. Scan once and pass the result
-  to both functions instead.
-- `GeoArtifact::from_scan` now derives the `geoM` manifest's payload plan,
-  null policy, and antimeridian policy from the scan's recorded provenance
-  rather than from the `ConvertRequest`, so the manifest can no longer
-  misdescribe the payload bytes (a request whose `payload` differed from the
-  scan's — e.g. `ScanRequest::default()`'s `None` vs `ConvertRequest::default()`'s
-  `RowWkb` — previously wrote a mismatched manifest that could misdecode on
-  read). It now errors with the new `GeoError::ScanPayloadMismatch` when the
-  request's `payload` differs from the scan's.
-- **Breaking:** `GeometryScan2D`/`GeometryScan3D` now record the scan's
-  provenance and expose it read-only: they are `#[non_exhaustive]` (only
-  obtainable from `GeoDataset::scan`, not constructible outside the crate),
-  and their payload/provenance is reached through the accessors `payload()` /
-  `payloads()` / `nulls()` / `envelope()` rather than public fields
-  (`boxes`/`features`/`profile` stay public). External code can therefore
-  neither forge a payload-plan/payload-bytes pair at construction nor mutate
-  it on an obtained scan, so a mismatched plan can't reach the manifest via
-  `GeoArtifact::from_scan` (which additionally errors with the new
-  `GeoError::ScanPayloadMismatch` if the `ConvertRequest`'s payload differs
-  from the scan's). `payloads` was previously a public field.
+  `GeoDataset::source_fingerprint`, so callers can scan a source once and
+  reuse that scan for both in-memory indexes and converted artifacts.
+- `GeoArtifact::from_scan` now preserves the scan's recorded payload and
+  geometry-policy metadata in the `geoM` manifest. It returns the new
+  `GeoError::ScanPayloadMismatch` when a conversion request asks for a
+  different payload plan than the scan produced.
+- **Breaking:** `GeometryScan2D`/`GeometryScan3D` now expose payload and scan
+  provenance through read-only accessors: `payload()`, `payloads()`, `nulls()`,
+  and `envelope()`. `boxes`, `features`, and `profile` remain public fields.
 
 ### Indexes
 
 - Added `GeoIndex2DF32`/`GeoIndex3DF32`, f32-precision in-memory accelerator
-  indexes, and `IndexBuildOptions::precision` (default `StoragePrecision::F64`,
-  no behavior change for existing callers) to select them via
-  `GeoDataset::build` or `GeoIndex::from_scan`. Half the box memory of
-  `GeoIndex2D`/`GeoIndex3D`; supports `Box2D`/`Box3D` queries only —
-  `GeoQuery2D::Polygon` and `GeoQuery2D::SphericalRadius` are rejected, since
-  the underlying `Index2DF32`/`Index3DF32::search` take a plain box, not the
-  generic query trait those variants need (a core-level ceiling, not planned
-  to be lifted). `Index2DF32`/`Index3DF32` are now re-exported from this
-  crate's root.
+  indexes, selectable with `IndexBuildOptions::precision` via
+  `GeoDataset::build` or `GeoIndex::from_scan`. They use half the box storage
+  of the default f64 indexes and support `Box2D`/`Box3D` queries.
+  `Index2DF32`/`Index3DF32` are now re-exported from this crate's root.
 - **Breaking:** `GeoIndex` gained `D2F32`/`D3F32` variants; a `match` on
   `GeoIndex` without a wildcard arm must handle them.
 
 ### Search
 
 - `gp2psindex query` now accepts `--bbox` with six comma-separated numbers
-  (`xmin,ymin,zmin,xmax,ymax,zmax`) against a 3D `.psi` index, calling the
-  already-existing `GeoArtifactIndex3D::search_features`. `--radius`,
-  `--exact`, and `--predicate` are 2D-only and are now rejected for a 3D
-  artifact with an explanatory error (a 3D query returns a bounding-box
-  candidate set; exact source-geometry filtering is implemented only for 2D,
-  so it cannot narrow a 3D result), instead of the previous blanket "query CLI
-  currently accepts only 2D" rejection.
+  (`xmin,ymin,zmin,xmax,ymax,zmax`) against a 3D `.psi` index. 2D-only flags
+  such as `--radius`, `--exact`, and `--predicate` now produce clearer errors
+  when used with 3D artifacts.
 - Added `GeoQuery3D::Frustum3D`/`GeoQuery3D::frustum3d`, a candidate-pruning
   view-frustum query for `GeoIndex3D::search_features` and
   `GeoArtifactIndex3D::search_items`/`search_features`/`search_hits`
-  (both `f64`- and `f32`-precision artifacts). Like core's
-  `Frustum3D::overlaps_box`, this is coarse — it may include boxes that only
-  partly overlap the frustum; there is no exact narrow-phase filter for
-  frustum queries in this crate, the same way core's own raycast leaves
-  narrow-phase testing to the caller. `Frustum3D`/`ClipSpaceZ` are now
-  re-exported from this crate's root. An `f32`-precision *in-memory* index
-  (`GeoIndex3DF32`) rejects a frustum query with an explanatory error — its
-  underlying core index only implements a box-based search (the same ceiling
-  `GeoIndex2DF32`/`GeoIndex3DF32` already have for `Polygon` queries).
-  `GeoQuery3D::candidate_box_3d` is now a metadata/diagnostics helper only —
-  actual search dispatches on the query variant directly rather than degrading
-  a frustum query to its bounding box.
+  (both f64 and f32 artifacts). Frustum search is a bounding-box candidate
+  filter, not an exact geometry intersection test. `Frustum3D` and
+  `ClipSpaceZ` are now re-exported from this crate's root.
 - **Breaking:** `GeoQuery3D` gained a `Frustum3D` variant (an exhaustive
   `match` needs the new arm), and `GeoQuery3D::candidate_box_3d` now returns
   `Result<Box3D, GeoError>` (`Err` for a degenerate frustum) instead of an
   infallible `Box3D`.
+- Updated the public `packed_spatial_index` dependency to 0.21.1, picking up
+  scale-invariant frustum-plane handling for 3D frustum queries.
 - Added `GeoIndex2D::raycast_features`/`raycast_closest_feature` and
   `GeoIndex3D::raycast_features`/`raycast_closest_feature` (plus
-  `f32`-accelerator `raycast_features`), wrapping core's raycast search.
-  Broad-phase only, like core's own `Index3D::raycast`: returns candidates
-  whose *bounding box* the ray touches, not features the ray's true geometry
-  crosses — do your own narrow-phase test on the results, the pattern
-  core's `examples/raycast_mesh.rs` establishes. This was already promised in
-  `docs/when-to-use.md` ("Reach for the accelerator when ... raycast
-  lookups") but not previously implemented; it now is. In-memory-accelerator
-  only — raycast has no streaming/artifact-reader equivalent in the core
-  crate. The `f32`-accelerator types have no `raycast_closest_feature`:
-  core's closest-hit raycast isn't implemented for `f32`-precision indexes
-  (all-hits is). `Ray2D`/`Ray3D` are now re-exported from this crate's root.
+  `f32`-accelerator `raycast_features`) for in-memory accelerator indexes.
+  Raycast returns bounding-box candidates; callers that need exact geometry
+  hits should run their own narrow-phase test. `Ray2D`/`Ray3D` are now
+  re-exported from this crate's root.
 
 ### Nearest Neighbors
 
 - Added `GeoIndex2D::nearest_features`/`nearest_features_haversine` and
   `GeoIndex3D::nearest_features` (plus `f32`-accelerator equivalents on
-  `GeoIndex2DF32`/`GeoIndex3DF32`), wrapping core's kNN search. Planar
-  Euclidean (`nearest_features`) or great-circle haversine
-  (`nearest_features_haversine`, 2D lon/lat data only) distance, nearest
-  first, paired with each hit's distance. This was already promised in
-  `docs/when-to-use.md` ("Reach for the accelerator when ... kNN ...
-  lookups") but not previously implemented; it now is. In-memory-accelerator
-  only — kNN has no streaming/artifact-reader equivalent in the core crate,
-  so `GeoArtifactIndex2D`/`3D` do not gain a kNN method (a permanent
-  constraint, not a TODO). The `f32`-accelerator types have no haversine
-  variant: core's custom-metric kNN entry point isn't implemented for
-  `f32`-precision indexes.
+  `GeoIndex2DF32`/`GeoIndex3DF32`) for in-memory accelerator indexes. Results
+  are nearest-first with each hit's distance; 2D lon/lat data can use the
+  haversine variant for great-circle distance.
 - `Point2D`, `Point3D`, `haversine_distance_2d`, and `EARTH_RADIUS_M` are now
   re-exported from this crate's root.
 

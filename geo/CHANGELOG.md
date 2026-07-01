@@ -4,6 +4,17 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Documentation
+
+- Split the recipe and decision-guide content out of `README.md` into
+  `docs/guide.md` (validate before building, convert to a streamable
+  `PSINDEX`, query source rows with exact filtering, spherical radius
+  queries) and `docs/when-to-use.md` (accelerator vs. converter, how this
+  crate differs from `oxigdal-geoparquet`), mirroring the core crate's
+  `docs/guide.md` / `docs/when-to-use.md` split. `README.md` is now a landing
+  page with a `## Documentation` section linking out, rather than one
+  550-line file.
+
 ## [0.14.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.13.0...psi-geo-v0.14.0) - 2026-06-30
 
 ### Search

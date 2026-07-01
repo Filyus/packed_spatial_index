@@ -81,6 +81,39 @@ Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `packed_spatial_index` readers skip it; this crate reads it through
 `open_geo_index` or, when only metadata is needed, `read_geo_manifest`.
 
+## Half-size in-memory index (f32 accelerator)
+
+`IndexBuildOptions { precision: StoragePrecision::F32, .. }` builds
+[`GeoIndex::D2F32`]/[`GeoIndex::D3F32`] instead of the default
+[`GeoIndex::D2`]/[`GeoIndex::D3`] — half the box memory, same shape as
+`ConvertRequest`'s existing `precision` option for the converter path:
+
+```rust
+use std::fs::File;
+use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, IndexBuildOptions, StoragePrecision};
+
+let mut dataset = open(File::open("cities.parquet")?)?;
+let GeoIndex::D2F32(index) = dataset.build(BuildRequest {
+    build: IndexBuildOptions {
+        precision: StoragePrecision::F32,
+        ..IndexBuildOptions::default()
+    },
+    ..BuildRequest::default()
+})?
+else {
+    panic!("expected an f32 2D index");
+};
+# let _ = index;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+An `F32` index only supports `GeoQuery2D::Box2D`/`GeoQuery3D::Box3D` queries —
+the underlying core index (`Index2DF32`/`Index3DF32`) takes a plain box, not
+the generic query trait a `GeoQuery2D::Polygon` search needs. A `Polygon` or
+`SphericalRadius` query against an `F32` index returns an error rather than a
+silent approximation; reach for the default `F64` precision if you need those
+query shapes.
+
 ## Build an index and a converted artifact together
 
 `GeoDataset::build` and `GeoDataset::convert_into` each scan the source once

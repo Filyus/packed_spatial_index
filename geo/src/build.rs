@@ -157,12 +157,32 @@ pub enum StoragePrecision {
 }
 
 /// Options passed to the core index builder.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index_geo::{IndexBuildOptions, StoragePrecision};
+///
+/// let opts = IndexBuildOptions {
+///     precision: StoragePrecision::F32,
+///     ..IndexBuildOptions::default()
+/// };
+/// assert_eq!(opts.precision, StoragePrecision::F32);
+/// ```
 #[derive(Debug, Clone)]
 pub struct IndexBuildOptions {
     /// Optional node size override.
     pub node_size: Option<usize>,
     /// Whether to use parallel build when supported by the core crate.
     pub parallel: bool,
+    /// In-memory index coordinate precision. Selects between [`GeoIndex::D2`]/
+    /// [`GeoIndex::D3`] (`F64`, the default) and [`GeoIndex::D2F32`]/
+    /// [`GeoIndex::D3F32`] (`F32`, half the box memory; `Box2D`/`Box3D` queries
+    /// only — a `GeoQuery2D::Polygon` or `GeoQuery3D::Frustum3D` query is
+    /// rejected against an `F32` index, since the underlying core index only
+    /// implements a box-based search, not the generic query trait those
+    /// variants need).
+    pub precision: StoragePrecision,
 }
 
 impl Default for IndexBuildOptions {
@@ -170,6 +190,7 @@ impl Default for IndexBuildOptions {
         Self {
             node_size: None,
             parallel: true,
+            precision: StoragePrecision::F64,
         }
     }
 }
@@ -287,14 +308,21 @@ impl Default for ConvertRequest {
 ///         println!("{} candidate features", hits.len());
 ///     }
 ///     GeoIndex::D3(_) => println!("3D index"),
+///     GeoIndex::D2F32(_) | GeoIndex::D3F32(_) => {
+///         println!("f32-precision index (only built when requested)")
+///     }
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub enum GeoIndex {
-    /// 2D index.
+    /// 2D index, `f64` storage.
     D2(GeoIndex2D),
-    /// 3D index.
+    /// 3D index, `f64` storage.
     D3(GeoIndex3D),
+    /// 2D index, `f32` storage (see [`IndexBuildOptions::precision`]).
+    D2F32(GeoIndex2DF32),
+    /// 3D index, `f32` storage (see [`IndexBuildOptions::precision`]).
+    D3F32(GeoIndex3DF32),
 }
 
 impl GeoIndex {
@@ -336,6 +364,8 @@ impl GeoIndex {
     /// let entries = match &index {
     ///     GeoIndex::D2(index) => index.features.len(),
     ///     GeoIndex::D3(index) => index.features.len(),
+    ///     GeoIndex::D2F32(index) => index.features.len(),
+    ///     GeoIndex::D3F32(index) => index.features.len(),
     /// };
     /// println!("{entries} entries, {} artifact bytes", artifact.bytes_len);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -353,11 +383,18 @@ impl GeoIndex {
                     index_entry_count: scan.boxes.len(),
                     entries_may_duplicate_rows: payload::entries_may_duplicate_rows(&scan.features),
                 };
-                GeoIndex::D2(GeoIndex2D {
-                    index: builder.finish()?,
-                    features: scan.features.clone(),
-                    metadata,
-                })
+                match opts.precision {
+                    StoragePrecision::F64 => GeoIndex::D2(GeoIndex2D {
+                        index: builder.finish()?,
+                        features: scan.features.clone(),
+                        metadata,
+                    }),
+                    StoragePrecision::F32 => GeoIndex::D2F32(GeoIndex2DF32 {
+                        index: builder.finish_f32()?,
+                        features: scan.features.clone(),
+                        metadata,
+                    }),
+                }
             }
             GeometryScan::D3(scan) => {
                 let mut builder = builder_3d(scan.boxes.len(), opts);
@@ -370,11 +407,18 @@ impl GeoIndex {
                     index_entry_count: scan.boxes.len(),
                     entries_may_duplicate_rows: payload::entries_may_duplicate_rows(&scan.features),
                 };
-                GeoIndex::D3(GeoIndex3D {
-                    index: builder.finish()?,
-                    features: scan.features.clone(),
-                    metadata,
-                })
+                match opts.precision {
+                    StoragePrecision::F64 => GeoIndex::D3(GeoIndex3D {
+                        index: builder.finish()?,
+                        features: scan.features.clone(),
+                        metadata,
+                    }),
+                    StoragePrecision::F32 => GeoIndex::D3F32(GeoIndex3DF32 {
+                        index: builder.finish_f32()?,
+                        features: scan.features.clone(),
+                        metadata,
+                    }),
+                }
             }
         })
     }
@@ -430,6 +474,79 @@ impl GeoIndex2D {
     }
 }
 
+/// 2D in-memory geospatial index, `f32`-precision storage.
+///
+/// Built via [`IndexBuildOptions::precision`] set to
+/// [`StoragePrecision::F32`](StoragePrecision::F32) — half the box memory of
+/// [`GeoIndex2D`], at the cost of only supporting [`GeoQuery2D::Box2D`]
+/// queries: the underlying core index (`Index2DF32`) takes a plain `Box2D`,
+/// not the generic query trait a [`GeoQuery2D::Polygon`] or
+/// [`GeoQuery2D::SphericalRadius`] search needs — a permanent limitation of
+/// the f32-storage core index, not a TODO.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{
+///     open, Box2D, BuildRequest, GeoIndex, IndexBuildOptions, StoragePrecision,
+/// };
+///
+/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let GeoIndex::D2F32(index) = dataset.build(BuildRequest {
+///     build: IndexBuildOptions {
+///         precision: StoragePrecision::F32,
+///         ..IndexBuildOptions::default()
+///     },
+///     ..BuildRequest::default()
+/// })?
+/// else {
+///     panic!("expected an f32 2D index");
+/// };
+/// let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+/// println!("{} candidate features", hits.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct GeoIndex2DF32 {
+    /// Core index.
+    pub index: Index2DF32,
+    /// Feature reference per compact item id.
+    pub features: Vec<FeatureRef>,
+    /// Build metadata.
+    pub metadata: GeoIndexMetadata,
+}
+
+impl GeoIndex2DF32 {
+    /// Search and return source feature references.
+    ///
+    /// Only [`GeoQuery2D::Box2D`] is supported; any other query variant
+    /// returns [`GeoError::UnsupportedArtifact`].
+    pub fn search_features<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        let GeoQuery2D::Box2D(bbox) = query.into() else {
+            return Err(GeoError::UnsupportedArtifact(
+                "f32-precision in-memory index only supports GeoQuery2D::Box2D queries; \
+                 the underlying core index takes a plain Box2D, not the generic query \
+                 trait a Polygon or SphericalRadius search needs"
+                    .to_string(),
+            ));
+        };
+        Ok(self
+            .index
+            .search(bbox)
+            .into_iter()
+            .filter_map(|id| self.features.get(id).cloned())
+            .collect())
+    }
+
+    /// Access the underlying core index.
+    pub fn raw_index(&self) -> &Index2DF32 {
+        &self.index
+    }
+}
+
 /// 3D in-memory geospatial index.
 pub struct GeoIndex3D {
     /// Core index.
@@ -475,6 +592,69 @@ impl GeoIndex3D {
 
     /// Access the underlying core index.
     pub fn raw_index(&self) -> &Index3D {
+        &self.index
+    }
+}
+
+/// 3D in-memory geospatial index, `f32`-precision storage.
+///
+/// Built via [`IndexBuildOptions::precision`] set to
+/// [`StoragePrecision::F32`](StoragePrecision::F32) — half the box memory of
+/// [`GeoIndex3D`], at the cost of only supporting [`GeoQuery3D::Box3D`]
+/// queries: the underlying core index (`Index3DF32`) takes a plain `Box3D`,
+/// not the generic query trait a non-box query needs — a permanent
+/// limitation of the f32-storage core index, not a TODO.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use packed_spatial_index_geo::{
+///     open, Box3D, BuildRequest, GeoIndex, IndexBuildOptions, IndexDimsRequest, StoragePrecision,
+/// };
+///
+/// let mut dataset = open(File::open("elevations.parquet")?)?;
+/// let GeoIndex::D3F32(index) = dataset.build(BuildRequest {
+///     dims: IndexDimsRequest::D3,
+///     build: IndexBuildOptions {
+///         precision: StoragePrecision::F32,
+///         ..IndexBuildOptions::default()
+///     },
+///     ..BuildRequest::default()
+/// })?
+/// else {
+///     panic!("expected an f32 3D index");
+/// };
+/// let hits = index.search_features(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))?;
+/// println!("{} candidate features", hits.len());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct GeoIndex3DF32 {
+    /// Core index.
+    pub index: Index3DF32,
+    /// Feature reference per compact item id.
+    pub features: Vec<FeatureRef>,
+    /// Build metadata.
+    pub metadata: GeoIndexMetadata,
+}
+
+impl GeoIndex3DF32 {
+    /// Search and return source feature references.
+    pub fn search_features<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        let GeoQuery3D::Box3D(bbox) = query.into();
+        Ok(self
+            .index
+            .search(bbox)
+            .into_iter()
+            .filter_map(|id| self.features.get(id).cloned())
+            .collect())
+    }
+
+    /// Access the underlying core index.
+    pub fn raw_index(&self) -> &Index3DF32 {
         &self.index
     }
 }
@@ -574,5 +754,126 @@ impl GeoArtifact {
             manifest,
             bytes_len: out.len(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scan::{GeometryScan2D, GeometryScan3D};
+    use crate::{
+        CoordinateDims, CrsInfo, EdgeModel, GeometryMetadataSource, GeometryTypeSet, WkbFlavor,
+    };
+    use packed_spatial_index::{Box2D, Box3D};
+
+    fn test_profile() -> GeometryProfile {
+        GeometryProfile {
+            column: "geometry".to_string(),
+            source: GeometryMetadataSource::GeoParquet,
+            encoding: crate::GeometryEncoding::Wkb {
+                flavor: WkbFlavor::Iso,
+            },
+            crs: CrsInfo::Missing,
+            edges: EdgeModel::Planar,
+            coordinate_dims: CoordinateDims::Xy,
+            geometry_types: GeometryTypeSet::unknown(),
+            extent: None,
+            row_bounds: Vec::new(),
+            num_rows: 3,
+        }
+    }
+
+    fn scan_2d() -> GeometryScan {
+        GeometryScan::D2(GeometryScan2D {
+            boxes: vec![
+                Box2D::new(0.0, 0.0, 1.0, 1.0),
+                Box2D::new(5.0, 5.0, 6.0, 6.0),
+                Box2D::new(10.0, 10.0, 11.0, 11.0),
+            ],
+            features: vec![
+                FeatureRef::row_number(0),
+                FeatureRef::row_number(1),
+                FeatureRef::row_number(2),
+            ],
+            payloads: None,
+            profile: test_profile(),
+        })
+    }
+
+    fn scan_3d() -> GeometryScan {
+        GeometryScan::D3(GeometryScan3D {
+            boxes: vec![
+                Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+                Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0),
+            ],
+            features: vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
+            payloads: None,
+            profile: test_profile(),
+        })
+    }
+
+    #[test]
+    fn from_scan_default_precision_is_f64() {
+        let index = GeoIndex::from_scan(&scan_2d(), &IndexBuildOptions::default()).unwrap();
+        assert!(matches!(index, GeoIndex::D2(_)));
+        let index = GeoIndex::from_scan(&scan_3d(), &IndexBuildOptions::default()).unwrap();
+        assert!(matches!(index, GeoIndex::D3(_)));
+    }
+
+    #[test]
+    fn from_scan_f32_precision_yields_f32_variant_2d() {
+        let opts = IndexBuildOptions {
+            precision: StoragePrecision::F32,
+            ..IndexBuildOptions::default()
+        };
+        let index = GeoIndex::from_scan(&scan_2d(), &opts).unwrap();
+        let GeoIndex::D2F32(index) = index else {
+            panic!("expected GeoIndex::D2F32");
+        };
+        let hits = index
+            .search_features(Box2D::new(-1.0, -1.0, 2.0, 2.0))
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].row_number, 0);
+    }
+
+    #[test]
+    fn from_scan_f32_precision_yields_f32_variant_3d() {
+        let opts = IndexBuildOptions {
+            precision: StoragePrecision::F32,
+            ..IndexBuildOptions::default()
+        };
+        let index = GeoIndex::from_scan(&scan_3d(), &opts).unwrap();
+        let GeoIndex::D3F32(index) = index else {
+            panic!("expected GeoIndex::D3F32");
+        };
+        let hits = index
+            .search_features(Box3D::new(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0))
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].row_number, 0);
+    }
+
+    #[test]
+    fn f32_2d_index_rejects_non_box_query() {
+        let opts = IndexBuildOptions {
+            precision: StoragePrecision::F32,
+            ..IndexBuildOptions::default()
+        };
+        let GeoIndex::D2F32(index) = GeoIndex::from_scan(&scan_2d(), &opts).unwrap() else {
+            panic!("expected GeoIndex::D2F32");
+        };
+        let polygon = GeoQuery2D::polygon(geo_types::Polygon::new(
+            geo_types::LineString::from(vec![
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (0.0, 0.0),
+            ]),
+            vec![],
+        ));
+        let err = index.search_features(polygon).unwrap_err();
+        assert!(matches!(err, GeoError::UnsupportedArtifact(_)));
     }
 }

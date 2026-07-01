@@ -13,6 +13,19 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   `GeoDataset` used to scan the source twice. Scan once and pass the result
   to both functions instead.
 
+### Indexes
+
+- Added `GeoIndex2DF32`/`GeoIndex3DF32`, f32-precision in-memory accelerator
+  indexes, and `IndexBuildOptions::precision` (default `StoragePrecision::F64`,
+  no behavior change for existing callers) to select them via
+  `GeoDataset::build` or `GeoIndex::from_scan`. Half the box memory of
+  `GeoIndex2D`/`GeoIndex3D`; supports `Box2D`/`Box3D` queries only —
+  `GeoQuery2D::Polygon` and `GeoQuery2D::SphericalRadius` are rejected, since
+  the underlying `Index2DF32`/`Index3DF32::search` take a plain box, not the
+  generic query trait those variants need (a core-level ceiling, not planned
+  to be lifted). `Index2DF32`/`Index3DF32` are now re-exported from this
+  crate's root.
+
 ## [0.14.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.14.0...psi-geo-v0.14.1) - 2026-07-01
 
 ### Documentation

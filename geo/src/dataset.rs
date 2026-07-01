@@ -94,6 +94,7 @@ pub fn open<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoErr
 /// match index {
 ///     GeoIndex::D2(index) => println!("2D features: {}", index.metadata.feature_count),
 ///     GeoIndex::D3(index) => println!("3D features: {}", index.metadata.feature_count),
+///     GeoIndex::D2F32(_) | GeoIndex::D3F32(_) => println!("f32-precision index"),
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```

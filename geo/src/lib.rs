@@ -22,8 +22,8 @@ pub use artifact::{
     open_geo_index_with_limits,
 };
 pub use build::{
-    BuildRequest, ConvertRequest, GeoArtifact, GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata,
-    IndexBuildOptions, StoragePrecision,
+    BuildRequest, ConvertRequest, GeoArtifact, GeoIndex, GeoIndex2D, GeoIndex2DF32, GeoIndex3D,
+    GeoIndex3DF32, GeoIndexMetadata, IndexBuildOptions, StoragePrecision,
 };
 pub use dataset::{
     FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN,
@@ -62,6 +62,6 @@ pub use geo_types;
 // convert, load, and query entirely through `packed_spatial_index_geo` without
 // adding `packed_spatial_index` as a second direct dependency.
 pub use packed_spatial_index::{
-    Box2D, Box3D, FileMetadata, Index2D, Index3D, RangeReader, SliceReader, StreamIndex2D,
-    StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, read_metadata,
+    Box2D, Box3D, FileMetadata, Index2D, Index2DF32, Index3D, Index3DF32, RangeReader, SliceReader,
+    StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, read_metadata,
 };

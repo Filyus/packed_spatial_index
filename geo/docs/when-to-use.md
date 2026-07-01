@@ -8,17 +8,22 @@ crate builds that index from either format, in one of two modes.
 ## Reach for the accelerator when
 
 The geospatial Parquet file stays put and you just want fast windowed / kNN /
-raycast lookups against it. The index is tiny (boxes + feature refs); a query
-hands you source row numbers to read back from the file. No conversion step,
-no second artifact to manage — open the source, build, query.
+raycast lookups against it. The index holds one box and one feature ref per
+row — no geometry copy — so its size tracks row count, not geometry size:
+measured on 100k simple points, that's already ~95% of the source Parquet's
+size; it gets smaller relative to the source as geometries grow larger or more
+complex. A query hands you source row numbers to read back from the file. No
+conversion step, no second artifact to manage — open the source, build, query.
 
 ## Reach for the converter when
 
 You want a portable, cloud-served store. By default it folds feature refs and
 geometry into one self-describing `PSINDEX` blob that the core streaming
 engine queries directly over HTTP range requests, with no Parquet re-read.
-Use `PayloadPlan::RowRef` instead when you want only a compact sidecar index
-that points back to the original source rows.
+Use `PayloadPlan::RowRef` instead when you want the smallest sidecar option: a
+box and a feature ref per row with no geometry copy, measured at about
+three-quarters the size of the default `RowWkb` payload (which duplicates each
+row's WKB geometry alongside the ref).
 
 ```text
 GeoParquet / Parquet geo

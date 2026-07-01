@@ -571,43 +571,105 @@ pub enum GeometryScan {
 }
 
 /// 2D scan result.
+///
+/// Obtain one from [`GeoDataset::scan`](crate::GeoDataset::scan): it cannot be
+/// constructed outside this crate, and the payload/provenance fields are
+/// read-only through accessors ([`payload`](Self::payload),
+/// [`payloads`](Self::payloads), [`nulls`](Self::nulls),
+/// [`envelope`](Self::envelope)). That keeps the recorded payload plan and the
+/// payload bytes paired as the scan produced them, so
+/// [`GeoArtifact::from_scan`](crate::GeoArtifact::from_scan) can trust the
+/// pairing when writing the manifest — external code can neither forge the
+/// pair at construction nor mutate it afterward.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct GeometryScan2D {
     /// One bounding box per index entry.
     pub boxes: Vec<Box2D>,
     /// Feature reference for each box.
     pub features: Vec<FeatureRef>,
-    /// Optional payload for each box.
-    pub payloads: Option<Vec<Vec<u8>>>,
     /// Profile of the scanned column.
     pub profile: GeometryProfile,
-    /// Payload plan that produced [`payloads`](Self::payloads). Recorded so
-    /// [`GeoArtifact::from_scan`](crate::GeoArtifact::from_scan) writes a
-    /// manifest that matches the actual payload bytes.
-    pub payload: PayloadPlan,
-    /// Null/empty policy applied during the scan.
-    pub nulls: NullPolicy,
-    /// Envelope policy applied during the scan.
-    pub envelope: EnvelopePolicy,
+    /// Optional payload bytes for each box. Read via [`payloads`](Self::payloads).
+    pub(crate) payloads: Option<Vec<Vec<u8>>>,
+    /// Payload plan that produced `payloads`. Read via [`payload`](Self::payload).
+    pub(crate) payload: PayloadPlan,
+    /// Null/empty policy applied during the scan. Read via [`nulls`](Self::nulls).
+    pub(crate) nulls: NullPolicy,
+    /// Envelope policy applied during the scan. Read via [`envelope`](Self::envelope).
+    pub(crate) envelope: EnvelopePolicy,
+}
+
+impl GeometryScan2D {
+    /// The payload bytes recorded for each index entry, if any.
+    pub fn payloads(&self) -> Option<&[Vec<u8>]> {
+        self.payloads.as_deref()
+    }
+
+    /// The payload plan that produced [`payloads`](Self::payloads).
+    pub fn payload(&self) -> &PayloadPlan {
+        &self.payload
+    }
+
+    /// The null/empty policy applied during the scan.
+    pub fn nulls(&self) -> NullPolicy {
+        self.nulls
+    }
+
+    /// The envelope policy applied during the scan.
+    pub fn envelope(&self) -> EnvelopePolicy {
+        self.envelope
+    }
 }
 
 /// 3D scan result.
+///
+/// Obtain one from [`GeoDataset::scan`](crate::GeoDataset::scan): it cannot be
+/// constructed outside this crate, and the payload/provenance fields are
+/// read-only through accessors ([`payload`](Self::payload),
+/// [`payloads`](Self::payloads), [`nulls`](Self::nulls),
+/// [`envelope`](Self::envelope)). That keeps the recorded payload plan and the
+/// payload bytes paired as the scan produced them, so
+/// [`GeoArtifact::from_scan`](crate::GeoArtifact::from_scan) can trust the
+/// pairing when writing the manifest — external code can neither forge the
+/// pair at construction nor mutate it afterward.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct GeometryScan3D {
     /// One bounding box per index entry.
     pub boxes: Vec<Box3D>,
     /// Feature reference for each box.
     pub features: Vec<FeatureRef>,
-    /// Optional payload for each box.
-    pub payloads: Option<Vec<Vec<u8>>>,
     /// Profile of the scanned column.
     pub profile: GeometryProfile,
-    /// Payload plan that produced [`payloads`](Self::payloads). Recorded so
-    /// [`GeoArtifact::from_scan`](crate::GeoArtifact::from_scan) writes a
-    /// manifest that matches the actual payload bytes.
-    pub payload: PayloadPlan,
-    /// Null/empty policy applied during the scan.
-    pub nulls: NullPolicy,
-    /// Envelope policy applied during the scan.
-    pub envelope: EnvelopePolicy,
+    /// Optional payload bytes for each box. Read via [`payloads`](Self::payloads).
+    pub(crate) payloads: Option<Vec<Vec<u8>>>,
+    /// Payload plan that produced `payloads`. Read via [`payload`](Self::payload).
+    pub(crate) payload: PayloadPlan,
+    /// Null/empty policy applied during the scan. Read via [`nulls`](Self::nulls).
+    pub(crate) nulls: NullPolicy,
+    /// Envelope policy applied during the scan. Read via [`envelope`](Self::envelope).
+    pub(crate) envelope: EnvelopePolicy,
+}
+
+impl GeometryScan3D {
+    /// The payload bytes recorded for each index entry, if any.
+    pub fn payloads(&self) -> Option<&[Vec<u8>]> {
+        self.payloads.as_deref()
+    }
+
+    /// The payload plan that produced [`payloads`](Self::payloads).
+    pub fn payload(&self) -> &PayloadPlan {
+        &self.payload
+    }
+
+    /// The null/empty policy applied during the scan.
+    pub fn nulls(&self) -> NullPolicy {
+        self.nulls
+    }
+
+    /// The envelope policy applied during the scan.
+    pub fn envelope(&self) -> EnvelopePolicy {
+        self.envelope
+    }
 }

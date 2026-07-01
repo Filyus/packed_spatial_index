@@ -20,10 +20,17 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   `RowWkb` — previously wrote a mismatched manifest that could misdecode on
   read). It now errors with the new `GeoError::ScanPayloadMismatch` when the
   request's `payload` differs from the scan's.
-- **Breaking:** `GeometryScan2D`/`GeometryScan3D` gained `payload` / `nulls` /
-  `envelope` fields (recording the scan's provenance); code that constructs
-  these structs with a literal must set them. `GeoError` gained a
-  `ScanPayloadMismatch` variant.
+- **Breaking:** `GeometryScan2D`/`GeometryScan3D` now record the scan's
+  provenance and expose it read-only: they are `#[non_exhaustive]` (only
+  obtainable from `GeoDataset::scan`, not constructible outside the crate),
+  and their payload/provenance is reached through the accessors `payload()` /
+  `payloads()` / `nulls()` / `envelope()` rather than public fields
+  (`boxes`/`features`/`profile` stay public). External code can therefore
+  neither forge a payload-plan/payload-bytes pair at construction nor mutate
+  it on an obtained scan, so a mismatched plan can't reach the manifest via
+  `GeoArtifact::from_scan` (which additionally errors with the new
+  `GeoError::ScanPayloadMismatch` if the `ConvertRequest`'s payload differs
+  from the scan's). `payloads` was previously a public field.
 
 ### Indexes
 

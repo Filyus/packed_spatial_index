@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.15.0...psi-geo-v0.16.0) - 2026-07-02
+
 ### API
 
 - Added async artifact opening and query APIs behind the `async` feature:

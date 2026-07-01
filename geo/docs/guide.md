@@ -81,6 +81,42 @@ Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `packed_spatial_index` readers skip it; this crate reads it through
 `open_geo_index` or, when only metadata is needed, `read_geo_manifest`.
 
+## Build an index and a converted artifact together
+
+`GeoDataset::build` and `GeoDataset::convert_into` each scan the source once
+internally, so calling both on the same `GeoDataset` scans it twice. Scan
+once and build both outputs from the result instead:
+
+```rust
+use std::fs::File;
+use packed_spatial_index_geo::{
+    open, ConvertRequest, GeoArtifact, GeoIndex, IndexBuildOptions, PayloadPlan, ScanRequest,
+};
+
+let mut dataset = open(File::open("cities.parquet")?)?;
+let scan = dataset.scan(ScanRequest {
+    payload: PayloadPlan::RowWkb,
+    ..ScanRequest::default()
+})?;
+
+let index = GeoIndex::from_scan(&scan, &IndexBuildOptions::default())?;
+
+let mut bytes = Vec::new();
+let artifact = GeoArtifact::from_scan(
+    &scan,
+    &ConvertRequest::default(),
+    dataset.source_fingerprint(),
+    &mut bytes,
+)?;
+std::fs::write("cities.psindex", &bytes)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Both functions borrow the scan rather than consume it, and only the scan
+itself reads the source. `GeoIndex::from_scan` never looks at the scan's
+payload bytes, so pick the `PayloadPlan` the artifact needs; the index comes
+out the same either way.
+
 ## Query source rows
 
 Use [`GeoDataset::read_features`][read_features] when a `PSINDEX` sidecar

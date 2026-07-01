@@ -5,16 +5,13 @@ use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuild
 use parquet::file::reader::ChunkReader;
 use serde::{Deserialize, Serialize};
 
-use crate::build::{
-    self, BuildRequest, GeoArtifact, GeoIndex, GeoIndex2D, GeoIndex3D, GeoIndexMetadata,
-};
+use crate::build::{BuildRequest, GeoArtifact, GeoIndex};
 use crate::discovery::{self, ColumnState};
 use crate::feature_read::{
     self, DuplicateFeatureRows, FeatureReadOrder, FeatureReadRequest, FeatureRows,
     GeometryReadMode, PropertyProjection,
 };
 use crate::filter;
-use crate::manifest;
 use crate::payload;
 use crate::scan::{self, GeometryScan, ScanRequest, ScanRequestForInspect};
 use crate::validation;
@@ -133,6 +130,29 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         &self.discovery
     }
 
+    /// Return a stable fingerprint of the source Parquet file's metadata.
+    ///
+    /// Pass it as `expected_source_fingerprint` on [`FeatureFilterRequest`] or
+    /// [`FeatureReadRequest`] to detect a source/artifact mismatch when
+    /// reading features back from a different `GeoDataset` session than the
+    /// one that built the index or artifact. Also needed by
+    /// [`GeoArtifact::from_scan`] when converting a [`GeoDataset::scan`]
+    /// result directly, without going through [`GeoDataset::convert_into`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::open;
+    ///
+    /// let dataset = open(File::open("cities.parquet")?)?;
+    /// println!("source fingerprint: {}", dataset.source_fingerprint());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn source_fingerprint(&self) -> &str {
+        &self.source_fingerprint
+    }
+
     /// Resolve a selector to a concrete geometry column.
     ///
     /// This is a metadata-only operation. It applies the same default selection
@@ -222,8 +242,10 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// Build an in-memory [`GeoIndex`] over the selected geometry column.
     ///
     /// The returned index maps candidate hits back to [`FeatureRef`] values
-    /// rather than compact item ids. Use [`GeoIndex2D::raw_index`] or
-    /// [`GeoIndex3D::raw_index`] when you need direct access to the core index.
+    /// rather than compact item ids. Use
+    /// [`GeoIndex2D::raw_index`](crate::GeoIndex2D::raw_index) or
+    /// [`GeoIndex3D::raw_index`](crate::GeoIndex3D::raw_index) when you need
+    /// direct access to the core index.
     ///
     /// # Example
     ///
@@ -247,42 +269,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
             envelope: req.envelope,
             payload: PayloadPlan::None,
         })?;
-        Ok(match scan {
-            GeometryScan::D2(scan) => {
-                let mut builder = build::builder_2d(scan.boxes.len(), &req.build);
-                for bbox in &scan.boxes {
-                    builder.add(*bbox);
-                }
-                let metadata = GeoIndexMetadata {
-                    profile: scan.profile,
-                    feature_count: payload::unique_feature_count(&scan.features),
-                    index_entry_count: scan.boxes.len(),
-                    entries_may_duplicate_rows: payload::entries_may_duplicate_rows(&scan.features),
-                };
-                GeoIndex::D2(GeoIndex2D {
-                    index: builder.finish()?,
-                    features: scan.features,
-                    metadata,
-                })
-            }
-            GeometryScan::D3(scan) => {
-                let mut builder = build::builder_3d(scan.boxes.len(), &req.build);
-                for bbox in &scan.boxes {
-                    builder.add(*bbox);
-                }
-                let metadata = GeoIndexMetadata {
-                    profile: scan.profile,
-                    feature_count: payload::unique_feature_count(&scan.features),
-                    index_entry_count: scan.boxes.len(),
-                    entries_may_duplicate_rows: payload::entries_may_duplicate_rows(&scan.features),
-                };
-                GeoIndex::D3(GeoIndex3D {
-                    index: builder.finish()?,
-                    features: scan.features,
-                    metadata,
-                })
-            }
-        })
+        GeoIndex::from_scan(&scan, &req.build)
     }
 
     /// Convert the selected geometry column into a streamable `PSINDEX` buffer.
@@ -316,60 +303,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
             envelope: req.envelope,
             payload: req.payload.clone(),
         })?;
-        let manifest = match scan {
-            GeometryScan::D2(scan) => {
-                let mut builder = build::builder_2d(scan.boxes.len(), &req.build);
-                for bbox in &scan.boxes {
-                    builder.add(*bbox);
-                }
-                let payload = scan.payloads.as_deref();
-                build::serialize_2d(
-                    builder,
-                    req.precision,
-                    req.interleaved,
-                    payload,
-                    &scan.profile,
-                    out,
-                )?;
-                build::artifact_manifest(
-                    &scan.profile,
-                    &req,
-                    payload::unique_feature_count(&scan.features),
-                    scan.boxes.len(),
-                    payload::entries_may_duplicate_rows(&scan.features),
-                    &self.source_fingerprint,
-                )
-            }
-            GeometryScan::D3(scan) => {
-                let mut builder = build::builder_3d(scan.boxes.len(), &req.build);
-                for bbox in &scan.boxes {
-                    builder.add(*bbox);
-                }
-                let payload = scan.payloads.as_deref();
-                build::serialize_3d(
-                    builder,
-                    req.precision,
-                    req.interleaved,
-                    payload,
-                    &scan.profile,
-                    out,
-                )?;
-                build::artifact_manifest(
-                    &scan.profile,
-                    &req,
-                    payload::unique_feature_count(&scan.features),
-                    scan.boxes.len(),
-                    payload::entries_may_duplicate_rows(&scan.features),
-                    &self.source_fingerprint,
-                )
-            }
-        };
-        let base = std::mem::take(out);
-        manifest::append_geo_manifest(&base, &manifest, out)?;
-        Ok(GeoArtifact {
-            manifest,
-            bytes_len: out.len(),
-        })
+        GeoArtifact::from_scan(&scan, &req, &self.source_fingerprint, out)
     }
 
     /// Convert the selected geometry column into a new `Vec<u8>`.

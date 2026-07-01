@@ -4,6 +4,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- Added `GeoIndex::from_scan`, `GeoArtifact::from_scan`, and
+  `GeoDataset::source_fingerprint`. `GeoDataset::build` and
+  `GeoDataset::convert_into` each call `GeoDataset::scan` internally, so
+  getting both an in-memory index and a converted artifact from one
+  `GeoDataset` used to scan the source twice. Scan once and pass the result
+  to both functions instead.
+
 ## [0.14.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.14.0...psi-geo-v0.14.1) - 2026-07-01
 
 ### Documentation

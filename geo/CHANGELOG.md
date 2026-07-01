@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.14.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.14.0...psi-geo-v0.14.1) - 2026-07-01
+
 ### Documentation
 
 - Split the recipe and decision-guide content out of `README.md` into
@@ -14,6 +16,12 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   `docs/guide.md` / `docs/when-to-use.md` split. `README.md` is now a landing
   page with a `## Documentation` section linking out, rather than one
   550-line file.
+- Added missing rustdoc examples for `GeoQuery3D`, `GeoIndex3D::search_features`,
+  and `GeoArtifactIndex2D`/`GeoArtifactIndex3D::search_hits`.
+- Corrected an "the index is tiny" overclaim in `docs/when-to-use.md`: measured
+  (100k simple points), even a payload-free index is ~95% the size of the
+  source Parquet, since a per-row index scales with row count, not geometry
+  size.
 
 ## [0.14.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.13.0...psi-geo-v0.14.0) - 2026-06-30
 

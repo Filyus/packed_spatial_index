@@ -1,5 +1,8 @@
+use std::ops::ControlFlow;
+
 use packed_spatial_index::{
-    Index2D, Index2DBuilder, Index2DF32, Index3D, Index3DBuilder, Index3DF32,
+    EARTH_RADIUS_M, Index2D, Index2DBuilder, Index2DF32, Index3D, Index3DBuilder, Index3DF32,
+    Point2D, Point3D, haversine_distance_2d,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +31,32 @@ pub(crate) fn builder_3d(count: usize, opts: &IndexBuildOptions) -> Index3DBuild
     }
     builder = builder.parallel(opts.parallel);
     builder
+}
+
+/// Collect up to `max_results` `(FeatureRef, distance)` pairs from a
+/// nondecreasing-distance core neighbor visitor, stopping the traversal once
+/// `max_results` have been found. `visit` should call the core index's own
+/// `visit_neighbors`/`visit_neighbors_metric` with the closure it's given.
+fn collect_nearest(
+    features: &[FeatureRef],
+    max_results: usize,
+    visit: impl FnOnce(&mut dyn FnMut(usize, f64) -> ControlFlow<()>),
+) -> Vec<(FeatureRef, f64)> {
+    if max_results == 0 {
+        return Vec::new();
+    }
+    let mut results = Vec::with_capacity(max_results);
+    visit(&mut |id, distance| {
+        if let Some(feature) = features.get(id) {
+            results.push((feature.clone(), distance));
+        }
+        if results.len() >= max_results {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    results
 }
 
 /// Apply the shared interleaved/crs/payload configuration to a freshly built
@@ -468,6 +497,73 @@ impl GeoIndex2D {
         Ok(features)
     }
 
+    /// Up to `max_results` nearest features to `point`, planar Euclidean
+    /// distance, nearest first, paired with each hit's squared distance.
+    ///
+    /// For lon/lat data, prefer [`nearest_features_haversine`][Self::nearest_features_haversine] —
+    /// Euclidean distance on raw longitude/latitude degrees is not a
+    /// geographic distance (a degree of longitude shrinks toward the poles).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, Point2D};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
+    ///     panic!("expected a 2D index");
+    /// };
+    /// for (feature, dist_sq) in index.nearest_features(Point2D::new(13.4, 52.5), 3) {
+    ///     println!("row {}: squared distance {dist_sq}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn nearest_features(&self, point: Point2D, max_results: usize) -> Vec<(FeatureRef, f64)> {
+        collect_nearest(&self.features, max_results, |visitor| {
+            let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
+        })
+    }
+
+    /// Up to `max_results` nearest features to a lon/lat query point by
+    /// great-circle (haversine) distance in metres, nearest first, paired
+    /// with each hit's distance in metres.
+    ///
+    /// Use for geographic data (`x` = longitude, `y` = latitude in degrees);
+    /// see [`nearest_features`][Self::nearest_features] for planar Euclidean
+    /// distance instead.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
+    ///     panic!("expected a 2D index");
+    /// };
+    /// for (feature, metres) in index.nearest_features_haversine(13.0, 52.4, 1, f64::INFINITY) {
+    ///     println!("row {}: {metres:.0}m away", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn nearest_features_haversine(
+        &self,
+        lon: f64,
+        lat: f64,
+        max_results: usize,
+        max_distance_metres: f64,
+    ) -> Vec<(FeatureRef, f64)> {
+        collect_nearest(&self.features, max_results, |visitor| {
+            let _ = self.index.visit_neighbors_metric(
+                |bx| haversine_distance_2d((lon, lat), bx, EARTH_RADIUS_M),
+                max_distance_metres,
+                visitor,
+            );
+        })
+    }
+
     /// Access the underlying core index.
     pub fn raw_index(&self) -> &Index2D {
         &self.index
@@ -541,6 +637,20 @@ impl GeoIndex2DF32 {
             .collect())
     }
 
+    /// Up to `max_results` nearest features to `point`, planar Euclidean
+    /// distance, nearest first, paired with each hit's squared distance.
+    ///
+    /// Unlike [`search_features`](Self::search_features), this is not
+    /// restricted to a query shape — the underlying core kNN search works on
+    /// `f32`-precision storage the same way it does on `f64`. There is no
+    /// haversine variant here: the core custom-metric kNN entry point
+    /// (`neighbors_metric`) is not implemented for `f32`-precision indexes.
+    pub fn nearest_features(&self, point: Point2D, max_results: usize) -> Vec<(FeatureRef, f64)> {
+        collect_nearest(&self.features, max_results, |visitor| {
+            let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
+        })
+    }
+
     /// Access the underlying core index.
     pub fn raw_index(&self) -> &Index2DF32 {
         &self.index
@@ -590,6 +700,38 @@ impl GeoIndex3D {
             .into_iter()
             .filter_map(|id| self.features.get(id).cloned())
             .collect())
+    }
+
+    /// Up to `max_results` nearest features to `point`, planar Euclidean
+    /// distance, nearest first, paired with each hit's squared distance.
+    ///
+    /// There is no haversine variant for 3D data — core has no built-in
+    /// geographic distance metric that also accounts for a third (elevation)
+    /// coordinate.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, IndexDimsRequest, Point3D};
+    ///
+    /// let mut dataset = open(File::open("elevations.parquet")?)?;
+    /// let GeoIndex::D3(index) = dataset.build(BuildRequest {
+    ///     dims: IndexDimsRequest::D3,
+    ///     ..BuildRequest::default()
+    /// })?
+    /// else {
+    ///     panic!("expected a 3D index");
+    /// };
+    /// for (feature, dist_sq) in index.nearest_features(Point3D::new(13.4, 52.5, 34.0), 3) {
+    ///     println!("row {}: squared distance {dist_sq}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn nearest_features(&self, point: Point3D, max_results: usize) -> Vec<(FeatureRef, f64)> {
+        collect_nearest(&self.features, max_results, |visitor| {
+            let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
+        })
     }
 
     /// Access the underlying core index.
@@ -663,6 +805,19 @@ impl GeoIndex3DF32 {
             .into_iter()
             .filter_map(|id| self.features.get(id).cloned())
             .collect())
+    }
+
+    /// Up to `max_results` nearest features to `point`, planar Euclidean
+    /// distance, nearest first, paired with each hit's squared distance.
+    ///
+    /// Unlike [`search_features`](Self::search_features), this is not
+    /// restricted to a query shape. There is no haversine variant: the core
+    /// custom-metric kNN entry point is not implemented for `f32`-precision
+    /// indexes.
+    pub fn nearest_features(&self, point: Point3D, max_results: usize) -> Vec<(FeatureRef, f64)> {
+        collect_nearest(&self.features, max_results, |visitor| {
+            let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
+        })
     }
 
     /// Access the underlying core index.
@@ -973,5 +1128,82 @@ mod tests {
         ]);
         let err = index.search_features(frustum).unwrap_err();
         assert!(matches!(err, GeoError::UnsupportedArtifact(_)));
+    }
+
+    #[test]
+    fn nearest_features_orders_by_planar_distance() {
+        let GeoIndex::D2(index) =
+            GeoIndex::from_scan(&scan_2d(), &IndexBuildOptions::default()).unwrap()
+        else {
+            panic!("expected GeoIndex::D2");
+        };
+        let hits = index.nearest_features(Point2D::new(0.0, 0.0), 2);
+        let rows: Vec<u64> = hits.iter().map(|(f, _)| f.row_number).collect();
+        assert_eq!(rows, vec![0, 1], "nearest boxes first, farthest last");
+        // Distances are nondecreasing.
+        assert!(hits[0].1 <= hits[1].1);
+    }
+
+    #[test]
+    fn nearest_features_max_results_zero_is_empty() {
+        let GeoIndex::D2(index) =
+            GeoIndex::from_scan(&scan_2d(), &IndexBuildOptions::default()).unwrap()
+        else {
+            panic!("expected GeoIndex::D2");
+        };
+        assert!(index.nearest_features(Point2D::new(0.0, 0.0), 0).is_empty());
+    }
+
+    #[test]
+    fn nearest_features_haversine_orders_by_great_circle_distance() {
+        // Berlin and Paris, matching core's own neighbors_metric doc example.
+        let scan = GeometryScan::D2(GeometryScan2D {
+            boxes: vec![
+                Box2D::from_point(packed_spatial_index::Point2D::new(13.40, 52.52)),
+                Box2D::from_point(packed_spatial_index::Point2D::new(2.35, 48.86)),
+            ],
+            features: vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
+            payloads: None,
+            profile: test_profile(),
+        });
+        let GeoIndex::D2(index) =
+            GeoIndex::from_scan(&scan, &IndexBuildOptions::default()).unwrap()
+        else {
+            panic!("expected GeoIndex::D2");
+        };
+
+        let hits = index.nearest_features_haversine(13.0, 52.4, 1, f64::INFINITY);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].0.row_number, 0,
+            "Berlin is nearer to the query point"
+        );
+
+        // A tight cutoff excludes even the nearest city.
+        assert!(
+            index
+                .nearest_features_haversine(13.0, 52.4, 1, 1.0)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn f32_nearest_features_matches_f64_ordering() {
+        let opts = IndexBuildOptions {
+            precision: StoragePrecision::F32,
+            ..IndexBuildOptions::default()
+        };
+        let GeoIndex::D2F32(index) = GeoIndex::from_scan(&scan_2d(), &opts).unwrap() else {
+            panic!("expected GeoIndex::D2F32");
+        };
+        let hits = index.nearest_features(Point2D::new(0.0, 0.0), 2);
+        let rows: Vec<u64> = hits.iter().map(|(f, _)| f.row_number).collect();
+        assert_eq!(rows, vec![0, 1]);
+
+        let GeoIndex::D3F32(index) = GeoIndex::from_scan(&scan_3d(), &opts).unwrap() else {
+            panic!("expected GeoIndex::D3F32");
+        };
+        let hits = index.nearest_features(Point3D::new(0.0, 0.0, 0.0), 1);
+        assert_eq!(hits[0].0.row_number, 0);
     }
 }

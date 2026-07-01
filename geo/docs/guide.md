@@ -386,5 +386,41 @@ descent, for both `f64`- and `f32`-precision artifacts. An `f32`-precision
 frustum query — its underlying core index only implements a box-based
 search.
 
+## kNN lookups
+
+`GeoIndex2D`/`GeoIndex3D` (and their `f32` counterparts) can answer "nearest
+features to a point" directly, without a bounding box:
+
+```rust
+use std::fs::File;
+use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, Point2D};
+
+let mut dataset = open(File::open("cities.parquet")?)?;
+let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
+    panic!("expected a 2D index");
+};
+for (feature, dist_sq) in index.nearest_features(Point2D::new(13.4, 52.5), 5) {
+    println!("row {}: squared distance {dist_sq}", feature.row_number);
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Two distance choices, matching this crate's existing planar/geographic split
+(`GeoQuery2D::Box2D` vs. `GeoQuery2D::SphericalRadius`):
+
+- **`nearest_features`** — planar Euclidean distance on the stored
+  coordinates. Correct for projected/local data; wrong for lon/lat, since a
+  degree of longitude shrinks toward the poles.
+- **`nearest_features_haversine`** (2D only) — great-circle distance in
+  metres for lon/lat data. Takes a `max_distance_metres` cutoff
+  (`f64::INFINITY` for unbounded); use it, not `nearest_features`, whenever
+  `x`/`y` are longitude/latitude degrees.
+
+kNN is in-memory-accelerator only: it has no streaming/artifact-reader
+equivalent in the core crate, so `GeoArtifactIndex2D`/`3D` do not gain a kNN
+method. This was already promised in [When to use
+it](when-to-use.md#reach-for-the-accelerator-when) ("fast windowed / kNN /
+raycast lookups") but not previously implemented.
+
 [validate]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.validate
 [read_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.read_features

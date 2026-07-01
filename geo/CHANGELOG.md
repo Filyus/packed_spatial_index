@@ -52,6 +52,24 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   metadata/diagnostics helper only — actual search dispatches on the query
   variant directly rather than degrading a frustum query to its bounding box.
 
+### Nearest Neighbors
+
+- Added `GeoIndex2D::nearest_features`/`nearest_features_haversine` and
+  `GeoIndex3D::nearest_features` (plus `f32`-accelerator equivalents on
+  `GeoIndex2DF32`/`GeoIndex3DF32`), wrapping core's kNN search. Planar
+  Euclidean (`nearest_features`) or great-circle haversine
+  (`nearest_features_haversine`, 2D lon/lat data only) distance, nearest
+  first, paired with each hit's distance. This was already promised in
+  `docs/when-to-use.md` ("Reach for the accelerator when ... kNN ...
+  lookups") but not previously implemented; it now is. In-memory-accelerator
+  only — kNN has no streaming/artifact-reader equivalent in the core crate,
+  so `GeoArtifactIndex2D`/`3D` do not gain a kNN method (a permanent
+  constraint, not a TODO). The `f32`-accelerator types have no haversine
+  variant: core's custom-metric kNN entry point isn't implemented for
+  `f32`-precision indexes.
+- `Point2D`, `Point3D`, `haversine_distance_2d`, and `EARTH_RADIUS_M` are now
+  re-exported from this crate's root.
+
 ## [0.14.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.14.0...psi-geo-v0.14.1) - 2026-07-01
 
 ### Documentation

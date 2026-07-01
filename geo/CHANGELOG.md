@@ -35,6 +35,22 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   artifact with an explanatory error (a `Box3D` query against a box index has
   no bounding-box false positives for `--exact` to filter), instead of the
   previous blanket "query CLI currently accepts only 2D" rejection.
+- Added `GeoQuery3D::Frustum3D`/`GeoQuery3D::frustum3d`, a candidate-pruning
+  view-frustum query for `GeoIndex3D::search_features` and
+  `GeoArtifactIndex3D::search_items`/`search_features`/`search_hits`
+  (both `f64`- and `f32`-precision artifacts). Like core's
+  `Frustum3D::overlaps_box`, this is coarse — it may include boxes that only
+  partly overlap the frustum; there is no exact narrow-phase filter for
+  frustum queries in this crate, the same way core's own raycast leaves
+  narrow-phase testing to the caller. `Frustum3D`/`ClipSpaceZ` are now
+  re-exported from this crate's root. An `f32`-precision *in-memory* index
+  (`GeoIndex3DF32`) rejects a frustum query with an explanatory error — its
+  underlying core index only implements a box-based search (the same ceiling
+  `GeoIndex2DF32`/`GeoIndex3DF32` already have for `Polygon` queries).
+  `GeoQuery3D::candidate_box_3d` now returns `Result<Box3D, GeoError>`
+  (`Err` for a degenerate frustum) instead of an infallible `Box3D`, and is a
+  metadata/diagnostics helper only — actual search dispatches on the query
+  variant directly rather than degrading a frustum query to its bounding box.
 
 ## [0.14.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.14.0...psi-geo-v0.14.1) - 2026-07-01
 

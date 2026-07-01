@@ -62,6 +62,7 @@ pub use geo_types;
 // convert, load, and query entirely through `packed_spatial_index_geo` without
 // adding `packed_spatial_index` as a second direct dependency.
 pub use packed_spatial_index::{
-    Box2D, Box3D, FileMetadata, Index2D, Index2DF32, Index3D, Index3DF32, RangeReader, SliceReader,
-    StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, read_metadata,
+    Box2D, Box3D, ClipSpaceZ, FileMetadata, Frustum3D, Index2D, Index2DF32, Index3D, Index3DF32,
+    RangeReader, SliceReader, StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32,
+    read_metadata,
 };

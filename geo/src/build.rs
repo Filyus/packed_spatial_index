@@ -582,9 +582,11 @@ impl GeoIndex3D {
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
-        Ok(self
-            .index
-            .search(query.into().candidate_box_3d())
+        let ids = match query.into() {
+            GeoQuery3D::Box3D(bbox) => self.index.search(bbox),
+            GeoQuery3D::Frustum3D(frustum) => self.index.search(&frustum),
+        };
+        Ok(ids
             .into_iter()
             .filter_map(|id| self.features.get(id).cloned())
             .collect())
@@ -640,11 +642,21 @@ pub struct GeoIndex3DF32 {
 
 impl GeoIndex3DF32 {
     /// Search and return source feature references.
+    ///
+    /// Only [`GeoQuery3D::Box3D`] is supported; a [`GeoQuery3D::Frustum3D`]
+    /// query returns [`GeoError::UnsupportedArtifact`].
     pub fn search_features<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
-        let GeoQuery3D::Box3D(bbox) = query.into();
+        let GeoQuery3D::Box3D(bbox) = query.into() else {
+            return Err(GeoError::UnsupportedArtifact(
+                "f32-precision in-memory index only supports GeoQuery3D::Box3D queries; \
+                 the underlying core index takes a plain Box3D, not the generic query \
+                 trait a Frustum3D search needs"
+                    .to_string(),
+            ));
+        };
         Ok(self
             .index
             .search(bbox)
@@ -874,6 +886,92 @@ mod tests {
             vec![],
         ));
         let err = index.search_features(polygon).unwrap_err();
+        assert!(matches!(err, GeoError::UnsupportedArtifact(_)));
+    }
+
+    #[test]
+    fn frustum3d_query_tightens_over_bounding_box_on_f64_3d_index() {
+        use packed_spatial_index::Frustum3D;
+
+        // A frustum that widens with z: at z=0, x/y in [-1,1]; at z=10, x/y in [-3,3].
+        let frustum = Frustum3D::from_planes([
+            [1.0, 0.0, 0.2, 1.0],
+            [-1.0, 0.0, 0.2, 1.0],
+            [0.0, 1.0, 0.2, 1.0],
+            [0.0, -1.0, 0.2, 1.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0, 10.0],
+        ]);
+
+        let scan = GeometryScan::D3(GeometryScan3D {
+            boxes: vec![
+                Box3D::new(0.0, 0.0, 0.0, 0.5, 0.5, 0.5),
+                Box3D::new(2.0, 2.0, 0.0, 2.5, 2.5, 0.5),
+                Box3D::new(-2.5, -2.5, 9.0, -2.0, -2.0, 9.5),
+            ],
+            features: vec![
+                FeatureRef::row_number(0),
+                FeatureRef::row_number(1),
+                FeatureRef::row_number(2),
+            ],
+            payloads: None,
+            profile: test_profile(),
+        });
+
+        let GeoIndex::D3(index) =
+            GeoIndex::from_scan(&scan, &IndexBuildOptions::default()).unwrap()
+        else {
+            panic!("expected GeoIndex::D3");
+        };
+
+        let bbox = frustum.bounding_box().expect("non-degenerate frustum");
+        let mut bbox_rows: Vec<u64> = index
+            .search_features(bbox)
+            .unwrap()
+            .iter()
+            .map(|f| f.row_number)
+            .collect();
+        bbox_rows.sort_unstable();
+        assert_eq!(
+            bbox_rows,
+            vec![0, 1, 2],
+            "bounding box covers all three boxes"
+        );
+
+        let mut frustum_rows: Vec<u64> = index
+            .search_features(frustum)
+            .unwrap()
+            .iter()
+            .map(|f| f.row_number)
+            .collect();
+        frustum_rows.sort_unstable();
+        assert_eq!(
+            frustum_rows,
+            vec![0, 2],
+            "frustum search excludes the box outside the narrow end, unlike its bounding box"
+        );
+    }
+
+    #[test]
+    fn f32_3d_index_rejects_frustum_query() {
+        use packed_spatial_index::Frustum3D;
+
+        let opts = IndexBuildOptions {
+            precision: StoragePrecision::F32,
+            ..IndexBuildOptions::default()
+        };
+        let GeoIndex::D3F32(index) = GeoIndex::from_scan(&scan_3d(), &opts).unwrap() else {
+            panic!("expected GeoIndex::D3F32");
+        };
+        let frustum = Frustum3D::from_planes([
+            [1.0, 0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, -1.0, 1.0],
+        ]);
+        let err = index.search_features(frustum).unwrap_err();
         assert!(matches!(err, GeoError::UnsupportedArtifact(_)));
     }
 }

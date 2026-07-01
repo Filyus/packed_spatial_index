@@ -1,6 +1,6 @@
 use geo::BoundingRect;
 use geo_types::{Coord, LineString, MultiPolygon, Polygon};
-use packed_spatial_index::{Box2D, Box3D};
+use packed_spatial_index::{Box2D, Box3D, Frustum3D};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::GeoError;
@@ -224,8 +224,6 @@ fn coords_to_ring(coords: Vec<[f64; 2]>) -> LineString<f64> {
 
 /// 3D geospatial query.
 ///
-/// 3D geo artifacts currently support box/envelope candidate queries.
-///
 /// # Example
 ///
 /// ```rust
@@ -238,6 +236,21 @@ fn coords_to_ring(coords: Vec<[f64; 2]>) -> LineString<f64> {
 pub enum GeoQuery3D {
     /// Query box in source XYZ coordinates.
     Box3D(Box3D),
+    /// View-frustum candidate query in source XYZ coordinates.
+    ///
+    /// Coarse only: like [`Frustum3D::overlaps_box`], the search may include
+    /// boxes that only partly overlap the frustum (the standard
+    /// frustum-culling p-vertex test). There is no exact narrow-phase filter
+    /// for frustum queries in this crate — do your own test on the returned
+    /// candidates, the same pattern `packed_spatial_index`'s own raycast
+    /// establishes (see its `examples/raycast_mesh.rs`).
+    ///
+    /// Only supported against `f64`-precision in-memory indexes
+    /// ([`GeoIndex3D`](crate::GeoIndex3D)) and artifacts of either precision;
+    /// an `f32`-precision in-memory index
+    /// ([`GeoIndex3DF32`](crate::GeoIndex3DF32)) rejects this variant, since
+    /// its underlying core index only implements a box-based search.
+    Frustum3D(Frustum3D),
 }
 
 impl GeoQuery3D {
@@ -246,10 +259,48 @@ impl GeoQuery3D {
         Self::Box3D(bbox)
     }
 
-    /// Return the core 3D candidate box for this query.
-    pub fn candidate_box_3d(self) -> Box3D {
+    /// Create a 3D view-frustum candidate query in source XYZ coordinates.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use packed_spatial_index_geo::{ClipSpaceZ, Frustum3D, GeoQuery3D};
+    ///
+    /// let identity = [
+    ///     [1.0, 0.0, 0.0, 0.0],
+    ///     [0.0, 1.0, 0.0, 0.0],
+    ///     [0.0, 0.0, 1.0, 0.0],
+    ///     [0.0, 0.0, 0.0, 1.0],
+    /// ];
+    /// let frustum = Frustum3D::from_view_projection(identity, ClipSpaceZ::NegOneToOne);
+    /// let query = GeoQuery3D::frustum3d(frustum);
+    /// assert!(matches!(query, GeoQuery3D::Frustum3D(_)));
+    /// ```
+    pub fn frustum3d(frustum: Frustum3D) -> Self {
+        Self::Frustum3D(frustum)
+    }
+
+    /// Return a coarse 3D covering box for this query.
+    ///
+    /// For [`GeoQuery3D::Box3D`] this is the query box itself. For
+    /// [`GeoQuery3D::Frustum3D`] this is the frustum's own bounding box
+    /// ([`Frustum3D::bounding_box`]) — a covering superset, not the frustum
+    /// shape itself, and `Err` when the frustum's planes are degenerate.
+    ///
+    /// This is a metadata/diagnostics helper, not what index search uses: a
+    /// `Frustum3D` search dispatches on the query variant directly, so it
+    /// keeps the frustum's own tighter overlap test instead of degrading to
+    /// this box.
+    pub fn candidate_box_3d(self) -> Result<Box3D, GeoError> {
         match self {
-            GeoQuery3D::Box3D(bbox) => bbox,
+            GeoQuery3D::Box3D(bbox) => Ok(bbox),
+            GeoQuery3D::Frustum3D(frustum) => frustum.bounding_box().ok_or_else(|| {
+                GeoError::UnsupportedArtifact(
+                    "frustum bounding box is undefined: its planes are degenerate or \
+                     near-parallel"
+                        .to_string(),
+                )
+            }),
         }
     }
 }
@@ -257,6 +308,12 @@ impl GeoQuery3D {
 impl From<Box3D> for GeoQuery3D {
     fn from(value: Box3D) -> Self {
         Self::Box3D(value)
+    }
+}
+
+impl From<Frustum3D> for GeoQuery3D {
+    fn from(value: Frustum3D) -> Self {
+        Self::Frustum3D(value)
     }
 }
 
@@ -270,6 +327,9 @@ impl Serialize for GeoQuery3D {
                 bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z,
             ])
             .serialize(serializer),
+            GeoQuery3D::Frustum3D(frustum) => {
+                GeoQuery3DSerde::Frustum3D(*frustum.planes()).serialize(serializer)
+            }
         }
     }
 }
@@ -283,6 +343,9 @@ impl<'de> Deserialize<'de> for GeoQuery3D {
             GeoQuery3DSerde::Box3D([min_x, min_y, min_z, max_x, max_y, max_z]) => {
                 GeoQuery3D::Box3D(Box3D::new(min_x, min_y, min_z, max_x, max_y, max_z))
             }
+            GeoQuery3DSerde::Frustum3D(planes) => {
+                GeoQuery3D::Frustum3D(Frustum3D::from_planes(planes))
+            }
         })
     }
 }
@@ -291,6 +354,7 @@ impl<'de> Deserialize<'de> for GeoQuery3D {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 enum GeoQuery3DSerde {
     Box3D([f64; 6]),
+    Frustum3D([[f64; 4]; 6]),
 }
 
 /// Exact source-filtering predicate.

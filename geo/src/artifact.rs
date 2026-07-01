@@ -365,11 +365,20 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     ///
     /// This does not decode geo payloads and therefore also works for
     /// [`PayloadPlan::None`] artifacts.
+    ///
+    /// A [`GeoQuery3D::Frustum3D`] query prunes subtrees that fall outside
+    /// the frustum during the streamed descent, for both `f64`- and
+    /// `f32`-precision artifacts.
     pub fn search_items<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<Vec<usize>, GeoError> {
-        let bbox = query.into().candidate_box_3d();
-        match &self.index {
-            GeoStreamIndex3D::F64(index) => Ok(index.search(bbox)?),
-            GeoStreamIndex3D::F32(index) => Ok(index.search(bbox)?),
+        match query.into() {
+            GeoQuery3D::Box3D(bbox) => match &self.index {
+                GeoStreamIndex3D::F64(index) => Ok(index.search(bbox)?),
+                GeoStreamIndex3D::F32(index) => Ok(index.search(bbox)?),
+            },
+            GeoQuery3D::Frustum3D(frustum) => match &self.index {
+                GeoStreamIndex3D::F64(index) => Ok(index.search_region(&frustum)?),
+                GeoStreamIndex3D::F32(index) => Ok(index.search_region(&frustum)?),
+            },
         }
     }
 
@@ -414,12 +423,22 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn search_hits<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<Vec<GeoHit>, GeoError> {
-        let bbox = query.into().candidate_box_3d();
-        let hits = match &self.index {
-            GeoStreamIndex3D::F64(index) => index.search_payloads(bbox)?,
-            GeoStreamIndex3D::F32(index) => index.search_payloads(bbox)?,
-        };
-        decode_hits(&self.manifest.payload_plan, hits)
+        match query.into() {
+            GeoQuery3D::Box3D(bbox) => {
+                let hits = match &self.index {
+                    GeoStreamIndex3D::F64(index) => index.search_payloads(bbox)?,
+                    GeoStreamIndex3D::F32(index) => index.search_payloads(bbox)?,
+                };
+                decode_hits(&self.manifest.payload_plan, hits)
+            }
+            GeoQuery3D::Frustum3D(frustum) => {
+                let hits = match &self.index {
+                    GeoStreamIndex3D::F64(index) => index.search_payloads_region(&frustum)?,
+                    GeoStreamIndex3D::F32(index) => index.search_payloads_region(&frustum)?,
+                };
+                decode_hits(&self.manifest.payload_plan, hits)
+            }
+        }
     }
 }
 

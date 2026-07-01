@@ -337,5 +337,54 @@ a 3D index: a `Box3D` query against a box index has no bounding-box false
 positives for `--exact` to filter, so the coarse search result is already
 exact.
 
+## 3D frustum candidate queries
+
+`GeoQuery3D::Frustum3D` narrows a 3D search by a view frustum instead of a
+box — tighter than the frustum's own bounding box, since the index search
+uses the frustum's actual overlap test during traversal, not just its
+covering box:
+
+```rust
+use std::fs::File;
+use packed_spatial_index_geo::{
+    open, Box3D, BuildRequest, ClipSpaceZ, Frustum3D, GeoIndex, GeoQuery3D, IndexDimsRequest,
+};
+
+let mut dataset = open(File::open("elevations.parquet")?)?;
+let GeoIndex::D3(index) = dataset.build(BuildRequest {
+    dims: IndexDimsRequest::D3,
+    ..BuildRequest::default()
+})?
+else {
+    panic!("expected a 3D index");
+};
+
+let view_projection = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+let frustum = Frustum3D::from_view_projection(view_projection, ClipSpaceZ::ZeroToOne);
+let candidates = index.search_features(GeoQuery3D::frustum3d(frustum))?;
+# let _ = candidates;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+This is candidate-pruning only, the same way `Box3D` is: the result may
+include a feature whose box only partly overlaps the frustum (the standard
+frustum-culling p-vertex test), and there is no exact narrow-phase filter for
+frustum queries in this crate. Test the returned candidates yourself, the
+same pattern `packed_spatial_index`'s own raycast establishes (see its
+`examples/raycast_mesh.rs`).
+
+`GeoArtifactIndex3D::search_items`/`search_hits`/`search_features` accept the
+same query and prune subtrees outside the frustum during the streamed
+descent, for both `f64`- and `f32`-precision artifacts. An `f32`-precision
+*in-memory* index (`GeoIndex3DF32`, see [Half-size in-memory index
+(f32 accelerator)](#half-size-in-memory-index-f32-accelerator)) rejects a
+frustum query — its underlying core index only implements a box-based
+search.
+
 [validate]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.validate
 [read_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.read_features

@@ -147,8 +147,12 @@ std::fs::write("cities.psindex", &bytes)?;
 
 Both functions borrow the scan rather than consume it, and only the scan
 itself reads the source. `GeoIndex::from_scan` never looks at the scan's
-payload bytes, so pick the `PayloadPlan` the artifact needs; the index comes
-out the same either way.
+payload bytes, so the index comes out the same regardless of the scan's
+`PayloadPlan`. `GeoArtifact::from_scan` does depend on it: the payload bytes
+are fixed by the scan, so it requires the `ConvertRequest`'s `payload` to
+match the plan the scan was built with (otherwise the manifest would
+misdescribe the bytes) and errors with `GeoError::ScanPayloadMismatch` if they
+differ. Scan the source with the `PayloadPlan` you want in the artifact.
 
 ## Query source rows
 
@@ -333,9 +337,12 @@ gp2psindex query input.parquet output.psi \
 ```
 
 `--radius`, `--exact`, and `--predicate` are 2D-only and are rejected against
-a 3D index: a `Box3D` query against a box index has no bounding-box false
-positives for `--exact` to filter, so the coarse search result is already
-exact.
+a 3D index. A 3D query returns a bounding-box (envelope) candidate set; exact
+source-geometry filtering is implemented only for 2D (the planar predicate
+stack is 2D-only), so `--exact`/`--predicate` cannot narrow a 3D result. For
+non-point 3D geometry — or any `f32` index, whose envelopes are rounded
+outward — that candidate set is a superset, so do your own narrow-phase test
+on the returned features if you need exact hits.
 
 ## 3D frustum candidate queries
 

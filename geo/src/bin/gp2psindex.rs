@@ -267,22 +267,24 @@ fn query_cmd_3d<R: RangeReader>(
     }
     if parsed.flag("--exact") {
         return Err(
-            "--exact is a no-op for a 3D index: a Box3D query against a box index has no \
-             bounding-box false positives to filter, so the coarse search result is already exact"
+            "--exact is not supported for a 3D index: exact source-geometry filtering is \
+             implemented only for 2D (the planar predicate stack is 2D-only). A 3D query returns \
+             a bounding-box (envelope) candidate set, which for non-point geometry -- or any f32 \
+             index -- is a superset, not the exact hit set"
                 .into(),
         );
     }
     if parsed.option("--predicate")?.is_some() {
         return Err(
-            "--predicate is a 2D-only option: a 3D index has no polygon/frustum query shape yet, \
-             so there is nothing for a predicate to select between"
+            "--predicate is a 2D-only option: it selects the predicate for the exact filter, \
+             which is not implemented for 3D indexes"
                 .into(),
         );
     }
     if parsed.flag("--treat-nonplanar-as-planar") {
         return Err(
-            "--treat-nonplanar-as-planar is a 2D-only option: a 3D index has no lon/lat \
-             geography concept to treat as planar"
+            "--treat-nonplanar-as-planar is a 2D-only option: it tunes the exact filter, which \
+             is not implemented for 3D indexes"
                 .into(),
         );
     }

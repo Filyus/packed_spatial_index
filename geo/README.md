@@ -67,11 +67,15 @@ files.
 | Validate input | [`GeoDataset::validate`][validate] |
 | Scan boxes / payloads | [`GeoDataset::scan`][scan], [`ScanRequest`][ScanRequest] |
 | Build an index | [`GeoDataset::build`][build], [`GeoIndex`][GeoIndex] |
+| Build a half-size (`f32`) index | [`IndexBuildOptions::precision`][IndexBuildOptions], [`StoragePrecision`][StoragePrecision] |
+| Build an index and a `PSINDEX` in one scan | [`GeoIndex::from_scan`][from_scan], [`GeoArtifact::from_scan`][artifact_from_scan] |
 | Query the index | [`GeoIndex2D::search_features`][search_features_2d], [`GeoIndex3D::search_features`][search_features_3d] |
+| Nearest features (kNN) | [`GeoIndex2D::nearest_features`][nearest_features], `nearest_features_haversine` |
+| Raycast features | [`GeoIndex3D::raycast_features`][raycast_features], `raycast_closest_feature` |
 | Convert to `PSINDEX` | [`GeoDataset::convert`][convert] |
 | Open a `PSINDEX` | [`open_geo_index`][open_geo_index] |
 | Query a `PSINDEX` | [`GeoArtifactIndex2D::search_hits`][search_hits], [`GeoHit`][GeoHit] |
-| Choose a query shape | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius) |
+| Choose a query shape | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius), [`GeoQuery3D`][GeoQuery3D] (box / frustum) |
 | Exact-filter source hits | [`GeoDataset::filter_features`][filter_features], [`FeatureFilterRequest`][FeatureFilterRequest] |
 | Exact-filter `PSINDEX` hits | [`GeoArtifactIndex2D::filter_hits`][filter_hits] |
 | Read source rows | [`GeoDataset::read_features`][read_features], [`FeatureReadRequest`][FeatureReadRequest] |
@@ -264,7 +268,13 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [GeoArtifactIndex]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoArtifactIndex.html
 [GeoHit]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoHit.html
 [GeoQuery2D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery2D.html
+[GeoQuery3D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery3D.html
 [GeoPayload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoPayload.html
+[IndexBuildOptions]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.IndexBuildOptions.html
+[from_scan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoIndex.html#method.from_scan
+[artifact_from_scan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifact.html#method.from_scan
+[nearest_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.nearest_features
+[raycast_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.raycast_features
 [IndexDimsRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.IndexDimsRequest.html
 [StoragePrecision]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.StoragePrecision.html
 [NullPolicy]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.NullPolicy.html

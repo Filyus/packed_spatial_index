@@ -142,9 +142,33 @@ fn content_type_for_payload(payload: &[Vec<u8>]) -> &'static str {
     }
 }
 
+/// Ensure a scan's payload plan matches the one a [`ConvertRequest`] asks for.
+/// The payload bytes are already fixed by the scan, so a differing request
+/// cannot change them — proceeding would write a manifest that misdescribes the
+/// payload format and silently misdecode on read.
+fn check_scan_payload(scanned: &PayloadPlan, requested: &PayloadPlan) -> Result<(), GeoError> {
+    if scanned != requested {
+        return Err(GeoError::ScanPayloadMismatch {
+            scanned: scanned.clone(),
+            requested: requested.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Build the `geoM` manifest. `precision`/`interleaved` are serialization
+/// choices taken from the [`ConvertRequest`], but the data-describing fields
+/// (`payload`, `nulls`, `envelope`) come from the [`GeometryScan`]'s recorded
+/// provenance, not the request — so the manifest always matches the payload
+/// bytes actually written, even when a caller passes a `ConvertRequest` whose
+/// payload plan differs from the one the scan was built with.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn artifact_manifest(
     profile: &GeometryProfile,
-    req: &ConvertRequest,
+    precision: StoragePrecision,
+    payload: &PayloadPlan,
+    nulls: NullPolicy,
+    envelope: EnvelopePolicy,
     feature_count: usize,
     index_entry_count: usize,
     entries_may_duplicate_rows: bool,
@@ -162,13 +186,13 @@ pub(crate) fn artifact_manifest(
         edges: profile.edges,
         encoding: profile.encoding.clone(),
         dims: profile.coordinate_dims,
-        storage_precision: req.precision,
-        null_policy: req.nulls,
-        antimeridian_policy: match req.envelope {
+        storage_precision: precision,
+        null_policy: nulls,
+        antimeridian_policy: match envelope {
             EnvelopePolicy::Planar => AntimeridianPolicy::Reject,
             EnvelopePolicy::Geographic { antimeridian } => antimeridian,
         },
-        payload_plan: req.payload.clone(),
+        payload_plan: payload.clone(),
         feature_count,
         index_entry_count,
         entries_may_duplicate_rows,
@@ -1007,6 +1031,7 @@ impl GeoArtifact {
     ) -> Result<GeoArtifact, GeoError> {
         let manifest = match scan {
             GeometryScan::D2(scan) => {
+                check_scan_payload(&scan.payload, &req.payload)?;
                 let mut builder = builder_2d(scan.boxes.len(), &req.build);
                 for bbox in &scan.boxes {
                     builder.add(*bbox);
@@ -1022,7 +1047,10 @@ impl GeoArtifact {
                 )?;
                 artifact_manifest(
                     &scan.profile,
-                    req,
+                    req.precision,
+                    &scan.payload,
+                    scan.nulls,
+                    scan.envelope,
                     payload::unique_feature_count(&scan.features),
                     scan.boxes.len(),
                     payload::entries_may_duplicate_rows(&scan.features),
@@ -1030,6 +1058,7 @@ impl GeoArtifact {
                 )
             }
             GeometryScan::D3(scan) => {
+                check_scan_payload(&scan.payload, &req.payload)?;
                 let mut builder = builder_3d(scan.boxes.len(), &req.build);
                 for bbox in &scan.boxes {
                     builder.add(*bbox);
@@ -1045,7 +1074,10 @@ impl GeoArtifact {
                 )?;
                 artifact_manifest(
                     &scan.profile,
-                    req,
+                    req.precision,
+                    &scan.payload,
+                    scan.nulls,
+                    scan.envelope,
                     payload::unique_feature_count(&scan.features),
                     scan.boxes.len(),
                     payload::entries_may_duplicate_rows(&scan.features),
@@ -1102,6 +1134,9 @@ mod tests {
             ],
             payloads: None,
             profile: test_profile(),
+            payload: PayloadPlan::None,
+            nulls: NullPolicy::Error,
+            envelope: EnvelopePolicy::Planar,
         })
     }
 
@@ -1114,6 +1149,9 @@ mod tests {
             features: vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
             payloads: None,
             profile: test_profile(),
+            payload: PayloadPlan::None,
+            nulls: NullPolicy::Error,
+            envelope: EnvelopePolicy::Planar,
         })
     }
 
@@ -1209,6 +1247,9 @@ mod tests {
             ],
             payloads: None,
             profile: test_profile(),
+            payload: PayloadPlan::None,
+            nulls: NullPolicy::Error,
+            envelope: EnvelopePolicy::Planar,
         });
 
         let GeoIndex::D3(index) =
@@ -1303,6 +1344,9 @@ mod tests {
             features: vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
             payloads: None,
             profile: test_profile(),
+            payload: PayloadPlan::None,
+            nulls: NullPolicy::Error,
+            envelope: EnvelopePolicy::Planar,
         });
         let GeoIndex::D2(index) =
             GeoIndex::from_scan(&scan, &IndexBuildOptions::default()).unwrap()
@@ -1410,5 +1454,60 @@ mod tests {
             .collect();
         rows.sort_unstable();
         assert_eq!(rows, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn from_scan_rejects_payload_plan_mismatch() {
+        // `scan_2d()` was built with `PayloadPlan::None`; asking `from_scan` for
+        // `RowWkb` must error rather than write a manifest that claims RowWkb
+        // over payload-less bytes (which would misdecode on read).
+        let req = ConvertRequest {
+            payload: PayloadPlan::RowWkb,
+            ..ConvertRequest::default()
+        };
+        let mut bytes = Vec::new();
+        let err = GeoArtifact::from_scan(&scan_2d(), &req, "fp", &mut bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GeoError::ScanPayloadMismatch {
+                    scanned: PayloadPlan::None,
+                    requested: PayloadPlan::RowWkb,
+                }
+            ),
+            "expected ScanPayloadMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_scan_manifest_reflects_scan_provenance_not_request() {
+        // Payload plan, null policy, and antimeridian policy in the manifest come
+        // from the scan (the source of truth for the bytes), not the request.
+        // Here the scan is RowRef + NullPolicy::Error while the ConvertRequest
+        // defaults are RowWkb + NullPolicy::Skip; the request's payload is set to
+        // match the scan (required), but nulls deliberately differ.
+        let scan = GeometryScan::D2(GeometryScan2D {
+            boxes: vec![Box2D::new(0.0, 0.0, 1.0, 1.0)],
+            features: vec![FeatureRef::row_number(0)],
+            payloads: Some(vec![vec![0u8; FEATURE_REF_RECORD_LEN]]),
+            profile: test_profile(),
+            payload: PayloadPlan::RowRef,
+            nulls: NullPolicy::Error,
+            envelope: EnvelopePolicy::Planar,
+        });
+        let req = ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        };
+        assert_eq!(
+            req.nulls,
+            NullPolicy::Skip,
+            "request default differs from scan"
+        );
+
+        let mut bytes = Vec::new();
+        let artifact = GeoArtifact::from_scan(&scan, &req, "fp", &mut bytes).unwrap();
+        assert_eq!(artifact.manifest.payload_plan, PayloadPlan::RowRef);
+        assert_eq!(artifact.manifest.null_policy, NullPolicy::Error);
     }
 }

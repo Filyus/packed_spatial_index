@@ -134,6 +134,9 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
                 features,
                 payloads,
                 profile,
+                payload: req.payload.clone(),
+                nulls: req.nulls,
+                envelope: req.envelope,
             }))
         }
         ResolvedDims::D3 => {
@@ -160,6 +163,9 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
                 features,
                 payloads,
                 profile,
+                payload: req.payload.clone(),
+                nulls: req.nulls,
+                envelope: req.envelope,
             }))
         }
     }
@@ -575,6 +581,14 @@ pub struct GeometryScan2D {
     pub payloads: Option<Vec<Vec<u8>>>,
     /// Profile of the scanned column.
     pub profile: GeometryProfile,
+    /// Payload plan that produced [`payloads`](Self::payloads). Recorded so
+    /// [`GeoArtifact::from_scan`](crate::GeoArtifact::from_scan) writes a
+    /// manifest that matches the actual payload bytes.
+    pub payload: PayloadPlan,
+    /// Null/empty policy applied during the scan.
+    pub nulls: NullPolicy,
+    /// Envelope policy applied during the scan.
+    pub envelope: EnvelopePolicy,
 }
 
 /// 3D scan result.
@@ -588,4 +602,12 @@ pub struct GeometryScan3D {
     pub payloads: Option<Vec<Vec<u8>>>,
     /// Profile of the scanned column.
     pub profile: GeometryProfile,
+    /// Payload plan that produced [`payloads`](Self::payloads). Recorded so
+    /// [`GeoArtifact::from_scan`](crate::GeoArtifact::from_scan) writes a
+    /// manifest that matches the actual payload bytes.
+    pub payload: PayloadPlan,
+    /// Null/empty policy applied during the scan.
+    pub nulls: NullPolicy,
+    /// Envelope policy applied during the scan.
+    pub envelope: EnvelopePolicy,
 }

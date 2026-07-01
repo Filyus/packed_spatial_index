@@ -32,6 +32,23 @@ pub enum GeoError {
     /// Artifact manifest or layout is not supported.
     #[error("unsupported geo artifact: {0}")]
     UnsupportedArtifact(String),
+    /// A [`GeometryScan`](crate::GeometryScan) was built with a different
+    /// payload plan than the [`ConvertRequest`](crate::ConvertRequest) passed to
+    /// [`GeoArtifact::from_scan`](crate::GeoArtifact::from_scan) asks for. The
+    /// payload bytes are already fixed by the scan, so the request cannot change
+    /// them; scan the source with the payload plan you want in the artifact (or
+    /// use [`GeoDataset::convert`](crate::GeoDataset::convert) /
+    /// [`GeoDataset::convert_into`](crate::GeoDataset::convert_into), which scan
+    /// and convert in one step).
+    #[error(
+        "scan was built with payload plan {scanned:?} but the ConvertRequest asks for {requested:?}; scan with the payload plan you want in the artifact"
+    )]
+    ScanPayloadMismatch {
+        /// Payload plan the scan actually produced.
+        scanned: crate::PayloadPlan,
+        /// Payload plan the `ConvertRequest` asked for.
+        requested: crate::PayloadPlan,
+    },
     /// Artifact payload could not be decoded according to the manifest.
     #[error("cannot decode geo payload: {0}")]
     PayloadDecode(String),

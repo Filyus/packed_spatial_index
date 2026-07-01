@@ -13,11 +13,11 @@ use bytes::Bytes;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, DuplicateFeatureRows,
     EnvelopePolicy, FEATURE_REF_RECORD_LEN, FeatureFilterRequest, FeatureReadOrder,
-    FeatureReadRequest, FeatureRef, GeoArtifactIndex, GeoError, GeoIndex, GeoPayload, GeoQuery2D,
-    GeometryEncoding, GeometryMetadataSource, GeometryReadMode, GeometryScan, GeometrySelector,
-    IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
-    PropertyProjection, RangeReader, SliceReader, StoragePrecision, StreamIndex2D,
-    decode_feature_ref_payload, decode_feature_wkb_payload, open, open_geo_index,
+    FeatureReadRequest, FeatureRef, Frustum3D, GeoArtifactIndex, GeoError, GeoIndex, GeoPayload,
+    GeoQuery2D, GeoQuery3D, GeometryEncoding, GeometryMetadataSource, GeometryReadMode,
+    GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NonPlanarExactPolicy,
+    NullPolicy, PayloadPlan, PropertyProjection, RangeReader, SliceReader, StoragePrecision,
+    StreamIndex2D, decode_feature_ref_payload, decode_feature_wkb_payload, open, open_geo_index,
     read_geo_manifest,
 };
 use parquet::arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions};
@@ -1491,6 +1491,82 @@ fn geo_artifact_reader_searches_3d_artifacts() {
 }
 
 #[test]
+fn geo_artifact_frustum_query_prunes_over_bounding_box() {
+    // Three 3D points: P0 inside the frustum, P1 outside it but inside its
+    // bounding box, P2 inside (far end). The streaming frustum query must return
+    // {0, 2} (pruning P1), while a Box3D query with the frustum's bounding box
+    // returns all three — proving the artifact-side frustum dispatch actually
+    // prunes with `search_region`, not just searches the covering box. Checked
+    // for both f64 and f32 storage.
+    let p0 = wkb_point_3d(0.25, 0.25, 0.25);
+    let p1 = wkb_point_3d(2.25, 2.25, 0.25);
+    let p2 = wkb_point_3d(-2.25, -2.25, 9.25);
+
+    // Widens with z: at the near end (z=0) it excludes P1; the far end admits P2.
+    let frustum = Frustum3D::from_planes([
+        [1.0, 0.0, 0.2, 1.0],
+        [-1.0, 0.0, 0.2, 1.0],
+        [0.0, 1.0, 0.2, 1.0],
+        [0.0, -1.0, 0.2, 1.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, -1.0, 10.0],
+    ]);
+    let bbox = frustum.bounding_box().expect("non-degenerate frustum");
+
+    for precision in [StoragePrecision::F64, StoragePrecision::F32] {
+        let data = write_geoparquet(
+            vec![(
+                "geometry",
+                binary_col(&[Some(p0.clone()), Some(p1.clone()), Some(p2.clone())]),
+            )],
+            geo_meta_wkb(&["Point Z"]),
+        );
+        let mut dataset = open(data).unwrap();
+        let bytes = dataset
+            .convert(ConvertRequest {
+                dims: IndexDimsRequest::D3,
+                payload: PayloadPlan::RowRef,
+                precision,
+                ..ConvertRequest::default()
+            })
+            .unwrap();
+        let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+            panic!("expected 3D artifact");
+        };
+
+        let mut frustum_rows: Vec<u64> = index
+            .search_features(GeoQuery3D::frustum3d(frustum))
+            .unwrap()
+            .iter()
+            .map(|f| f.row_number)
+            .collect();
+        frustum_rows.sort_unstable();
+
+        let mut bbox_rows: Vec<u64> = index
+            .search_features(bbox)
+            .unwrap()
+            .iter()
+            .map(|f| f.row_number)
+            .collect();
+        bbox_rows.sort_unstable();
+
+        assert_eq!(
+            bbox_rows,
+            vec![0, 1, 2],
+            "{precision:?}: the frustum's bounding box covers all three points"
+        );
+        assert!(
+            frustum_rows.contains(&0) && frustum_rows.contains(&2),
+            "{precision:?}: frustum keeps the in-frustum points, got {frustum_rows:?}"
+        );
+        assert!(
+            !frustum_rows.contains(&1),
+            "{precision:?}: frustum prunes the point outside it but inside its bbox, got {frustum_rows:?}"
+        );
+    }
+}
+
+#[test]
 fn geo_artifact_reader_does_not_require_known_length() {
     struct NoLenReader(SliceReader<Vec<u8>>);
 
@@ -2087,9 +2163,9 @@ fn cli_query_accepts_3d_bbox_and_rejects_2d_only_flags() {
         String::from_utf8_lossy(&radius_rejected.stderr)
     );
 
-    // --exact against a 3D box index is a no-op by construction: the coarse
-    // search result already IS the exact result. Reject with the honest
-    // reasoning, not a blanket "not implemented" message.
+    // --exact against a 3D index is rejected with the honest reason: exact
+    // source-geometry filtering is 2D-only (the planar predicate stack is 2D),
+    // so a 3D result is an envelope candidate set, not the exact hit set.
     let exact_rejected = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
         .arg("query")
         .arg(&source_path)
@@ -2102,7 +2178,7 @@ fn cli_query_accepts_3d_bbox_and_rejects_2d_only_flags() {
     assert!(!exact_rejected.status.success());
     assert!(
         String::from_utf8_lossy(&exact_rejected.stderr)
-            .contains("no bounding-box false positives to filter"),
+            .contains("exact source-geometry filtering is implemented only for 2D"),
         "stderr: {}",
         String::from_utf8_lossy(&exact_rejected.stderr)
     );

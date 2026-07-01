@@ -12,6 +12,18 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   getting both an in-memory index and a converted artifact from one
   `GeoDataset` used to scan the source twice. Scan once and pass the result
   to both functions instead.
+- `GeoArtifact::from_scan` now derives the `geoM` manifest's payload plan,
+  null policy, and antimeridian policy from the scan's recorded provenance
+  rather than from the `ConvertRequest`, so the manifest can no longer
+  misdescribe the payload bytes (a request whose `payload` differed from the
+  scan's — e.g. `ScanRequest::default()`'s `None` vs `ConvertRequest::default()`'s
+  `RowWkb` — previously wrote a mismatched manifest that could misdecode on
+  read). It now errors with the new `GeoError::ScanPayloadMismatch` when the
+  request's `payload` differs from the scan's.
+- **Breaking:** `GeometryScan2D`/`GeometryScan3D` gained `payload` / `nulls` /
+  `envelope` fields (recording the scan's provenance); code that constructs
+  these structs with a literal must set them. `GeoError` gained a
+  `ScanPayloadMismatch` variant.
 
 ### Indexes
 
@@ -25,6 +37,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   generic query trait those variants need (a core-level ceiling, not planned
   to be lifted). `Index2DF32`/`Index3DF32` are now re-exported from this
   crate's root.
+- **Breaking:** `GeoIndex` gained `D2F32`/`D3F32` variants; a `match` on
+  `GeoIndex` without a wildcard arm must handle them.
 
 ### Search
 
@@ -32,9 +46,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   (`xmin,ymin,zmin,xmax,ymax,zmax`) against a 3D `.psi` index, calling the
   already-existing `GeoArtifactIndex3D::search_features`. `--radius`,
   `--exact`, and `--predicate` are 2D-only and are now rejected for a 3D
-  artifact with an explanatory error (a `Box3D` query against a box index has
-  no bounding-box false positives for `--exact` to filter), instead of the
-  previous blanket "query CLI currently accepts only 2D" rejection.
+  artifact with an explanatory error (a 3D query returns a bounding-box
+  candidate set; exact source-geometry filtering is implemented only for 2D,
+  so it cannot narrow a 3D result), instead of the previous blanket "query CLI
+  currently accepts only 2D" rejection.
 - Added `GeoQuery3D::Frustum3D`/`GeoQuery3D::frustum3d`, a candidate-pruning
   view-frustum query for `GeoIndex3D::search_features` and
   `GeoArtifactIndex3D::search_items`/`search_features`/`search_hits`
@@ -47,10 +62,13 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   (`GeoIndex3DF32`) rejects a frustum query with an explanatory error — its
   underlying core index only implements a box-based search (the same ceiling
   `GeoIndex2DF32`/`GeoIndex3DF32` already have for `Polygon` queries).
-  `GeoQuery3D::candidate_box_3d` now returns `Result<Box3D, GeoError>`
-  (`Err` for a degenerate frustum) instead of an infallible `Box3D`, and is a
-  metadata/diagnostics helper only — actual search dispatches on the query
-  variant directly rather than degrading a frustum query to its bounding box.
+  `GeoQuery3D::candidate_box_3d` is now a metadata/diagnostics helper only —
+  actual search dispatches on the query variant directly rather than degrading
+  a frustum query to its bounding box.
+- **Breaking:** `GeoQuery3D` gained a `Frustum3D` variant (an exhaustive
+  `match` needs the new arm), and `GeoQuery3D::candidate_box_3d` now returns
+  `Result<Box3D, GeoError>` (`Err` for a degenerate frustum) instead of an
+  infallible `Box3D`.
 - Added `GeoIndex2D::raycast_features`/`raycast_closest_feature` and
   `GeoIndex3D::raycast_features`/`raycast_closest_feature` (plus
   `f32`-accelerator `raycast_features`), wrapping core's raycast search.

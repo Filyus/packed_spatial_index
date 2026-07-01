@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.21.1...psi-v0.22.0) - 2026-07-02
+
 ### Search
 
 - Added async region-query APIs to the streaming indexes. `StreamIndex2D` /

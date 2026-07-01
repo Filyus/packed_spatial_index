@@ -17,8 +17,10 @@ pinpoints individual features. This crate fills the gap:
   skipped or split
 - **converter** — build the index and attach a leaf-ordered payload (by default,
   `FeatureRef` + WKB geometry), serialized to a self-describing,
-  **streamable `PSINDEX`** that answers window / kNN / raycast queries straight
-  from object storage in a handful of range reads, with no Parquet re-read
+  **streamable `PSINDEX`** that answers window, polygon, and 3D frustum
+  candidate queries straight from object storage in a handful of range reads,
+  with no Parquet re-read. kNN and raycast queries use the in-memory
+  accelerator path.
 - **discovery / inspection** — open a `GeoDataset`, list usable geometry
   candidates before selecting one, then inspect the selected column's typed
   metadata (dims, encoding, CRS, edges, extent, row count)

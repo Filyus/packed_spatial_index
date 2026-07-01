@@ -4,6 +4,12 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Documentation
+
+- Clarified streaming-query documentation: sync streaming supports range and
+  region queries, while async streaming currently mirrors box queries; kNN and
+  raycast remain in-memory/view use cases.
+
 ## [0.21.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.21.0...psi-v0.21.1) - 2026-07-01
 
 ### 3D

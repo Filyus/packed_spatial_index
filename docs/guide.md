@@ -57,14 +57,16 @@ file; `search_iter` is the lazy iterator form of range search.
 | `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
 
-The same range methods also accept 2D triangle and convex-polygon queries
-(`Index2D` / `Index2DView`) and 3D frustum queries (`Index3D` / `Index3DView`);
-those examples are covered below. These shape queries are f64-only and are not
-available on the SIMD, f32, or streaming frontends.
+The same overlap machinery also accepts 2D triangle and convex-polygon queries
+on `Index2D` / `Index2DView`, and 3D frustum queries on `Index3D` /
+`Index3DView`. Streaming readers expose the same pruning through
+`search_region` / `visit_region` / `search_payloads_region` (including compact
+`...F32` readers, conservatively over rounded boxes). These shape queries are
+not available on SIMD frontends or on the owned scalar `Index*F32` search APIs.
 
 The empty cells are intentional, not gaps to fill:
 
-- Streaming covers only range search (with payloads). kNN and raycast use a
+- Streaming covers range and region search (with payloads). kNN and raycast use a
   best-first traversal that jumps around the tree, so adjacent reads do not
   coalesce; streaming them would be one read per node. Load those with a view or
   an in-memory index. (The in-memory and `f32` indexes serialize the files that

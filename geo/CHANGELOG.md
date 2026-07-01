@@ -4,6 +4,12 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Documentation
+
+- Clarified that streamable geo artifacts answer window, polygon, and 3D
+  frustum candidate queries from object storage; kNN and raycast use the
+  in-memory accelerator path.
+
 ## [0.15.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.14.1...psi-geo-v0.15.0) - 2026-07-01
 
 ### API

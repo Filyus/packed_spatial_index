@@ -26,6 +26,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   to be lifted). `Index2DF32`/`Index3DF32` are now re-exported from this
   crate's root.
 
+### Search
+
+- `gp2psindex query` now accepts `--bbox` with six comma-separated numbers
+  (`xmin,ymin,zmin,xmax,ymax,zmax`) against a 3D `.psi` index, calling the
+  already-existing `GeoArtifactIndex3D::search_features`. `--radius`,
+  `--exact`, and `--predicate` are 2D-only and are now rejected for a 3D
+  artifact with an explanatory error (a `Box3D` query against a box index has
+  no bounding-box false positives for `--exact` to filter), instead of the
+  previous blanket "query CLI currently accepts only 2D" rejection.
+
 ## [0.14.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.14.0...psi-geo-v0.14.1) - 2026-07-01
 
 ### Documentation

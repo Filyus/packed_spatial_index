@@ -10,12 +10,13 @@ use arrow::record_batch::RecordBatch;
 use arrow_json::LineDelimitedWriter;
 use base64::Engine as _;
 use packed_spatial_index_geo::{
-    AntimeridianPolicy, Box2D, ConvertRequest, DuplicateFeatureRows, EnvelopePolicy,
-    FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRows, GeoArtifactIndex,
-    GeoDiscovery, GeoError, GeoQuery2D, GeometryProfile, GeometryReadMode, GeometrySelector,
-    IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
-    PropertyProjection, SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest,
-    ValidationReport, ValidationSeverity, open, open_geo_index,
+    AntimeridianPolicy, Box2D, Box3D, ConvertRequest, DuplicateFeatureRows, EnvelopePolicy,
+    FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRef, FeatureRows,
+    GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoDiscovery,
+    GeoError, GeoQuery2D, GeometryProfile, GeometryReadMode, GeometrySelector, IndexDimsRequest,
+    InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan, PropertyProjection, RangeReader,
+    SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport,
+    ValidationSeverity, open, open_geo_index,
 };
 
 const USAGE: &str = "\
@@ -51,7 +52,9 @@ usage:
       [--order source|hit]
       [--duplicates dedup|parts]
       [--json|--ndjson]
-      [--allow-source-mismatch]";
+      [--allow-source-mismatch]
+      (against a 3D index: --bbox takes xmin,ymin,zmin,xmax,ymax,zmax;
+       --radius/--exact/--predicate/--treat-nonplanar-as-planar are 2D-only)";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -183,6 +186,30 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let source = parsed.required_pos(0, "source.parquet")?;
     let index_path = parsed.required_pos(1, "index.psi")?;
     parsed.no_extra_pos(2)?;
+
+    if parsed.flag("--json") && parsed.flag("--ndjson") {
+        return Err("--json and --ndjson are mutually exclusive".into());
+    }
+
+    let bytes = std::fs::read(index_path)?;
+    let artifact = open_geo_index(SliceReader::new(bytes))?;
+    let manifest = artifact.manifest().clone();
+
+    let features = match artifact {
+        GeoArtifactIndex::D2(index) => query_cmd_2d(&parsed, source, &index)?,
+        GeoArtifactIndex::D3(index) => query_cmd_3d(&parsed, &index)?,
+    };
+
+    query_cmd_finish(&parsed, source, &manifest, features)
+}
+
+/// 2D query path: `--bbox` (4 numbers) or `--radius`, with optional `--exact`
+/// planar/spherical filtering.
+fn query_cmd_2d<R: RangeReader>(
+    parsed: &Parsed<'_>,
+    source: &str,
+    index: &GeoArtifactIndex2D<R>,
+) -> Result<Vec<FeatureRef>, Box<dyn std::error::Error>> {
     let bbox = parsed.option("--bbox")?;
     let radius = parsed.option("--radius")?;
     let query = match (bbox, radius) {
@@ -194,11 +221,6 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         (None, None) => return Err("--bbox or --radius is required".into()),
     };
-    let geometry = parse_geometry_read(parsed.option("--geometry")?.as_deref().unwrap_or("none"))?;
-    let properties = parse_properties(parsed.option("--properties")?.as_deref().unwrap_or("all"))?;
-    let order = parse_feature_order(parsed.option("--order")?.as_deref().unwrap_or("source"))?;
-    let duplicates =
-        parse_duplicates(parsed.option("--duplicates")?.as_deref().unwrap_or("dedup"))?;
     let radius_query = matches!(query, GeoQuery2D::SphericalRadius { .. });
     let exact = parsed.flag("--exact") || radius_query;
     let predicate = parsed.option("--predicate")?;
@@ -210,38 +232,82 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         return Err("--treat-nonplanar-as-planar cannot be used with --radius".into());
     }
 
-    if parsed.flag("--json") && parsed.flag("--ndjson") {
-        return Err("--json and --ndjson are mutually exclusive".into());
+    let manifest = index.manifest().clone();
+    let features = index.search_features(query.clone())?;
+    if !exact {
+        return Ok(features);
     }
 
-    let bytes = std::fs::read(index_path)?;
-    let artifact = open_geo_index(SliceReader::new(bytes))?;
-    let manifest = artifact.manifest().clone();
-    let features = match artifact {
-        GeoArtifactIndex::D2(index) => index.search_features(query.clone())?,
-        GeoArtifactIndex::D3(_) => {
-            return Err("query CLI currently accepts only 2D --bbox/--radius queries".into());
-        }
-    };
     let expected_source_fingerprint =
         (!parsed.flag("--allow-source-mismatch")).then_some(manifest.source_fingerprint.clone());
-    let features = if exact {
-        let mut dataset = open(File::open(source)?)?;
-        dataset.filter_features(FeatureFilterRequest {
-            features,
-            selector: GeometrySelector::Name(manifest.selected_column.clone()),
-            query,
-            predicate: parse_spatial_predicate(predicate.as_deref().unwrap_or("intersects"))?,
-            non_planar: if treat_nonplanar {
-                NonPlanarExactPolicy::TreatAsPlanar
-            } else {
-                NonPlanarExactPolicy::Reject
-            },
-            expected_source_fingerprint: expected_source_fingerprint.clone(),
-        })?
-    } else {
-        features
+    let mut dataset = open(File::open(source)?)?;
+    Ok(dataset.filter_features(FeatureFilterRequest {
+        features,
+        selector: GeometrySelector::Name(manifest.selected_column.clone()),
+        query,
+        predicate: parse_spatial_predicate(predicate.as_deref().unwrap_or("intersects"))?,
+        non_planar: if treat_nonplanar {
+            NonPlanarExactPolicy::TreatAsPlanar
+        } else {
+            NonPlanarExactPolicy::Reject
+        },
+        expected_source_fingerprint,
+    })?)
+}
+
+/// 3D query path: `--bbox` only (6 numbers). `--radius`, `--exact`,
+/// `--predicate`, and `--treat-nonplanar-as-planar` are 2D-only concepts and
+/// are rejected here with an explanatory error rather than dispatched.
+fn query_cmd_3d<R: RangeReader>(
+    parsed: &Parsed<'_>,
+    index: &GeoArtifactIndex3D<R>,
+) -> Result<Vec<FeatureRef>, Box<dyn std::error::Error>> {
+    if parsed.option("--radius")?.is_some() {
+        return Err("--radius is a 2D lon/lat query; this is a 3D index".into());
+    }
+    if parsed.flag("--exact") {
+        return Err(
+            "--exact is a no-op for a 3D index: a Box3D query against a box index has no \
+             bounding-box false positives to filter, so the coarse search result is already exact"
+                .into(),
+        );
+    }
+    if parsed.option("--predicate")?.is_some() {
+        return Err(
+            "--predicate is a 2D-only option: a 3D index has no polygon/frustum query shape yet, \
+             so there is nothing for a predicate to select between"
+                .into(),
+        );
+    }
+    if parsed.flag("--treat-nonplanar-as-planar") {
+        return Err(
+            "--treat-nonplanar-as-planar is a 2D-only option: a 3D index has no lon/lat \
+             geography concept to treat as planar"
+                .into(),
+        );
+    }
+
+    let Some(value) = parsed.option("--bbox")? else {
+        return Err("--bbox is required for a 3D index (--radius is 2D-only)".into());
     };
+    let bbox3d = parse_bbox3d(&value)?;
+    Ok(index.search_features(bbox3d)?)
+}
+
+/// Shared tail: read projected rows for `features` back from `source` and print them.
+fn query_cmd_finish(
+    parsed: &Parsed<'_>,
+    source: &str,
+    manifest: &GeoArtifactManifest,
+    features: Vec<FeatureRef>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let geometry = parse_geometry_read(parsed.option("--geometry")?.as_deref().unwrap_or("none"))?;
+    let properties = parse_properties(parsed.option("--properties")?.as_deref().unwrap_or("all"))?;
+    let order = parse_feature_order(parsed.option("--order")?.as_deref().unwrap_or("source"))?;
+    let duplicates =
+        parse_duplicates(parsed.option("--duplicates")?.as_deref().unwrap_or("dedup"))?;
+    let expected_source_fingerprint =
+        (!parsed.flag("--allow-source-mismatch")).then_some(manifest.source_fingerprint.clone());
 
     let mut dataset = open(File::open(source)?)?;
     let rows = dataset.read_features(FeatureReadRequest {
@@ -446,6 +512,23 @@ fn parse_bbox(value: &str) -> Result<Box2D, Box<dyn std::error::Error>> {
         return Err("--bbox expects four comma-separated numbers".into());
     }
     Ok(Box2D::new(parts[0], parts[1], parts[2], parts[3]))
+}
+
+fn parse_bbox3d(value: &str) -> Result<Box3D, Box<dyn std::error::Error>> {
+    let parts = value
+        .split(',')
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()?;
+    if parts.len() != 6 {
+        return Err(
+            "--bbox against a 3D index expects six comma-separated numbers \
+             (xmin,ymin,zmin,xmax,ymax,zmax)"
+                .into(),
+        );
+    }
+    Ok(Box3D::new(
+        parts[0], parts[1], parts[2], parts[3], parts[4], parts[5],
+    ))
 }
 
 fn parse_antimeridian(value: Option<String>) -> Result<EnvelopePolicy, Box<dyn std::error::Error>> {
@@ -727,5 +810,20 @@ mod tests {
             parse_dims(parsed.option("--dims").unwrap().as_deref().unwrap()).unwrap(),
             IndexDimsRequest::D3
         ));
+    }
+
+    #[test]
+    fn parse_bbox3d_accepts_six_numbers() {
+        let bbox = parse_bbox3d("1,2,3,4,5,6").unwrap();
+        assert_eq!(bbox, Box3D::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn parse_bbox3d_rejects_wrong_count() {
+        let err = parse_bbox3d("1,2,3,4").unwrap_err();
+        assert!(err.to_string().contains("six comma-separated numbers"));
+
+        let err = parse_bbox3d("1,2,3,4,5,6,7").unwrap_err();
+        assert!(err.to_string().contains("six comma-separated numbers"));
     }
 }

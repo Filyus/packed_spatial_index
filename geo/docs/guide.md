@@ -320,5 +320,22 @@ gp2psindex build input.parquet output.psi \
   --properties include:name,pop
 ```
 
+## Querying a 3D index
+
+Against a `.psi` built with `--dims 3d`, `query --bbox` takes six
+comma-separated numbers instead of four: `xmin,ymin,zmin,xmax,ymax,zmax`.
+
+```text
+gp2psindex query input.parquet output.psi \
+  --bbox -10,35,0,20,60,100 \
+  --properties include:name \
+  --json
+```
+
+`--radius`, `--exact`, and `--predicate` are 2D-only and are rejected against
+a 3D index: a `Box3D` query against a box index has no bounding-box false
+positives for `--exact` to filter, so the coarse search result is already
+exact.
+
 [validate]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.validate
 [read_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.read_features

@@ -1995,6 +1995,155 @@ fn cli_query_spherical_radius_filters_geography_points() {
 }
 
 #[test]
+fn cli_query_accepts_3d_bbox_and_rejects_2d_only_flags() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_3d(1.0, 2.0, 3.0)),
+                    Some(wkb_point_3d(50.0, 60.0, 70.0)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["near", "far"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point Z"]),
+    );
+    let mut dataset = open(data.clone()).unwrap();
+    let psindex = dataset
+        .convert(ConvertRequest {
+            dims: IndexDimsRequest::D3,
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+
+    let dir = env::temp_dir().join(format!(
+        "psi_geo_query_3d_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.parquet");
+    let index_path = dir.join("source.psi");
+    fs::write(&source_path, &data).unwrap();
+    fs::write(&index_path, &psindex).unwrap();
+
+    // A 3D --bbox with six comma-separated numbers dispatches to
+    // GeoArtifactIndex3D::search_features and returns the matching feature.
+    let output = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("0,0,0,2,3,4")
+        .arg("--properties")
+        .arg("include:name")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(json[0]["feature"]["row_number"], 0);
+    assert_eq!(json[0]["properties"]["name"], "near");
+
+    // A 4-number --bbox is a 2D shape and must be rejected against a 3D index.
+    let wrong_arity = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("0,0,2,3")
+        .output()
+        .unwrap();
+    assert!(!wrong_arity.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong_arity.stderr).contains("six comma-separated numbers"),
+        "stderr: {}",
+        String::from_utf8_lossy(&wrong_arity.stderr)
+    );
+
+    // --radius is a 2D lon/lat concept; reject it clearly against a 3D index.
+    let radius_rejected = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--radius")
+        .arg("0,0,1000")
+        .output()
+        .unwrap();
+    assert!(!radius_rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&radius_rejected.stderr).contains("2D lon/lat"),
+        "stderr: {}",
+        String::from_utf8_lossy(&radius_rejected.stderr)
+    );
+
+    // --exact against a 3D box index is a no-op by construction: the coarse
+    // search result already IS the exact result. Reject with the honest
+    // reasoning, not a blanket "not implemented" message.
+    let exact_rejected = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("0,0,0,2,3,4")
+        .arg("--exact")
+        .output()
+        .unwrap();
+    assert!(!exact_rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&exact_rejected.stderr)
+            .contains("no bounding-box false positives to filter"),
+        "stderr: {}",
+        String::from_utf8_lossy(&exact_rejected.stderr)
+    );
+
+    // --predicate is 2D-only for the same reason.
+    let predicate_rejected = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("0,0,0,2,3,4")
+        .arg("--predicate")
+        .arg("intersects")
+        .output()
+        .unwrap();
+    assert!(!predicate_rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&predicate_rejected.stderr).contains("2D-only"),
+        "stderr: {}",
+        String::from_utf8_lossy(&predicate_rejected.stderr)
+    );
+
+    // --treat-nonplanar-as-planar has no 3D geography concept to apply to.
+    let nonplanar_rejected = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--bbox")
+        .arg("0,0,0,2,3,4")
+        .arg("--treat-nonplanar-as-planar")
+        .output()
+        .unwrap();
+    assert!(!nonplanar_rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&nonplanar_rejected.stderr).contains("2D-only"),
+        "stderr: {}",
+        String::from_utf8_lossy(&nonplanar_rejected.stderr)
+    );
+}
+
+#[test]
 fn geo_manifest_reader_handles_corrupt_bytes_without_panic() {
     let data = write_geoparquet(
         vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 2.0))]))],

@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.20.0...psi-v0.21.0) - 2026-07-01
+
 ### 3D
 
 - Added `Frustum3D::bounding_box()`, an axis-aligned bounding box computed

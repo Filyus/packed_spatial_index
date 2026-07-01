@@ -4,6 +4,14 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### 3D
+
+- Added `Frustum3D::bounding_box()`, an axis-aligned bounding box computed
+  from the frustum's eight corner points. Lets downstream code (e.g. the geo
+  companion crate) narrow a frustum query to a coarse box before a streaming
+  or non-generic search. Returns `None` for a degenerate/near-parallel plane
+  arrangement rather than a silently-wrong box.
+
 ## [0.20.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.19.0...psi-v0.20.0) - 2026-06-30
 
 ### Search

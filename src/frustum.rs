@@ -5,6 +5,10 @@
 //! edge or corner (the standard frustum-culling p-vertex test). It never drops a
 //! box that is actually visible, which is what culling needs — an extra box is
 //! cheap to reject downstream; a missing one is a hole in the frame.
+//!
+//! [`Frustum3D::bounding_box`] computes the frustum's axis-aligned bounding box
+//! from its eight corner points, for callers that want a coarse candidate box
+//! before applying the tighter frustum test.
 
 use crate::geometry::{Box3D, Overlaps3D};
 
@@ -112,6 +116,91 @@ impl Frustum3D {
             }
         }
         true
+    }
+
+    /// The frustum's axis-aligned bounding box, computed from its eight corner
+    /// points.
+    ///
+    /// Each corner is the intersection of one plane from `{planes()[0],
+    /// planes()[1]}`, one from `{planes()[2], planes()[3]}`, and one from
+    /// `{planes()[4], planes()[5]}` — the pairing [`from_view_projection`]
+    /// produces (`[left, right, bottom, top, near, far]`). This is only guaranteed
+    /// to be a meaningful frustum shape for that pairing; a [`from_planes`]
+    /// frustum built from six arbitrary inward planes has no guaranteed
+    /// left/right/bottom/top/near/far structure, so the eight "corners" computed
+    /// here may not form the frustum's actual convex hull in that case.
+    ///
+    /// Returns `None` if any corner's three planes are near-parallel or otherwise
+    /// degenerate (the 3-plane intersection is singular to within a small
+    /// epsilon), rather than returning a silently-wrong box.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box3D, Frustum3D};
+    ///
+    /// let f = Frustum3D::from_planes([
+    ///     [1.0, 0.0, 0.0, -0.0],  // x >= 0
+    ///     [-1.0, 0.0, 0.0, 1.0],  // x <= 1
+    ///     [0.0, 1.0, 0.0, -0.0],  // y >= 0
+    ///     [0.0, -1.0, 0.0, 1.0],  // y <= 1
+    ///     [0.0, 0.0, 1.0, -0.0],  // z >= 0
+    ///     [0.0, 0.0, -1.0, 1.0],  // z <= 1
+    /// ]);
+    /// assert_eq!(f.bounding_box(), Some(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)));
+    /// ```
+    ///
+    /// [`from_planes`]: Self::from_planes
+    /// [`from_view_projection`]: Self::from_view_projection
+    pub fn bounding_box(&self) -> Option<Box3D> {
+        const EPS: f64 = 1e-9;
+
+        let cross = |a: [f64; 3], b: [f64; 3]| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+
+        for &i0 in &[0usize, 1] {
+            for &i1 in &[2usize, 3] {
+                for &i2 in &[4usize, 5] {
+                    let p0 = self.planes[i0];
+                    let p1 = self.planes[i1];
+                    let p2 = self.planes[i2];
+                    let n0 = [p0[0], p0[1], p0[2]];
+                    let n1 = [p1[0], p1[1], p1[2]];
+                    let n2 = [p2[0], p2[1], p2[2]];
+                    let (d0, d1, d2) = (p0[3], p1[3], p2[3]);
+
+                    let n1xn2 = cross(n1, n2);
+                    let det = dot(n0, n1xn2);
+                    if det.abs() < EPS {
+                        return None;
+                    }
+
+                    let n2xn0 = cross(n2, n0);
+                    let n0xn1 = cross(n0, n1);
+                    let corner = [
+                        -(d0 * n1xn2[0] + d1 * n2xn0[0] + d2 * n0xn1[0]) / det,
+                        -(d0 * n1xn2[1] + d1 * n2xn0[1] + d2 * n0xn1[1]) / det,
+                        -(d0 * n1xn2[2] + d1 * n2xn0[2] + d2 * n0xn1[2]) / det,
+                    ];
+
+                    for axis in 0..3 {
+                        min[axis] = min[axis].min(corner[axis]);
+                        max[axis] = max[axis].max(corner[axis]);
+                    }
+                }
+            }
+        }
+
+        Some(Box3D::new(min[0], min[1], min[2], max[0], max[1], max[2]))
     }
 }
 

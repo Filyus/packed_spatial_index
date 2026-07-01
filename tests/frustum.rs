@@ -172,3 +172,73 @@ fn from_view_projection_clip_space_moves_only_the_near_plane() {
     // The modern zero-to-one range is the default.
     assert_eq!(ClipSpaceZ::default(), ClipSpaceZ::ZeroToOne);
 }
+
+#[test]
+fn bounding_box_of_axis_aligned_box_frustum_is_exact() {
+    // An axis-aligned "frustum" that is really just a box expressed as six
+    // planes: the corner-solve must reproduce the box exactly, hand-verifiable
+    // (not just a conservative superset like `overlaps_box`).
+    for (lo, hi) in [(20.0, 160.0), (0.0, 100.0), (-5.5, 3.25)] {
+        let frustum = box_frustum(lo, hi);
+        assert_eq!(
+            frustum.bounding_box(),
+            Some(Box3D::new(lo, lo, lo, hi, hi, hi))
+        );
+    }
+
+    // Non-cubic box (different extents per axis) via `from_planes` directly.
+    let (xmin, ymin, zmin) = (-2.0, 1.0, 0.0);
+    let (xmax, ymax, zmax) = (3.0, 4.0, 10.0);
+    let frustum = Frustum3D::from_planes([
+        [1.0, 0.0, 0.0, -xmin],
+        [-1.0, 0.0, 0.0, xmax],
+        [0.0, 1.0, 0.0, -ymin],
+        [0.0, -1.0, 0.0, ymax],
+        [0.0, 0.0, 1.0, -zmin],
+        [0.0, 0.0, -1.0, zmax],
+    ]);
+    assert_eq!(
+        frustum.bounding_box(),
+        Some(Box3D::new(xmin, ymin, zmin, xmax, ymax, zmax))
+    );
+}
+
+#[test]
+fn bounding_box_of_identity_view_projection_is_ndc_cube() {
+    // Reuses the identity-vp fixture from `from_view_projection_identity_is_ndc_cube`:
+    // Gribb-Hartmann on an identity vp yields the clip cube [-1, 1]^3, so the
+    // bounding box should be sane (contain that cube's extent) even without
+    // hand-computing to the last decimal.
+    let identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let frustum = Frustum3D::from_view_projection(identity, ClipSpaceZ::NegOneToOne);
+    let bbox = frustum.bounding_box().expect("non-degenerate frustum");
+
+    let eps = 1e-9;
+    assert!((bbox.min_x - (-1.0)).abs() < eps);
+    assert!((bbox.min_y - (-1.0)).abs() < eps);
+    assert!((bbox.min_z - (-1.0)).abs() < eps);
+    assert!((bbox.max_x - 1.0).abs() < eps);
+    assert!((bbox.max_y - 1.0).abs() < eps);
+    assert!((bbox.max_z - 1.0).abs() < eps);
+}
+
+#[test]
+fn bounding_box_returns_none_for_degenerate_planes() {
+    // Left/right and bottom/top normals both point along x (parallel to each
+    // other instead of spanning independent axes), so every 3-plane corner
+    // solve is singular: no valid intersection point exists for any corner.
+    let degenerate = Frustum3D::from_planes([
+        [1.0, 0.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, -10.0],
+        [-1.0, 0.0, 0.0, 150.0],
+        [0.0, 0.0, 1.0, -10.0],
+        [0.0, 0.0, -1.0, 150.0],
+    ]);
+    assert_eq!(degenerate.bounding_box(), None);
+}

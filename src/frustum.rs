@@ -131,8 +131,11 @@ impl Frustum3D {
     /// here may not form the frustum's actual convex hull in that case.
     ///
     /// Returns `None` if any corner's three planes are near-parallel or otherwise
-    /// degenerate (the 3-plane intersection is singular to within a small
-    /// epsilon), rather than returning a silently-wrong box.
+    /// degenerate (the 3-plane intersection is singular), rather than returning a
+    /// silently-wrong box. The degeneracy test is scale-invariant — it compares
+    /// the normalized triple product of the plane normals, so a valid frustum
+    /// whose planes are uniformly scaled (planes need not be normalized) is not
+    /// falsely reported degenerate.
     ///
     /// # Example
     ///
@@ -153,6 +156,11 @@ impl Frustum3D {
     /// [`from_planes`]: Self::from_planes
     /// [`from_view_projection`]: Self::from_view_projection
     pub fn bounding_box(&self) -> Option<Box3D> {
+        // Relative threshold: `det` is the scalar triple product of the three
+        // plane normals, which scales with the product of their magnitudes.
+        // Comparing `|det|` against `EPS * |n0| * |n1| * |n2|` tests the triple
+        // product of the *unit* normals (|sin| of the solid angle they span), so
+        // it is invariant to how the planes are scaled.
         const EPS: f64 = 1e-9;
 
         let cross = |a: [f64; 3], b: [f64; 3]| {
@@ -163,6 +171,7 @@ impl Frustum3D {
             ]
         };
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let norm = |a: [f64; 3]| dot(a, a).sqrt();
 
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
@@ -180,7 +189,8 @@ impl Frustum3D {
 
                     let n1xn2 = cross(n1, n2);
                     let det = dot(n0, n1xn2);
-                    if det.abs() < EPS {
+                    let scale = norm(n0) * norm(n1) * norm(n2);
+                    if scale == 0.0 || det.abs() < EPS * scale {
                         return None;
                     }
 

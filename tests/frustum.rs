@@ -204,6 +204,41 @@ fn bounding_box_of_axis_aligned_box_frustum_is_exact() {
 }
 
 #[test]
+fn bounding_box_is_scale_invariant() {
+    // A plane `[a, b, c, d]` and `[s*a, s*b, s*c, s*d]` denote the same plane
+    // (only the sign of `a*x + b*y + c*z + d` is used), so scaling every plane
+    // must not change the bounding box — and must not trip a false "degenerate"
+    // `None`. Regression for an absolute determinant epsilon that scaled with
+    // `|normal|^3`: at `scale = 1e-4` the old check returned `None` for this
+    // perfectly valid frustum.
+    let base = box_frustum(-5.5, 3.25);
+    let expected = Box3D::new(-5.5, -5.5, -5.5, 3.25, 3.25, 3.25);
+    assert_eq!(base.bounding_box(), Some(expected));
+
+    for scale in [1e-6, 1e-4, 1e-2, 1e2, 1e6] {
+        let mut planes = *base.planes();
+        for plane in &mut planes {
+            for coord in plane {
+                *coord *= scale;
+            }
+        }
+        let bbox = Frustum3D::from_planes(planes)
+            .bounding_box()
+            .unwrap_or_else(|| panic!("scaling all planes by {scale} must not be degenerate"));
+        let eps = 1e-6;
+        assert!(
+            (bbox.min_x - expected.min_x).abs() < eps
+                && (bbox.min_y - expected.min_y).abs() < eps
+                && (bbox.min_z - expected.min_z).abs() < eps
+                && (bbox.max_x - expected.max_x).abs() < eps
+                && (bbox.max_y - expected.max_y).abs() < eps
+                && (bbox.max_z - expected.max_z).abs() < eps,
+            "scaling all planes by {scale} must preserve the bounding box, got {bbox:?}"
+        );
+    }
+}
+
+#[test]
 fn bounding_box_of_identity_view_projection_is_ndc_cube() {
     // Reuses the identity-vp fixture from `from_view_projection_identity_is_ndc_cube`:
     // Gribb-Hartmann on an identity vp yields the clip cube [-1, 1]^3, so the

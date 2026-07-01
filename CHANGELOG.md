@@ -4,6 +4,14 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### 3D
+
+- `Frustum3D::bounding_box()` now uses a scale-invariant degeneracy test.
+  Previously an absolute determinant epsilon scaled with the cube of the plane
+  normals' magnitude, so a valid frustum whose (non-normalized) planes were
+  uniformly scaled down could be wrongly reported degenerate (`None`). The
+  check now compares the normalized triple product of the normals.
+
 ## [0.21.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.20.0...psi-v0.21.0) - 2026-07-01
 
 ### 3D

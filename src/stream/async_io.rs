@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
-use crate::geometry::{Box2D, Box3D};
+use crate::geometry::{Box2D, Box3D, Overlaps2D, Overlaps3D};
 use crate::persistence::{
     CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PYLD_DESC_LEN,
     PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PYLD, TAG_TREE, TREE_DESC_LEN, derive_level_bounds,
@@ -584,6 +584,69 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
         Ok(out)
     }
 
+    /// Stream the indices of every item whose box overlaps the region `query` —
+    /// any [`Overlaps2D`] shape, not just a box.
+    pub async fn visit_region_async<Q, F>(
+        &self,
+        query: &Q,
+        mut visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize),
+    {
+        self.core
+            .traverse_async(
+                |r| query.overlaps_box(parse_box2d(r)),
+                Want::Ids,
+                |id, _| visitor(id),
+            )
+            .await
+    }
+
+    /// Collect the indices of every item whose box overlaps the region `query`.
+    pub async fn search_region_async<Q: Overlaps2D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_region_async(query, |index| out.push(index))
+            .await?;
+        Ok(out)
+    }
+
+    /// Visit `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`.
+    pub async fn visit_payloads_region_async<Q, F>(
+        &self,
+        query: &Q,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize, &[u8]),
+    {
+        self.core
+            .traverse_async(
+                |r| query.overlaps_box(parse_box2d(r)),
+                Want::Payloads,
+                visitor,
+            )
+            .await
+    }
+
+    /// Collect `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`.
+    pub async fn search_payloads_region_async<Q: Overlaps2D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads_region_async(query, |id, blob| out.push((id, blob.to_vec())))
+            .await?;
+        Ok(out)
+    }
+
     /// Whether this index was written with a payload section.
     pub fn has_payload_async(&self) -> bool {
         self.core.has_payload()
@@ -634,6 +697,69 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
                 Want::Payloads,
                 |id, blob| out.push((id, blob.to_vec())),
             )
+            .await?;
+        Ok(out)
+    }
+
+    /// Stream the indices of every item whose box overlaps the region `query` —
+    /// any [`Overlaps3D`] shape, not just a box.
+    pub async fn visit_region_async<Q, F>(
+        &self,
+        query: &Q,
+        mut visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize),
+    {
+        self.core
+            .traverse_async(
+                |r| query.overlaps_box(parse_box3d(r)),
+                Want::Ids,
+                |id, _| visitor(id),
+            )
+            .await
+    }
+
+    /// Collect the indices of every item whose box overlaps the region `query`.
+    pub async fn search_region_async<Q: Overlaps3D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_region_async(query, |index| out.push(index))
+            .await?;
+        Ok(out)
+    }
+
+    /// Visit `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`.
+    pub async fn visit_payloads_region_async<Q, F>(
+        &self,
+        query: &Q,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize, &[u8]),
+    {
+        self.core
+            .traverse_async(
+                |r| query.overlaps_box(parse_box3d(r)),
+                Want::Payloads,
+                visitor,
+            )
+            .await
+    }
+
+    /// Collect `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`.
+    pub async fn search_payloads_region_async<Q: Overlaps3D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads_region_async(query, |id, blob| out.push((id, blob.to_vec())))
             .await?;
         Ok(out)
     }
@@ -692,6 +818,69 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
         Ok(out)
     }
 
+    /// Stream the indices of every item whose (rounded) box overlaps the region
+    /// `query` — any [`Overlaps2D`] shape.
+    pub async fn visit_region_async<Q, F>(
+        &self,
+        query: &Q,
+        mut visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize),
+    {
+        self.core
+            .traverse_async(
+                |r| query.overlaps_box(parse_box2d_f32(r)),
+                Want::Ids,
+                |id, _| visitor(id),
+            )
+            .await
+    }
+
+    /// Collect the indices of every item whose box overlaps the region `query`.
+    pub async fn search_region_async<Q: Overlaps2D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_region_async(query, |index| out.push(index))
+            .await?;
+        Ok(out)
+    }
+
+    /// Visit `(item index, payload blob)` for every item whose (rounded) box
+    /// overlaps the region `query`.
+    pub async fn visit_payloads_region_async<Q, F>(
+        &self,
+        query: &Q,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize, &[u8]),
+    {
+        self.core
+            .traverse_async(
+                |r| query.overlaps_box(parse_box2d_f32(r)),
+                Want::Payloads,
+                visitor,
+            )
+            .await
+    }
+
+    /// Collect `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`.
+    pub async fn search_payloads_region_async<Q: Overlaps2D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads_region_async(query, |id, blob| out.push((id, blob.to_vec())))
+            .await?;
+        Ok(out)
+    }
+
     /// Whether this index was written with a payload section.
     pub fn has_payload_async(&self) -> bool {
         self.core.has_payload()
@@ -742,6 +931,69 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
                 Want::Payloads,
                 |id, blob| out.push((id, blob.to_vec())),
             )
+            .await?;
+        Ok(out)
+    }
+
+    /// Stream the indices of every item whose (rounded) box overlaps the region
+    /// `query` — any [`Overlaps3D`] shape.
+    pub async fn visit_region_async<Q, F>(
+        &self,
+        query: &Q,
+        mut visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize),
+    {
+        self.core
+            .traverse_async(
+                |r| query.overlaps_box(parse_box3d_f32(r)),
+                Want::Ids,
+                |id, _| visitor(id),
+            )
+            .await
+    }
+
+    /// Collect the indices of every item whose box overlaps the region `query`.
+    pub async fn search_region_async<Q: Overlaps3D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<usize>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_region_async(query, |index| out.push(index))
+            .await?;
+        Ok(out)
+    }
+
+    /// Visit `(item index, payload blob)` for every item whose (rounded) box
+    /// overlaps the region `query`.
+    pub async fn visit_payloads_region_async<Q, F>(
+        &self,
+        query: &Q,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(usize, &[u8]),
+    {
+        self.core
+            .traverse_async(
+                |r| query.overlaps_box(parse_box3d_f32(r)),
+                Want::Payloads,
+                visitor,
+            )
+            .await
+    }
+
+    /// Collect `(item index, payload blob)` for every item whose box overlaps the
+    /// region `query`.
+    pub async fn search_payloads_region_async<Q: Overlaps3D>(
+        &self,
+        query: &Q,
+    ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
+        let mut out = Vec::new();
+        self.visit_payloads_region_async(query, |id, blob| out.push((id, blob.to_vec())))
             .await?;
         Ok(out)
     }

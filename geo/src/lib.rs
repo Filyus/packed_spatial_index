@@ -21,6 +21,8 @@ pub use artifact::{
     GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoHit, GeoPayload, open_geo_index,
     open_geo_index_with_limits,
 };
+#[cfg(feature = "async")]
+pub use artifact::{open_geo_index_async, open_geo_index_with_limits_async};
 pub use build::{
     BuildRequest, ConvertRequest, GeoArtifact, GeoIndex, GeoIndex2D, GeoIndex2DF32, GeoIndex3D,
     GeoIndex3DF32, GeoIndexMetadata, IndexBuildOptions, StoragePrecision,
@@ -61,6 +63,8 @@ pub use geo_types;
 // Re-export the core types this crate produces or names, so a caller can build,
 // convert, load, and query entirely through `packed_spatial_index_geo` without
 // adding `packed_spatial_index` as a second direct dependency.
+#[cfg(feature = "async")]
+pub use packed_spatial_index::AsyncRangeReader;
 pub use packed_spatial_index::{
     Box2D, Box3D, ClipSpaceZ, EARTH_RADIUS_M, FileMetadata, Frustum3D, Index2D, Index2DF32,
     Index3D, Index3DF32, Point2D, Point3D, RangeReader, Ray2D, Ray3D, SliceReader, StreamIndex2D,

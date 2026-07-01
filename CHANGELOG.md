@@ -4,11 +4,19 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Search
+
+- Added async region-query APIs to the streaming indexes. `StreamIndex2D` /
+  `StreamIndex3D` (and the `f32` variants) now expose
+  `search_region_async` / `visit_region_async` /
+  `search_payloads_region_async` / `visit_payloads_region_async`, matching the
+  sync streaming coverage for 2D region and 3D frustum queries.
+
 ### Documentation
 
-- Clarified streaming-query documentation: sync streaming supports range and
-  region queries, while async streaming currently mirrors box queries; kNN and
-  raycast remain in-memory/view use cases.
+- Clarified streaming-query documentation: sync and async streaming support
+  range and region queries, while kNN and raycast remain in-memory/view use
+  cases.
 
 ## [0.21.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.21.0...psi-v0.21.1) - 2026-07-01
 

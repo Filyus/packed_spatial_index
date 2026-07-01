@@ -4,6 +4,19 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- Added async artifact opening and query APIs behind the `async` feature:
+  `open_geo_index_async`, `open_geo_index_with_limits_async`, and
+  `search_items_async` / `search_features_async` / `search_hits_async` on 2D
+  and 3D artifact indexes.
+
+### Search
+
+- `GeoArtifactIndex2D::search_items` now uses polygon region pruning for
+  `GeoQuery2D::Polygon`, including payload-free artifacts where `search_hits`
+  is unavailable.
+
 ### Documentation
 
 - Clarified that streamable geo artifacts answer window, polygon, and 3D

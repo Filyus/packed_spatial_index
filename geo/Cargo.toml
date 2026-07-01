@@ -13,6 +13,13 @@ categories = ["science::geo", "data-structures"]
 # published crate.
 exclude = ["/scripts/"]
 
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = []
+async = ["packed_spatial_index/async"]
+
 [dependencies]
 # Query/build engine. `stream` + `f32-storage` so the converter can emit compact
 # files and tests can load them back over a RangeReader. The heavy geo deps below
@@ -39,3 +46,4 @@ thiserror = "2"
 # `Bytes` implements parquet's `ChunkReader`, so tests can feed in-memory
 # Parquet fixtures straight into the readers.
 bytes = "1"
+pollster = "0.4"

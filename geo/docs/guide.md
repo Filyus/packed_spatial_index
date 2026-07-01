@@ -79,7 +79,8 @@ Payload modes:
 
 Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `packed_spatial_index` readers skip it; this crate reads it through
-`open_geo_index` or, when only metadata is needed, `read_geo_manifest`.
+`open_geo_index` (or `open_geo_index_async` with the `async` feature) and, when
+only metadata is needed, `read_geo_manifest`.
 
 ## Half-size in-memory index (f32 accelerator)
 
@@ -385,10 +386,10 @@ frustum queries in this crate. Test the returned candidates yourself, the
 same pattern `packed_spatial_index`'s own raycast establishes (see its
 `examples/raycast_mesh.rs`).
 
-`GeoArtifactIndex3D::search_items`/`search_hits`/`search_features` accept the
-same query and prune subtrees outside the frustum during the streamed
-descent, for both `f64`- and `f32`-precision artifacts. An `f32`-precision
-*in-memory* index (`GeoIndex3DF32`, see [Half-size in-memory index
+`GeoArtifactIndex3D::search_items`/`search_hits`/`search_features` and their
+async counterparts accept the same query and prune subtrees outside the frustum
+during the streamed descent, for both `f64`- and `f32`-precision artifacts. An
+`f32`-precision *in-memory* index (`GeoIndex3DF32`, see [Half-size in-memory index
 (f32 accelerator)](#half-size-in-memory-index-f32-accelerator)) rejects a
 frustum query — its underlying core index only implements a box-based
 search.

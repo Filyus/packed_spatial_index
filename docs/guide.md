@@ -61,8 +61,10 @@ The same overlap machinery also accepts 2D triangle and convex-polygon queries
 on `Index2D` / `Index2DView`, and 3D frustum queries on `Index3D` /
 `Index3DView`. Streaming readers expose the same pruning through
 `search_region` / `visit_region` / `search_payloads_region` (including compact
-`...F32` readers, conservatively over rounded boxes). These shape queries are
-not available on SIMD frontends or on the owned scalar `Index*F32` search APIs.
+`...F32` readers, conservatively over rounded boxes); with the `async` feature,
+the same coverage is available through the matching `*_async` methods. These
+shape queries are not available on SIMD frontends or on the owned scalar
+`Index*F32` search APIs.
 
 The empty cells are intentional, not gaps to fill:
 

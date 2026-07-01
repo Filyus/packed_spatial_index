@@ -1386,6 +1386,47 @@ fn async_search_payloads_matches_sync() {
 
 #[cfg(feature = "async")]
 #[test]
+fn async_region_matches_sync_and_payloads() {
+    use crate::ConvexPolygon2D;
+
+    let (_, payloads, bytes) = random_with_payloads(20_000, 0xA60);
+    let sync = open_slice(bytes.clone());
+    let astream = pollster::block_on(StreamIndex2D::open_async(AsyncSlice(bytes))).unwrap();
+    let poly = ConvexPolygon2D::new(vec![[100.0, 100.0], [500.0, 100.0], [100.0, 500.0]]);
+
+    let mut sync_ids = sync.search_region(&poly).unwrap();
+    let mut async_ids = pollster::block_on(astream.search_region_async(&poly)).unwrap();
+    sync_ids.sort_unstable();
+    async_ids.sort_unstable();
+    assert_eq!(sync_ids, async_ids);
+
+    let mut sync_pairs = sync.search_payloads_region(&poly).unwrap();
+    let mut async_pairs = pollster::block_on(astream.search_payloads_region_async(&poly)).unwrap();
+    sync_pairs.sort();
+    async_pairs.sort();
+    assert_eq!(sync_pairs, async_pairs);
+    for (id, blob) in &async_pairs {
+        assert_eq!(blob, &payloads[*id]);
+    }
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_payload_region_requires_payload_section() {
+    use crate::ConvexPolygon2D;
+
+    let (_, bytes) = random_owned(1000, 0xA61);
+    let astream = pollster::block_on(StreamIndex2D::open_async(AsyncSlice(bytes))).unwrap();
+    let poly = ConvexPolygon2D::new(vec![[0.0, 0.0], [500.0, 0.0], [0.0, 500.0]]);
+
+    assert!(matches!(
+        pollster::block_on(astream.search_payloads_region_async(&poly)),
+        Err(StreamError::NoPayload)
+    ));
+}
+
+#[cfg(feature = "async")]
+#[test]
 fn async_fixed_width_payload_matches_sync() {
     const STRIDE: usize = 12;
     let (owned, _) = random_owned(20_000, 0xA6F);
@@ -1449,4 +1490,78 @@ fn async_3d_search_payloads_matches_sync() {
     for (id, blob) in &pairs {
         assert_eq!(blob, &payloads[*id]);
     }
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_3d_region_matches_sync() {
+    use crate::{Box3D, Index3DBuilder};
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
+    let mut rng = StdRng::seed_from_u64(0xA73D);
+    let n = 20_000;
+    let mut builder = Index3DBuilder::new(n).node_size(16);
+    for _ in 0..n {
+        let c: [f64; 3] = [
+            rng.random_range(0.0..1000.0),
+            rng.random_range(0.0..1000.0),
+            rng.random_range(0.0..1000.0),
+        ];
+        builder.add(Box3D::new(
+            c[0],
+            c[1],
+            c[2],
+            c[0] + 2.0,
+            c[1] + 2.0,
+            c[2] + 2.0,
+        ));
+    }
+    let owned = builder.finish().unwrap();
+    let bytes = owned.to_bytes();
+    let sync = StreamIndex3D::open(SliceReader::new(bytes.clone())).unwrap();
+    let astream = pollster::block_on(StreamIndex3D::open_async(AsyncSlice(bytes))).unwrap();
+    let q = Box3D::new(300.0, 300.0, 300.0, 380.0, 380.0, 380.0);
+
+    let mut sync_ids = sync.search_region(&q).unwrap();
+    let mut async_ids = pollster::block_on(astream.search_region_async(&q)).unwrap();
+    sync_ids.sort_unstable();
+    async_ids.sort_unstable();
+    assert_eq!(sync_ids, async_ids);
+}
+
+#[cfg(all(feature = "async", feature = "f32-storage"))]
+#[test]
+fn async_f32_region_matches_sync() {
+    use crate::{Box3D, ConvexPolygon2D, Index3DBuilder};
+
+    let mut builder_2d = Index2DBuilder::new(10_000).node_size(16);
+    for i in 0..10_000 {
+        let v = i as f64 * 0.1;
+        builder_2d.add(Box2D::new(v, v, v + 0.25, v + 0.25));
+    }
+    let bytes_2d = builder_2d.finish_f32().unwrap().to_bytes();
+    let sync_2d = StreamIndex2DF32::open(SliceReader::new(bytes_2d.clone())).unwrap();
+    let async_2d = pollster::block_on(StreamIndex2DF32::open_async(AsyncSlice(bytes_2d))).unwrap();
+    let poly = ConvexPolygon2D::new(vec![[100.0, 100.0], [700.0, 100.0], [100.0, 700.0]]);
+    let mut sync_2d_hits = sync_2d.search_region(&poly).unwrap();
+    let mut async_2d_hits = pollster::block_on(async_2d.search_region_async(&poly)).unwrap();
+    sync_2d_hits.sort_unstable();
+    async_2d_hits.sort_unstable();
+    assert_eq!(sync_2d_hits, async_2d_hits);
+
+    let mut builder = Index3DBuilder::new(10_000).node_size(16);
+    for i in 0..10_000 {
+        let v = i as f64 * 0.1;
+        builder.add(Box3D::new(v, v, v, v + 0.25, v + 0.25, v + 0.25));
+    }
+    let bytes_3d = builder.finish_f32().unwrap().to_bytes();
+    let sync_3d = StreamIndex3DF32::open(SliceReader::new(bytes_3d.clone())).unwrap();
+    let async_3d = pollster::block_on(StreamIndex3DF32::open_async(AsyncSlice(bytes_3d))).unwrap();
+    let q = Box3D::new(200.0, 200.0, 200.0, 500.0, 500.0, 500.0);
+    let mut sync_3d_hits = sync_3d.search_region(&q).unwrap();
+    let mut async_3d_hits = pollster::block_on(async_3d.search_region_async(&q)).unwrap();
+    sync_3d_hits.sort_unstable();
+    async_3d_hits.sort_unstable();
+    assert_eq!(sync_3d_hits, async_3d_hits);
 }

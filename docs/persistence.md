@@ -126,15 +126,17 @@ impl RangeReader for HttpRange {
 
 The server only needs to honor the HTTP `Range` header — S3, R2, GCS, and most
 CDNs do. For async I/O (a browser `fetch`, or a Cloudflare Worker over R2) enable
-the `async` feature and implement `AsyncRangeReader` the same way; `open_async` /
-`search_async` mirror box search and issue a level's reads concurrently.
+the `async` feature and implement `AsyncRangeReader` the same way; `open_async`,
+`search_async`, and the async region/payload methods mirror sync streaming and
+issue a level's reads concurrently.
 
 **What streams today:** 2D and 3D range search (`search` / `search_into` /
 `visit`), optionally returning a stored blob per hit (`search_payloads`, when the
-file was written with `to_bytes_with_payloads`), sync or async. The sync
-streaming readers also support region queries (`search_region` / `visit_region`
-/ `search_payloads_region`) such as 2D convex polygons and 3D frustums. All of
-these use optional per-query cost limits (`open_with_limits` + `StreamLimits` —
+file was written with `to_bytes_with_payloads`), sync or async. Streaming
+readers also support region queries (`search_region` / `visit_region` /
+`search_payloads_region` and their async counterparts) such as 2D convex
+polygons and 3D frustums. All of these use optional per-query cost limits
+(`open_with_limits` + `StreamLimits` —
 bound reads, bytes, and items so a broad query cannot run unbounded). For a
 remote-tuned layout, `to_bytes_interleaved` stores each node's box and child
 pointer together so the descent fetches them in one read per level instead of
@@ -168,8 +170,8 @@ roomy directory budget.
 
 **Compact `f32` streaming:** `StreamIndex2DF32` / `StreamIndex3DF32` stream a
 compact `f32`-box file for half the box bytes over the wire, with the same
-`search` / `search_payloads` / async box-query API and the sync
-`search_region` / `search_payloads_region` region API. The stored boxes are
+sync and async `search` / `search_payloads` / `search_region` /
+`search_payloads_region` API. The stored boxes are
 rounded outward, so results are a conservative superset (filter against your own
 `f64` boxes for exact). Write the file with the scalar `Index3DF32` or the SIMD
 `SimdIndex3DF32`; `.interleaved()` on its `serialize()` builder enables the

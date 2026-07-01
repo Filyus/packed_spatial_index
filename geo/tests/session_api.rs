@@ -20,6 +20,8 @@ use packed_spatial_index_geo::{
     StreamIndex2D, decode_feature_ref_payload, decode_feature_wkb_payload, open, open_geo_index,
     read_geo_manifest,
 };
+#[cfg(feature = "async")]
+use packed_spatial_index_geo::{AsyncRangeReader, open_geo_index_async};
 use parquet::arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions};
 use parquet::basic::{GeometryType, LogicalType, Repetition, Type as ParquetPhysicalType};
 use parquet::file::metadata::KeyValue;
@@ -55,6 +57,30 @@ fn wkb_point_3d(x: f64, y: f64, z: f64) -> Vec<u8> {
     v.extend_from_slice(&y.to_le_bytes());
     v.extend_from_slice(&z.to_le_bytes());
     v
+}
+
+#[cfg(feature = "async")]
+struct AsyncSlice(Vec<u8>);
+
+#[cfg(feature = "async")]
+impl AsyncRangeReader for AsyncSlice {
+    async fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let start = usize::try_from(offset)
+            .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "offset out of range"))?;
+        let end = start
+            .checked_add(buf.len())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "range overflow"))?;
+        let src = self
+            .0
+            .get(start..end)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "range outside buffer"))?;
+        buf.copy_from_slice(src);
+        Ok(())
+    }
+
+    fn len(&self) -> Option<u64> {
+        Some(self.0.len() as u64)
+    }
 }
 
 fn wkb_line_2d(coords: &[(f64, f64)]) -> Vec<u8> {
@@ -689,6 +715,120 @@ fn polygon_search_prunes_and_filter_hits_removes_bbox_fp() {
         .collect::<Vec<_>>();
     exact_rows.sort_unstable();
     assert_eq!(exact_rows, vec![0, 2]);
+}
+
+#[test]
+fn artifact_polygon_search_items_prunes_without_payload() {
+    use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
+
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                Some(wkb_point_2d(1.0, 1.0)),   // 0: inside the triangle
+                Some(wkb_point_2d(8.0, 8.0)),   // 1: in bbox, outside the triangle
+                Some(wkb_point_2d(2.0, 2.0)),   // 2: inside the triangle
+                Some(wkb_point_2d(20.0, 20.0)), // 3: outside the bbox
+            ]),
+        )],
+        geo_meta_wkb(&["Point"]),
+    );
+
+    let mut dataset = open(data).unwrap();
+    let artifact = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::None,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(artifact)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+
+    let triangle = Polygon::new(
+        LineString::new(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 10.0, y: 0.0 },
+            Coord { x: 0.0, y: 10.0 },
+            Coord { x: 0.0, y: 0.0 },
+        ]),
+        vec![],
+    );
+
+    let mut polygon_items = index
+        .search_items(GeoQuery2D::polygon(triangle.clone()))
+        .unwrap();
+    polygon_items.sort_unstable();
+    assert_eq!(polygon_items, vec![0, 2]);
+
+    let mut bbox_items = index
+        .search_items(Box2D::new(0.0, 0.0, 10.0, 10.0))
+        .unwrap();
+    bbox_items.sort_unstable();
+    assert_eq!(bbox_items, vec![0, 1, 2]);
+}
+
+#[test]
+fn artifact_empty_polygon_errors_consistently() {
+    use packed_spatial_index_geo::geo_types::MultiPolygon;
+
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 1.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let artifact = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(artifact)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let empty = GeoQuery2D::multi_polygon(MultiPolygon::new(vec![]));
+
+    assert!(matches!(
+        index.search_items(empty.clone()),
+        Err(GeoError::EmptyQueryPolygon)
+    ));
+    assert!(matches!(
+        index.search_hits(empty),
+        Err(GeoError::EmptyQueryPolygon)
+    ));
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_artifact_empty_polygon_errors_consistently() {
+    use packed_spatial_index_geo::geo_types::MultiPolygon;
+
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 1.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let artifact = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) =
+        pollster::block_on(open_geo_index_async(AsyncSlice(artifact))).unwrap()
+    else {
+        panic!("expected 2D artifact");
+    };
+    let empty = GeoQuery2D::multi_polygon(MultiPolygon::new(vec![]));
+
+    assert!(matches!(
+        pollster::block_on(index.search_items_async(empty.clone())),
+        Err(GeoError::EmptyQueryPolygon)
+    ));
+    assert!(matches!(
+        pollster::block_on(index.search_hits_async(empty)),
+        Err(GeoError::EmptyQueryPolygon)
+    ));
 }
 
 #[test]
@@ -1465,6 +1605,96 @@ fn geo_artifact_reader_uses_manifest_precision_for_f32_artifacts() {
     assert_eq!(hits[0].feature.row_number, 0);
 }
 
+#[cfg(feature = "async")]
+#[test]
+fn async_geo_artifact_reader_searches_2d_box_and_polygon() {
+    use packed_spatial_index_geo::SpatialPredicate;
+    use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
+
+    let triangle = Polygon::new(
+        LineString::new(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 10.0, y: 0.0 },
+            Coord { x: 0.0, y: 10.0 },
+            Coord { x: 0.0, y: 0.0 },
+        ]),
+        vec![],
+    );
+
+    for precision in [StoragePrecision::F64, StoragePrecision::F32] {
+        let data = write_geoparquet(
+            vec![(
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(1.0, 1.0)),   // 0: inside the triangle
+                    Some(wkb_point_2d(8.0, 8.0)),   // 1: in bbox, outside
+                    Some(wkb_point_2d(2.0, 2.0)),   // 2: inside the triangle
+                    Some(wkb_point_2d(20.0, 20.0)), // 3: outside the bbox
+                ]),
+            )],
+            geo_meta_wkb(&["Point"]),
+        );
+        let mut dataset = open(data).unwrap();
+        let bytes = dataset
+            .convert(ConvertRequest {
+                precision,
+                ..ConvertRequest::default()
+            })
+            .unwrap();
+
+        let GeoArtifactIndex::D2(sync_index) =
+            open_geo_index(SliceReader::new(bytes.clone())).unwrap()
+        else {
+            panic!("expected 2D artifact");
+        };
+        let GeoArtifactIndex::D2(async_index) =
+            pollster::block_on(open_geo_index_async(AsyncSlice(bytes))).unwrap()
+        else {
+            panic!("expected 2D artifact");
+        };
+
+        let bbox = Box2D::new(0.0, 0.0, 10.0, 10.0);
+        let mut sync_box_rows: Vec<u64> = sync_index
+            .search_features(bbox)
+            .unwrap()
+            .iter()
+            .map(|feature| feature.row_number)
+            .collect();
+        let mut async_box_rows: Vec<u64> =
+            pollster::block_on(async_index.search_features_async(bbox))
+                .unwrap()
+                .iter()
+                .map(|feature| feature.row_number)
+                .collect();
+        sync_box_rows.sort_unstable();
+        async_box_rows.sort_unstable();
+        assert_eq!(async_box_rows, sync_box_rows, "{precision:?} box query");
+
+        let mut async_polygon_rows: Vec<u64> = pollster::block_on(
+            async_index.search_features_async(GeoQuery2D::polygon(triangle.clone())),
+        )
+        .unwrap()
+        .iter()
+        .map(|feature| feature.row_number)
+        .collect();
+        async_polygon_rows.sort_unstable();
+        assert_eq!(async_polygon_rows, vec![0, 2], "{precision:?} polygon");
+
+        let hits = pollster::block_on(async_index.search_hits_async(bbox)).unwrap();
+        let exact = async_index
+            .filter_hits(
+                hits,
+                GeoQuery2D::polygon(triangle.clone()),
+                SpatialPredicate::Intersects,
+                NonPlanarExactPolicy::Reject,
+            )
+            .unwrap();
+        let mut exact_rows: Vec<u64> = exact.iter().map(|hit| hit.feature.row_number).collect();
+        exact_rows.sort_unstable();
+        assert_eq!(exact_rows, vec![0, 2], "{precision:?} filter_hits");
+    }
+}
+
 #[test]
 fn geo_artifact_reader_searches_3d_artifacts() {
     let data = write_geoparquet(
@@ -1566,6 +1796,76 @@ fn geo_artifact_frustum_query_prunes_over_bounding_box() {
     }
 }
 
+#[cfg(feature = "async")]
+#[test]
+fn async_geo_artifact_frustum_query_prunes_over_bounding_box() {
+    let p0 = wkb_point_3d(0.25, 0.25, 0.25);
+    let p1 = wkb_point_3d(2.25, 2.25, 0.25);
+    let p2 = wkb_point_3d(-2.25, -2.25, 9.25);
+
+    let frustum = Frustum3D::from_planes([
+        [1.0, 0.0, 0.2, 1.0],
+        [-1.0, 0.0, 0.2, 1.0],
+        [0.0, 1.0, 0.2, 1.0],
+        [0.0, -1.0, 0.2, 1.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, -1.0, 10.0],
+    ]);
+    let bbox = frustum.bounding_box().expect("non-degenerate frustum");
+
+    for precision in [StoragePrecision::F64, StoragePrecision::F32] {
+        let data = write_geoparquet(
+            vec![(
+                "geometry",
+                binary_col(&[Some(p0.clone()), Some(p1.clone()), Some(p2.clone())]),
+            )],
+            geo_meta_wkb(&["Point Z"]),
+        );
+        let mut dataset = open(data).unwrap();
+        let bytes = dataset
+            .convert(ConvertRequest {
+                dims: IndexDimsRequest::D3,
+                payload: PayloadPlan::RowRef,
+                precision,
+                ..ConvertRequest::default()
+            })
+            .unwrap();
+
+        let GeoArtifactIndex::D3(async_index) =
+            pollster::block_on(open_geo_index_async(AsyncSlice(bytes))).unwrap()
+        else {
+            panic!("expected 3D artifact");
+        };
+
+        let mut frustum_items =
+            pollster::block_on(async_index.search_items_async(GeoQuery3D::frustum3d(frustum)))
+                .unwrap();
+        frustum_items.sort_unstable();
+        assert_eq!(frustum_items, vec![0, 2], "{precision:?} item ids");
+
+        let mut frustum_rows: Vec<u64> =
+            pollster::block_on(async_index.search_hits_async(GeoQuery3D::frustum3d(frustum)))
+                .unwrap()
+                .iter()
+                .map(|hit| hit.feature.row_number)
+                .collect();
+        frustum_rows.sort_unstable();
+        assert_eq!(frustum_rows, vec![0, 2], "{precision:?} frustum hits");
+
+        let mut bbox_rows: Vec<u64> = pollster::block_on(async_index.search_features_async(bbox))
+            .unwrap()
+            .iter()
+            .map(|feature| feature.row_number)
+            .collect();
+        bbox_rows.sort_unstable();
+        assert_eq!(
+            bbox_rows,
+            vec![0, 1, 2],
+            "{precision:?}: bbox query still covers all points"
+        );
+    }
+}
+
 #[test]
 fn geo_artifact_reader_does_not_require_known_length() {
     struct NoLenReader(SliceReader<Vec<u8>>);
@@ -1600,6 +1900,32 @@ fn geo_artifact_reader_requires_geo_manifest() {
     let bytes = builder.finish().unwrap().to_bytes();
     assert!(matches!(
         open_geo_index(SliceReader::new(bytes)),
+        Err(GeoError::MissingGeoManifest)
+    ));
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_geo_artifact_reader_manifest_errors_match_sync() {
+    let bad_magic = vec![0; 32];
+    assert!(matches!(
+        open_geo_index(SliceReader::new(bad_magic.clone())),
+        Err(GeoError::Container(message)) if message == "bad magic"
+    ));
+    assert!(matches!(
+        pollster::block_on(open_geo_index_async(AsyncSlice(bad_magic))),
+        Err(GeoError::Container(message)) if message == "bad magic"
+    ));
+
+    let mut builder = packed_spatial_index::Index2DBuilder::new(1);
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    let bytes = builder.finish().unwrap().to_bytes();
+    assert!(matches!(
+        open_geo_index(SliceReader::new(bytes.clone())),
+        Err(GeoError::MissingGeoManifest)
+    ));
+    assert!(matches!(
+        pollster::block_on(open_geo_index_async(AsyncSlice(bytes))),
         Err(GeoError::MissingGeoManifest)
     ));
 }

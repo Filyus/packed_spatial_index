@@ -76,6 +76,7 @@ files.
 | Raycast features | [`GeoIndex3D::raycast_features`][raycast_features], `raycast_closest_feature` |
 | Convert to `PSINDEX` | [`GeoDataset::convert`][convert] |
 | Open a `PSINDEX` | [`open_geo_index`][open_geo_index] |
+| Open a `PSINDEX` over async range I/O | [`open_geo_index_async`][open_geo_index_async] (`async` feature) |
 | Query a `PSINDEX` | [`GeoArtifactIndex2D::search_hits`][search_hits], [`GeoHit`][GeoHit] |
 | Choose a query shape | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius), [`GeoQuery3D`][GeoQuery3D] (box / frustum) |
 | Exact-filter source hits | [`GeoDataset::filter_features`][filter_features], [`FeatureFilterRequest`][FeatureFilterRequest] |
@@ -90,6 +91,10 @@ values. A feature ref always carries the source `row_number`; scans and converte
 artifacts also fill `row_group` / `row_in_group` so source rows can be read back
 efficiently. `part` is set when one source row becomes multiple index entries,
 for example after antimeridian splitting.
+
+Enable the `async` feature to open the same streamable artifacts through an
+`AsyncRangeReader`. The async artifact methods mirror window, polygon, and 3D
+frustum candidate queries, including payload-returning `search_hits_async`.
 
 ## Examples
 
@@ -267,6 +272,7 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [ConvertRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ConvertRequest.html
 [GeoArtifact]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifact.html
 [open_geo_index]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geo_index.html
+[open_geo_index_async]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geo_index_async.html
 [GeoArtifactIndex]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoArtifactIndex.html
 [GeoHit]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoHit.html
 [GeoQuery2D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery2D.html

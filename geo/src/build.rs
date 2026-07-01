@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use packed_spatial_index::{
     EARTH_RADIUS_M, Index2D, Index2DBuilder, Index2DF32, Index3D, Index3DBuilder, Index3DF32,
-    Point2D, Point3D, haversine_distance_2d,
+    Point2D, Point3D, Ray2D, Ray3D, haversine_distance_2d,
 };
 use serde::{Deserialize, Serialize};
 
@@ -564,6 +564,65 @@ impl GeoIndex2D {
         })
     }
 
+    /// Every candidate feature this ray segment's box overlaps, in traversal
+    /// order (not sorted by hit distance) — for the ordered closest hit, use
+    /// [`raycast_closest_feature`](Self::raycast_closest_feature).
+    ///
+    /// This is a broad-phase result: it returns every feature whose
+    /// *bounding box* the ray touches, not features whose true geometry the
+    /// ray actually crosses. Do your own narrow-phase geometry test on the
+    /// results — see `packed_spatial_index`'s `examples/raycast_mesh.rs` for
+    /// the pattern.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, Point2D, Ray2D};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
+    ///     panic!("expected a 2D index");
+    /// };
+    /// let ray = Ray2D::new(Point2D::new(0.0, 0.0), 1.0, 0.0, 100.0);
+    /// for feature in index.raycast_features(ray) {
+    ///     println!("row {}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn raycast_features(&self, ray: Ray2D) -> Vec<FeatureRef> {
+        self.index
+            .raycast(ray)
+            .into_iter()
+            .filter_map(|id| self.features.get(id).cloned())
+            .collect()
+    }
+
+    /// The closest feature this ray segment's box hits, paired with the
+    /// entry parameter `t` (in units of the ray's direction length), or
+    /// `None` if the ray misses every feature's box.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, Point2D, Ray2D};
+    ///
+    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
+    ///     panic!("expected a 2D index");
+    /// };
+    /// let ray = Ray2D::new(Point2D::new(0.0, 0.0), 1.0, 0.0, 100.0);
+    /// if let Some((feature, t)) = index.raycast_closest_feature(ray) {
+    ///     println!("row {} at t={t}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn raycast_closest_feature(&self, ray: Ray2D) -> Option<(FeatureRef, f64)> {
+        let (id, t) = self.index.raycast_closest(ray)?;
+        self.features.get(id).cloned().map(|f| (f, t))
+    }
+
     /// Access the underlying core index.
     pub fn raw_index(&self) -> &Index2D {
         &self.index
@@ -651,6 +710,21 @@ impl GeoIndex2DF32 {
         })
     }
 
+    /// Every candidate feature this ray segment's (rounded) box overlaps, in
+    /// traversal order. Broad-phase only — see
+    /// [`GeoIndex2D::raycast_features`] for the same caveat.
+    ///
+    /// There is no `raycast_closest_feature` on this type: the core
+    /// `f32`-precision index does not implement closest-hit raycast, only
+    /// all-hits.
+    pub fn raycast_features(&self, ray: Ray2D) -> Vec<FeatureRef> {
+        self.index
+            .raycast(ray)
+            .into_iter()
+            .filter_map(|id| self.features.get(id).cloned())
+            .collect()
+    }
+
     /// Access the underlying core index.
     pub fn raw_index(&self) -> &Index2DF32 {
         &self.index
@@ -732,6 +806,55 @@ impl GeoIndex3D {
         collect_nearest(&self.features, max_results, |visitor| {
             let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
         })
+    }
+
+    /// Every candidate feature this ray segment's box overlaps, in traversal
+    /// order (not sorted by hit distance) — for the ordered closest hit, use
+    /// [`raycast_closest_feature`](Self::raycast_closest_feature).
+    ///
+    /// This is a broad-phase result: it returns every feature whose
+    /// *bounding box* the ray touches, not features whose true geometry the
+    /// ray actually crosses — do your own narrow-phase geometry test on the
+    /// results (`packed_spatial_index`'s own `Ray3D::closest_triangle`, if
+    /// your payload is triangle data, or your own intersection test
+    /// otherwise). See its `examples/raycast_mesh.rs` for the pattern.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{
+    ///     open, BuildRequest, GeoIndex, IndexDimsRequest, Point3D, Ray3D,
+    /// };
+    ///
+    /// let mut dataset = open(File::open("elevations.parquet")?)?;
+    /// let GeoIndex::D3(index) = dataset.build(BuildRequest {
+    ///     dims: IndexDimsRequest::D3,
+    ///     ..BuildRequest::default()
+    /// })?
+    /// else {
+    ///     panic!("expected a 3D index");
+    /// };
+    /// let ray = Ray3D::new(Point3D::new(0.0, 0.0, 100.0), 0.0, 0.0, -1.0, 200.0);
+    /// for feature in index.raycast_features(ray) {
+    ///     println!("row {}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn raycast_features(&self, ray: Ray3D) -> Vec<FeatureRef> {
+        self.index
+            .raycast(ray)
+            .into_iter()
+            .filter_map(|id| self.features.get(id).cloned())
+            .collect()
+    }
+
+    /// The closest feature this ray segment's box hits, paired with the
+    /// entry parameter `t` (in units of the ray's direction length), or
+    /// `None` if the ray misses every feature's box.
+    pub fn raycast_closest_feature(&self, ray: Ray3D) -> Option<(FeatureRef, f64)> {
+        let (id, t) = self.index.raycast_closest(ray)?;
+        self.features.get(id).cloned().map(|f| (f, t))
     }
 
     /// Access the underlying core index.
@@ -818,6 +941,21 @@ impl GeoIndex3DF32 {
         collect_nearest(&self.features, max_results, |visitor| {
             let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
         })
+    }
+
+    /// Every candidate feature this ray segment's (rounded) box overlaps, in
+    /// traversal order. Broad-phase only — see
+    /// [`GeoIndex3D::raycast_features`] for the same caveat.
+    ///
+    /// There is no `raycast_closest_feature` on this type: the core
+    /// `f32`-precision index does not implement closest-hit raycast, only
+    /// all-hits.
+    pub fn raycast_features(&self, ray: Ray3D) -> Vec<FeatureRef> {
+        self.index
+            .raycast(ray)
+            .into_iter()
+            .filter_map(|id| self.features.get(id).cloned())
+            .collect()
     }
 
     /// Access the underlying core index.
@@ -1205,5 +1343,72 @@ mod tests {
         };
         let hits = index.nearest_features(Point3D::new(0.0, 0.0, 0.0), 1);
         assert_eq!(hits[0].0.row_number, 0);
+    }
+
+    #[test]
+    fn raycast_features_and_closest_hit_on_f64_2d_index() {
+        let GeoIndex::D2(index) =
+            GeoIndex::from_scan(&scan_2d(), &IndexBuildOptions::default()).unwrap()
+        else {
+            panic!("expected GeoIndex::D2");
+        };
+        // Diagonal ray from (-1,-1) crosses all three boxes at t=1,6,11.
+        let ray = Ray2D::new(Point2D::new(-1.0, -1.0), 1.0, 1.0, 20.0);
+        let mut rows: Vec<u64> = index
+            .raycast_features(ray)
+            .iter()
+            .map(|f| f.row_number)
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(rows, vec![0, 1, 2], "diagonal ray crosses all three boxes");
+
+        let (closest, t) = index.raycast_closest_feature(ray).unwrap();
+        assert_eq!(closest.row_number, 0, "nearest box along the ray");
+        assert!((t - 1.0).abs() < 1e-9);
+
+        // A short ray that stops before reaching any box.
+        let short_ray = Ray2D::new(Point2D::new(-1.0, -1.0), 1.0, 1.0, 0.5);
+        assert!(index.raycast_features(short_ray).is_empty());
+        assert!(index.raycast_closest_feature(short_ray).is_none());
+    }
+
+    #[test]
+    fn raycast_features_and_closest_hit_on_f64_3d_index() {
+        let GeoIndex::D3(index) =
+            GeoIndex::from_scan(&scan_3d(), &IndexBuildOptions::default()).unwrap()
+        else {
+            panic!("expected GeoIndex::D3");
+        };
+        let ray = Ray3D::new(Point3D::new(-1.0, -1.0, -1.0), 1.0, 1.0, 1.0, 20.0);
+        let mut rows: Vec<u64> = index
+            .raycast_features(ray)
+            .iter()
+            .map(|f| f.row_number)
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(rows, vec![0, 1]);
+
+        let (closest, t) = index.raycast_closest_feature(ray).unwrap();
+        assert_eq!(closest.row_number, 0);
+        assert!((t - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn f32_raycast_features_matches_f64_2d() {
+        let opts = IndexBuildOptions {
+            precision: StoragePrecision::F32,
+            ..IndexBuildOptions::default()
+        };
+        let GeoIndex::D2F32(index) = GeoIndex::from_scan(&scan_2d(), &opts).unwrap() else {
+            panic!("expected GeoIndex::D2F32");
+        };
+        let ray = Ray2D::new(Point2D::new(-1.0, -1.0), 1.0, 1.0, 20.0);
+        let mut rows: Vec<u64> = index
+            .raycast_features(ray)
+            .iter()
+            .map(|f| f.row_number)
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(rows, vec![0, 1, 2]);
     }
 }

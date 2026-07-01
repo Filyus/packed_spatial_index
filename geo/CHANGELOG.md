@@ -51,6 +51,19 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   (`Err` for a degenerate frustum) instead of an infallible `Box3D`, and is a
   metadata/diagnostics helper only — actual search dispatches on the query
   variant directly rather than degrading a frustum query to its bounding box.
+- Added `GeoIndex2D::raycast_features`/`raycast_closest_feature` and
+  `GeoIndex3D::raycast_features`/`raycast_closest_feature` (plus
+  `f32`-accelerator `raycast_features`), wrapping core's raycast search.
+  Broad-phase only, like core's own `Index3D::raycast`: returns candidates
+  whose *bounding box* the ray touches, not features the ray's true geometry
+  crosses — do your own narrow-phase test on the results, the pattern
+  core's `examples/raycast_mesh.rs` establishes. This was already promised in
+  `docs/when-to-use.md` ("Reach for the accelerator when ... raycast
+  lookups") but not previously implemented; it now is. In-memory-accelerator
+  only — raycast has no streaming/artifact-reader equivalent in the core
+  crate. The `f32`-accelerator types have no `raycast_closest_feature`:
+  core's closest-hit raycast isn't implemented for `f32`-precision indexes
+  (all-hits is). `Ray2D`/`Ray3D` are now re-exported from this crate's root.
 
 ### Nearest Neighbors
 

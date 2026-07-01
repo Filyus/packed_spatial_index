@@ -422,5 +422,49 @@ method. This was already promised in [When to use
 it](when-to-use.md#reach-for-the-accelerator-when) ("fast windowed / kNN /
 raycast lookups") but not previously implemented.
 
+## Raycast lookups
+
+`GeoIndex2D`/`GeoIndex3D` (and their `f32` counterparts) can answer "which
+features does this ray cross":
+
+```rust
+use std::fs::File;
+use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, IndexDimsRequest, Point3D, Ray3D};
+
+let mut dataset = open(File::open("elevations.parquet")?)?;
+let GeoIndex::D3(index) = dataset.build(BuildRequest {
+    dims: IndexDimsRequest::D3,
+    ..BuildRequest::default()
+})?
+else {
+    panic!("expected a 3D index");
+};
+
+let ray = Ray3D::new(Point3D::new(0.0, 0.0, 100.0), 0.0, 0.0, -1.0, 200.0);
+if let Some((feature, t)) = index.raycast_closest_feature(ray) {
+    println!("closest hit: row {} at t={t}", feature.row_number);
+}
+for feature in index.raycast_features(ray) {
+    println!("candidate: row {}", feature.row_number);
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`raycast_features` returns every candidate in traversal order (not sorted by
+distance); `raycast_closest_feature` returns the nearest one with its entry
+parameter `t`. Both are broad-phase: they report a hit when the ray touches a
+feature's *bounding box*, not its true geometry. Test the returned candidates
+yourself — core's own `Ray3D::closest_triangle` if your payload is triangle
+data, or your own intersection test otherwise (see
+`packed_spatial_index`'s `examples/raycast_mesh.rs` for the pattern this
+mirrors).
+
+The `f32`-precision accelerator types have `raycast_features` but not
+`raycast_closest_feature`: core's closest-hit raycast isn't implemented for
+`f32`-precision indexes (all-hits is). Like kNN, raycast is
+in-memory-accelerator only — it was already promised in [When to use
+it](when-to-use.md#reach-for-the-accelerator-when) but not previously
+implemented.
+
 [validate]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.validate
 [read_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.read_features

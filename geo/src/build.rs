@@ -357,6 +357,25 @@ pub struct GeoIndex3D {
 
 impl GeoIndex3D {
     /// Search and return source feature references.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{Box3D, BuildRequest, GeoIndex, IndexDimsRequest, open};
+    ///
+    /// let mut dataset = open(File::open("elevations.parquet")?)?;
+    /// let GeoIndex::D3(index) = dataset.build(BuildRequest {
+    ///     dims: IndexDimsRequest::D3,
+    ///     ..BuildRequest::default()
+    /// })?
+    /// else {
+    ///     panic!("expected a 3D index");
+    /// };
+    /// let hits = index.search_features(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))?;
+    /// println!("{} candidate features", hits.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_features<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,

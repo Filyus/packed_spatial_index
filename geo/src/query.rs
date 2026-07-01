@@ -225,6 +225,15 @@ fn coords_to_ring(coords: Vec<[f64; 2]>) -> LineString<f64> {
 /// 3D geospatial query.
 ///
 /// 3D geo artifacts currently support box/envelope candidate queries.
+///
+/// # Example
+///
+/// ```rust
+/// use packed_spatial_index_geo::{Box3D, GeoQuery3D};
+///
+/// let query = GeoQuery3D::box3d(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0));
+/// assert!(matches!(query, GeoQuery3D::Box3D(_)));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GeoQuery3D {
     /// Query box in source XYZ coordinates.

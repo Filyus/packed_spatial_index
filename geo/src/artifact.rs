@@ -187,6 +187,27 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// polygon during the streamed descent, so it fetches only the leaves the
     /// polygon overlaps — less data than its bounding box. Box and
     /// spherical-radius queries narrow by candidate bounding boxes.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, GeoPayload, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("cities.psi")?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    /// for hit in index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    ///     match &hit.payload {
+    ///         GeoPayload::RowWkb(wkb) => {
+    ///             println!("{}: {} WKB bytes", hit.feature.row_number, wkb.len())
+    ///         }
+    ///         GeoPayload::FeatureJson(feature) => println!("{}: {feature}", hit.feature.row_number),
+    ///         GeoPayload::RowRef => println!("{}: no geometry payload", hit.feature.row_number),
+    ///     }
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_hits<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<GeoHit>, GeoError> {
         let query = query.into();
         if let GeoQuery2D::Polygon(multi_polygon) = &query {
@@ -371,6 +392,27 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     ///
     /// Each hit includes the compact item id, the source [`FeatureRef`], and
     /// the decoded [`GeoPayload`] described by the artifact manifest.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box3D, GeoArtifactIndex, GeoPayload, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("elevations.psi")?;
+    /// let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 3D artifact");
+    /// };
+    /// for hit in index.search_hits(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))? {
+    ///     match &hit.payload {
+    ///         GeoPayload::RowWkb(wkb) => {
+    ///             println!("{}: {} WKB bytes", hit.feature.row_number, wkb.len())
+    ///         }
+    ///         GeoPayload::FeatureJson(feature) => println!("{}: {feature}", hit.feature.row_number),
+    ///         GeoPayload::RowRef => println!("{}: no geometry payload", hit.feature.row_number),
+    ///     }
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_hits<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<Vec<GeoHit>, GeoError> {
         let bbox = query.into().candidate_box_3d();
         let hits = match &self.index {

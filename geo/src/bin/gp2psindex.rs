@@ -83,6 +83,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
 fn discover_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&["--json"])?;
     let input = parsed.required_pos(0, "input.parquet")?;
     parsed.no_extra_pos(1)?;
     let dataset = open(File::open(input)?)?;
@@ -97,6 +98,7 @@ fn discover_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 fn inspect_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&["--geometry-column", "--exact", "--json"])?;
     let input = parsed.required_pos(0, "input.parquet")?;
     parsed.no_extra_pos(1)?;
     let selector = geometry_selector(parsed.option("--geometry-column")?);
@@ -116,6 +118,16 @@ fn inspect_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&[
+        "--geometry-column",
+        "--dims",
+        "--precision",
+        "--nulls",
+        "--payload",
+        "--properties",
+        "--antimeridian",
+        "--no-interleave",
+    ])?;
     let input = parsed.required_pos(0, "input.parquet")?;
     let output = parsed.required_pos(1, "output.psi")?;
     parsed.no_extra_pos(2)?;
@@ -148,6 +160,17 @@ fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 fn validate_cmd(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&[
+        "--geometry-column",
+        "--exact",
+        "--json",
+        "--strict",
+        "--dims",
+        "--nulls",
+        "--payload",
+        "--properties",
+        "--antimeridian",
+    ])?;
     let input = parsed.required_pos(0, "input.parquet")?;
     parsed.no_extra_pos(1)?;
     let payload = parse_payload(
@@ -183,6 +206,20 @@ fn validate_cmd(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>>
 
 fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&[
+        "--bbox",
+        "--radius",
+        "--exact",
+        "--predicate",
+        "--treat-nonplanar-as-planar",
+        "--geometry",
+        "--properties",
+        "--order",
+        "--duplicates",
+        "--json",
+        "--ndjson",
+        "--allow-source-mismatch",
+    ])?;
     let source = parsed.required_pos(0, "source.parquet")?;
     let index_path = parsed.required_pos(1, "index.psi")?;
     parsed.no_extra_pos(2)?;
@@ -696,6 +733,19 @@ impl<'a> Parsed<'a> {
 
     fn flag(&self, flag: &str) -> bool {
         self.args.iter().any(|arg| arg == flag)
+    }
+
+    fn no_unknown_flags(&self, known: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        for arg in self.args {
+            if !arg.starts_with("--") {
+                continue;
+            }
+            let flag = arg.split_once('=').map_or(arg.as_str(), |(flag, _)| flag);
+            if !known.contains(&flag) {
+                return Err(format!("unknown flag `{flag}`").into());
+            }
+        }
+        Ok(())
     }
 
     fn option(&self, flag: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {

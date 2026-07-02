@@ -501,7 +501,8 @@ pub(crate) fn feature_json_payload(
         .map(wkb::geometry_json)
         .transpose()?
         .unwrap_or(serde_json::Value::Null);
-    let properties = properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let properties =
+        properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let feature = serde_json::json!({
         "type": "Feature",
         "id": feature.feature_id.as_deref().unwrap_or(""),

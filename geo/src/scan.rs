@@ -28,7 +28,8 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
     state: &ColumnState,
     req: ScanRequest,
 ) -> Result<GeometryScan, GeoError> {
-    if matches!(req.envelope, EnvelopePolicy::Geographic { .. }) && state.info.crs.is_known_projected()
+    if matches!(req.envelope, EnvelopePolicy::Geographic { .. })
+        && state.info.crs.is_known_projected()
     {
         return Err(GeoError::Metadata(format!(
             "column `{}` has a projected CRS; geographic antimeridian handling is only valid for lon/lat coordinates",
@@ -408,7 +409,10 @@ fn scan_one_row(
         ));
     };
     if let Some(covering) = covering.filter(|_| !need_geometry_payload) {
-        return Ok(Some((bounds_from_covering(covering, row, collect_lons)?, None)));
+        return Ok(Some((
+            bounds_from_covering(covering, row, collect_lons)?,
+            None,
+        )));
     }
     let Some(row) = geoarrow::scan_row(geom, kind, state.info.coordinate_dims, row, collect_lons)?
     else {

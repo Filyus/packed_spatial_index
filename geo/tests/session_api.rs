@@ -2057,9 +2057,15 @@ fn covering_interval_does_not_wrap_when_min_is_before_max() {
     let data = write_geoparquet(
         vec![
             ("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))])),
-            ("xmin", Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef),
+            (
+                "xmin",
+                Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef,
+            ),
             ("ymin", Arc::new(Float64Array::from(vec![-5.0])) as ArrayRef),
-            ("xmax", Arc::new(Float64Array::from(vec![170.0])) as ArrayRef),
+            (
+                "xmax",
+                Arc::new(Float64Array::from(vec![170.0])) as ArrayRef,
+            ),
             ("ymax", Arc::new(Float64Array::from(vec![5.0])) as ArrayRef),
         ],
         geo_meta_wkb_with_covering(),
@@ -2085,9 +2091,15 @@ fn covering_interval_wraps_only_when_min_exceeds_max() {
     let data = write_geoparquet(
         vec![
             ("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))])),
-            ("xmin", Arc::new(Float64Array::from(vec![170.0])) as ArrayRef),
+            (
+                "xmin",
+                Arc::new(Float64Array::from(vec![170.0])) as ArrayRef,
+            ),
             ("ymin", Arc::new(Float64Array::from(vec![-5.0])) as ArrayRef),
-            ("xmax", Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef),
+            (
+                "xmax",
+                Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef,
+            ),
             ("ymax", Arc::new(Float64Array::from(vec![5.0])) as ArrayRef),
         ],
         geo_meta_wkb_with_covering(),
@@ -2120,9 +2132,15 @@ fn covering_interval_wrap_under_planar_is_rejected() {
     let data = write_geoparquet(
         vec![
             ("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))])),
-            ("xmin", Arc::new(Float64Array::from(vec![170.0])) as ArrayRef),
+            (
+                "xmin",
+                Arc::new(Float64Array::from(vec![170.0])) as ArrayRef,
+            ),
             ("ymin", Arc::new(Float64Array::from(vec![-5.0])) as ArrayRef),
-            ("xmax", Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef),
+            (
+                "xmax",
+                Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef,
+            ),
             ("ymax", Arc::new(Float64Array::from(vec![5.0])) as ArrayRef),
         ],
         geo_meta_wkb_with_covering(),
@@ -2816,10 +2834,7 @@ fn iso_wkb_dimension_codes_drive_scan_dimensions() {
 #[test]
 fn non_finite_wkb_coordinate_is_not_indexed() {
     let data = write_geoparquet(
-        vec![(
-            "geometry",
-            binary_col(&[Some(wkb_point_2d(f64::NAN, 2.0))]),
-        )],
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(f64::NAN, 2.0))]))],
         geo_meta_wkb(&["Point"]),
     );
     let mut dataset = open(data).unwrap();

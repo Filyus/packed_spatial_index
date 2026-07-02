@@ -1047,7 +1047,8 @@ fn clean_container_metadata_ranges(clean: &[u8]) -> Vec<Range<u64>> {
     let dir_end = SUPERBLOCK_LEN + chunk_count * CHUNK_ENTRY_LEN;
     assert!(dir_end <= clean.len());
 
-    let mut ranges = vec![0..dir_end as u64];
+    let mut ranges = Vec::with_capacity(chunk_count + 1);
+    ranges.push(0..dir_end as u64);
     for i in 0..chunk_count {
         let base = SUPERBLOCK_LEN + i * CHUNK_ENTRY_LEN;
         let tag = &clean[base..base + 4];

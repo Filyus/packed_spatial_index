@@ -114,7 +114,7 @@ impl GeomProcessor for BoundsProcessor {
             x,
             y,
             z: None,
-                m: None,
+            m: None,
         });
         Ok(())
     }
@@ -236,7 +236,8 @@ pub(crate) fn is_empty_point_wkb(bytes: &[u8]) -> bool {
     if bytes.len() < end {
         return false;
     }
-    (0..coord_count).all(|i| read_f64_endian(&bytes[offset + i * 8..offset + (i + 1) * 8], little).is_nan())
+    (0..coord_count)
+        .all(|i| read_f64_endian(&bytes[offset + i * 8..offset + (i + 1) * 8], little).is_nan())
 }
 
 fn read_u32_endian(bytes: &[u8], little: bool) -> u32 {

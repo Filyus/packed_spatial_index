@@ -704,7 +704,9 @@ fn checked_directory_span(
     total_len: Option<u64>,
 ) -> Result<(usize, usize), GeoError> {
     if total_len.is_none() && chunk_count > MAX_CONTAINER_CHUNKS_WITHOUT_LEN {
-        return Err(GeoError::Container("too many chunks without a known length".to_string()));
+        return Err(GeoError::Container(
+            "too many chunks without a known length".to_string(),
+        ));
     }
     let dir_len = chunk_count
         .checked_mul(CHUNK_ENTRY_LEN)
@@ -722,7 +724,9 @@ fn checked_directory_span(
 
 fn check_manifest_len(len: usize, total_len: Option<u64>) -> Result<(), GeoError> {
     if total_len.is_none() && len > MAX_GEO_MANIFEST_BYTES_WITHOUT_LEN {
-        return Err(GeoError::Container("geoM manifest is too large".to_string()));
+        return Err(GeoError::Container(
+            "geoM manifest is too large".to_string(),
+        ));
     }
     Ok(())
 }

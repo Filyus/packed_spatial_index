@@ -1,6 +1,7 @@
 //! Layout-agnostic scalar raycast traversal.
 
 use crate::neighbors::{NeighborNodeState, NeighborState};
+use crate::ray::inclusive_ray_cutoff;
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
@@ -94,7 +95,7 @@ pub(crate) fn closest_hit(
 
     let root = num_nodes - 1;
     let root_t = enter_at(root)?;
-    let mut best_t = max_distance;
+    let mut best_t = inclusive_ray_cutoff(max_distance);
     let mut best_index = None;
     queue.push(NeighborNodeState::new(root, root_t));
 

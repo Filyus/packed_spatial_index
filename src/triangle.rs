@@ -339,6 +339,7 @@ fn mt_f64(t: &Triangle3D, o: [f64; 3], d: [f64; 3], max_t: f64) -> f64 {
         d[0] * e2[1] - d[1] * e2[0],
     ];
     let det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2];
+    let det_eps = scaled_det_epsilon_f64(d, e1, e2);
     let inv = 1.0 / det;
     let s = [o[0] - t.a[0], o[1] - t.a[1], o[2] - t.a[2]];
     let u = (s[0] * p[0] + s[1] * p[1] + s[2] * p[2]) * inv;
@@ -349,7 +350,7 @@ fn mt_f64(t: &Triangle3D, o: [f64; 3], d: [f64; 3], max_t: f64) -> f64 {
     ];
     let v = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inv;
     let t = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv;
-    let miss = (det.abs() < 1e-12)
+    let miss = (det.abs() <= det_eps)
         | (u < 0.0)
         | (u > 1.0)
         | (v < 0.0)
@@ -357,6 +358,14 @@ fn mt_f64(t: &Triangle3D, o: [f64; 3], d: [f64; 3], max_t: f64) -> f64 {
         | (t < 0.0)
         | (t > max_t);
     if miss { f64::INFINITY } else { t }
+}
+
+#[inline(always)]
+fn scaled_det_epsilon_f64(d: [f64; 3], e1: [f64; 3], e2: [f64; 3]) -> f64 {
+    let d_scale = d[0].abs() + d[1].abs() + d[2].abs();
+    let e1_scale = e1[0].abs() + e1[1].abs() + e1[2].abs();
+    let e2_scale = e2[0].abs() + e2[1].abs() + e2[2].abs();
+    64.0 * f64::EPSILON * d_scale * e1_scale * e2_scale
 }
 
 fn closest_f64(o: [f64; 3], d: [f64; 3], max_t: f64, tris: &[Triangle3D]) -> Option<TriangleHit> {
@@ -388,6 +397,7 @@ fn mt_f32(t: &Triangle3DF32, o: [f32; 3], d: [f32; 3], max_t: f32) -> f32 {
         d[0] * e2[1] - d[1] * e2[0],
     ];
     let det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2];
+    let det_eps = scaled_det_epsilon_f32(d, e1, e2);
     let inv = 1.0 / det;
     let s = [o[0] - t.a[0], o[1] - t.a[1], o[2] - t.a[2]];
     let u = (s[0] * p[0] + s[1] * p[1] + s[2] * p[2]) * inv;
@@ -398,7 +408,7 @@ fn mt_f32(t: &Triangle3DF32, o: [f32; 3], d: [f32; 3], max_t: f32) -> f32 {
     ];
     let v = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inv;
     let t = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv;
-    let miss = (det.abs() < 1e-8)
+    let miss = (det.abs() <= det_eps)
         | (u < 0.0)
         | (u > 1.0)
         | (v < 0.0)
@@ -406,6 +416,14 @@ fn mt_f32(t: &Triangle3DF32, o: [f32; 3], d: [f32; 3], max_t: f32) -> f32 {
         | (t < 0.0)
         | (t > max_t);
     if miss { f32::INFINITY } else { t }
+}
+
+#[inline(always)]
+fn scaled_det_epsilon_f32(d: [f32; 3], e1: [f32; 3], e2: [f32; 3]) -> f32 {
+    let d_scale = d[0].abs() + d[1].abs() + d[2].abs();
+    let e1_scale = e1[0].abs() + e1[1].abs() + e1[2].abs();
+    let e2_scale = e2[0].abs() + e2[1].abs() + e2[2].abs();
+    64.0 * f32::EPSILON * d_scale * e1_scale * e2_scale
 }
 
 fn closest_f32(
@@ -452,7 +470,8 @@ fn closest_f32_simd(
     let inf = f32x8::splat(f32::INFINITY);
     let zero = f32x8::splat(0.0);
     let one = f32x8::splat(1.0);
-    let eps = f32x8::splat(1e-8);
+    let eps_factor = f32x8::splat(64.0 * f32::EPSILON);
+    let d_scale = f32x8::splat(d[0].abs() + d[1].abs() + d[2].abs());
     let maxv = f32x8::splat(max_t);
     let ox = f32x8::splat(o[0]);
     let oy = f32x8::splat(o[1]);
@@ -490,6 +509,9 @@ fn closest_f32_simd(
         let py = dz * e2x - dx * e2z;
         let pz = dx * e2y - dy * e2x;
         let det = e1x * px + e1y * py + e1z * pz;
+        let e1_scale = e1x.abs() + e1y.abs() + e1z.abs();
+        let e2_scale = e2x.abs() + e2y.abs() + e2z.abs();
+        let eps = eps_factor * d_scale * e1_scale * e2_scale;
         let inv = one / det;
         let sx = ox - ax;
         let sy = oy - ay;
@@ -502,6 +524,7 @@ fn closest_f32_simd(
         let t = (e2x * qx + e2y * qy + e2z * qz) * inv;
 
         let miss = det.abs().simd_lt(eps)
+            | det.simd_eq(zero)
             | u.simd_lt(zero)
             | u.simd_gt(one)
             | v.simd_lt(zero)

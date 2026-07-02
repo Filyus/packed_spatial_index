@@ -3,12 +3,25 @@
 //! A ray is defined by an origin, an unnormalized direction, and a maximum ray
 //! parameter `max_distance` (the segment covers `origin + t * dir` for
 //! `t in [0, max_distance]`). Box intersections use the standard slab test with
-//! precomputed reciprocal directions; axis-parallel rays (a direction component
-//! that is exactly zero) are handled explicitly so a ray lying exactly on a box
-//! face still hits.
+//! precomputed reciprocal directions; axis-parallel or subnormal direction
+//! components are handled explicitly so a ray lying exactly on a box face still
+//! hits.
 
 use crate::geometry::{Box2D, Box3D, Point2D, Point3D};
 use crate::triangle::{Triangle3, TriangleHit};
+
+#[inline]
+pub(crate) fn inclusive_ray_cutoff(max_distance: f64) -> f64 {
+    if !max_distance.is_finite() {
+        return f64::INFINITY;
+    }
+    let max_distance = if max_distance == 0.0 {
+        0.0
+    } else {
+        max_distance
+    };
+    f64::from_bits(max_distance.to_bits() + 1)
+}
 
 /// Finite 2D ray segment used by `raycast` searches.
 ///
@@ -47,8 +60,7 @@ impl Ray2D {
     ///
     /// A fully zero direction (`dir_x == dir_y == 0.0`) is a point probe: it
     /// hits only boxes that contain `origin`, all at `t == 0.0`. Direction
-    /// components should be finite; a `NaN` direction produces unspecified
-    /// results.
+    /// components must be finite; a non-finite origin or direction never hits.
     #[inline]
     pub const fn new(origin: Point2D, dir_x: f64, dir_y: f64, max_distance: f64) -> Self {
         Self {
@@ -61,19 +73,31 @@ impl Ray2D {
         }
     }
 
-    /// `true` if any direction component is exactly zero (an axis-parallel ray). The
-    /// vectorized slab test uses `1/dir = inf` and is not NaN-safe at a box face, so
-    /// such rays take a masked path.
+    /// `true` if any direction component needs the masked SIMD slab path. Exact
+    /// zero and subnormal directions can produce `inf` reciprocals, and the
+    /// multiply-only vector slab is not NaN-safe at a box face.
     #[inline]
     #[allow(dead_code)] // used by the SIMD raycast paths only
     pub(crate) fn has_zero_direction(self) -> bool {
-        self.dir_x == 0.0 || self.dir_y == 0.0
+        self.dir_x == 0.0
+            || self.dir_y == 0.0
+            || self.dir_x.is_subnormal()
+            || self.dir_y.is_subnormal()
+    }
+
+    #[inline]
+    pub(crate) fn has_non_finite_component(self) -> bool {
+        !self.origin.x.is_finite()
+            || !self.origin.y.is_finite()
+            || !self.dir_x.is_finite()
+            || !self.dir_y.is_finite()
     }
 
     /// `true` when the ray segment touches `bounds` (edges inclusive).
     #[inline]
     pub fn intersects_box(self, bounds: Box2D) -> bool {
-        if self.max_distance < 0.0 || self.max_distance.is_nan() {
+        if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
+        {
             return false;
         }
         let mut t_min: f64 = 0.0;
@@ -102,7 +126,8 @@ impl Ray2D {
     /// traversal.
     #[inline]
     pub fn enter_t(self, bounds: Box2D) -> Option<f64> {
-        if self.max_distance < 0.0 || self.max_distance.is_nan() {
+        if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
+        {
             return None;
         }
         let mut t_min: f64 = 0.0;
@@ -168,8 +193,8 @@ impl Ray3D {
     ///
     /// A fully zero direction (`dir_x == dir_y == dir_z == 0.0`) is a point
     /// probe: it hits only boxes that contain `origin`, all at `t == 0.0`.
-    /// Direction components should be finite; a `NaN` direction produces
-    /// unspecified results.
+    /// Direction components must be finite; a non-finite origin or direction
+    /// never hits.
     #[inline]
     pub const fn new(
         origin: Point3D,
@@ -190,19 +215,35 @@ impl Ray3D {
         }
     }
 
-    /// `true` if any direction component is exactly zero (an axis-parallel ray). The
-    /// vectorized slab test uses `1/dir = inf` and is not NaN-safe at a box face, so
-    /// such rays take a masked path.
+    /// `true` if any direction component needs the masked SIMD slab path. Exact
+    /// zero and subnormal directions can produce `inf` reciprocals, and the
+    /// multiply-only vector slab is not NaN-safe at a box face.
     #[inline]
     #[allow(dead_code)] // used by the SIMD raycast paths only
     pub(crate) fn has_zero_direction(self) -> bool {
-        self.dir_x == 0.0 || self.dir_y == 0.0 || self.dir_z == 0.0
+        self.dir_x == 0.0
+            || self.dir_y == 0.0
+            || self.dir_z == 0.0
+            || self.dir_x.is_subnormal()
+            || self.dir_y.is_subnormal()
+            || self.dir_z.is_subnormal()
+    }
+
+    #[inline]
+    pub(crate) fn has_non_finite_component(self) -> bool {
+        !self.origin.x.is_finite()
+            || !self.origin.y.is_finite()
+            || !self.origin.z.is_finite()
+            || !self.dir_x.is_finite()
+            || !self.dir_y.is_finite()
+            || !self.dir_z.is_finite()
     }
 
     /// `true` when the ray segment touches `bounds` (faces inclusive).
     #[inline]
     pub fn intersects_box(self, bounds: Box3D) -> bool {
-        if self.max_distance < 0.0 || self.max_distance.is_nan() {
+        if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
+        {
             return false;
         }
         let mut t_min: f64 = 0.0;
@@ -239,7 +280,8 @@ impl Ray3D {
     /// traversal.
     #[inline]
     pub fn enter_t(self, bounds: Box3D) -> Option<f64> {
-        if self.max_distance < 0.0 || self.max_distance.is_nan() {
+        if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
+        {
             return None;
         }
         let mut t_min: f64 = 0.0;

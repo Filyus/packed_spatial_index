@@ -3,7 +3,7 @@
 
 use packed_spatial_index::{
     Box2D, Box3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
-    Triangle2, Triangle2D, Triangle3, Triangle3D, Triangle3DF32,
+    Point3D, Ray3D, Triangle2, Triangle2D, Triangle3, Triangle3D, Triangle3DF32,
 };
 
 fn tri3(i: usize) -> Triangle3D {
@@ -123,6 +123,35 @@ fn triangle_aabb_bounds_vertices() {
     let t = Triangle3D::new([1.0, 5.0, -2.0], [3.0, 2.0, 4.0], [-1.0, 0.0, 1.0]);
     let bb = t.aabb();
     assert_eq!(bb, Box3D::new(-1.0, 0.0, -2.0, 3.0, 5.0, 4.0));
+}
+
+#[test]
+fn closest_triangle_accepts_tiny_valid_triangles() {
+    let tiny = 1e-15;
+    let tri = Triangle3D::new([0.0, 0.0, 1.0], [tiny, 0.0, 1.0], [0.0, tiny, 1.0]);
+    let ray = Ray3D::new(
+        Point3D::new(tiny * 0.25, tiny * 0.25, 0.0),
+        0.0,
+        0.0,
+        1.0,
+        2.0,
+    );
+    let hit = ray.closest_triangle(&[tri]).unwrap();
+    assert_eq!(hit.index, 0);
+    assert!((hit.t - 1.0).abs() < 1e-12, "t={}", hit.t);
+
+    let tiny = 1e-10f32;
+    let tri = Triangle3DF32::new([0.0, 0.0, 1.0], [tiny, 0.0, 1.0], [0.0, tiny, 1.0]);
+    let ray = Ray3D::new(
+        Point3D::new(tiny as f64 * 0.25, tiny as f64 * 0.25, 0.0),
+        0.0,
+        0.0,
+        1.0,
+        2.0,
+    );
+    let hit = ray.closest_triangle(&[tri]).unwrap();
+    assert_eq!(hit.index, 0);
+    assert!((hit.t - 1.0).abs() < 1e-5, "t={}", hit.t);
 }
 
 /// A scattered field of small boxes and an assortment of query triangles (fat,

@@ -8,7 +8,7 @@ use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::Box2D,
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace},
-    ray::Ray2D,
+    ray::{Ray2D, inclusive_ray_cutoff},
     traversal::{SearchWorkspace, upper_bound_level},
 };
 
@@ -61,12 +61,16 @@ impl SimdIndex2D {
     ) -> Option<(usize, f64)> {
         let queue = &mut workspace.node_queue;
         queue.clear();
-        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
+        if self.num_items == 0
+            || ray.max_distance < 0.0
+            || ray.max_distance.is_nan()
+            || ray.has_non_finite_component()
+        {
             return None;
         }
         let root = self.min_xs.len() - 1;
         let root_t = ray.enter_t(self.box_at_soa(root))?;
-        let mut best_t = ray.max_distance;
+        let mut best_t = inclusive_ray_cutoff(ray.max_distance);
         let mut best_index = None;
         queue.push(NeighborNodeState::new(root, root_t));
 
@@ -169,12 +173,16 @@ impl SimdIndex2D {
 
         let queue = &mut workspace.node_queue;
         queue.clear();
-        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
+        if self.num_items == 0
+            || ray.max_distance < 0.0
+            || ray.max_distance.is_nan()
+            || ray.has_non_finite_component()
+        {
             return None;
         }
         let root = self.min_xs.len() - 1;
         let root_t = ray.enter_t(self.box_at_soa(root))?;
-        let mut best_t = ray.max_distance;
+        let mut best_t = inclusive_ray_cutoff(ray.max_distance);
         let mut best_index = None;
         queue.push(NeighborNodeState::new(root, root_t));
 
@@ -268,12 +276,16 @@ impl SimdIndex2D {
 
         let queue = &mut workspace.node_queue;
         queue.clear();
-        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
+        if self.num_items == 0
+            || ray.max_distance < 0.0
+            || ray.max_distance.is_nan()
+            || ray.has_non_finite_component()
+        {
             return None;
         }
         let root = self.min_xs.len() - 1;
         let root_t = ray.enter_t(self.box_at_soa(root))?;
-        let mut best_t = ray.max_distance;
+        let mut best_t = inclusive_ray_cutoff(ray.max_distance);
         let mut best_index = None;
         queue.push(NeighborNodeState::new(root, root_t));
 
@@ -443,7 +455,11 @@ impl SimdIndex2D {
     fn raycast_collect_wide(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
         results.clear();
         stack.clear();
-        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
+        if self.num_items == 0
+            || ray.max_distance < 0.0
+            || ray.max_distance.is_nan()
+            || ray.has_non_finite_component()
+        {
             return;
         }
 
@@ -550,7 +566,11 @@ impl SimdIndex2D {
 
         results.clear();
         stack.clear();
-        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
+        if self.num_items == 0
+            || ray.max_distance < 0.0
+            || ray.max_distance.is_nan()
+            || ray.has_non_finite_component()
+        {
             return;
         }
 
@@ -650,7 +670,11 @@ impl SimdIndex2D {
 
         results.clear();
         stack.clear();
-        if self.num_items == 0 || ray.max_distance < 0.0 || ray.max_distance.is_nan() {
+        if self.num_items == 0
+            || ray.max_distance < 0.0
+            || ray.max_distance.is_nan()
+            || ray.has_non_finite_component()
+        {
             return;
         }
 

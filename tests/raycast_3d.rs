@@ -113,6 +113,24 @@ fn raycast_all_hits_3d_matches_brute() {
 }
 
 #[test]
+fn raycast_closest_3d_includes_exact_max_distance_hit_and_rejects_invalid_rays() {
+    let mut builder = Index3DBuilder::new(1);
+    builder.add(Box3D::new(10.0, 0.0, 0.0, 11.0, 1.0, 1.0));
+    let index = builder.finish().unwrap();
+
+    let boundary = Ray3D::new(Point3D::new(0.0, 0.5, 0.5), 1.0, 0.0, 0.0, 10.0);
+    assert_eq!(index.raycast_closest(boundary), Some((0, 10.0)));
+
+    let nan_origin = Ray3D::new(Point3D::new(f64::NAN, 0.5, 0.5), 1.0, 0.0, 0.0, 20.0);
+    assert!(index.raycast(nan_origin).is_empty());
+    assert_eq!(index.raycast_closest(nan_origin), None);
+
+    let inf_dir = Ray3D::new(Point3D::new(0.0, 0.5, 0.5), f64::INFINITY, 0.0, 0.0, 20.0);
+    assert!(index.raycast(inf_dir).is_empty());
+    assert_eq!(index.raycast_closest(inf_dir), None);
+}
+
+#[test]
 fn raycast_3d_empty_and_degenerate_rays() {
     let index = Index3DBuilder::new(0).finish().unwrap();
     let ray = Ray3D::new(Point3D::new(0.0, 0.0, 0.0), 1.0, 0.0, 0.0, 10.0);
@@ -210,6 +228,29 @@ mod simd {
         let hit = simd.raycast_closest_with(ray, &mut ws);
         assert_eq!(hit.map(|(_, t)| t), brute_closest(&boxes, ray));
         assert!((hit.unwrap().1 - 5.0).abs() <= EPS, "entry t should be 5.0");
+    }
+
+    #[test]
+    fn simd_raycast_3d_subnormal_direction_matches_scalar() {
+        let boxes = [Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)];
+        let mut scalar_builder = Index3DBuilder::new(boxes.len());
+        let mut simd_builder = Index3DBuilder::new(boxes.len());
+        boxes.iter().for_each(|&b| {
+            scalar_builder.add(b);
+            simd_builder.add(b);
+        });
+        let scalar = scalar_builder.finish().unwrap();
+        let simd = simd_builder.finish_simd().unwrap();
+
+        let ray = Ray3D::new(
+            Point3D::new(0.5, 0.5, -1.0),
+            f64::from_bits(1),
+            0.0,
+            1.0,
+            10.0,
+        );
+        assert_eq!(simd.raycast(ray), scalar.raycast(ray));
+        assert_eq!(simd.raycast_closest(ray), scalar.raycast_closest(ray));
     }
 }
 

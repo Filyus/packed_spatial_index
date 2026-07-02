@@ -874,6 +874,12 @@ impl Index2D {
         item_queue: &mut BinaryHeap<NeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
+        if !query.is_valid() {
+            results.clear();
+            item_queue.clear();
+            node_queue.clear();
+            return;
+        }
         best_first::collect_neighbors_two_queue(
             self.entries.len(),
             self.num_items,
@@ -895,6 +901,10 @@ impl Index2D {
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
+        if !query.is_valid() {
+            queue.clear();
+            return None;
+        }
         best_first::nearest_one(
             self.entries.len(),
             self.num_items,
@@ -917,6 +927,10 @@ impl Index2D {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
+        if !query.is_valid() {
+            queue.clear();
+            return ControlFlow::Continue(());
+        }
         best_first::visit_neighbors(
             self.entries.len(),
             self.num_items,
@@ -1775,6 +1789,12 @@ impl<'a> Index2DView<'a> {
         item_queue: &mut BinaryHeap<NeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
+        if !query.is_valid() {
+            results.clear();
+            item_queue.clear();
+            node_queue.clear();
+            return;
+        }
         best_first::collect_neighbors_two_queue(
             self.num_nodes,
             self.num_items,
@@ -1796,6 +1816,10 @@ impl<'a> Index2DView<'a> {
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
+        if !query.is_valid() {
+            queue.clear();
+            return None;
+        }
         best_first::nearest_one(
             self.num_nodes,
             self.num_items,
@@ -1841,6 +1865,10 @@ impl<'a> Index2DView<'a> {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
+        if !query.is_valid() {
+            queue.clear();
+            return ControlFlow::Continue(());
+        }
         best_first::visit_neighbors(
             self.num_nodes,
             self.num_items,

@@ -421,6 +421,11 @@ impl crate::neighbors::PointKnn for Index3DF32 {
     }
 
     #[inline]
+    fn knn_point_is_valid(point: Point3D) -> bool {
+        point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
+    }
+
+    #[inline]
     fn knn_level_end(&self, node: usize) -> usize {
         crate::neighbors::level_end_of(&self.level_bounds, node)
     }
@@ -595,6 +600,11 @@ impl crate::neighbors::PointKnn for SimdIndex3DF32 {
     #[inline]
     fn knn_node_size(&self) -> usize {
         self.node_size
+    }
+
+    #[inline]
+    fn knn_point_is_valid(point: Point3D) -> bool {
+        point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
     }
 
     #[inline]
@@ -2043,6 +2053,11 @@ impl crate::neighbors::PointKnn for SimdIndex3DF32View<'_> {
     #[inline]
     fn knn_node_size(&self) -> usize {
         self.node_size
+    }
+
+    #[inline]
+    fn knn_point_is_valid(point: Point3D) -> bool {
+        point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
     }
 
     #[inline]

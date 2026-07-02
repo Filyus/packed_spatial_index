@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use packed_spatial_index::{Box2D, Index2DBuilder, Triangle2D};
+use packed_spatial_index::{Box2D, Index2DBuilder, NeighborWorkspace, Point2D, Triangle2D};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -210,4 +210,30 @@ fn from_triangles_builds_a_queryable_index() {
     let index = packed_spatial_index::Index2DF32::from_triangles(&tris).unwrap();
     assert_eq!(index.num_items(), 300);
     assert!(!index.search(Box2D::new(9.0, 9.0, 14.0, 14.0)).is_empty());
+}
+
+#[test]
+fn f32_knn_rejects_nan_point_and_accepts_negative_zero_cutoff() {
+    let mut builder = Index2DBuilder::new(1);
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    let index = builder.finish_f32().unwrap();
+
+    assert_eq!(
+        index.neighbors_within(Point2D::new(0.5, 0.5), 4, -0.0),
+        vec![0]
+    );
+    let nan = Point2D::new(f64::NAN, 0.5);
+    assert!(index.neighbors(nan, 4).is_empty());
+    assert!(index.neighbors_within(nan, 4, 10.0).is_empty());
+
+    let mut out = vec![usize::MAX];
+    index.neighbors_into(nan, 4, 10.0, &mut out);
+    assert!(out.is_empty());
+
+    let mut workspace = NeighborWorkspace::with_capacity(8, 8);
+    assert!(
+        index
+            .neighbors_with(nan, 4, 10.0, &mut workspace)
+            .is_empty()
+    );
 }

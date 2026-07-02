@@ -42,6 +42,7 @@ fn neighbor_apis_agree_and_support_early_exit() {
     assert_eq!(expected[0], 0);
     assert_eq!(index.neighbors(point, 3), expected);
     assert_eq!(index.neighbors_within(point, 4, 3.9), vec![0]);
+    assert_eq!(index.neighbors_within(point, 4, -0.0), vec![0]);
     assert!(index.neighbors(point, 0).is_empty());
     assert!(index.neighbors_within(point, 3, -1.0).is_empty());
 
@@ -79,4 +80,33 @@ fn neighbor_apis_agree_and_support_early_exit() {
     });
     assert_eq!(calls, 1);
     assert_eq!(stopped, ControlFlow::Break(0));
+}
+
+#[test]
+fn nan_query_point_returns_empty_neighbors() {
+    let boxes = [[0.0, 0.0, 2.0, 2.0], [5.0, 0.0, 6.0, 1.0]];
+    let index = build_index(&boxes, 2);
+    let point = Point2D::new(f64::NAN, 1.0);
+
+    assert!(index.neighbors(point, 4).is_empty());
+    assert!(index.neighbors_within(point, 4, 10.0).is_empty());
+
+    let mut out = vec![usize::MAX];
+    index.neighbors_into(point, 4, 10.0, &mut out);
+    assert!(out.is_empty());
+
+    let mut workspace = NeighborWorkspace::with_capacity(8, 8);
+    assert!(
+        index
+            .neighbors_with(point, 4, 10.0, &mut workspace)
+            .is_empty()
+    );
+
+    let mut visited = false;
+    let flow: ControlFlow<()> = index.visit_neighbors(point, 10.0, |_, _| {
+        visited = true;
+        ControlFlow::Continue(())
+    });
+    assert!(flow.is_continue());
+    assert!(!visited);
 }

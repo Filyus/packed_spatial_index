@@ -3,7 +3,9 @@
 
 use std::collections::HashSet;
 
-use packed_spatial_index::{Box3D, Index3DBuilder, Index3DF32, Point3D, Ray3D, Triangle3D};
+use packed_spatial_index::{
+    Box3D, Index3DBuilder, Index3DF32, NeighborWorkspace, Point3D, Ray3D, Triangle3D,
+};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -286,4 +288,30 @@ fn search_exact_matches_f64_exactly() {
             assert!(exact.contains(&f));
         }
     }
+}
+
+#[test]
+fn f32_knn_rejects_nan_point_and_accepts_negative_zero_cutoff() {
+    let mut builder = Index3DBuilder::new(1);
+    builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    let index = builder.finish_f32().unwrap();
+
+    assert_eq!(
+        index.neighbors_within(Point3D::new(0.5, 0.5, 0.5), 4, -0.0),
+        vec![0]
+    );
+    let nan = Point3D::new(f64::NAN, 0.5, 0.5);
+    assert!(index.neighbors(nan, 4).is_empty());
+    assert!(index.neighbors_within(nan, 4, 10.0).is_empty());
+
+    let mut out = vec![usize::MAX];
+    index.neighbors_into(nan, 4, 10.0, &mut out);
+    assert!(out.is_empty());
+
+    let mut workspace = NeighborWorkspace::with_capacity(8, 8);
+    assert!(
+        index
+            .neighbors_with(nan, 4, 10.0, &mut workspace)
+            .is_empty()
+    );
 }

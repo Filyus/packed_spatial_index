@@ -24,6 +24,7 @@ pub(crate) trait PointKnn {
     fn knn_node_size(&self) -> usize;
     fn knn_level_end(&self, node: usize) -> usize;
     fn knn_index_at(&self, pos: usize) -> usize;
+    fn knn_point_is_valid(point: Self::Point) -> bool;
     fn knn_distance_squared_to(&self, pos: usize, point: Self::Point) -> f64;
     fn exact_distance_squared(point: Self::Point, bbox: Self::ExactBox) -> f64;
 }
@@ -84,7 +85,7 @@ pub(crate) fn point_neighbors_into<T: PointKnn + ?Sized>(
     results: &mut Vec<usize>,
 ) {
     results.clear();
-    if max_results == 0 {
+    if max_results == 0 || !T::knn_point_is_valid(point) {
         return;
     }
     if max_results == 1 {
@@ -107,7 +108,7 @@ pub(crate) fn point_neighbors_with<'a, T: PointKnn + ?Sized>(
     workspace: &'a mut NeighborWorkspace,
 ) -> &'a [usize] {
     workspace.results.clear();
-    if max_results == 0 {
+    if max_results == 0 || !T::knn_point_is_valid(point) {
         workspace.queue.clear();
         workspace.node_queue.clear();
         return &workspace.results;
@@ -173,6 +174,10 @@ pub(crate) fn point_neighbors_exact_into<T, F>(
     T: PointKnn + ?Sized,
     F: FnMut(usize) -> T::ExactBox,
 {
+    results.clear();
+    if !T::knn_point_is_valid(point) {
+        return;
+    }
     let mut frontier = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
     let mut best = BinaryHeap::with_capacity(max_results);
     collect_point_neighbors_refined_with_queue(
@@ -199,6 +204,12 @@ where
     T: PointKnn + ?Sized,
     F: FnMut(usize) -> T::ExactBox,
 {
+    if !T::knn_point_is_valid(point) {
+        workspace.results.clear();
+        workspace.queue.clear();
+        workspace.exact_queue.clear();
+        return &workspace.results;
+    }
     collect_point_neighbors_refined_with_queue(
         tree,
         point,
@@ -221,6 +232,9 @@ pub(crate) fn visit_point_neighbors<T, B>(
 where
     T: PointKnn + ?Sized,
 {
+    if !T::knn_point_is_valid(point) {
+        return ControlFlow::Continue(());
+    }
     let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
     visit_point_neighbors_with_queue(tree, point, max_distance, &mut queue, visitor)
 }

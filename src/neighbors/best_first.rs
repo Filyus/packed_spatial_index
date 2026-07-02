@@ -93,7 +93,6 @@ pub(crate) fn collect_neighbors_two_queue(
     while results.len() < max_results {
         while let Some(&node) = node_queue.peek() {
             if node.dist > max_dist_sq {
-                node_queue.clear();
                 break;
             }
             if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
@@ -239,7 +238,6 @@ pub(crate) fn visit_neighbors_two_queue<B>(
     loop {
         while let Some(&node) = node_queue.peek() {
             if node.dist > max_dist_sq {
-                node_queue.clear();
                 break;
             }
             if item_queue.peek().is_some_and(|item| item.dist < node.dist) {

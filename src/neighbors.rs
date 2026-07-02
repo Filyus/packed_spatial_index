@@ -40,6 +40,14 @@ pub(crate) enum NeighborQuery2D {
 
 impl NeighborQuery2D {
     #[inline]
+    pub(crate) fn is_valid(self) -> bool {
+        match self {
+            NeighborQuery2D::Point(point) => point.x.is_finite() && point.y.is_finite(),
+            NeighborQuery2D::Box(_) => true,
+        }
+    }
+
+    #[inline]
     pub(crate) fn distance_squared_to(self, bounds: Box2D) -> f64 {
         match self {
             NeighborQuery2D::Point(point) => bounds.distance_squared_to(point),
@@ -56,6 +64,16 @@ pub(crate) enum NeighborQuery3D {
 }
 
 impl NeighborQuery3D {
+    #[inline]
+    pub(crate) fn is_valid(self) -> bool {
+        match self {
+            NeighborQuery3D::Point(point) => {
+                point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
+            }
+            NeighborQuery3D::Box(_) => true,
+        }
+    }
+
     #[inline]
     pub(crate) fn distance_squared_to(self, bounds: Box3D) -> f64 {
         match self {
@@ -221,7 +239,7 @@ impl PartialOrd for ExactNeighborState {
 }
 
 pub(crate) fn max_distance_squared(max_distance: f64) -> Option<f64> {
-    if max_distance.is_nan() || max_distance.is_sign_negative() {
+    if max_distance.is_nan() || max_distance < 0.0 {
         None
     } else {
         Some(max_distance * max_distance)
@@ -231,7 +249,7 @@ pub(crate) fn max_distance_squared(max_distance: f64) -> Option<f64> {
 /// A finite or `+inf` distance cutoff in the metric's own units (no squaring).
 /// `None` (nan or negative) means "match nothing".
 pub(crate) fn valid_max_distance(max_distance: f64) -> Option<f64> {
-    if max_distance.is_nan() || max_distance.is_sign_negative() {
+    if max_distance.is_nan() || max_distance < 0.0 {
         None
     } else {
         Some(max_distance)

@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.17.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.16.1...psi-geo-v0.17.0) - 2026-07-03
+
 ### API
 
 - Added a default `parquet` feature that gates the `arrow` and `parquet`

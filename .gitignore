@@ -4,3 +4,5 @@ dev/
 node_modules/
 wasm-demo/web/pkg/
 wasm-demo/web/dist/
+# wrangler's local state/cache (holds the Cloudflare account id, build cache)
+.wrangler/

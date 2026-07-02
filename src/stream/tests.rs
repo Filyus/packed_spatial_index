@@ -1,8 +1,12 @@
 use super::*;
 use crate::LoadError;
+use crate::persistence::{
+    CHUNK_ENTRY_LEN, PYLD_DESC_LEN, SUPERBLOCK_LEN, TAG_PYLD, TAG_TREE, TREE_DESC_LEN,
+};
 use crate::{Box2D, Index2DBuilder};
 use std::cell::RefCell;
 use std::io;
+use std::ops::Range;
 
 /// Build a deterministic index of `n` unit boxes on a diagonal.
 fn build_bytes(n: usize, node_size: usize) -> Vec<u8> {
@@ -247,11 +251,11 @@ fn rejects_length_mismatch() {
 #[test]
 fn rejects_truncated_header() {
     let bytes = build_bytes(10, 16);
-    let short = bytes[..40].to_vec(); // shorter than the 32-byte superblock
+    let short = bytes[..40].to_vec(); // superblock plus an incomplete directory
     match StreamIndex2D::open(SliceReader::new(short)) {
-        Err(StreamError::Io(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+        Err(StreamError::Format(LoadError::Truncated)) => {}
         Ok(_) => panic!("expected UnexpectedEof, got a valid index"),
-        Err(other) => panic!("expected UnexpectedEof, got {other:?}"),
+        Err(other) => panic!("expected Truncated, got {other:?}"),
     }
 }
 
@@ -535,6 +539,47 @@ impl<R: RangeReader> RangeReader for NoLenReader<R> {
     }
     fn len(&self) -> Option<u64> {
         None
+    }
+}
+
+fn set_chunk_count(bytes: &mut [u8], chunk_count: u32) {
+    bytes[16..20].copy_from_slice(&chunk_count.to_le_bytes());
+}
+
+fn set_first_chunk_len(bytes: &mut [u8], len: u64) {
+    bytes[48..56].copy_from_slice(&len.to_le_bytes());
+}
+
+#[test]
+fn rejects_huge_chunk_count_before_directory_allocation() {
+    let mut bytes = build_bytes(1, 16);
+    set_chunk_count(&mut bytes, u32::MAX);
+    match StreamIndex2D::open(SliceReader::new(bytes)) {
+        Err(StreamError::Format(LoadError::Truncated)) => {}
+        Ok(_) => panic!("expected huge directory rejection, got a valid index"),
+        Err(other) => panic!("expected Truncated for huge directory, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_unknown_length_huge_chunk_count_at_sane_cap() {
+    let mut bytes = build_bytes(1, 16);
+    set_chunk_count(&mut bytes, 1025);
+    match StreamIndex2D::open(NoLenReader(SliceReader::new(bytes))) {
+        Err(StreamError::Format(LoadError::InvalidTree)) => {}
+        Ok(_) => panic!("expected unknown-length directory cap rejection, got a valid index"),
+        Err(other) => panic!("expected InvalidTree for oversized directory, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_chunk_end_overflow_before_alignment() {
+    let mut bytes = build_bytes(1, 16);
+    set_first_chunk_len(&mut bytes, u64::MAX);
+    match StreamIndex2D::open(SliceReader::new(bytes)) {
+        Err(StreamError::Format(LoadError::IntegerOverflow)) => {}
+        Ok(_) => panic!("expected chunk length overflow rejection, got a valid index"),
+        Err(other) => panic!("expected IntegerOverflow for chunk length, got {other:?}"),
     }
 }
 
@@ -958,21 +1003,63 @@ fn interleaved_corrupt_bytes_never_panic() {
 /// never panic, no matter what bytes come back.
 struct HostileReader {
     clean: Vec<u8>,
-    clean_below: u64,
+    clean_ranges: Vec<Range<u64>>,
     counter: RefCell<u8>,
+    corrupted_bytes: RefCell<usize>,
 }
 
 impl HostileReader {
     fn new(clean: Vec<u8>) -> Self {
-        // level_bounds ends at 64 + 8 * level_count (header field at offset 56).
-        let level_count = u64::from_le_bytes(clean[56..64].try_into().unwrap());
-        let clean_below = 64 + 8 * level_count;
+        let clean_ranges = clean_container_metadata_ranges(&clean);
         Self {
             clean,
-            clean_below,
+            clean_ranges,
             counter: RefCell::new(1),
+            corrupted_bytes: RefCell::new(0),
         }
     }
+
+    fn corrupted_bytes(&self) -> usize {
+        *self.corrupted_bytes.borrow()
+    }
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+
+fn descriptor_range(clean: &[u8], offset: u64, len: u64, min_len: usize) -> Range<u64> {
+    let offset_usize = usize::try_from(offset).unwrap();
+    assert!(len >= min_len as u64);
+    assert!(offset_usize + min_len <= clean.len());
+    let desc_len = read_u32_le(clean, offset_usize) as u64;
+    assert!(desc_len >= min_len as u64);
+    assert!(desc_len <= len);
+    offset..offset + desc_len
+}
+
+fn clean_container_metadata_ranges(clean: &[u8]) -> Vec<Range<u64>> {
+    let chunk_count = read_u32_le(clean, 16) as usize;
+    let dir_end = SUPERBLOCK_LEN + chunk_count * CHUNK_ENTRY_LEN;
+    assert!(dir_end <= clean.len());
+
+    let mut ranges = vec![0..dir_end as u64];
+    for i in 0..chunk_count {
+        let base = SUPERBLOCK_LEN + i * CHUNK_ENTRY_LEN;
+        let tag = &clean[base..base + 4];
+        let offset = read_u64_le(clean, base + 8);
+        let len = read_u64_le(clean, base + 16);
+        if tag == TAG_TREE {
+            ranges.push(descriptor_range(clean, offset, len, TREE_DESC_LEN));
+        } else if tag == TAG_PYLD {
+            ranges.push(descriptor_range(clean, offset, len, PYLD_DESC_LEN));
+        }
+    }
+    ranges
 }
 
 impl RangeReader for HostileReader {
@@ -983,11 +1070,13 @@ impl RangeReader for HostileReader {
         let mut c = self.counter.borrow_mut();
         for (i, (dst, &b)) in buf.iter_mut().zip(src).enumerate() {
             let pos = offset + i as u64;
-            // Pristine header + level_bounds; everything else is corrupted with
-            // a per-read-varying mask so no two reads agree.
-            *dst = if pos < self.clean_below {
+            // Pristine container metadata and chunk descriptors; every node and
+            // payload-body byte is corrupted with a per-read-varying mask so no
+            // two reads agree.
+            *dst = if self.clean_ranges.iter().any(|range| range.contains(&pos)) {
                 b
             } else {
+                *self.corrupted_bytes.borrow_mut() += 1;
                 b ^ c.wrapping_add(pos as u8) ^ 0x5A
             };
         }
@@ -1021,6 +1110,10 @@ fn hostile_reader_never_panics() {
         for q in queries {
             let _ = stream.search(q);
         }
+        assert!(
+            stream.core.reader.corrupted_bytes() > 0,
+            "hostile reader must actually mutate node bytes"
+        );
     }
 
     // Payload files: `open` reads the (hostile) blob total and may reject the
@@ -1035,7 +1128,36 @@ fn hostile_reader_never_panics() {
                 let _ = stream.search(q);
                 let _ = stream.search_payloads(q);
             }
+            assert!(
+                stream.core.reader.corrupted_bytes() > 0,
+                "hostile reader must actually mutate payload/node bytes"
+            );
         }
+    }
+
+    let fixed_payloads: Vec<u8> = (0..2_000u32).flat_map(u32::to_le_bytes).collect();
+    for clean in [
+        owned
+            .serialize()
+            .records(4, &fixed_payloads)
+            .to_bytes()
+            .unwrap(),
+        owned
+            .serialize()
+            .interleaved()
+            .records(4, &fixed_payloads)
+            .to_bytes()
+            .unwrap(),
+    ] {
+        let stream = StreamIndex2D::open(HostileReader::new(clean)).unwrap();
+        for q in queries {
+            let _ = stream.search(q);
+            let _ = stream.search_payloads(q);
+        }
+        assert!(
+            stream.core.reader.corrupted_bytes() > 0,
+            "hostile reader must actually mutate fixed-width payload/node bytes"
+        );
     }
 }
 

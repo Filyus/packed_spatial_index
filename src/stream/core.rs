@@ -17,6 +17,8 @@ use super::payload::{
 use super::planner::{apply_gather_run, expand_frontier, plan_gather};
 use super::readers::RangeReader;
 
+const MAX_CONTAINER_CHUNKS_WITHOUT_LEN: usize = 1024;
+
 /// Dimension-independent streaming state: validated header counts, section
 /// offsets, the parsed level bounds, and the cached upper-level directory.
 ///
@@ -117,6 +119,34 @@ impl<R> StreamCore<R> {
     }
 }
 
+pub(super) fn checked_directory_span(
+    chunk_count: usize,
+    file_len: Option<u64>,
+) -> Result<(usize, u64), LoadError> {
+    if file_len.is_none() && chunk_count > MAX_CONTAINER_CHUNKS_WITHOUT_LEN {
+        return Err(LoadError::InvalidTree);
+    }
+    let dir_len = chunk_count
+        .checked_mul(CHUNK_ENTRY_LEN)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let dir_end = SUPERBLOCK_LEN
+        .checked_add(dir_len)
+        .ok_or(LoadError::IntegerOverflow)?;
+    if let Some(file_len) = file_len
+        && file_len < dir_end as u64
+    {
+        return Err(LoadError::Truncated);
+    }
+    Ok((dir_len, dir_end as u64))
+}
+
+pub(super) fn align8_u64(value: u64) -> Result<u64, LoadError> {
+    value
+        .checked_add(7)
+        .map(|v| v & !7)
+        .ok_or(LoadError::IntegerOverflow)
+}
+
 impl<R: RangeReader> StreamCore<R> {
     /// Open and validate a chunk-container index from `reader`: check the
     /// superblock, read the directory, locate the `TREE` (and optional `PYLD`)
@@ -137,14 +167,12 @@ impl<R: RangeReader> StreamCore<R> {
             return Err(StreamError::Format(LoadError::UnsupportedVersion));
         }
         let chunk_count = read_u32_at(&head, 16)? as usize;
-        let dir_len = chunk_count
-            .checked_mul(CHUNK_ENTRY_LEN)
-            .ok_or(LoadError::IntegerOverflow)?;
+        let file_len = reader.len();
+        let (dir_len, dir_end) = checked_directory_span(chunk_count, file_len)?;
         let mut dir = vec![0u8; dir_len];
         reader.read_exact_at(SUPERBLOCK_LEN as u64, &mut dir)?;
 
-        let file_len = reader.len();
-        let mut max_end = SUPERBLOCK_LEN as u64 + dir_len as u64;
+        let mut max_end = dir_end;
         let mut tree: Option<(u64, u64)> = None;
         let mut pyld: Option<(u64, u64)> = None;
         for i in 0..chunk_count {
@@ -171,7 +199,7 @@ impl<R: RangeReader> StreamCore<R> {
         // TREE descriptor.
         // Reject a file longer than the last chunk plus its alignment pad — a
         // stray trailing byte the directory does not account for.
-        let aligned_end = (max_end + 7) & !7;
+        let aligned_end = align8_u64(max_end)?;
         if let Some(fl) = file_len
             && fl > aligned_end
         {

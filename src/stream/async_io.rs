@@ -8,6 +8,7 @@ use crate::persistence::{
     expected_tree_shape, parse_pyld_chunk, parse_tree_chunk, read_u32_at, read_u64_at,
 };
 
+use super::core::{align8_u64, checked_directory_span};
 use super::directory::directory_start;
 use super::limits::{Budget, directory_node_budget};
 use super::payload::{
@@ -74,16 +75,14 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             return Err(StreamError::Format(LoadError::UnsupportedVersion));
         }
         let chunk_count = read_u32_at(&head, 16)? as usize;
-        let dir_len = chunk_count
-            .checked_mul(CHUNK_ENTRY_LEN)
-            .ok_or(LoadError::IntegerOverflow)?;
+        let file_len = reader.len();
+        let (dir_len, dir_end) = checked_directory_span(chunk_count, file_len)?;
         let mut dir = vec![0u8; dir_len];
         reader
             .read_exact_at(SUPERBLOCK_LEN as u64, &mut dir)
             .await?;
 
-        let file_len = reader.len();
-        let mut max_end = SUPERBLOCK_LEN as u64 + dir_len as u64;
+        let mut max_end = dir_end;
         let mut tree: Option<(u64, u64)> = None;
         let mut pyld: Option<(u64, u64)> = None;
         for i in 0..chunk_count {
@@ -109,7 +108,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
 
         // Reject a file longer than the last chunk plus its alignment pad — a
         // stray trailing byte the directory does not account for.
-        let aligned_end = (max_end + 7) & !7;
+        let aligned_end = align8_u64(max_end)?;
         if let Some(fl) = file_len
             && fl > aligned_end
         {

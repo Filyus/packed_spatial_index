@@ -495,21 +495,13 @@ pub(crate) fn projection_columns(
 pub(crate) fn feature_json_payload(
     feature: &FeatureRef,
     wkb: Option<&[u8]>,
-    batch: &RecordBatch,
-    row: usize,
-    properties: &PropertyProjection,
-    property_columns: &[usize],
+    properties: Option<serde_json::Value>,
 ) -> Result<Vec<u8>, GeoError> {
     let geometry = wkb
         .map(wkb::geometry_json)
         .transpose()?
         .unwrap_or(serde_json::Value::Null);
-    let properties =
-        if matches!(properties, PropertyProjection::None) || property_columns.is_empty() {
-            serde_json::Value::Object(serde_json::Map::new())
-        } else {
-            row_properties_json(batch, row, property_columns)?
-        };
+    let properties = properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let feature = serde_json::json!({
         "type": "Feature",
         "id": feature.feature_id.as_deref().unwrap_or(""),
@@ -520,16 +512,19 @@ pub(crate) fn feature_json_payload(
     serde_json::to_vec(&feature).map_err(|e| GeoError::Wkb(e.to_string()))
 }
 
-fn row_properties_json(
+pub(crate) fn feature_json_property_rows(
     batch: &RecordBatch,
-    row: usize,
+    properties: &PropertyProjection,
     property_columns: &[usize],
-) -> Result<serde_json::Value, GeoError> {
+) -> Result<Option<Vec<serde_json::Value>>, GeoError> {
+    if matches!(properties, PropertyProjection::None) || property_columns.is_empty() {
+        return Ok(None);
+    }
     let mut fields = Vec::with_capacity(property_columns.len());
     let mut arrays = Vec::with_capacity(property_columns.len());
     for &idx in property_columns {
         fields.push(batch.schema().field(idx).clone());
-        arrays.push(batch.column(idx).slice(row, 1));
+        arrays.push(batch.column(idx).clone());
     }
     let schema = Arc::new(Schema::new(fields));
     let projected = RecordBatch::try_new(schema, arrays)?;
@@ -537,32 +532,41 @@ fn row_properties_json(
     let mut writer = LineDelimitedWriter::new(&mut buf);
     writer.write(&projected)?;
     writer.finish()?;
-    let value: serde_json::Value =
-        serde_json::from_slice(buf.trim_ascii()).map_err(|e| GeoError::Wkb(e.to_string()))?;
-    Ok(value)
-}
-
-trait TrimAscii {
-    fn trim_ascii(&self) -> &[u8];
-}
-
-impl TrimAscii for Vec<u8> {
-    fn trim_ascii(&self) -> &[u8] {
-        let mut start = 0;
-        let mut end = self.len();
-        while start < end && self[start].is_ascii_whitespace() {
-            start += 1;
-        }
-        while end > start && self[end - 1].is_ascii_whitespace() {
-            end -= 1;
-        }
-        &self[start..end]
+    let trimmed = trim_ascii(buf.as_slice());
+    if trimmed.is_empty() {
+        return Ok(Some(Vec::new()));
     }
+    let mut rows = Vec::with_capacity(batch.num_rows());
+    for line in trimmed.split(|&byte| byte == b'\n') {
+        let value: serde_json::Value =
+            serde_json::from_slice(trim_ascii(line)).map_err(|e| GeoError::Wkb(e.to_string()))?;
+        rows.push(value);
+    }
+    if rows.len() != batch.num_rows() {
+        return Err(GeoError::Metadata(format!(
+            "property JSON writer emitted {} rows for a {}-row batch",
+            rows.len(),
+            batch.num_rows()
+        )));
+    }
+    Ok(Some(rows))
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let mut start = 0;
+    let mut end = bytes.len();
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &bytes[start..end]
 }
 
 /// Property projection for `FeatureJson` payloads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", content = "columns", rename_all = "snake_case")]
 pub enum PropertyProjection {
     /// Emit an empty properties object.
     None,

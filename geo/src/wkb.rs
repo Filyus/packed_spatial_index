@@ -19,6 +19,7 @@ pub(crate) struct GeometryBounds {
     pub dims: CoordinateDims,
     pub any: bool,
     pub lon_values: Vec<f64>,
+    pub from_covering: bool,
 }
 
 impl GeometryBounds {
@@ -29,6 +30,7 @@ impl GeometryBounds {
             dims: CoordinateDims::Unknown,
             any: false,
             lon_values: Vec::new(),
+            from_covering: false,
         }
     }
 
@@ -77,6 +79,7 @@ impl GeometryBounds {
 struct BoundsProcessor {
     bounds: GeometryBounds,
     collect_lons: bool,
+    non_finite: bool,
 }
 
 impl BoundsProcessor {
@@ -84,7 +87,20 @@ impl BoundsProcessor {
         Self {
             bounds: GeometryBounds::new(collect_lons),
             collect_lons,
+            non_finite: false,
         }
+    }
+
+    fn add_coord(&mut self, coord: Coord) {
+        if !coord.x.is_finite()
+            || !coord.y.is_finite()
+            || coord.z.is_some_and(|z| !z.is_finite())
+            || coord.m.is_some_and(|m| !m.is_finite())
+        {
+            self.non_finite = true;
+            return;
+        }
+        self.bounds.add_coord(&coord, self.collect_lons);
     }
 }
 
@@ -94,15 +110,16 @@ impl GeomProcessor for BoundsProcessor {
     }
 
     fn xy(&mut self, x: f64, y: f64, _idx: usize) -> geozero::error::Result<()> {
-        self.bounds.add_coord(
-            &Coord {
-                x,
-                y,
-                z: None,
+        self.add_coord(Coord {
+            x,
+            y,
+            z: None,
                 m: None,
-            },
-            self.collect_lons,
-        );
+        });
+        Ok(())
+    }
+
+    fn empty_point(&mut self, _idx: usize) -> geozero::error::Result<()> {
         Ok(())
     }
 
@@ -116,8 +133,7 @@ impl GeomProcessor for BoundsProcessor {
         _tm: Option<u64>,
         _idx: usize,
     ) -> geozero::error::Result<()> {
-        self.bounds
-            .add_coord(&Coord { x, y, z, m }, self.collect_lons);
+        self.add_coord(Coord { x, y, z, m });
         Ok(())
     }
 }
@@ -126,14 +142,17 @@ pub(crate) fn bounds(bytes: &[u8], collect_lons: bool) -> Result<Option<Geometry
     let mut processor = BoundsProcessor::new(collect_lons);
     let mut cursor = std::io::Cursor::new(bytes);
     if let Err(err) = geozero::wkb::process_wkb_geom(&mut cursor, &mut processor) {
-        let msg = err.to_string();
-        if msg.to_ascii_lowercase().contains("empty") {
-            return Ok(None);
-        }
-        return Err(GeoError::Wkb(msg));
+        return Err(GeoError::Wkb(err.to_string()));
+    }
+    if processor.non_finite {
+        return Err(GeoError::Wkb(
+            "geometry contains a non-finite coordinate".to_string(),
+        ));
     }
     let mut out = processor.bounds;
-    out.dims = dims_from_wkb(bytes).unwrap_or(out.dims);
+    if let Some(header_dims) = dims_from_wkb(bytes) {
+        out.dims = out.dims.merge(header_dims);
+    }
     Ok(out.any.then_some(out))
 }
 
@@ -168,16 +187,77 @@ pub(crate) fn dims_from_wkb(bytes: &[u8]) -> Option<CoordinateDims> {
             (false, false) => CoordinateDims::Xy,
         });
     }
-    let code = raw % 3000;
-    if raw >= 3000 && code < 1000 {
+    let code = raw % 1000;
+    if raw >= 3000 && code > 0 {
         Some(CoordinateDims::Xyzm)
-    } else if raw >= 2000 && code < 1000 {
+    } else if raw >= 2000 && code > 0 {
         Some(CoordinateDims::Xym)
-    } else if raw >= 1000 && code < 1000 {
+    } else if raw >= 1000 && code > 0 {
         Some(CoordinateDims::Xyz)
     } else {
         Some(CoordinateDims::Xy)
     }
+}
+
+pub(crate) fn is_empty_point_wkb(bytes: &[u8]) -> bool {
+    if bytes.len() < 5 {
+        return false;
+    }
+    let little = match bytes[0] {
+        0 => false,
+        1 => true,
+        _ => return false,
+    };
+    let raw = read_u32_endian(&bytes[1..5], little);
+    let ewkb_z = raw & 0x8000_0000 != 0;
+    let ewkb_m = raw & 0x4000_0000 != 0;
+    let ewkb_srid = raw & 0x2000_0000 != 0;
+    let (base_type, has_z, has_m) = if ewkb_z || ewkb_m || ewkb_srid {
+        (raw & 0x0000_FFFF, ewkb_z, ewkb_m)
+    } else {
+        let base = raw % 1000;
+        (
+            base,
+            (1000..2000).contains(&raw) || raw >= 3000,
+            raw >= 2000,
+        )
+    };
+    if base_type != 1 {
+        return false;
+    }
+    let coord_count = 2 + usize::from(has_z) + usize::from(has_m);
+    let offset: usize = 5 + if ewkb_srid { 4 } else { 0 };
+    let Some(coord_bytes) = coord_count.checked_mul(8) else {
+        return false;
+    };
+    let Some(end) = offset.checked_add(coord_bytes) else {
+        return false;
+    };
+    if bytes.len() < end {
+        return false;
+    }
+    (0..coord_count).all(|i| read_f64_endian(&bytes[offset + i * 8..offset + (i + 1) * 8], little).is_nan())
+}
+
+fn read_u32_endian(bytes: &[u8], little: bool) -> u32 {
+    let mut value = [0u8; 4];
+    value.copy_from_slice(&bytes[..4]);
+    if little {
+        u32::from_le_bytes(value)
+    } else {
+        u32::from_be_bytes(value)
+    }
+}
+
+fn read_f64_endian(bytes: &[u8], little: bool) -> f64 {
+    let mut value = [0u8; 8];
+    value.copy_from_slice(&bytes[..8]);
+    let bits = if little {
+        u64::from_le_bytes(value)
+    } else {
+        u64::from_be_bytes(value)
+    };
+    f64::from_bits(bits)
 }
 
 pub(crate) fn write_geometry(

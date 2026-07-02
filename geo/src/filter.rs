@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::geodetic::SphericalRadius;
 use crate::{
     EdgeAlgorithm, EdgeModel, FeatureRef, GeoError, GeoQuery2D, GeometryEncoding, GeometrySelector,
-    NonPlanarExactPolicy, SpatialPredicate,
+    NonPlanarExactPolicy, SpatialPredicate, wkb,
 };
 
 fn reject_non_planar_exact(
@@ -92,13 +92,11 @@ pub(crate) fn decode_geo_geometry(
     match geo_types::Geometry::<f64>::from_wkb(&mut cursor, WkbDialect::Wkb) {
         Ok(geometry) => Ok(Some(geometry)),
         Err(err) => {
-            let msg = err.to_string();
-            let lower = msg.to_ascii_lowercase();
-            if lower.contains("empty") || lower.contains("missing geometry") {
-                Ok(None)
-            } else {
-                Err(GeoError::Wkb(msg))
+            if wkb::is_empty_point_wkb(bytes) {
+                return Ok(None);
             }
+            let msg = err.to_string();
+            Err(GeoError::Wkb(msg))
         }
     }
 }

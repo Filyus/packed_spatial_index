@@ -59,6 +59,27 @@ fn wkb_point_3d(x: f64, y: f64, z: f64) -> Vec<u8> {
     v
 }
 
+fn wkb_point_m(x: f64, y: f64, m: f64) -> Vec<u8> {
+    let mut v = Vec::with_capacity(29);
+    v.push(1);
+    v.extend_from_slice(&2001u32.to_le_bytes());
+    v.extend_from_slice(&x.to_le_bytes());
+    v.extend_from_slice(&y.to_le_bytes());
+    v.extend_from_slice(&m.to_le_bytes());
+    v
+}
+
+fn wkb_point_zm(x: f64, y: f64, z: f64, m: f64) -> Vec<u8> {
+    let mut v = Vec::with_capacity(37);
+    v.push(1);
+    v.extend_from_slice(&3001u32.to_le_bytes());
+    v.extend_from_slice(&x.to_le_bytes());
+    v.extend_from_slice(&y.to_le_bytes());
+    v.extend_from_slice(&z.to_le_bytes());
+    v.extend_from_slice(&m.to_le_bytes());
+    v
+}
+
 #[cfg(feature = "async")]
 struct AsyncSlice(Vec<u8>);
 
@@ -160,6 +181,10 @@ fn geo_meta_wkb_edges(geometry_types: &[&str], edges: &str) -> String {
     format!(
         r#"{{"version":"1.1.0","primary_column":"geometry","columns":{{"geometry":{{"encoding":"WKB","geometry_types":[{types}],"edges":"{edges}"}}}}}}"#
     )
+}
+
+fn geo_meta_wkb_with_covering() -> String {
+    r#"{"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"],"edges":"spherical","covering":{"bbox":{"xmin":["xmin"],"ymin":["ymin"],"xmax":["xmax"],"ymax":["ymax"]}}}}}"#.to_string()
 }
 
 fn geo_meta_arrow(encoding: &str, geometry_type: &str) -> String {
@@ -1893,6 +1918,59 @@ fn geo_artifact_reader_does_not_require_known_length() {
     assert_eq!(hits[0].row_number, 0);
 }
 
+fn geo_chunk_entry_base(bytes: &[u8], tag: &[u8; 4]) -> usize {
+    let chunk_count = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+    for i in 0..chunk_count {
+        let base = 32 + i * 24;
+        if &bytes[base..base + 4] == tag {
+            return base;
+        }
+    }
+    panic!("chunk {:?} not found", std::str::from_utf8(tag).unwrap());
+}
+
+#[test]
+fn geo_artifact_reader_caps_unknown_length_directory_and_manifest() {
+    struct NoLenReader(SliceReader<Vec<u8>>);
+
+    impl RangeReader for NoLenReader {
+        fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            self.0.read_exact_at(offset, buf)
+        }
+    }
+
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(6.0, 7.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let bytes = dataset.convert(ConvertRequest::default()).unwrap();
+
+    let mut huge_directory = bytes.clone();
+    huge_directory[16..20].copy_from_slice(&1025u32.to_le_bytes());
+    let err = match open_geo_index(NoLenReader(SliceReader::new(huge_directory))) {
+        Err(err) => err,
+        Ok(_) => panic!("expected huge unknown-length directory to be rejected"),
+    };
+    assert!(
+        err.to_string().contains("too many chunks"),
+        "unexpected error: {err}"
+    );
+
+    let mut huge_manifest = bytes;
+    let manifest_base = geo_chunk_entry_base(&huge_manifest, b"geoM");
+    huge_manifest[manifest_base + 16..manifest_base + 24]
+        .copy_from_slice(&(1024u64 * 1024 + 1).to_le_bytes());
+    let err = match open_geo_index(NoLenReader(SliceReader::new(huge_manifest))) {
+        Err(err) => err,
+        Ok(_) => panic!("expected huge unknown-length geoM manifest to be rejected"),
+    };
+    assert!(
+        err.to_string().contains("geoM manifest is too large"),
+        "unexpected error: {err}"
+    );
+}
+
 #[test]
 fn geo_artifact_reader_requires_geo_manifest() {
     let mut builder = packed_spatial_index::Index2DBuilder::new(1);
@@ -1972,6 +2050,86 @@ fn antimeridian_split_duplicates_feature_ref_parts() {
         exact.iter().map(|feature| feature.part).collect::<Vec<_>>(),
         vec![Some(0), Some(1)]
     );
+}
+
+#[test]
+fn covering_interval_does_not_wrap_when_min_is_before_max() {
+    let data = write_geoparquet(
+        vec![
+            ("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))])),
+            ("xmin", Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef),
+            ("ymin", Arc::new(Float64Array::from(vec![-5.0])) as ArrayRef),
+            ("xmax", Arc::new(Float64Array::from(vec![170.0])) as ArrayRef),
+            ("ymax", Arc::new(Float64Array::from(vec![5.0])) as ArrayRef),
+        ],
+        geo_meta_wkb_with_covering(),
+    );
+    let mut dataset = open(data).unwrap();
+    let GeometryScan::D2(scan) = dataset
+        .scan(packed_spatial_index_geo::ScanRequest {
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            ..Default::default()
+        })
+        .unwrap()
+    else {
+        panic!("expected 2D scan");
+    };
+    assert_eq!(scan.boxes, vec![Box2D::new(-170.0, -5.0, 170.0, 5.0)]);
+    assert_eq!(scan.features[0].part, None);
+}
+
+#[test]
+fn covering_interval_wraps_only_when_min_exceeds_max() {
+    let data = write_geoparquet(
+        vec![
+            ("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))])),
+            ("xmin", Arc::new(Float64Array::from(vec![170.0])) as ArrayRef),
+            ("ymin", Arc::new(Float64Array::from(vec![-5.0])) as ArrayRef),
+            ("xmax", Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef),
+            ("ymax", Arc::new(Float64Array::from(vec![5.0])) as ArrayRef),
+        ],
+        geo_meta_wkb_with_covering(),
+    );
+    let mut dataset = open(data).unwrap();
+    let GeometryScan::D2(scan) = dataset
+        .scan(packed_spatial_index_geo::ScanRequest {
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            ..Default::default()
+        })
+        .unwrap()
+    else {
+        panic!("expected 2D scan");
+    };
+    assert_eq!(
+        scan.boxes,
+        vec![
+            Box2D::new(170.0, -5.0, 180.0, 5.0),
+            Box2D::new(-180.0, -5.0, -170.0, 5.0)
+        ]
+    );
+    assert_eq!(scan.features[0].part, Some(0));
+    assert_eq!(scan.features[1].part, Some(1));
+}
+
+#[test]
+fn covering_interval_wrap_under_planar_is_rejected() {
+    let data = write_geoparquet(
+        vec![
+            ("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))])),
+            ("xmin", Arc::new(Float64Array::from(vec![170.0])) as ArrayRef),
+            ("ymin", Arc::new(Float64Array::from(vec![-5.0])) as ArrayRef),
+            ("xmax", Arc::new(Float64Array::from(vec![-170.0])) as ArrayRef),
+            ("ymax", Arc::new(Float64Array::from(vec![5.0])) as ArrayRef),
+        ],
+        geo_meta_wkb_with_covering(),
+    );
+    let mut dataset = open(data).unwrap();
+    let err = dataset.scan(Default::default()).unwrap_err();
+    assert!(matches!(err, GeoError::Antimeridian { row: 0 }));
 }
 
 #[test]
@@ -2621,6 +2779,55 @@ fn malformed_wkb_scan_returns_error_without_panic() {
             "malformed WKB case {i} unexpectedly scanned"
         );
     }
+}
+
+#[test]
+fn iso_wkb_dimension_codes_drive_scan_dimensions() {
+    let cases = [
+        (wkb_point_3d(1.0, 2.0, 3.0), CoordinateDims::Xyz, 3.0),
+        (wkb_point_zm(1.0, 2.0, 4.0, 9.0), CoordinateDims::Xyzm, 4.0),
+    ];
+    for (wkb, dims, z) in cases {
+        let data = write_geoparquet(
+            vec![("geometry", binary_col(&[Some(wkb)]))],
+            geo_meta_wkb(&["Point"]),
+        );
+        let mut dataset = open(data).unwrap();
+        let GeometryScan::D3(scan) = dataset.scan(Default::default()).unwrap() else {
+            panic!("expected 3D scan for {dims:?}");
+        };
+        assert_eq!(scan.profile.coordinate_dims, dims);
+        assert_eq!(scan.boxes[0].min_z, z);
+        assert_eq!(scan.boxes[0].max_z, z);
+    }
+
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_m(1.0, 2.0, 8.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let GeometryScan::D2(scan) = dataset.scan(Default::default()).unwrap() else {
+        panic!("expected 2D scan for POINT M");
+    };
+    assert_eq!(scan.profile.coordinate_dims, CoordinateDims::Xym);
+    assert_eq!(scan.boxes[0], Box2D::new(1.0, 2.0, 1.0, 2.0));
+}
+
+#[test]
+fn non_finite_wkb_coordinate_is_not_indexed() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[Some(wkb_point_2d(f64::NAN, 2.0))]),
+        )],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open(data).unwrap();
+    let err = dataset.scan(Default::default()).unwrap_err();
+    assert!(
+        err.to_string().contains("non-finite"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

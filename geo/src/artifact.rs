@@ -696,6 +696,37 @@ enum GeoStreamIndex3D<R> {
     F32(StreamIndex3DF32<R>),
 }
 
+const MAX_CONTAINER_CHUNKS_WITHOUT_LEN: usize = 1024;
+const MAX_GEO_MANIFEST_BYTES_WITHOUT_LEN: usize = 1024 * 1024;
+
+fn checked_directory_span(
+    chunk_count: usize,
+    total_len: Option<u64>,
+) -> Result<(usize, usize), GeoError> {
+    if total_len.is_none() && chunk_count > MAX_CONTAINER_CHUNKS_WITHOUT_LEN {
+        return Err(GeoError::Container("too many chunks without a known length".to_string()));
+    }
+    let dir_len = chunk_count
+        .checked_mul(CHUNK_ENTRY_LEN)
+        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    let dir_end = SUPERBLOCK_LEN
+        .checked_add(dir_len)
+        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    if let Some(total_len) = total_len
+        && total_len < dir_end as u64
+    {
+        return Err(GeoError::Container("truncated directory".to_string()));
+    }
+    Ok((dir_len, dir_end))
+}
+
+fn check_manifest_len(len: usize, total_len: Option<u64>) -> Result<(), GeoError> {
+    if total_len.is_none() && len > MAX_GEO_MANIFEST_BYTES_WITHOUT_LEN {
+        return Err(GeoError::Container("geoM manifest is too large".to_string()));
+    }
+    Ok(())
+}
+
 fn read_manifest_from_reader<R: RangeReader>(reader: &R) -> Result<GeoArtifactManifest, GeoError> {
     let mut head = [0u8; SUPERBLOCK_LEN];
     reader
@@ -708,13 +739,9 @@ fn read_manifest_from_reader<R: RangeReader>(reader: &R) -> Result<GeoArtifactMa
         return Err(GeoError::Container("unsupported version".to_string()));
     }
 
+    let total_len = reader.len();
     let chunk_count = read_u32(&head, 16)? as usize;
-    let dir_len = chunk_count
-        .checked_mul(CHUNK_ENTRY_LEN)
-        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
-    let dir_end = SUPERBLOCK_LEN
-        .checked_add(dir_len)
-        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    let (dir_len, dir_end) = checked_directory_span(chunk_count, total_len)?;
     let mut dir = vec![0; dir_len];
     reader
         .read_exact_at(SUPERBLOCK_LEN as u64, &mut dir)
@@ -734,12 +761,13 @@ fn read_manifest_from_reader<R: RangeReader>(reader: &R) -> Result<GeoArtifactMa
         if offset < dir_end {
             return Err(GeoError::Container("chunk range outside file".to_string()));
         }
-        if let Some(total_len) = reader.len()
+        if let Some(total_len) = total_len
             && end as u64 > total_len
         {
             return Err(GeoError::Container("chunk range outside file".to_string()));
         }
         if tag == TAG_GEO_MANIFEST {
+            check_manifest_len(len, total_len)?;
             let mut content = vec![0; len];
             reader
                 .read_exact_at(offset as u64, &mut content)
@@ -767,13 +795,9 @@ async fn read_manifest_from_reader_async<R: AsyncRangeReader>(
         return Err(GeoError::Container("unsupported version".to_string()));
     }
 
+    let total_len = reader.len();
     let chunk_count = read_u32(&head, 16)? as usize;
-    let dir_len = chunk_count
-        .checked_mul(CHUNK_ENTRY_LEN)
-        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
-    let dir_end = SUPERBLOCK_LEN
-        .checked_add(dir_len)
-        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    let (dir_len, dir_end) = checked_directory_span(chunk_count, total_len)?;
     let mut dir = vec![0; dir_len];
     reader
         .read_exact_at(SUPERBLOCK_LEN as u64, &mut dir)
@@ -794,12 +818,13 @@ async fn read_manifest_from_reader_async<R: AsyncRangeReader>(
         if offset < dir_end {
             return Err(GeoError::Container("chunk range outside file".to_string()));
         }
-        if let Some(total_len) = reader.len()
+        if let Some(total_len) = total_len
             && end as u64 > total_len
         {
             return Err(GeoError::Container("chunk range outside file".to_string()));
         }
         if tag == TAG_GEO_MANIFEST {
+            check_manifest_len(len, total_len)?;
             let mut content = vec![0; len];
             reader
                 .read_exact_at(offset as u64, &mut content)

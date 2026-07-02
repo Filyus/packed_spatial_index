@@ -10,9 +10,9 @@ use crate::manifest;
 use crate::payload;
 use crate::{
     AntimeridianPolicy, EnvelopePolicy, FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE,
-    FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE, FeatureRef, GeoArtifactManifest, GeoError,
-    GeoQuery2D, GeoQuery3D, GeometryMetadataSource, GeometryProfile, GeometryScan,
-    GeometrySelector, IndexDimsRequest, NullPolicy, PayloadPlan,
+    FEATURE_WKB_CONTENT_TYPE, FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D,
+    GeometryMetadataSource, GeometryProfile, GeometryScan, GeometrySelector, IndexDimsRequest,
+    NullPolicy, PayloadPlan,
 };
 
 pub(crate) fn builder_2d(count: usize, opts: &IndexBuildOptions) -> Index2DBuilder {
@@ -65,7 +65,7 @@ fn collect_nearest(
 /// no common trait in the core crate, so this is a macro rather than a
 /// generic function.
 macro_rules! configure_and_write {
-    ($index:expr, $interleaved:expr, $payload:expr, $crs:expr, $out:expr) => {{
+    ($index:expr, $interleaved:expr, $payload:expr, $payload_plan:expr, $crs:expr, $out:expr) => {{
         let mut serializer = $index.serialize();
         if $interleaved && $payload.is_some() {
             serializer = serializer.interleaved();
@@ -76,7 +76,7 @@ macro_rules! configure_and_write {
         if let Some(payload) = $payload {
             serializer = serializer
                 .payloads(payload)
-                .content_type(content_type_for_payload(payload));
+                .content_type(content_type_for_payload($payload_plan));
         }
         serializer.to_bytes_into($out)?;
     }};
@@ -87,6 +87,7 @@ pub(crate) fn serialize_2d(
     precision: StoragePrecision,
     interleaved: bool,
     payload: Option<&[Vec<u8>]>,
+    payload_plan: &PayloadPlan,
     profile: &GeometryProfile,
     out: &mut Vec<u8>,
 ) -> Result<(), GeoError> {
@@ -94,11 +95,11 @@ pub(crate) fn serialize_2d(
     match precision {
         StoragePrecision::F64 => {
             let index = builder.finish()?;
-            configure_and_write!(index, interleaved, payload, crs, out)
+            configure_and_write!(index, interleaved, payload, payload_plan, crs, out)
         }
         StoragePrecision::F32 => {
             let index: Index2DF32 = builder.finish_f32()?;
-            configure_and_write!(index, interleaved, payload, crs, out)
+            configure_and_write!(index, interleaved, payload, payload_plan, crs, out)
         }
     }
     Ok(())
@@ -109,6 +110,7 @@ pub(crate) fn serialize_3d(
     precision: StoragePrecision,
     interleaved: bool,
     payload: Option<&[Vec<u8>]>,
+    payload_plan: &PayloadPlan,
     profile: &GeometryProfile,
     out: &mut Vec<u8>,
 ) -> Result<(), GeoError> {
@@ -116,29 +118,22 @@ pub(crate) fn serialize_3d(
     match precision {
         StoragePrecision::F64 => {
             let index = builder.finish()?;
-            configure_and_write!(index, interleaved, payload, crs, out)
+            configure_and_write!(index, interleaved, payload, payload_plan, crs, out)
         }
         StoragePrecision::F32 => {
             let index: Index3DF32 = builder.finish_f32()?;
-            configure_and_write!(index, interleaved, payload, crs, out)
+            configure_and_write!(index, interleaved, payload, payload_plan, crs, out)
         }
     }
     Ok(())
 }
 
-fn content_type_for_payload(payload: &[Vec<u8>]) -> &'static str {
-    if payload
-        .first()
-        .is_some_and(|value| value.first().is_some_and(|b| *b == b'{'))
-    {
-        FEATURE_JSON_CONTENT_TYPE
-    } else if payload
-        .first()
-        .is_some_and(|value| value.len() == FEATURE_REF_RECORD_LEN)
-    {
-        FEATURE_REF_CONTENT_TYPE
-    } else {
-        FEATURE_WKB_CONTENT_TYPE
+fn content_type_for_payload(payload: &PayloadPlan) -> &'static str {
+    match payload {
+        PayloadPlan::None => FEATURE_WKB_CONTENT_TYPE,
+        PayloadPlan::RowRef => FEATURE_REF_CONTENT_TYPE,
+        PayloadPlan::RowWkb => FEATURE_WKB_CONTENT_TYPE,
+        PayloadPlan::FeatureJson { .. } => FEATURE_JSON_CONTENT_TYPE,
     }
 }
 
@@ -1042,6 +1037,7 @@ impl GeoArtifact {
                     req.precision,
                     req.interleaved,
                     payload,
+                    &scan.payload,
                     &scan.profile,
                     out,
                 )?;
@@ -1069,6 +1065,7 @@ impl GeoArtifact {
                     req.precision,
                     req.interleaved,
                     payload,
+                    &scan.payload,
                     &scan.profile,
                     out,
                 )?;
@@ -1099,7 +1096,8 @@ mod tests {
     use super::*;
     use crate::scan::{GeometryScan2D, GeometryScan3D};
     use crate::{
-        CoordinateDims, CrsInfo, EdgeModel, GeometryMetadataSource, GeometryTypeSet, WkbFlavor,
+        CoordinateDims, CrsInfo, EdgeModel, FEATURE_REF_RECORD_LEN, GeometryMetadataSource,
+        GeometryTypeSet, PropertyProjection, WkbFlavor,
     };
     use packed_spatial_index::{Box2D, Box3D};
 
@@ -1509,5 +1507,36 @@ mod tests {
         let artifact = GeoArtifact::from_scan(&scan, &req, "fp", &mut bytes).unwrap();
         assert_eq!(artifact.manifest.payload_plan, PayloadPlan::RowRef);
         assert_eq!(artifact.manifest.null_policy, NullPolicy::Error);
+    }
+
+    #[test]
+    fn payload_content_type_comes_from_payload_plan() {
+        assert_eq!(
+            content_type_for_payload(&PayloadPlan::RowRef),
+            FEATURE_REF_CONTENT_TYPE
+        );
+        assert_eq!(
+            content_type_for_payload(&PayloadPlan::RowWkb),
+            FEATURE_WKB_CONTENT_TYPE
+        );
+        assert_eq!(
+            content_type_for_payload(&PayloadPlan::FeatureJson {
+                properties: PropertyProjection::None,
+            }),
+            FEATURE_JSON_CONTENT_TYPE
+        );
+    }
+
+    #[test]
+    fn feature_json_projection_manifest_round_trips() {
+        for properties in [
+            PropertyProjection::Include(vec!["name".to_string(), "pop".to_string()]),
+            PropertyProjection::Exclude(vec!["debug".to_string()]),
+        ] {
+            let plan = PayloadPlan::FeatureJson { properties };
+            let encoded = serde_json::to_vec(&plan).unwrap();
+            let decoded: PayloadPlan = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(decoded, plan);
+        }
     }
 }

@@ -792,6 +792,19 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                 ),
             ));
         }
+        if matches!(req.envelope, EnvelopePolicy::Geographic { .. })
+            && state.info.crs.is_known_projected()
+        {
+            issues.push(validation::issue(
+                ValidationSeverity::Error,
+                ValidationCode::GeographyCoordinateAabb,
+                Some(state.info.name.clone()),
+                format!(
+                    "column `{}` has a projected CRS; geographic antimeridian handling is only valid for lon/lat coordinates",
+                    state.info.name
+                ),
+            ));
+        }
 
         match &req.payload {
             PayloadPlan::RowWkb if !state.info.capabilities.can_emit_row_wkb => {

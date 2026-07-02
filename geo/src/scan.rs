@@ -2,8 +2,10 @@ use arrow::array::{
     Array, ArrayRef, BinaryArray, BinaryViewArray, Float32Array, Float64Array, LargeBinaryArray,
     StructArray,
 };
+use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use packed_spatial_index::{Box2D, Box3D};
+use parquet::arrow::ProjectionMask;
 use parquet::file::reader::ChunkReader;
 
 use crate::dataset::GeoDataset;
@@ -26,13 +28,28 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
     state: &ColumnState,
     req: ScanRequest,
 ) -> Result<GeometryScan, GeoError> {
+    if matches!(req.envelope, EnvelopePolicy::Geographic { .. }) && state.info.crs.is_known_projected()
+    {
+        return Err(GeoError::Metadata(format!(
+            "column `{}` has a projected CRS; geographic antimeridian handling is only valid for lon/lat coordinates",
+            state.info.name
+        )));
+    }
     let builder = dataset.take_builder()?;
     let row_groups = feature_read::row_group_spans(builder.metadata());
-    let batches = builder.build().map_err(GeoError::from)?;
+    let need_geometry_payload = matches!(
+        req.payload,
+        PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
+    );
+    let scan_roots = scan_projection_roots(builder.schema().as_ref(), state, &req)?;
+    let projection = ProjectionMask::roots(builder.parquet_schema(), scan_roots.iter().copied());
+    let batches = builder
+        .with_projection(projection)
+        .build()
+        .map_err(GeoError::from)?;
     let mut entries = Vec::new();
     let mut detected_dims = state.info.coordinate_dims;
     let collect_lons = matches!(req.envelope, EnvelopePolicy::Geographic { .. });
-    let want_payload = !matches!(req.payload, PayloadPlan::None);
     let mut row_base = 0u64;
     let mut row_group_cursor = 0usize;
 
@@ -48,6 +65,12 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
         let covering = covering_arrays(&batch, state.covering.as_ref())?;
         let property_columns =
             feature_read::projection_columns(&batch, &state.info.name, &req.payload)?;
+        let property_rows = match &req.payload {
+            PayloadPlan::FeatureJson { properties } => {
+                feature_read::feature_json_property_rows(&batch, properties, &property_columns)?
+            }
+            _ => None,
+        };
         for row in 0..batch.num_rows() {
             let row_number = row_base + row as u64;
             let (row_group, row_in_group) =
@@ -59,7 +82,7 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
                 covering.as_ref(),
                 row,
                 collect_lons,
-                want_payload,
+                need_geometry_payload,
             )?;
             let Some((bounds, wkb)) = scanned else {
                 match req.nulls {
@@ -74,16 +97,11 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
             detected_dims = detected_dims.merge(bounds.dims);
             let feature = FeatureRef::row_in_group(row_number, row_group, row_in_group);
             let property_json = match &req.payload {
-                PayloadPlan::FeatureJson { properties } => {
-                    Some(feature_read::feature_json_payload(
-                        &feature,
-                        wkb.as_deref(),
-                        &batch,
-                        row,
-                        properties,
-                        &property_columns,
-                    )?)
-                }
+                PayloadPlan::FeatureJson { .. } => Some(feature_read::feature_json_payload(
+                    &feature,
+                    wkb.as_deref(),
+                    property_rows.as_ref().map(|rows| rows[row].clone()),
+                )?),
                 PayloadPlan::RowRef => Some(payload::encode_feature_ref(&feature)),
                 PayloadPlan::RowWkb => Some(payload::encode_feature_wkb(
                     &feature,
@@ -169,6 +187,49 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
             }))
         }
     }
+}
+
+fn scan_projection_roots(
+    schema: &Schema,
+    state: &ColumnState,
+    req: &ScanRequest,
+) -> Result<Vec<usize>, GeoError> {
+    let mut roots = Vec::new();
+    roots.push(feature_read::root_column_index(schema, &state.info.name)?);
+    if let Some(covering) = state.covering.as_ref() {
+        push_covering_root(schema, &mut roots, &covering.xmin)?;
+        push_covering_root(schema, &mut roots, &covering.ymin)?;
+        push_covering_root(schema, &mut roots, &covering.xmax)?;
+        push_covering_root(schema, &mut roots, &covering.ymax)?;
+        if let Some(path) = &covering.zmin {
+            push_covering_root(schema, &mut roots, path)?;
+        }
+        if let Some(path) = &covering.zmax {
+            push_covering_root(schema, &mut roots, path)?;
+        }
+    }
+    if let PayloadPlan::FeatureJson { properties } = &req.payload {
+        roots.extend(feature_read::property_root_indices(
+            schema,
+            &state.info.name,
+            properties,
+        )?);
+    }
+    roots.sort_unstable();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn push_covering_root(
+    schema: &Schema,
+    roots: &mut Vec<usize>,
+    path: &[String],
+) -> Result<(), GeoError> {
+    let root = path
+        .first()
+        .ok_or_else(|| GeoError::Metadata("empty bbox covering path".to_string()))?;
+    roots.push(feature_read::root_column_index(schema, root)?);
+    Ok(())
 }
 
 trait PayloadVec {
@@ -321,7 +382,7 @@ fn scan_one_row(
     covering: Option<&CoveringArrays>,
     row: usize,
     collect_lons: bool,
-    want_payload: bool,
+    need_geometry_payload: bool,
 ) -> Result<RowScanResult, GeoError> {
     if geom.is_null(row) {
         return Ok(None);
@@ -331,57 +392,69 @@ fn scan_one_row(
             return Ok(None);
         }
         let wkb = binary.value(row);
-        let bounds = if let Some(covering) = covering.filter(|_| !want_payload) {
-            bounds_from_covering(covering, row, collect_lons)
+        let bounds = if let Some(covering) = covering.filter(|_| !need_geometry_payload) {
+            bounds_from_covering(covering, row, collect_lons)?
         } else {
             let Some(bounds) = wkb::bounds(wkb, collect_lons)? else {
                 return Ok(None);
             };
             bounds
         };
-        return Ok(Some((bounds, want_payload.then(|| wkb.to_vec()))));
+        return Ok(Some((bounds, need_geometry_payload.then(|| wkb.to_vec()))));
     }
     let GeometryEncoding::GeoArrow { kind, .. } = state.info.encoding else {
         return Err(GeoError::UnsupportedEncoding(
             state.info.encoding.to_string(),
         ));
     };
-    if let Some(covering) = covering.filter(|_| !want_payload) {
-        return Ok(Some((
-            bounds_from_covering(covering, row, collect_lons),
-            None,
-        )));
+    if let Some(covering) = covering.filter(|_| !need_geometry_payload) {
+        return Ok(Some((bounds_from_covering(covering, row, collect_lons)?, None)));
     }
     let Some(row) = geoarrow::scan_row(geom, kind, state.info.coordinate_dims, row, collect_lons)?
     else {
         return Ok(None);
     };
-    Ok(Some((row.bounds, want_payload.then_some(row.wkb))))
+    Ok(Some((row.bounds, need_geometry_payload.then_some(row.wkb))))
 }
 
 fn bounds_from_covering(
     covering: &CoveringArrays,
     row: usize,
     collect_lons: bool,
-) -> GeometryBounds {
+) -> Result<GeometryBounds, GeoError> {
     let mut bounds = GeometryBounds::new(collect_lons);
     bounds.min[0] = covering.xmin[row];
     bounds.min[1] = covering.ymin[row];
     bounds.max[0] = covering.xmax[row];
     bounds.max[1] = covering.ymax[row];
+    if !bounds.min[0].is_finite()
+        || !bounds.min[1].is_finite()
+        || !bounds.max[0].is_finite()
+        || !bounds.max[1].is_finite()
+    {
+        return Err(GeoError::Metadata(
+            "bbox covering contains a non-finite coordinate".to_string(),
+        ));
+    }
     if let (Some(zmin), Some(zmax)) = (&covering.zmin, &covering.zmax) {
         bounds.min[2] = zmin[row];
         bounds.max[2] = zmax[row];
+        if !bounds.min[2].is_finite() || !bounds.max[2].is_finite() {
+            return Err(GeoError::Metadata(
+                "bbox covering contains a non-finite coordinate".to_string(),
+            ));
+        }
         bounds.dims = CoordinateDims::Xyz;
     } else {
         bounds.dims = CoordinateDims::Xy;
     }
     bounds.any = true;
+    bounds.from_covering = true;
     if collect_lons {
         bounds.lon_values.push(bounds.min[0]);
         bounds.lon_values.push(bounds.max[0]);
     }
-    bounds
+    Ok(bounds)
 }
 
 #[derive(Debug)]
@@ -424,12 +497,15 @@ fn split_2d(
     row: u64,
 ) -> Result<Vec<Box2D>, GeoError> {
     match policy {
-        EnvelopePolicy::Planar => Ok(vec![Box2D::new(
-            bounds.min[0],
-            bounds.min[1],
-            bounds.max[0],
-            bounds.max[1],
-        )]),
+        EnvelopePolicy::Planar => {
+            reject_wrapped_covering_under_planar(bounds, row)?;
+            Ok(vec![Box2D::new(
+                bounds.min[0],
+                bounds.min[1],
+                bounds.max[0],
+                bounds.max[1],
+            )])
+        }
         EnvelopePolicy::Geographic { antimeridian } => {
             split_lon(bounds, antimeridian, row).map(|parts| {
                 parts
@@ -448,6 +524,7 @@ fn split_3d(
 ) -> Result<Vec<Box3D>, GeoError> {
     match policy {
         EnvelopePolicy::Planar => {
+            reject_wrapped_covering_under_planar(bounds, row)?;
             let b = bounds.as_3d();
             Ok(vec![Box3D::new(b[0], b[1], b[2], b[3], b[4], b[5])])
         }
@@ -474,6 +551,13 @@ fn split_3d(
     }
 }
 
+fn reject_wrapped_covering_under_planar(bounds: &GeometryBounds, row: u64) -> Result<(), GeoError> {
+    if bounds.from_covering && bounds.min[0] > bounds.max[0] {
+        return Err(GeoError::Antimeridian { row });
+    }
+    Ok(())
+}
+
 fn split_lon(
     bounds: &GeometryBounds,
     policy: AntimeridianPolicy,
@@ -481,6 +565,8 @@ fn split_lon(
 ) -> Result<Vec<(f64, f64)>, GeoError> {
     let (start, end, crosses) = if bounds.min[0] > bounds.max[0] {
         (bounds.min[0], bounds.max[0], true)
+    } else if bounds.from_covering {
+        (bounds.min[0], bounds.max[0], false)
     } else if bounds.lon_values.len() > 1 {
         minimal_lon_interval(&bounds.lon_values)
     } else {

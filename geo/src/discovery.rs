@@ -336,6 +336,22 @@ impl CrsInfo {
             CrsInfo::ExplicitNone | CrsInfo::Missing | CrsInfo::Unknown => None,
         }
     }
+
+    pub(crate) fn is_known_projected(&self) -> bool {
+        let Some(value) = self.as_index_crs() else {
+            return false;
+        };
+        let lower = value.to_ascii_lowercase();
+        if lower.contains("crs84") || lower.contains("4326") {
+            return false;
+        }
+        lower.contains("projected")
+            || lower.contains("projcrs")
+            || lower.contains("epsg:3857")
+            || lower.contains("\"3857\"")
+            || lower.contains("epsg:3395")
+            || lower.contains("\"3395\"")
+    }
 }
 
 /// Geometry type names known for a column.

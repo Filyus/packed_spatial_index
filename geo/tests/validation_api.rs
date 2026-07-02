@@ -156,6 +156,21 @@ fn validation_reports_native_parquet_geospatial_stats() {
 }
 
 #[test]
+fn validation_rejects_geographic_policy_for_projected_crs() {
+    let mut dataset = open(compat_native_crs_fixture()).unwrap();
+    let report = dataset
+        .validate(ValidateRequest {
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            ..ValidateRequest::default()
+        })
+        .unwrap();
+    assert!(!report.ok);
+    assert!(has_issue(&report, ValidationCode::GeographyCoordinateAabb));
+}
+
+#[test]
 fn validation_reports_explicit_missing_and_ambiguous_selection() {
     let mut dataset = open(compat_point_wkb_fixture()).unwrap();
     let missing = dataset
@@ -308,5 +323,19 @@ fn cli_validate_json_and_strict_smoke() {
             .contains("--properties can only be used with --payload feature-json"),
         "stderr: {}",
         String::from_utf8_lossy(&invalid_properties.stderr)
+    );
+
+    let unknown_flag = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("validate")
+        .arg("tests/fixtures/geoparquet-compat/data-point-encoding_wkb.parquet")
+        .arg("--definitely-unknown")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    assert!(!unknown_flag.status.success());
+    assert!(
+        String::from_utf8_lossy(&unknown_flag.stderr).contains("unknown flag"),
+        "stderr: {}",
+        String::from_utf8_lossy(&unknown_flag.stderr)
     );
 }

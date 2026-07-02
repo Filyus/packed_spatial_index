@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.16.0...psi-geo-v0.16.1) - 2026-07-02
+
 ### API
 
 - `gp2psindex` now rejects unknown command-line flags instead of silently

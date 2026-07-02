@@ -51,7 +51,7 @@ Requires Rust 1.89 or newer.
 
 ```toml
 [dependencies]
-packed_spatial_index = "0.21"
+packed_spatial_index = "0.23"
 ```
 
 ## When to use it
@@ -337,4 +337,3 @@ Licensed under the Apache License, Version 2.0.
 [BoundsError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BoundsError.html
 [BuildError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BuildError.html
 [LoadError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.LoadError.html
-

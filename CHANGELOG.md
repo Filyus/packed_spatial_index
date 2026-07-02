@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.23.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.22.0...psi-v0.23.0) - 2026-07-02
+
 ### Safety
 
 - Hardened streaming index container opening against hostile inputs: oversized

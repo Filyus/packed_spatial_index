@@ -4,6 +4,43 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- `gp2psindex` now rejects unknown command-line flags instead of silently
+  accepting mistyped options.
+
+### Safety
+
+- Hardened geo artifact opening against oversized chunk directories, oversized
+  `geoM` manifests, and overflowing aligned ranges before large reads or
+  allocations.
+
+### Geometry
+
+- WKB ISO dimension codes (`1000`/`2000`/`3000` plus base type) now drive
+  detected geometry dimensions correctly, and non-finite WKB coordinates are
+  rejected instead of indexed as valid bounds.
+- GeoParquet bbox covering intervals now treat `xmin <= xmax` as a normal
+  covering interval and `xmin > xmax` as an explicit antimeridian wrap; planar
+  scans reject wrapped covering intervals unless geographic antimeridian
+  handling is requested.
+
+### Persistence
+
+- Geo artifact payload content types now come from the selected `PayloadPlan`
+  instead of payload byte sniffing.
+
+### Performance
+
+- GeoParquet scans now project only geometry, covering, and requested
+  FeatureJson property roots; RowRef scans can use bbox coverings without
+  parsing WKB, and FeatureJson property payloads are written at batch level.
+
+### Validation
+
+- Geographic envelope policies now reject known projected CRS columns, while
+  missing or unknown CRS metadata remains allowed for validation/reporting.
+
 ## [0.16.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.15.0...psi-geo-v0.16.0) - 2026-07-02
 
 ### API

@@ -4,6 +4,37 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Safety
+
+- Hardened streaming index container opening against hostile inputs: oversized
+  chunk directories, overflowing chunk ranges, and unknown-length readers are
+  rejected before large allocations or unchecked alignment.
+
+### Search
+
+- `raycast_closest` now includes hits exactly at `max_distance`, rejects
+  non-finite ray origins/directions, and keeps SIMD raycast behavior aligned
+  with scalar paths for zero or subnormal direction components.
+- `Ray3D::closest_triangle` now uses scale-aware triangle intersection
+  tolerances so tiny valid triangles can still be hit.
+
+### Nearest Neighbors
+
+- kNN point queries with `NaN` coordinates now return empty results across
+  scalar, view, SIMD, and f32 paths; `-0.0` cutoffs are treated as zero.
+
+### Persistence
+
+- SIMD and view loaders now return `PayloadNotSupported` for payload-carrying
+  files they cannot expose, while owning scalar loaders continue to load the
+  validated index portion of those files.
+
+### Performance
+
+- `Index2D::from_bytes` and `Index3D::from_bytes` use little-endian aligned
+  bulk copies for owning scalar loads, with the existing decoded fallback for
+  other layouts.
+
 ## [0.22.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.21.1...psi-v0.22.0) - 2026-07-02
 
 ### Search

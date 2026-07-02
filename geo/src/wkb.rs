@@ -1,9 +1,14 @@
+#[cfg(feature = "parquet")]
 use geozero::GeomProcessor;
+#[cfg(feature = "parquet")]
 use geozero::geojson::GeoJsonString;
+#[cfg(feature = "parquet")]
 use geozero::wkb::{FromWkb, WkbDialect};
 
+#[cfg(feature = "parquet")]
 use crate::{CoordinateDims, GeoError, GeometryKind};
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone)]
 pub(crate) struct Coord {
     pub x: f64,
@@ -12,6 +17,7 @@ pub(crate) struct Coord {
     pub m: Option<f64>,
 }
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone)]
 pub(crate) struct GeometryBounds {
     pub min: [f64; 3],
@@ -22,7 +28,9 @@ pub(crate) struct GeometryBounds {
     pub from_covering: bool,
 }
 
+#[cfg(feature = "parquet")]
 impl GeometryBounds {
+    #[cfg(feature = "parquet")]
     pub(crate) fn new(_collect_lons: bool) -> Self {
         Self {
             min: [f64::INFINITY; 3],
@@ -34,6 +42,7 @@ impl GeometryBounds {
         }
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn add_coord(&mut self, coord: &Coord, collect_lons: bool) {
         self.min[0] = self.min[0].min(coord.x);
         self.min[1] = self.min[1].min(coord.y);
@@ -56,6 +65,7 @@ impl GeometryBounds {
         }
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn as_3d(&self) -> [f64; 6] {
         [
             self.min[0],
@@ -76,13 +86,16 @@ impl GeometryBounds {
     }
 }
 
+#[cfg(feature = "parquet")]
 struct BoundsProcessor {
     bounds: GeometryBounds,
     collect_lons: bool,
     non_finite: bool,
 }
 
+#[cfg(feature = "parquet")]
 impl BoundsProcessor {
+    #[cfg(feature = "parquet")]
     fn new(collect_lons: bool) -> Self {
         Self {
             bounds: GeometryBounds::new(collect_lons),
@@ -91,6 +104,7 @@ impl BoundsProcessor {
         }
     }
 
+    #[cfg(feature = "parquet")]
     fn add_coord(&mut self, coord: Coord) {
         if !coord.x.is_finite()
             || !coord.y.is_finite()
@@ -104,6 +118,7 @@ impl BoundsProcessor {
     }
 }
 
+#[cfg(feature = "parquet")]
 impl GeomProcessor for BoundsProcessor {
     fn multi_dim(&self) -> bool {
         true
@@ -138,6 +153,7 @@ impl GeomProcessor for BoundsProcessor {
     }
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn bounds(bytes: &[u8], collect_lons: bool) -> Result<Option<GeometryBounds>, GeoError> {
     let mut processor = BoundsProcessor::new(collect_lons);
     let mut cursor = std::io::Cursor::new(bytes);
@@ -156,6 +172,7 @@ pub(crate) fn bounds(bytes: &[u8], collect_lons: bool) -> Result<Option<Geometry
     Ok(out.any.then_some(out))
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn geometry_json(bytes: &[u8]) -> Result<serde_json::Value, GeoError> {
     let mut cursor = std::io::Cursor::new(bytes);
     let json = GeoJsonString::from_wkb(&mut cursor, WkbDialect::Wkb)
@@ -163,6 +180,7 @@ pub(crate) fn geometry_json(bytes: &[u8]) -> Result<serde_json::Value, GeoError>
     serde_json::from_str(&json.0).map_err(|e| GeoError::Wkb(e.to_string()))
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn dims_from_wkb(bytes: &[u8]) -> Option<CoordinateDims> {
     if bytes.len() < 5 {
         return None;
@@ -261,6 +279,7 @@ fn read_f64_endian(bytes: &[u8], little: bool) -> f64 {
     f64::from_bits(bits)
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn write_geometry(
     kind: GeometryKind,
     dims: CoordinateDims,
@@ -308,6 +327,7 @@ pub(crate) fn write_geometry(
     out
 }
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone)]
 pub(crate) enum GeometryParts {
     Point(Coord),
@@ -316,6 +336,7 @@ pub(crate) enum GeometryParts {
     MultiPolygon(Vec<Vec<Vec<Coord>>>),
 }
 
+#[cfg(feature = "parquet")]
 fn write_line_string(out: &mut Vec<u8>, line: &[Coord], dims: CoordinateDims) {
     write_header(out, 2, dims);
     write_u32(out, line.len());
@@ -324,6 +345,7 @@ fn write_line_string(out: &mut Vec<u8>, line: &[Coord], dims: CoordinateDims) {
     }
 }
 
+#[cfg(feature = "parquet")]
 fn write_polygon(out: &mut Vec<u8>, rings: &[Vec<Coord>], dims: CoordinateDims) {
     write_header(out, 3, dims);
     write_u32(out, rings.len());
@@ -335,6 +357,7 @@ fn write_polygon(out: &mut Vec<u8>, rings: &[Vec<Coord>], dims: CoordinateDims) 
     }
 }
 
+#[cfg(feature = "parquet")]
 fn write_header(out: &mut Vec<u8>, base_type: u32, dims: CoordinateDims) {
     out.push(1);
     let code = match dims {
@@ -346,10 +369,12 @@ fn write_header(out: &mut Vec<u8>, base_type: u32, dims: CoordinateDims) {
     out.extend_from_slice(&code.to_le_bytes());
 }
 
+#[cfg(feature = "parquet")]
 fn write_u32(out: &mut Vec<u8>, value: usize) {
     out.extend_from_slice(&(value as u32).to_le_bytes());
 }
 
+#[cfg(feature = "parquet")]
 fn write_coord(out: &mut Vec<u8>, coord: &Coord, dims: CoordinateDims) {
     out.extend_from_slice(&coord.x.to_le_bytes());
     out.extend_from_slice(&coord.y.to_le_bytes());

@@ -27,9 +27,11 @@ pinpoints individual features. This crate fills the gap:
 - 2D and 3D, optional **`f32`** storage for half-size files, and **`skip_null`** to
   drop empty geometry
 
-The heavy `arrow` / `parquet` / `geoparquet` dependencies live only here; the
-`packed_spatial_index` core that *queries* the result stays lean (wasm / edge
-friendly). Build runs server-side once; query runs anywhere.
+The heavy `arrow` / `parquet` dependencies sit behind the default **`parquet`**
+feature. Turn it off (`default-features = false`) and the crate is query-only —
+open a pre-built `PSINDEX`, stream candidate queries, exact-filter geometry
+from the payload — with no `arrow` / `parquet`, small enough for **wasm / edge**.
+Build runs server-side once (needs `parquet`); query runs anywhere.
 
 ```rust,no_run
 use std::fs::File;
@@ -50,6 +52,28 @@ Requires Rust 1.89 or newer.
 [dependencies]
 packed_spatial_index_geo = "0.16"
 ```
+
+### Features
+
+- **`parquet`** *(default)* — the Parquet source side: `open`, `GeoDataset`
+  (discovery, inspection, validation, feature read-back), `build` / `convert`,
+  and the `gp2psindex` CLI. Pulls in `arrow` + `parquet`.
+- **`async`** — open and query streamable `PSINDEX` artifacts over an
+  [`AsyncRangeReader`][AsyncRangeReader], adding `open_geo_index_async` and `search_hits_async`.
+
+To query a pre-built `PSINDEX` from a browser or edge worker, drop the default
+feature so `arrow` / `parquet` never enter the build:
+
+```toml
+[dependencies]
+packed_spatial_index_geo = { version = "0.16", default-features = false, features = ["async"] }
+```
+
+That leaves the crate query-only — [`open_geo_index`][open_geo_index] /
+`open_geo_index_async`, `search_items` / `search_hits`,
+[`GeoArtifactIndex2D::filter_hits`][filter_hits] (exact intersection over the
+payload geometry), and payload decoding — compiling to `wasm32`. Only reading a
+Parquet source needs the `parquet` feature.
 
 ## API at a glance
 
@@ -301,3 +325,4 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [decode_feature_wkb_payload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.decode_feature_wkb_payload.html
 [read_geo_manifest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.read_geo_manifest.html
 [GeoArtifactManifest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactManifest.html
+[AsyncRangeReader]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/trait.AsyncRangeReader.html

@@ -9,15 +9,26 @@ repository = "https://github.com/Filyus/packed_spatial_index"
 readme = "README.md"
 keywords = ["geoparquet", "spatial", "rtree", "geoarrow", "index"]
 categories = ["science::geo", "data-structures"]
-# Dev-only verification scripts (e.g. the pyarrow cross-check) stay out of the
-# published crate.
-exclude = ["/scripts/"]
+# Dev-only verification scripts (e.g. the pyarrow cross-check) and wrangler's
+# local cache (Cloudflare account id) stay out of the published crate.
+exclude = ["/scripts/", "/.wrangler/"]
 
 [package.metadata.docs.rs]
 all-features = true
 
+[[bin]]
+name = "gp2psindex"
+required-features = ["parquet"]
+
 [features]
-default = []
+default = ["parquet"]
+# The Parquet source side: read Parquet / GeoParquet files — discovery,
+# inspection, validation, feature read-back — and build/convert indexes from
+# them. Pulls in arrow + parquet. Without it the crate is query-only: open a
+# pre-built PSINDEX artifact and query it (open_geo_index, search_*,
+# filter_hits, payload decode) with no arrow or parquet — small enough for
+# wasm32.
+parquet = ["dep:arrow", "dep:arrow-json", "dep:arrow-select", "dep:parquet"]
 async = ["packed_spatial_index/async"]
 
 [dependencies]
@@ -26,11 +37,12 @@ async = ["packed_spatial_index/async"]
 # stay OUT of this core — that is the whole point of a separate crate.
 packed_spatial_index = { path = "..", version = "0.23.0", features = ["stream", "f32-storage"] }
 
-# Arrow arrays + the synchronous Parquet record-batch reader.
-arrow = "59"
-arrow-json = "59"
-arrow-select = "59"
-parquet = { version = "59", features = ["geospatial"] }
+# Arrow arrays + the synchronous Parquet record-batch reader, behind the
+# `parquet` feature: the query-only configuration never touches them.
+arrow = { version = "59", optional = true }
+arrow-json = { version = "59", optional = true }
+arrow-select = { version = "59", optional = true }
+parquet = { version = "59", features = ["geospatial"], optional = true }
 # WKB envelope fallback when a file has no bbox covering column.
 geozero = { version = "0.15", features = ["with-wkb", "with-geojson", "with-geo"] }
 # Pure-Rust planar predicates for exact post-filtering of bbox candidates.

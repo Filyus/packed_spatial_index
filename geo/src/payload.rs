@@ -1,10 +1,34 @@
+#[cfg(feature = "parquet")]
 use std::collections::HashSet;
 
+#[cfg(feature = "parquet")]
 use parquet::file::metadata::ParquetMetaData;
 use serde::{Deserialize, Serialize};
 
-use crate::{FEATURE_REF_RECORD_LEN, PropertyProjection};
+/// Content type used for [`PayloadPlan::RowRef`] payload sections.
+pub const FEATURE_REF_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-ref";
+/// Content type used for [`PayloadPlan::RowWkb`] payload sections.
+pub const FEATURE_WKB_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-wkb";
+/// Content type used for [`PayloadPlan::FeatureJson`] payload sections.
+pub const FEATURE_JSON_CONTENT_TYPE: &str = "application/geo+json";
+/// Byte length of the fixed-width [`FeatureRef`] payload record.
+pub const FEATURE_REF_RECORD_LEN: usize = 24;
 
+/// Property projection for `FeatureJson` payloads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "columns", rename_all = "snake_case")]
+pub enum PropertyProjection {
+    /// Emit an empty properties object.
+    None,
+    /// Emit all non-geometry columns.
+    AllNonGeometry,
+    /// Emit only these property columns.
+    Include(Vec<String>),
+    /// Emit all non-geometry columns except these.
+    Exclude(Vec<String>),
+}
+
+#[cfg(feature = "parquet")]
 pub(crate) fn encode_feature_ref(feature: &FeatureRef) -> Vec<u8> {
     let mut out = Vec::with_capacity(FEATURE_REF_RECORD_LEN);
     out.extend_from_slice(&feature.row_number.to_le_bytes());
@@ -16,6 +40,7 @@ pub(crate) fn encode_feature_ref(feature: &FeatureRef) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn encode_feature_wkb(feature: &FeatureRef, wkb: &[u8]) -> Vec<u8> {
     let mut out = encode_feature_ref(feature);
     out.extend_from_slice(wkb);
@@ -65,6 +90,7 @@ fn decode_u16_option(bytes: [u8; 2]) -> Option<u16> {
     }
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn unique_feature_count(features: &[FeatureRef]) -> usize {
     features
         .iter()
@@ -73,6 +99,7 @@ pub(crate) fn unique_feature_count(features: &[FeatureRef]) -> usize {
         .len()
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn entries_may_duplicate_rows(features: &[FeatureRef]) -> bool {
     let mut seen = HashSet::new();
     features
@@ -80,6 +107,7 @@ pub(crate) fn entries_may_duplicate_rows(features: &[FeatureRef]) -> bool {
         .any(|feature| !seen.insert(feature.row_number))
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn source_fingerprint(meta: &ParquetMetaData) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     hash = fnv(hash, &meta.file_metadata().num_rows().to_le_bytes());
@@ -90,6 +118,7 @@ pub(crate) fn source_fingerprint(meta: &ParquetMetaData) -> String {
     format!("fnv64:{hash:016x}")
 }
 
+#[cfg(feature = "parquet")]
 fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
     for b in bytes {
         hash ^= u64::from(*b);
@@ -141,6 +170,7 @@ impl FeatureRef {
         }
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn row_in_group(row_number: u64, row_group: u32, row_in_group: u32) -> Self {
         Self {
             row_number,

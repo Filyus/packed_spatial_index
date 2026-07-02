@@ -246,9 +246,9 @@ pub enum GeoQuery3D {
     /// establishes (see its `examples/raycast_mesh.rs`).
     ///
     /// Only supported against `f64`-precision in-memory indexes
-    /// ([`GeoIndex3D`](crate::GeoIndex3D)) and artifacts of either precision;
+    /// (`GeoIndex3D`) and artifacts of either precision;
     /// an `f32`-precision in-memory index
-    /// ([`GeoIndex3DF32`](crate::GeoIndex3DF32)) rejects this variant, since
+    /// (`GeoIndex3DF32`) rejects this variant, since
     /// its underlying core index only implements a box-based search.
     Frustum3D(Frustum3D),
 }

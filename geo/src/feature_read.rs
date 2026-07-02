@@ -15,7 +15,7 @@ use crate::geoarrow;
 use crate::payload::FeatureRef;
 use crate::scan::{self, WkbCol};
 use crate::wkb;
-use crate::{GeoError, GeometryEncoding, GeometrySelector, PayloadPlan};
+use crate::{GeoError, GeometryEncoding, GeometrySelector, PayloadPlan, PropertyProjection};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RowGroupSpan {
@@ -563,20 +563,6 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
         end -= 1;
     }
     &bytes[start..end]
-}
-
-/// Property projection for `FeatureJson` payloads.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "columns", rename_all = "snake_case")]
-pub enum PropertyProjection {
-    /// Emit an empty properties object.
-    None,
-    /// Emit all non-geometry columns.
-    AllNonGeometry,
-    /// Emit only these property columns.
-    Include(Vec<String>),
-    /// Emit all non-geometry columns except these.
-    Exclude(Vec<String>),
 }
 
 /// Geometry materialization mode for [`GeoDataset::read_features`](crate::dataset::GeoDataset::read_features).

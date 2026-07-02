@@ -4,6 +4,19 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- Added a default `parquet` feature that gates the `arrow` and `parquet`
+  dependencies. With `default-features = false` the crate is query-only: it
+  opens pre-built `PSINDEX` artifacts and queries them — `open_geo_index` /
+  `open_geo_index_async`, `search_items` / `search_hits`,
+  `GeoArtifactIndex2D::filter_hits` (exact intersection over the payload
+  geometry), payload decoding — with no `arrow` or `parquet`, so the query side
+  builds for `wasm32`. The Parquet source side (`open`, `GeoDataset`
+  discovery/inspection/validation/read-back, `build` / `convert`, the
+  `gp2psindex` CLI) keeps requiring the default `parquet` feature, so existing
+  dependants are unaffected.
+
 ## [0.16.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.16.0...psi-geo-v0.16.1) - 2026-07-02
 
 ### API

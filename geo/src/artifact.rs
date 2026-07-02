@@ -210,7 +210,8 @@ impl<R> GeoArtifactIndex2D<R> {
     /// geometry actually satisfies `query` under `predicate`, removing the bbox
     /// false-positives over holes and concavities. Because it tests the geometry
     /// already fetched by [`GeoArtifactIndex2D::search_hits`], it avoids the
-    /// candidate geometry re-read that [`GeoDataset::filter_features`] performs.
+    /// candidate geometry re-read that `GeoDataset::filter_features` (`parquet`
+    /// feature) performs.
     ///
     /// Needs a payload that carries geometry — `RowWkb` or `FeatureJson`. A
     /// `RowRef` payload stores no geometry, so it returns
@@ -253,7 +254,6 @@ impl<R> GeoArtifactIndex2D<R> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
-    /// [`GeoDataset::filter_features`]: crate::GeoDataset::filter_features
     pub fn filter_hits<Q: Into<GeoQuery2D>>(
         &self,
         hits: Vec<GeoHit>,

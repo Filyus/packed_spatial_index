@@ -5,11 +5,11 @@ use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuild
 use parquet::file::reader::ChunkReader;
 use serde::{Deserialize, Serialize};
 
+use crate::PropertyProjection;
 use crate::build::{BuildRequest, GeoArtifact, GeoIndex};
 use crate::discovery::{self, ColumnState};
 use crate::feature_read::{
-    self, DuplicateFeatureRows, FeatureReadOrder, FeatureReadRequest, FeatureRows,
-    GeometryReadMode, PropertyProjection,
+    self, DuplicateFeatureRows, FeatureReadOrder, FeatureReadRequest, FeatureRows, GeometryReadMode,
 };
 use crate::filter;
 use crate::payload;
@@ -22,18 +22,6 @@ use crate::{
     NativeGeospatialStatsReport, NullPolicy, PayloadPlan, SelectionStatus, ValidationCode,
     ValidationReport, ValidationSeverity,
 };
-
-/// Content type used for [`PayloadPlan::RowRef`](crate::PayloadPlan::RowRef)
-/// payload sections.
-pub const FEATURE_REF_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-ref";
-/// Content type used for [`PayloadPlan::RowWkb`](crate::PayloadPlan::RowWkb)
-/// payload sections.
-pub const FEATURE_WKB_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-wkb";
-/// Content type used for [`PayloadPlan::FeatureJson`](crate::PayloadPlan::FeatureJson)
-/// payload sections.
-pub const FEATURE_JSON_CONTENT_TYPE: &str = "application/geo+json";
-/// Byte length of the fixed-width [`FeatureRef`] payload record.
-pub const FEATURE_REF_RECORD_LEN: usize = 24;
 
 /// Open a GeoParquet or native Parquet geospatial dataset.
 ///

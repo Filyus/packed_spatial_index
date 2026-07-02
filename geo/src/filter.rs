@@ -165,7 +165,7 @@ fn spherical_radius_matches(
     }
 }
 
-/// Request for [`GeoDataset::filter_features`](crate::GeoDataset::filter_features).
+/// Request for `GeoDataset::filter_features` (`parquet` feature).
 ///
 /// # Example
 ///

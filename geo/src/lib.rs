@@ -2,18 +2,24 @@
 #![warn(missing_docs)]
 
 mod artifact;
+#[cfg(feature = "parquet")]
 mod build;
+#[cfg(feature = "parquet")]
 mod dataset;
 mod discovery;
 mod error;
+#[cfg(feature = "parquet")]
 mod feature_read;
 mod filter;
+#[cfg(feature = "parquet")]
 mod geoarrow;
 mod geodetic;
 mod manifest;
 mod payload;
 mod query;
+#[cfg(feature = "parquet")]
 mod scan;
+#[cfg(feature = "parquet")]
 mod validation;
 mod wkb;
 
@@ -23,34 +29,40 @@ pub use artifact::{
 };
 #[cfg(feature = "async")]
 pub use artifact::{open_geo_index_async, open_geo_index_with_limits_async};
+#[cfg(feature = "parquet")]
 pub use build::{
     BuildRequest, ConvertRequest, GeoArtifact, GeoIndex, GeoIndex2D, GeoIndex2DF32, GeoIndex3D,
-    GeoIndex3DF32, GeoIndexMetadata, IndexBuildOptions, StoragePrecision,
+    GeoIndex3DF32, GeoIndexMetadata, IndexBuildOptions,
 };
-pub use dataset::{
-    FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN,
-    FEATURE_WKB_CONTENT_TYPE, GeoDataset, IndexDimsRequest, InspectRequest, ValidateRequest, open,
+#[cfg(feature = "parquet")]
+pub use dataset::{GeoDataset, IndexDimsRequest, InspectRequest, ValidateRequest, open};
+#[cfg(feature = "parquet")]
+pub use discovery::{
+    ColumnCapabilities, DeclaredExtent, DiscoveryWarning, FileGeoMetadata, GeoDiscovery,
+    GeometryColumn, GeometryColumnInfo, GeometryMetadataSource, GeometryProfile,
+    GeometrySelectionReason, GeometryTypeSet, RowBoundsSource, SelectionStatus,
 };
 pub use discovery::{
-    ColumnCapabilities, CoordinateDims, CoordinateLayout, CrsInfo, DeclaredExtent,
-    DiscoveryWarning, EdgeAlgorithm, EdgeModel, FileGeoMetadata, GeoDiscovery, GeometryColumn,
-    GeometryColumnInfo, GeometryEncoding, GeometryKind, GeometryMetadataSource, GeometryProfile,
-    GeometrySelectionReason, GeometrySelector, GeometryTypeSet, RowBoundsSource, SelectionStatus,
-    WkbFlavor,
+    CoordinateDims, CoordinateLayout, CrsInfo, EdgeAlgorithm, EdgeModel, GeometryEncoding,
+    GeometryKind, GeometrySelector, WkbFlavor,
 };
 pub use error::GeoError;
+#[cfg(feature = "parquet")]
 pub use feature_read::{
     DuplicateFeatureRows, FeatureReadOrder, FeatureReadRequest, FeatureRows, GeometryReadMode,
-    PropertyProjection,
 };
 pub use filter::FeatureFilterRequest;
 pub use geodetic::{AntimeridianPolicy, EnvelopePolicy, NullPolicy};
-pub use manifest::{GeoArtifactManifest, read_geo_manifest};
+pub use manifest::{GeoArtifactManifest, StoragePrecision, read_geo_manifest};
 pub use payload::{
-    FeatureRef, PayloadPlan, decode_feature_ref_payload, decode_feature_wkb_payload,
+    FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN,
+    FEATURE_WKB_CONTENT_TYPE, FeatureRef, PayloadPlan, PropertyProjection,
+    decode_feature_ref_payload, decode_feature_wkb_payload,
 };
 pub use query::{GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy, SpatialPredicate};
+#[cfg(feature = "parquet")]
 pub use scan::{GeometryScan, GeometryScan2D, GeometryScan3D, ScanRequest};
+#[cfg(feature = "parquet")]
 pub use validation::{
     NativeBoundingBox, NativeGeospatialStatsReport, RowGroupGeospatialStats, ValidationCode,
     ValidationIssue, ValidationReport, ValidationSeverity,

@@ -1,13 +1,20 @@
+#[cfg(feature = "parquet")]
 use std::collections::{HashMap, HashSet};
 
+#[cfg(feature = "parquet")]
 use parquet::basic::{EdgeInterpolationAlgorithm, LogicalType, Type as ParquetPhysicalType};
+#[cfg(feature = "parquet")]
 use parquet::file::metadata::{FileMetaData, ParquetMetaData};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "parquet")]
 use crate::GeoError;
+#[cfg(feature = "parquet")]
 use crate::geoarrow;
+#[cfg(feature = "parquet")]
 use crate::validation;
 
+#[cfg(feature = "parquet")]
 /// Source that made a geometry column discoverable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +53,7 @@ pub enum GeometryEncoding {
 }
 
 impl GeometryEncoding {
+    #[cfg(feature = "parquet")]
     pub(crate) fn is_wkb_payload(&self) -> bool {
         matches!(
             self,
@@ -55,6 +63,7 @@ impl GeometryEncoding {
         )
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn is_native_parquet(&self) -> bool {
         matches!(
             self,
@@ -123,6 +132,7 @@ pub enum GeometryKind {
 }
 
 impl GeometryKind {
+    #[cfg(feature = "parquet")]
     pub(crate) fn from_geoarrow_encoding(value: &str) -> Self {
         match value.to_ascii_lowercase().as_str() {
             "point" => Self::Point,
@@ -135,6 +145,7 @@ impl GeometryKind {
         }
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn list_depth(self) -> Option<usize> {
         match self {
             GeometryKind::Point => Some(0),
@@ -189,10 +200,12 @@ pub enum CoordinateDims {
 }
 
 impl CoordinateDims {
+    #[cfg(feature = "parquet")]
     pub(crate) fn has_z(self) -> bool {
         matches!(self, CoordinateDims::Xyz | CoordinateDims::Xyzm)
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn has_m(self) -> bool {
         matches!(self, CoordinateDims::Xym | CoordinateDims::Xyzm)
     }
@@ -205,6 +218,7 @@ impl CoordinateDims {
         }
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn merge(self, other: Self) -> Self {
         use CoordinateDims::{Unknown, Xy, Xym, Xyz, Xyzm};
         match (self, other) {
@@ -217,6 +231,7 @@ impl CoordinateDims {
         }
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn from_geometry_types(types: &[String]) -> Self {
         if types.is_empty() {
             return Self::Unknown;
@@ -327,6 +342,7 @@ pub enum CrsInfo {
 }
 
 impl CrsInfo {
+    #[cfg(feature = "parquet")]
     pub(crate) fn as_index_crs(&self) -> Option<String> {
         match self {
             CrsInfo::Present { value } => Some(value.to_string()),
@@ -337,6 +353,7 @@ impl CrsInfo {
         }
     }
 
+    #[cfg(feature = "parquet")]
     pub(crate) fn is_known_projected(&self) -> bool {
         let Some(value) = self.as_index_crs() else {
             return false;
@@ -354,6 +371,7 @@ impl CrsInfo {
     }
 }
 
+#[cfg(feature = "parquet")]
 /// Geometry type names known for a column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeometryTypeSet {
@@ -361,12 +379,15 @@ pub struct GeometryTypeSet {
     pub types: Vec<String>,
 }
 
+#[cfg(feature = "parquet")]
 impl GeometryTypeSet {
+    #[cfg(feature = "parquet")]
     pub(crate) fn unknown() -> Self {
         Self { types: Vec::new() }
     }
 }
 
+#[cfg(feature = "parquet")]
 /// Declared dataset or column extent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeclaredExtent {
@@ -374,6 +395,7 @@ pub struct DeclaredExtent {
     pub values: Vec<f64>,
 }
 
+#[cfg(feature = "parquet")]
 /// Source used to produce per-row bounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -386,6 +408,7 @@ pub enum RowBoundsSource {
     GeoArrowScan,
 }
 
+#[cfg(feature = "parquet")]
 /// Operations supported by a geometry column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnCapabilities {
@@ -399,6 +422,7 @@ pub struct ColumnCapabilities {
     pub can_emit_feature_json: bool,
 }
 
+#[cfg(feature = "parquet")]
 /// File-level geospatial metadata summary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileGeoMetadata {
@@ -410,6 +434,7 @@ pub struct FileGeoMetadata {
     pub has_geoparquet_metadata: bool,
 }
 
+#[cfg(feature = "parquet")]
 /// Metadata-only discovery result for a dataset.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeoDiscovery {
@@ -425,6 +450,7 @@ pub struct GeoDiscovery {
     pub warnings: Vec<DiscoveryWarning>,
 }
 
+#[cfg(feature = "parquet")]
 /// Metadata and capabilities for one geometry column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeometryColumnInfo {
@@ -450,6 +476,7 @@ pub struct GeometryColumnInfo {
     pub capabilities: ColumnCapabilities,
 }
 
+#[cfg(feature = "parquet")]
 /// Result of resolving a selector or default selection policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -475,6 +502,7 @@ pub enum SelectionStatus {
     None,
 }
 
+#[cfg(feature = "parquet")]
 /// Why a geometry column was selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -489,6 +517,7 @@ pub enum GeometrySelectionReason {
     FirstUsable,
 }
 
+#[cfg(feature = "parquet")]
 /// Non-fatal issue found during discovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -514,6 +543,7 @@ pub enum DiscoveryWarning {
     },
 }
 
+#[cfg(feature = "parquet")]
 /// Concrete selected geometry column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeometryColumn {
@@ -551,6 +581,7 @@ pub enum GeometrySelector {
     FirstUsable,
 }
 
+#[cfg(feature = "parquet")]
 /// Profile of a selected geometry column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeometryProfile {
@@ -576,12 +607,14 @@ pub struct GeometryProfile {
     pub num_rows: u64,
 }
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone)]
 pub(crate) struct ColumnState {
     pub(crate) info: GeometryColumnInfo,
     pub(crate) covering: Option<GeoParquetBboxCovering>,
 }
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone, Deserialize)]
 struct GeoParquetMetadata {
     version: String,
@@ -589,6 +622,7 @@ struct GeoParquetMetadata {
     columns: HashMap<String, GeoParquetColumnMetadata>,
 }
 
+#[cfg(feature = "parquet")]
 impl GeoParquetMetadata {
     fn from_parquet_meta(metadata: &FileMetaData) -> Option<Result<Self, GeoError>> {
         let value = metadata
@@ -601,6 +635,7 @@ impl GeoParquetMetadata {
     }
 }
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone, Deserialize)]
 struct GeoParquetColumnMetadata {
     encoding: String,
@@ -616,6 +651,7 @@ struct GeoParquetColumnMetadata {
     covering: Option<GeoParquetCovering>,
 }
 
+#[cfg(feature = "parquet")]
 fn deserialize_present_value<'de, D>(
     deserializer: D,
 ) -> Result<Option<Option<serde_json::Value>>, D::Error>
@@ -626,11 +662,13 @@ where
         .map(|value| Some(if value.is_null() { None } else { Some(value) }))
 }
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone, Deserialize)]
 struct GeoParquetCovering {
     bbox: GeoParquetBboxCovering,
 }
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct GeoParquetBboxCovering {
     pub(crate) xmin: Vec<String>,
@@ -643,6 +681,7 @@ pub(crate) struct GeoParquetBboxCovering {
     pub(crate) zmax: Option<Vec<String>>,
 }
 
+#[cfg(feature = "parquet")]
 #[derive(Debug, Clone)]
 struct NativeColumn {
     name: String,
@@ -652,6 +691,7 @@ struct NativeColumn {
     dims: CoordinateDims,
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn discover_metadata(
     meta: &ParquetMetaData,
 ) -> Result<(GeoDiscovery, Vec<ColumnState>), GeoError> {
@@ -769,6 +809,7 @@ pub(crate) fn discover_metadata(
     ))
 }
 
+#[cfg(feature = "parquet")]
 fn default_selection(
     states: &[ColumnState],
     geo_meta: Option<&GeoParquetMetadata>,
@@ -799,6 +840,7 @@ fn default_selection(
     }
 }
 
+#[cfg(feature = "parquet")]
 fn native_geo_columns(meta: &ParquetMetaData) -> Vec<NativeColumn> {
     meta.file_metadata()
         .schema_descr()
@@ -840,6 +882,7 @@ fn native_geo_columns(meta: &ParquetMetaData) -> Vec<NativeColumn> {
         .collect()
 }
 
+#[cfg(feature = "parquet")]
 fn native_dim_hint(meta: &ParquetMetaData, column_index: usize) -> CoordinateDims {
     let mut saw_stats = false;
     let mut dims = CoordinateDims::Unknown;
@@ -863,6 +906,7 @@ fn native_dim_hint(meta: &ParquetMetaData, column_index: usize) -> CoordinateDim
     }
 }
 
+#[cfg(feature = "parquet")]
 fn edge_algorithm(value: EdgeInterpolationAlgorithm) -> EdgeAlgorithm {
     match value {
         EdgeInterpolationAlgorithm::SPHERICAL => EdgeAlgorithm::Spherical,
@@ -874,6 +918,7 @@ fn edge_algorithm(value: EdgeInterpolationAlgorithm) -> EdgeAlgorithm {
     }
 }
 
+#[cfg(feature = "parquet")]
 fn native_crs(value: &Option<String>) -> CrsInfo {
     value
         .as_ref()
@@ -885,6 +930,7 @@ fn native_crs(value: &Option<String>) -> CrsInfo {
         })
 }
 
+#[cfg(feature = "parquet")]
 fn geoparquet_crs(value: &Option<Option<serde_json::Value>>) -> CrsInfo {
     match value {
         Some(Some(value)) => CrsInfo::Present {
@@ -897,6 +943,7 @@ fn geoparquet_crs(value: &Option<Option<serde_json::Value>>) -> CrsInfo {
     }
 }
 
+#[cfg(feature = "parquet")]
 fn geoparquet_edges(value: Option<&str>) -> EdgeModel {
     match value {
         Some(edge) if edge.eq_ignore_ascii_case("spherical") => EdgeModel::Spherical,
@@ -906,6 +953,7 @@ fn geoparquet_edges(value: Option<&str>) -> EdgeModel {
     }
 }
 
+#[cfg(feature = "parquet")]
 fn row_bounds_sources(encoding: &GeometryEncoding, has_covering: bool) -> Vec<RowBoundsSource> {
     if has_covering {
         vec![RowBoundsSource::Covering]
@@ -918,6 +966,7 @@ fn row_bounds_sources(encoding: &GeometryEncoding, has_covering: bool) -> Vec<Ro
     }
 }
 
+#[cfg(feature = "parquet")]
 pub(crate) fn profile_from_state(state: &ColumnState, num_rows: u64) -> GeometryProfile {
     GeometryProfile {
         column: state.info.name.clone(),

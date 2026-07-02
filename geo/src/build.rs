@@ -12,7 +12,7 @@ use crate::{
     AntimeridianPolicy, EnvelopePolicy, FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE,
     FEATURE_WKB_CONTENT_TYPE, FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D,
     GeometryMetadataSource, GeometryProfile, GeometryScan, GeometrySelector, IndexDimsRequest,
-    NullPolicy, PayloadPlan,
+    NullPolicy, PayloadPlan, StoragePrecision,
 };
 
 pub(crate) fn builder_2d(count: usize, opts: &IndexBuildOptions) -> Index2DBuilder {
@@ -192,16 +192,6 @@ pub(crate) fn artifact_manifest(
         index_entry_count,
         entries_may_duplicate_rows,
     }
-}
-
-/// Coordinate storage precision for converted artifacts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StoragePrecision {
-    /// Store coordinates as `f64`.
-    F64,
-    /// Store coordinates as `f32`; queries return a conservative superset.
-    F32,
 }
 
 /// Options passed to the core index builder.

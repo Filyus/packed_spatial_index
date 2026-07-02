@@ -41,7 +41,7 @@ impl SimdIndex3DF32 {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
         let (parsed, payload) = parse_index(bytes, 3, 4)?;
         if payload.is_some() {
-            return Err(LoadError::UnsupportedVersion);
+            return Err(LoadError::PayloadNotSupported);
         }
         Ok(Self::from_scalar(index3d_from_columns(
             columns3d_from_parsed(&parsed),

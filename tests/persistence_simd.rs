@@ -5,7 +5,8 @@
 //! format, so bytes written by one must load into the other.
 
 use packed_spatial_index::{
-    Box2D, Box3D, Index2D, Index2DBuilder, Index3D, Index3DBuilder, SimdIndex2D, SimdIndex3D,
+    Box2D, Box3D, Index2D, Index2DBuilder, Index3D, Index3DBuilder, LoadError, SimdIndex2D,
+    SimdIndex2DView, SimdIndex3D, SimdIndex3DView,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -126,6 +127,35 @@ fn simd3d_bytes_match_aos_and_round_trip() {
             assert_eq!(expected, got);
         }
     }
+}
+
+#[test]
+fn simd_loaders_report_payload_not_supported() {
+    let mut builder = Index2DBuilder::new(1);
+    builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    let index = builder.finish().unwrap();
+    let payload_bytes = index.to_bytes_with_payloads(&[vec![1, 2, 3]]).unwrap();
+    assert!(matches!(
+        SimdIndex2D::from_bytes(&payload_bytes),
+        Err(LoadError::PayloadNotSupported)
+    ));
+    assert_eq!(
+        SimdIndex2DView::from_bytes(&payload_bytes).map(|_| ()),
+        Err(LoadError::PayloadNotSupported)
+    );
+
+    let mut builder = Index3DBuilder::new(1);
+    builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    let index = builder.finish().unwrap();
+    let payload_bytes = index.to_bytes_with_payloads(&[vec![4, 5, 6]]).unwrap();
+    assert!(matches!(
+        SimdIndex3D::from_bytes(&payload_bytes),
+        Err(LoadError::PayloadNotSupported)
+    ));
+    assert_eq!(
+        SimdIndex3DView::from_bytes(&payload_bytes).map(|_| ()),
+        Err(LoadError::PayloadNotSupported)
+    );
 }
 
 #[test]

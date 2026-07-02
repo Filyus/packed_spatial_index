@@ -42,7 +42,7 @@ impl SimdIndex2D {
         // SIMD indexes do not expose payloads; refuse a payload file rather than
         // silently drop the data (SIMD indexes have no payload accessor).
         if payload.is_some() {
-            return Err(LoadError::UnsupportedVersion);
+            return Err(LoadError::PayloadNotSupported);
         }
         let num_nodes = parsed.num_nodes;
         let level_bounds = parsed.level_bounds;

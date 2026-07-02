@@ -7,6 +7,8 @@ pub enum LoadError {
     BadMagic,
     /// The buffer uses a newer or otherwise unsupported format version.
     UnsupportedVersion,
+    /// The buffer contains item payloads, but this loader exposes only index boxes.
+    PayloadNotSupported,
     /// The buffer ended before a complete header or section could be read.
     Truncated,
     /// The buffer length does not match the length declared by the header.
@@ -32,6 +34,10 @@ impl fmt::Display for LoadError {
         match self {
             LoadError::BadMagic => write!(f, "buffer is not a packed_spatial_index index"),
             LoadError::UnsupportedVersion => write!(f, "unsupported packed_spatial_index format"),
+            LoadError::PayloadNotSupported => write!(
+                f,
+                "buffer contains item payloads, but this loader exposes only index boxes"
+            ),
             LoadError::Truncated => write!(f, "buffer is truncated"),
             LoadError::LengthMismatch { expected, actual } => write!(
                 f,

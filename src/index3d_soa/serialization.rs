@@ -47,7 +47,7 @@ impl SimdIndex3D {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
         let (parsed, payload) = parse_index(bytes, 3, 8)?;
         if payload.is_some() {
-            return Err(LoadError::UnsupportedVersion);
+            return Err(LoadError::PayloadNotSupported);
         }
         let num_nodes = parsed.num_nodes;
         let level_bounds = parsed.level_bounds;

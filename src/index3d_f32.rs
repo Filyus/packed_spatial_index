@@ -1580,7 +1580,7 @@ impl<'a> SimdIndex3DF32View<'a> {
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
         let (parsed, payload) = parse_index(bytes, 3, 4)?;
         if payload.is_some() {
-            return Err(LoadError::UnsupportedVersion);
+            return Err(LoadError::PayloadNotSupported);
         }
         Ok(Self {
             node_size: parsed.node_size,

@@ -257,15 +257,8 @@ impl Index2D {
             level_bounds.push(view.level_bound_unchecked(i));
         }
 
-        let mut entries = Vec::with_capacity(view.num_nodes);
-        for i in 0..view.num_nodes {
-            entries.push(view.entry_at_unchecked(i));
-        }
-
-        let mut indices = Vec::with_capacity(view.num_nodes);
-        for i in 0..view.num_nodes {
-            indices.push(view.index_at_unchecked(i));
-        }
+        let entries = copy_box2d_entries(view.entries, view.num_nodes);
+        let indices = copy_u64_indices(view.indices, view.num_nodes);
 
         Ok(Self {
             node_size: view.node_size,
@@ -2013,6 +2006,46 @@ pub struct Search2DIter<'a> {
     // Half-open entry range of the leaf node currently being scanned.
     leaf_pos: usize,
     leaf_end: usize,
+}
+
+#[cold]
+#[inline(never)]
+fn copy_box2d_entries(bytes: &[u8], num_nodes: usize) -> Vec<Box2D> {
+    if cfg!(target_endian = "little") {
+        // SAFETY: Box2D is repr(C) over four f64 fields; every f64 bit pattern is valid.
+        let (prefix, entries, suffix) = unsafe { bytes.align_to::<Box2D>() };
+        if prefix.is_empty() && suffix.is_empty() && entries.len() == num_nodes {
+            return entries.to_vec();
+        }
+    }
+    let mut entries = Vec::with_capacity(num_nodes);
+    for i in 0..num_nodes {
+        let offset = i * 32;
+        entries.push(Box2D::new(
+            read_f64_le_unchecked(bytes, offset),
+            read_f64_le_unchecked(bytes, offset + 8),
+            read_f64_le_unchecked(bytes, offset + 16),
+            read_f64_le_unchecked(bytes, offset + 24),
+        ));
+    }
+    entries
+}
+
+#[cold]
+#[inline(never)]
+fn copy_u64_indices(bytes: &[u8], num_nodes: usize) -> Vec<usize> {
+    if cfg!(target_endian = "little") && core::mem::size_of::<usize>() == 8 {
+        // SAFETY: on this path usize is a little-endian u64-width integer.
+        let (prefix, indices, suffix) = unsafe { bytes.align_to::<usize>() };
+        if prefix.is_empty() && suffix.is_empty() && indices.len() == num_nodes {
+            return indices.to_vec();
+        }
+    }
+    let mut indices = Vec::with_capacity(num_nodes);
+    for i in 0..num_nodes {
+        indices.push(read_u64_le_unchecked(bytes, i * 8) as usize);
+    }
+    indices
 }
 
 #[derive(Clone, Copy)]

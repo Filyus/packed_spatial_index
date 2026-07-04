@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.17.0...psi-geo-v0.18.0) - 2026-07-04
+
 ### API
 
 - Added FlatGeobuf and GeoJSON source support behind default `flatgeobuf` and

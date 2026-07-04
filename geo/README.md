@@ -52,7 +52,7 @@ Requires Rust 1.89 or newer.
 
 ```toml
 [dependencies]
-packed_spatial_index_geo = "0.17"
+packed_spatial_index_geo = "0.18"
 ```
 
 ### Features
@@ -73,7 +73,7 @@ feature so `arrow` / `parquet` never enter the build:
 
 ```toml
 [dependencies]
-packed_spatial_index_geo = { version = "0.17", default-features = false, features = ["async"] }
+packed_spatial_index_geo = { version = "0.18", default-features = false, features = ["async"] }
 ```
 
 That leaves the crate query-only — [`open_geo_index`][open_geo_index] /

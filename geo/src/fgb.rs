@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use flatgeobuf::{FallibleStreamingIterator, FgbReader};
 use geozero::{ColumnValue, GeozeroGeometry, PropertyProcessor};
+use serde_json::value::RawValue;
 
 use crate::payload::{self, FeatureRef};
 use crate::scan_core::{self, FeatureReadRequest, FeatureRecord, GeometryReadMode, ScanEntry};
@@ -272,13 +273,13 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
                     let geometry_text = feature
                         .to_json()
                         .map_err(|e| GeoError::FlatGeobuf(format!("features[{row}]: {e}")))?;
-                    let geometry: serde_json::Value = serde_json::from_str(&geometry_text)
+                    let geometry = RawValue::from_string(geometry_text)
                         .map_err(|e| GeoError::FlatGeobuf(format!("features[{row}]: {e}")))?;
                     let projected = collect_properties(feature, properties)
                         .map_err(|e| GeoError::FlatGeobuf(format!("features[{row}]: {e}")))?;
-                    Some(payload::feature_json_from_parts(
+                    Some(payload::feature_json_from_raw_parts(
                         &feature_ref,
-                        geometry,
+                        geometry.as_ref(),
                         Some(serde_json::Value::Object(projected)),
                     )?)
                 }

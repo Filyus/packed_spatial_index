@@ -1,4 +1,4 @@
-# Geospatial Parquet Index
+# Geospatial Source Index
 
 [![crates.io](https://img.shields.io/crates/v/packed_spatial_index_geo.svg)](https://crates.io/crates/packed_spatial_index_geo)
 [![docs.rs](https://docs.rs/packed_spatial_index_geo/badge.svg)](https://docs.rs/packed_spatial_index_geo)
@@ -7,10 +7,11 @@
 [![License](https://img.shields.io/crates/l/packed_spatial_index_geo.svg)](https://github.com/Filyus/packed_spatial_index/blob/main/LICENSE)
 
 Build a [`packed_spatial_index`](https://crates.io/crates/packed_spatial_index)
-spatial index for **GeoParquet** and native Apache Parquet `GEOMETRY` /
-`GEOGRAPHY` columns. These formats store geometry plus, in some cases, optional
-bbox/statistics metadata — but they do not provide a per-row spatial index that
-pinpoints individual features. This crate fills the gap:
+spatial index for **GeoParquet**, native Apache Parquet `GEOMETRY` /
+`GEOGRAPHY` columns, **FlatGeobuf**, and **GeoJSON**. These formats store
+geometry plus, in some cases, optional bbox/statistics metadata — but they do
+not provide a portable per-row `PSINDEX` sidecar that pinpoints individual
+features and can be streamed from object storage. This crate fills the gap:
 
 - **accelerator** — build an in-memory index over the features; a query returns
   `FeatureRef` values that preserve source row numbers even when rows are
@@ -27,11 +28,12 @@ pinpoints individual features. This crate fills the gap:
 - 2D and 3D, optional **`f32`** storage for half-size files, and **`skip_null`** to
   drop empty geometry
 
-The heavy `arrow` / `parquet` dependencies sit behind the default **`parquet`**
-feature. Turn it off (`default-features = false`) and the crate is query-only —
-open a pre-built `PSINDEX`, stream candidate queries, exact-filter geometry
-from the payload — with no `arrow` / `parquet`, small enough for **wasm / edge**.
-Build runs server-side once (needs `parquet`); query runs anywhere.
+The source-side dependencies sit behind format features. Defaults enable
+`parquet`, `flatgeobuf`, and `geojson`, so the CLI can build from all supported
+inputs. Turn defaults off (`default-features = false`) and the crate is
+query-only — open a pre-built `PSINDEX`, stream candidate queries, exact-filter
+geometry from the payload — with no `arrow` / `parquet`, small enough for
+**wasm / edge**. Build runs server-side once; query runs anywhere.
 
 ```rust,no_run
 use std::fs::File;
@@ -58,6 +60,11 @@ packed_spatial_index_geo = "0.17"
 - **`parquet`** *(default)* — the Parquet source side: `open`, `GeoDataset`
   (discovery, inspection, validation, feature read-back), `build` / `convert`,
   and the `gp2psindex` CLI. Pulls in `arrow` + `parquet`.
+- **`flatgeobuf`** *(default)* — open `.fgb` sources with `open_flatgeobuf`,
+  then scan, build, convert, and read features back without Arrow.
+- **`geojson`** *(default)* — open GeoJSON with `open_geojson` /
+  `open_geojson_slice`, then scan, build, convert, and read features back.
+  GeoJSON is parsed eagerly in memory.
 - **`async`** — open and query streamable `PSINDEX` artifacts over an
   [`AsyncRangeReader`][AsyncRangeReader], adding `open_geo_index_async` and `search_hits_async`.
 
@@ -73,7 +80,7 @@ That leaves the crate query-only — [`open_geo_index`][open_geo_index] /
 `open_geo_index_async`, `search_items` / `search_hits`,
 [`GeoArtifactIndex2D::filter_hits`][filter_hits] (exact intersection over the
 payload geometry), and payload decoding — compiling to `wasm32`. Only reading a
-Parquet source needs the `parquet` feature.
+source file needs a format feature.
 
 ## API at a glance
 
@@ -87,6 +94,8 @@ files.
 | Task | Start here |
 | --- | --- |
 | Open a source | [`open`][open] |
+| Open GeoJSON | [`open_geojson`][open_geojson], [`open_geojson_slice`][open_geojson_slice] |
+| Open FlatGeobuf | [`open_flatgeobuf`][open_flatgeobuf] |
 | Discover columns | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery] |
 | Select a column | [`GeoDataset::select`][select], [`GeometrySelector`][GeometrySelector] |
 | Inspect metadata | [`GeoDataset::inspect`][inspect], [`InspectRequest`][InspectRequest] |
@@ -105,7 +114,8 @@ files.
 | Choose a query shape | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius), [`GeoQuery3D`][GeoQuery3D] (box / frustum) |
 | Exact-filter source hits | [`GeoDataset::filter_features`][filter_features], [`FeatureFilterRequest`][FeatureFilterRequest] |
 | Exact-filter `PSINDEX` hits | [`GeoArtifactIndex2D::filter_hits`][filter_hits] |
-| Read source rows | [`GeoDataset::read_features`][read_features], [`FeatureReadRequest`][FeatureReadRequest] |
+| Read Parquet source rows | [`GeoDataset::read_features`][read_features], [`FeatureReadRequest`][FeatureReadRequest] |
+| Read GeoJSON / FlatGeobuf source rows | `read_features`, [`FeatureRecord`][FeatureRecord] |
 | Tune requests | [`IndexDimsRequest`][IndexDimsRequest], [`NullPolicy`][NullPolicy] |
 | Pick payloads | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
 | Use the CLI | See [CLI](#cli) |
@@ -155,10 +165,14 @@ Run it directly after install, or prefix the same arguments with
 `cargo run --bin gp2psindex --` from a repository checkout.
 
 Start with discovery when you do not know which geometry columns the file
-contains:
+contains. `gp2psindex` detects `.parquet`, `.fgb`, `.geojson`, and `.json`
+inputs by extension and falls back to a small signature check; pass `--format`
+to override detection.
 
 ```text
 gp2psindex discover input.parquet --json
+gp2psindex inspect places.geojson --json
+gp2psindex inspect layer.fgb --format flatgeobuf
 ```
 
 Inspect the selected column when you want the resolved encoding, CRS, dimensions,
@@ -186,6 +200,13 @@ gp2psindex build input.parquet output.psi \
   --payload row-wkb \
   --dims auto \
   --nulls skip
+
+gp2psindex build places.geojson places.psi \
+  --payload feature-json \
+  --properties all
+
+gp2psindex build layer.fgb layer.psi \
+  --payload row-wkb
 ```
 
 Query a sidecar and read projected source properties back as NDJSON:
@@ -194,6 +215,11 @@ Query a sidecar and read projected source properties back as NDJSON:
 gp2psindex query input.parquet output.psi \
   --bbox -10,35,20,60 \
   --properties include:name,pop
+
+gp2psindex query places.geojson places.psi \
+  --bbox -10,35,20,60 \
+  --properties include:name \
+  --json
 ```
 
 Add `--exact` to filter bbox candidates with a planar geometry/rectangle
@@ -232,9 +258,14 @@ gp2psindex query input.parquet output.psi \
 ## Scope
 
 - Inputs may be GeoParquet files with `geo` metadata or native Apache Parquet
-  `GEOMETRY` / `GEOGRAPHY` logical-type columns. When both are present,
-  GeoParquet `primary_column` is the default; use `GeometrySelector::Name` or
-  the CLI's `--geometry-column` option to select explicitly.
+  `GEOMETRY` / `GEOGRAPHY` logical-type columns, FlatGeobuf files, or GeoJSON
+  documents. When both GeoParquet metadata and native Parquet geometry columns
+  are present, GeoParquet `primary_column` is the default; use
+  `GeometrySelector::Name` or the CLI's `--geometry-column` option to select
+  explicitly.
+- FlatGeobuf and GeoJSON sources expose a single geometry named `geometry`.
+  GeoJSON input accepts `FeatureCollection`, single `Feature`, and bare geometry
+  documents; v1 parses the whole document in memory.
 - Use `open(...).discovery()` when a file may contain several geometry
   candidates and you want metadata-only selection status before reading rows.
 - Boxes come from the **bbox covering** column when present, otherwise from each
@@ -266,6 +297,9 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 
 <!-- docs.rs API links -->
 [open]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open.html
+[open_geojson]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geojson.html
+[open_geojson_slice]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geojson_slice.html
+[open_flatgeobuf]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_flatgeobuf.html
 [GeoDataset]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html
 [discovery]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.discovery
 [select]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.select
@@ -317,6 +351,7 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [FeatureRef]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureRef.html
 [FeatureFilterRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureFilterRequest.html
 [FeatureReadRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureReadRequest.html
+[FeatureRecord]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureRecord.html
 [FeatureRows]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.FeatureRows.html
 [GeometryReadMode]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometryReadMode.html
 [FeatureReadOrder]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.FeatureReadOrder.html

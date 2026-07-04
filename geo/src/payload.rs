@@ -4,6 +4,8 @@ use std::collections::HashSet;
 #[cfg(feature = "parquet")]
 use parquet::file::metadata::ParquetMetaData;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "_source")]
+use serde_json::value::RawValue;
 
 #[cfg(feature = "_source")]
 use crate::GeoError;
@@ -55,6 +57,7 @@ pub(crate) fn encode_feature_wkb(feature: &FeatureRef, wkb: &[u8]) -> Vec<u8> {
 /// they hold it — decoded from WKB (Parquet) or taken straight from the
 /// source (GeoJSON) — so this stays free of arrow and WKB concerns.
 #[cfg(feature = "_source")]
+#[allow(dead_code)]
 pub(crate) fn feature_json_from_parts(
     feature: &FeatureRef,
     geometry: serde_json::Value,
@@ -70,6 +73,34 @@ pub(crate) fn feature_json_from_parts(
         "properties": properties,
     });
     serde_json::to_vec(&feature).map_err(|e| GeoError::Wkb(e.to_string()))
+}
+
+/// Serialize a GeoJSON `Feature` payload while borrowing an already-valid raw
+/// GeoJSON geometry string.
+#[cfg(feature = "_source")]
+pub(crate) fn feature_json_from_raw_parts(
+    feature: &FeatureRef,
+    geometry: &RawValue,
+    properties: Option<serde_json::Value>,
+) -> Result<Vec<u8>, GeoError> {
+    #[derive(Serialize)]
+    struct RawFeatureJson<'a> {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        id: &'a str,
+        feature_ref: &'a FeatureRef,
+        geometry: &'a RawValue,
+        properties: serde_json::Value,
+    }
+
+    let payload = RawFeatureJson {
+        kind: "Feature",
+        id: feature.feature_id.as_deref().unwrap_or(""),
+        feature_ref: feature,
+        geometry,
+        properties: properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+    };
+    serde_json::to_vec(&payload).map_err(|e| GeoError::Wkb(e.to_string()))
 }
 
 /// Decode a fixed-width [`FeatureRef`] payload.

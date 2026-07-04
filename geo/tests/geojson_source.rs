@@ -377,3 +377,41 @@ fn geojson_cli_build_and_query_detects_format() {
     let stdout = String::from_utf8(query.stdout).unwrap();
     assert!(stdout.contains("\"name\": \"west\""), "{stdout}");
 }
+
+#[cfg(feature = "parquet")]
+#[test]
+fn geojson_cli_build_single_feature_uses_eager_fallback() {
+    let dir = std::env::temp_dir().join(format!(
+        "psi_geojson_cli_single_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("single.geojson");
+    let output = dir.join("single.psi");
+    std::fs::write(
+        &input,
+        br#"{"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{"name":"solo"}}"#,
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gp2psindex");
+    let build = std::process::Command::new(bin)
+        .arg("build")
+        .arg(&input)
+        .arg(&output)
+        .arg("--payload")
+        .arg("row-ref")
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let manifest = read_geo_manifest(&std::fs::read(output).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(manifest.feature_count, 1);
+}

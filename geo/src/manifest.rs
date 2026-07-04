@@ -82,6 +82,15 @@ struct Chunk {
     content: Vec<u8>,
 }
 
+#[cfg(feature = "_source")]
+#[derive(Debug, Clone, Copy)]
+struct ChunkRef {
+    tag: [u8; 4],
+    flags: u32,
+    offset: usize,
+    len: usize,
+}
+
 /// Read the embedded `geoM` manifest from a converted `PSINDEX` byte buffer.
 ///
 /// Returns `Ok(None)` when the container has no `geoM` chunk. Use
@@ -114,18 +123,54 @@ pub(crate) fn read_geo_manifest_content(content: &[u8]) -> Result<GeoArtifactMan
 
 #[cfg(feature = "_source")]
 pub(crate) fn append_geo_manifest(
-    bytes: &[u8],
-    manifest: &GeoArtifactManifest,
     out: &mut Vec<u8>,
+    manifest: &GeoArtifactManifest,
 ) -> Result<(), GeoError> {
-    let mut chunks = parse_chunks(bytes)?;
-    chunks.retain(|chunk| chunk.tag != TAG_GEO_MANIFEST);
-    chunks.push(Chunk {
-        tag: TAG_GEO_MANIFEST,
-        flags: 0,
-        content: serde_json::to_vec(manifest).map_err(|e| GeoError::Container(e.to_string()))?,
-    });
-    write_chunks(&chunks, out)
+    let refs = parse_chunk_refs(out)?;
+    let content = serde_json::to_vec(manifest).map_err(|e| GeoError::Container(e.to_string()))?;
+    let chunks: Vec<ChunkRef> = refs
+        .into_iter()
+        .filter(|chunk| chunk.tag != TAG_GEO_MANIFEST)
+        .collect();
+    let mut lengths: Vec<usize> = chunks.iter().map(|chunk| chunk.len).collect();
+    lengths.push(content.len());
+    let (offsets, total) = plan_offsets_from_lengths(&lengths)?;
+    let moves: Vec<(usize, usize, usize)> = chunks
+        .iter()
+        .zip(offsets.iter().copied())
+        .map(|(chunk, new_offset)| (chunk.offset, new_offset, chunk.len))
+        .collect();
+
+    // Adding a new directory entry normally shifts all chunk bodies to the
+    // right. Replacing an existing geoM can shift chunks left; keep that rare
+    // path simple and conservative.
+    if moves
+        .iter()
+        .any(|(old_offset, new_offset, _)| new_offset < old_offset)
+    {
+        let bytes = out.clone();
+        let mut owned = parse_chunks(&bytes)?;
+        owned.retain(|chunk| chunk.tag != TAG_GEO_MANIFEST);
+        owned.push(Chunk {
+            tag: TAG_GEO_MANIFEST,
+            flags: 0,
+            content,
+        });
+        return write_chunks(&owned, out);
+    }
+
+    out.resize(total, 0);
+    for (old_offset, new_offset, len) in moves.iter().rev().copied() {
+        out.copy_within(old_offset..old_offset + len, new_offset);
+    }
+    let manifest_offset = *offsets
+        .last()
+        .ok_or_else(|| GeoError::Container("missing manifest offset".to_string()))?;
+    out[manifest_offset..manifest_offset + content.len()].copy_from_slice(&content);
+
+    zero_padding(out, &offsets, &lengths, total)?;
+    write_superblock_and_directory(out, &chunks, &offsets, content.len())?;
+    Ok(())
 }
 
 fn parse_chunks(bytes: &[u8]) -> Result<Vec<Chunk>, GeoError> {
@@ -181,6 +226,60 @@ fn parse_chunks(bytes: &[u8]) -> Result<Vec<Chunk>, GeoError> {
 }
 
 #[cfg(feature = "_source")]
+fn parse_chunk_refs(bytes: &[u8]) -> Result<Vec<ChunkRef>, GeoError> {
+    if bytes.len() < SUPERBLOCK_LEN {
+        return Err(GeoError::Container("truncated superblock".to_string()));
+    }
+    if &bytes[..FORMAT_MAGIC.len()] != FORMAT_MAGIC {
+        return Err(GeoError::Container("bad magic".to_string()));
+    }
+    if read_u64(bytes, 8)? != FORMAT_VERSION {
+        return Err(GeoError::Container("unsupported version".to_string()));
+    }
+    let chunk_count = read_u32(bytes, 16)? as usize;
+    let dir_len = chunk_count
+        .checked_mul(CHUNK_ENTRY_LEN)
+        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    let dir_end = SUPERBLOCK_LEN
+        .checked_add(dir_len)
+        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    if bytes.len() < dir_end {
+        return Err(GeoError::Container("truncated directory".to_string()));
+    }
+    let mut chunks = Vec::with_capacity(chunk_count);
+    let mut max_end = dir_end;
+    for i in 0..chunk_count {
+        let base = SUPERBLOCK_LEN + i * CHUNK_ENTRY_LEN;
+        let mut tag = [0u8; 4];
+        tag.copy_from_slice(&bytes[base..base + 4]);
+        let flags = read_u32(bytes, base + 4)?;
+        let offset = usize::try_from(read_u64(bytes, base + 8)?)
+            .map_err(|_| GeoError::Container("offset overflow".to_string()))?;
+        let len = usize::try_from(read_u64(bytes, base + 16)?)
+            .map_err(|_| GeoError::Container("length overflow".to_string()))?;
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| GeoError::Container("chunk overflow".to_string()))?;
+        if offset < dir_end || end > bytes.len() {
+            return Err(GeoError::Container("chunk range outside file".to_string()));
+        }
+        max_end = max_end.max(end);
+        chunks.push(ChunkRef {
+            tag,
+            flags,
+            offset,
+            len,
+        });
+    }
+    if bytes.len() > align8(max_end)? {
+        return Err(GeoError::Container(
+            "trailing bytes outside directory".to_string(),
+        ));
+    }
+    Ok(chunks)
+}
+
+#[cfg(feature = "_source")]
 fn write_chunks(chunks: &[Chunk], out: &mut Vec<u8>) -> Result<(), GeoError> {
     let offsets = plan_offsets(chunks)?;
     let total = offsets
@@ -207,6 +306,53 @@ fn write_chunks(chunks: &[Chunk], out: &mut Vec<u8>) -> Result<(), GeoError> {
 }
 
 #[cfg(feature = "_source")]
+fn write_superblock_and_directory(
+    out: &mut [u8],
+    chunks: &[ChunkRef],
+    offsets: &[usize],
+    manifest_len: usize,
+) -> Result<(), GeoError> {
+    let chunk_count = chunks
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    if offsets.len() != chunk_count {
+        return Err(GeoError::Container("directory offset mismatch".to_string()));
+    }
+    out[..FORMAT_MAGIC.len()].copy_from_slice(FORMAT_MAGIC);
+    write_u64(out, 8, FORMAT_VERSION);
+    write_u32(out, 16, chunk_count as u32);
+    for (i, chunk) in chunks.iter().enumerate() {
+        write_chunk_entry(out, i, chunk.tag, chunk.flags, offsets[i], chunk.len);
+    }
+    write_chunk_entry(
+        out,
+        chunks.len(),
+        TAG_GEO_MANIFEST,
+        0,
+        offsets[chunks.len()],
+        manifest_len,
+    );
+    Ok(())
+}
+
+#[cfg(feature = "_source")]
+fn write_chunk_entry(
+    out: &mut [u8],
+    index: usize,
+    tag: [u8; 4],
+    flags: u32,
+    offset: usize,
+    len: usize,
+) {
+    let base = SUPERBLOCK_LEN + index * CHUNK_ENTRY_LEN;
+    out[base..base + 4].copy_from_slice(&tag);
+    write_u32(out, base + 4, flags & CHUNK_FLAG_CRITICAL);
+    write_u64(out, base + 8, offset as u64);
+    write_u64(out, base + 16, len as u64);
+}
+
+#[cfg(feature = "_source")]
 fn plan_offsets(chunks: &[Chunk]) -> Result<Vec<usize>, GeoError> {
     let dir_len = chunks
         .len()
@@ -224,6 +370,56 @@ fn plan_offsets(chunks: &[Chunk]) -> Result<Vec<usize>, GeoError> {
             .ok_or_else(|| GeoError::Container("container length overflow".to_string()))?;
     }
     Ok(offsets)
+}
+
+#[cfg(feature = "_source")]
+fn plan_offsets_from_lengths(lengths: &[usize]) -> Result<(Vec<usize>, usize), GeoError> {
+    let dir_len = lengths
+        .len()
+        .checked_mul(CHUNK_ENTRY_LEN)
+        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    let mut cur = SUPERBLOCK_LEN
+        .checked_add(dir_len)
+        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    let mut offsets = Vec::with_capacity(lengths.len());
+    for len in lengths {
+        cur = align8(cur)?;
+        offsets.push(cur);
+        cur = cur
+            .checked_add(*len)
+            .ok_or_else(|| GeoError::Container("container length overflow".to_string()))?;
+    }
+    Ok((offsets, align8(cur)?))
+}
+
+#[cfg(feature = "_source")]
+fn zero_padding(
+    out: &mut [u8],
+    offsets: &[usize],
+    lengths: &[usize],
+    total: usize,
+) -> Result<(), GeoError> {
+    let dir_end = SUPERBLOCK_LEN
+        .checked_add(
+            lengths
+                .len()
+                .checked_mul(CHUNK_ENTRY_LEN)
+                .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?,
+        )
+        .ok_or_else(|| GeoError::Container("directory overflow".to_string()))?;
+    let mut pos = dir_end;
+    for (&offset, &len) in offsets.iter().zip(lengths) {
+        if offset > pos {
+            out[pos..offset].fill(0);
+        }
+        pos = offset
+            .checked_add(len)
+            .ok_or_else(|| GeoError::Container("container length overflow".to_string()))?;
+    }
+    if total > pos {
+        out[pos..total].fill(0);
+    }
+    Ok(())
 }
 
 fn align8(value: usize) -> Result<usize, GeoError> {

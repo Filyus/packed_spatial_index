@@ -1102,8 +1102,7 @@ impl GeoArtifact {
                 )
             }
         };
-        let base = std::mem::take(out);
-        manifest::append_geo_manifest(&base, &manifest, out)?;
+        manifest::append_geo_manifest(out, &manifest)?;
         Ok(GeoArtifact {
             manifest,
             bytes_len: out.len(),

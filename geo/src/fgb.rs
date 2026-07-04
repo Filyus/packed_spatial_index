@@ -362,6 +362,9 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
             req.order,
             req.duplicates,
         )?;
+        if output_is_source_ordered(&output) {
+            return self.read_features_source_ordered(output, &req);
+        }
         let wanted: HashSet<u64> = output.iter().map(|feature| feature.row_number).collect();
         let mut remaining_outputs: HashMap<u64, usize> = HashMap::new();
         for feature in &output {
@@ -428,6 +431,61 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
             .collect()
     }
 
+    fn read_features_source_ordered(
+        &mut self,
+        output: Vec<FeatureRef>,
+        req: &FeatureReadRequest,
+    ) -> Result<Vec<FeatureRecord>, GeoError> {
+        let reader = self.reader.take().ok_or(GeoError::DatasetConsumed)?;
+        let mut features = reader
+            .select_all()
+            .map_err(|e| GeoError::FlatGeobuf(e.to_string()))?;
+        let mut records = Vec::with_capacity(output.len());
+        let mut next = 0usize;
+        let mut row = 0u64;
+        loop {
+            let feature = match features.next() {
+                Ok(Some(feature)) => feature,
+                Ok(None) => break,
+                Err(e) => return Err(GeoError::FlatGeobuf(format!("features[{row}]: {e}"))),
+            };
+            if next < output.len() && output[next].row_number == row {
+                let start = next;
+                while next < output.len() && output[next].row_number == row {
+                    next += 1;
+                }
+                let materialized = materialize_feature(
+                    feature,
+                    req.geometry,
+                    req.geometry_json,
+                    &req.properties,
+                    row as usize,
+                )?;
+                for requested in &output[start..next - 1] {
+                    records.push(feature_record_from_materialized(
+                        requested.clone(),
+                        materialized.clone(),
+                    ));
+                }
+                records.push(feature_record_from_materialized(
+                    output[next - 1].clone(),
+                    materialized,
+                ));
+                if next == output.len() {
+                    return Ok(records);
+                }
+            }
+            row += 1;
+        }
+        if let Some(feature) = output.get(next) {
+            return Err(GeoError::FeatureRowOutOfBounds {
+                row_number: feature.row_number,
+                num_rows: row,
+            });
+        }
+        Ok(records)
+    }
+
     fn check_selector(&self, selector: &GeometrySelector) -> Result<(), GeoError> {
         match selector {
             GeometrySelector::Default | GeometrySelector::FirstUsable => Ok(()),
@@ -466,11 +524,29 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
     }
 }
 
+fn output_is_source_ordered(output: &[FeatureRef]) -> bool {
+    output
+        .windows(2)
+        .all(|window| window[0].row_number <= window[1].row_number)
+}
+
 #[derive(Debug, Clone)]
 struct MaterializedFgbFeature {
     geometry_wkb: Option<Vec<u8>>,
     geometry_json: Option<serde_json::Value>,
     properties: serde_json::Value,
+}
+
+fn feature_record_from_materialized(
+    feature: FeatureRef,
+    record: MaterializedFgbFeature,
+) -> FeatureRecord {
+    FeatureRecord {
+        feature,
+        geometry_wkb: record.geometry_wkb,
+        geometry_json: record.geometry_json,
+        properties: record.properties,
+    }
 }
 
 fn materialize_feature(

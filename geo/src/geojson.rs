@@ -11,6 +11,7 @@ use std::io::{self, Read};
 
 use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::value::RawValue;
 
 use crate::payload::{self, FeatureRef};
 use crate::scan_core::{self, FeatureReadRequest, FeatureRecord, GeometryReadMode, ScanEntry};
@@ -111,35 +112,45 @@ pub fn build_geojson_stream<R: Read>(reader: R, req: BuildRequest) -> Result<Geo
 /// # Ok::<(), packed_spatial_index_geo::GeoError>(())
 /// ```
 pub fn open_geojson_slice(bytes: &[u8]) -> Result<GeoJsonDataset, GeoError> {
-    let value: serde_json::Value =
+    let document: RawDocumentType =
         serde_json::from_slice(bytes).map_err(|e| GeoError::GeoJson(e.to_string()))?;
     let fingerprint = format!("fnv64:{:016x}", payload::fnv(0xcbf2_9ce4_8422_2325, bytes));
-    let doc_type = value
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| GeoError::GeoJson("document has no `type` member".to_string()))?;
-    let extent = declared_extent(&value);
-    let features = match doc_type {
+    let (features, extent) = match document.doc_type.as_str() {
         "FeatureCollection" => {
-            let features = value
-                .get("features")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| {
-                    GeoError::GeoJson("FeatureCollection has no `features` array".to_string())
-                })?;
-            features
-                .iter()
+            let document: RawFeatureCollectionDocument =
+                serde_json::from_slice(bytes).map_err(|e| GeoError::GeoJson(e.to_string()))?;
+            let features = document.features.ok_or_else(|| {
+                GeoError::GeoJson("FeatureCollection has no `features` array".to_string())
+            })?;
+            let features = features
+                .into_iter()
                 .enumerate()
                 .map(|(row, feature)| parse_feature(feature, row))
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                features,
+                document.bbox.as_ref().and_then(declared_extent_from_bbox),
+            )
         }
-        "Feature" => vec![parse_feature(&value, 0)?],
+        "Feature" => {
+            let feature: RawFeature =
+                serde_json::from_slice(bytes).map_err(|e| GeoError::GeoJson(e.to_string()))?;
+            (vec![parse_feature(feature, 0)?], None)
+        }
         "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon" | "MultiPolygon"
-        | "GeometryCollection" => vec![GeoJsonFeature {
-            geometry: Some(value.clone()),
-            properties: None,
-            feature_id: None,
-        }],
+        | "GeometryCollection" => {
+            let geometry = raw_value_from_slice(bytes)?;
+            let geometry_type = raw_geometry_type(geometry.as_ref(), 0)?;
+            (
+                vec![GeoJsonFeature {
+                    geometry: Some(geometry),
+                    geometry_type: Some(geometry_type),
+                    properties: None,
+                    feature_id: None,
+                }],
+                None,
+            )
+        }
         other => {
             return Err(GeoError::GeoJson(format!(
                 "unsupported document type `{other}`"
@@ -153,54 +164,135 @@ pub fn open_geojson_slice(bytes: &[u8]) -> Result<GeoJsonDataset, GeoError> {
     })
 }
 
-fn declared_extent(value: &serde_json::Value) -> Option<DeclaredExtent> {
-    let bbox = value.get("bbox")?.as_array()?;
-    let values: Vec<f64> = bbox.iter().filter_map(serde_json::Value::as_f64).collect();
-    (values.len() == bbox.len() && (values.len() == 4 || values.len() == 6))
-        .then_some(DeclaredExtent { values })
+#[derive(Deserialize)]
+struct RawDocumentType {
+    #[serde(rename = "type")]
+    doc_type: String,
 }
 
-fn parse_feature(value: &serde_json::Value, row: usize) -> Result<GeoJsonFeature, GeoError> {
-    let feature_type = value.get("type").and_then(serde_json::Value::as_str);
-    if feature_type != Some("Feature") {
+#[derive(Deserialize)]
+struct RawFeatureCollectionDocument {
+    #[allow(dead_code)]
+    #[serde(rename = "type")]
+    doc_type: String,
+    #[serde(default)]
+    bbox: Option<serde_json::Value>,
+    #[serde(default)]
+    features: Option<Vec<RawFeature>>,
+}
+
+#[derive(Deserialize)]
+struct RawFeature {
+    #[serde(rename = "type")]
+    feature_type: Option<String>,
+    #[serde(default)]
+    geometry: Option<Box<RawValue>>,
+    #[serde(default)]
+    properties: Option<Box<RawValue>>,
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+}
+
+fn parse_feature(value: RawFeature, row: usize) -> Result<GeoJsonFeature, GeoError> {
+    if value.feature_type.as_deref() != Some("Feature") {
         return Err(GeoError::GeoJson(format!(
             "features[{row}] is not a Feature object"
         )));
     }
-    let geometry = match value.get("geometry") {
-        None | Some(serde_json::Value::Null) => None,
+    let (geometry, geometry_type) = match value.geometry {
+        None => (None, None),
         Some(geometry) => {
-            if !geometry
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|_| true)
-            {
-                return Err(GeoError::GeoJson(format!(
-                    "features[{row}] geometry has no `type` member"
-                )));
-            }
-            Some(geometry.clone())
+            let geometry_type = raw_geometry_type(geometry.as_ref(), row)?;
+            (Some(geometry), Some(geometry_type))
         }
     };
-    let properties = match value.get("properties") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::Object(map)) => Some(map.clone()),
-        Some(_) => {
-            return Err(GeoError::GeoJson(format!(
-                "features[{row}] properties is not an object"
-            )));
+    let properties = match value.properties {
+        None => None,
+        Some(properties) => {
+            validate_raw_properties(properties.as_ref(), row)?;
+            Some(properties)
         }
     };
-    let feature_id = match value.get("id") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(id)) => Some(id.clone()),
-        Some(other) => Some(other.to_string()),
-    };
+    let feature_id = feature_id(value.id.as_ref());
     Ok(GeoJsonFeature {
         geometry,
+        geometry_type,
         properties,
         feature_id,
     })
+}
+
+fn raw_value_from_slice(bytes: &[u8]) -> Result<Box<RawValue>, GeoError> {
+    let text = std::str::from_utf8(bytes).map_err(|e| GeoError::GeoJson(e.to_string()))?;
+    RawValue::from_string(text.to_string()).map_err(|e| GeoError::GeoJson(e.to_string()))
+}
+
+fn raw_geometry_type(geometry: &RawValue, row: usize) -> Result<String, GeoError> {
+    #[derive(Deserialize)]
+    struct GeometryType {
+        #[serde(rename = "type")]
+        geometry_type: Option<String>,
+    }
+
+    let value: GeometryType = serde_json::from_str(geometry.get())
+        .map_err(|e| geojson_feature_error(row, &e.to_string()))?;
+    value
+        .geometry_type
+        .ok_or_else(|| geojson_feature_error(row, "geometry has no `type` member"))
+}
+
+fn validate_raw_properties(properties: &RawValue, row: usize) -> Result<(), GeoError> {
+    if properties.get().trim_start().starts_with('{') {
+        Ok(())
+    } else {
+        Err(GeoError::GeoJson(format!(
+            "features[{row}] properties is not an object"
+        )))
+    }
+}
+
+fn parse_geometry_raw(geometry: &RawValue, row: usize) -> Result<serde_json::Value, GeoError> {
+    serde_json::from_str(geometry.get()).map_err(|e| geojson_feature_error(row, &e.to_string()))
+}
+
+fn parse_properties_raw(
+    properties: Option<&RawValue>,
+    row: usize,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, GeoError> {
+    let Some(properties) = properties else {
+        return Ok(None);
+    };
+    validate_raw_properties(properties, row)?;
+    let properties = serde_json::from_str(properties.get())
+        .map_err(|e| geojson_feature_error(row, &e.to_string()))?;
+    Ok(Some(properties))
+}
+
+fn project_properties_raw(
+    properties: Option<&RawValue>,
+    projection: &PropertyProjection,
+    row: usize,
+) -> Result<serde_json::Map<String, serde_json::Value>, GeoError> {
+    if matches!(projection, PropertyProjection::None) {
+        return Ok(serde_json::Map::new());
+    }
+    let properties = parse_properties_raw(properties, row)?;
+    Ok(project_properties(properties.as_ref(), projection))
+}
+
+fn project_properties_raw_cached(
+    properties: Option<&RawValue>,
+    parsed: Option<&serde_json::Map<String, serde_json::Value>>,
+    projection: &PropertyProjection,
+    row: usize,
+) -> Result<serde_json::Map<String, serde_json::Value>, GeoError> {
+    if matches!(projection, PropertyProjection::None) {
+        return Ok(serde_json::Map::new());
+    }
+    if let Some(properties) = parsed {
+        return Ok(project_properties(Some(properties), projection));
+    }
+    project_properties_raw(properties, projection, row)
 }
 
 fn scan_geojson_stream<R: Read>(
@@ -275,7 +367,7 @@ impl<'a> StreamScanState<'a> {
         }
     }
 
-    fn process_feature(&mut self, feature: StreamFeature) -> Result<(), GeoError> {
+    fn process_feature(&mut self, feature: RawFeature) -> Result<(), GeoError> {
         let row = self.row;
         self.row += 1;
         if feature.feature_type.as_deref() != Some("Feature") {
@@ -284,31 +376,36 @@ impl<'a> StreamScanState<'a> {
             )));
         }
         let geometry = match feature.geometry {
-            None | Some(serde_json::Value::Null) => None,
+            None => None,
             Some(geometry) => {
-                let kind = geometry_type(&geometry, row)?;
-                if !self.types.iter().any(|t| t == kind) {
-                    self.types.push(kind.to_string());
+                let kind = raw_geometry_type(geometry.as_ref(), row)?;
+                if !self.types.iter().any(|t| t == &kind) {
+                    self.types.push(kind);
                 }
                 Some(geometry)
             }
         };
-        let properties = match feature.properties {
-            None | Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::Object(map)) => {
-                for key in map.keys() {
-                    self.seen_properties.insert(key.clone());
-                }
-                Some(map)
+        if let Some(properties) = feature.properties.as_deref() {
+            validate_raw_properties(properties, row)?;
+        }
+        let mut parsed_properties = None;
+        if matches!(
+            &self.req.payload,
+            PayloadPlan::FeatureJson {
+                properties: PropertyProjection::Include(_)
             }
-            Some(_) => {
-                return Err(GeoError::GeoJson(format!(
-                    "features[{row}] properties is not an object"
-                )));
+        ) {
+            parsed_properties = parse_properties_raw(feature.properties.as_deref(), row)?;
+            if let Some(properties) = parsed_properties.as_ref() {
+                self.seen_properties.extend(properties.keys().cloned());
             }
-        };
+        }
+        let geometry_value = geometry
+            .as_deref()
+            .map(|geometry| parse_geometry_raw(geometry, row))
+            .transpose()?;
         let Some(bounds) = scan_geometry(
-            geometry.as_ref(),
+            geometry_value.as_ref(),
             row,
             matches!(self.req.envelope, EnvelopePolicy::Geographic { .. }),
         )?
@@ -327,7 +424,7 @@ impl<'a> StreamScanState<'a> {
             PayloadPlan::RowWkb => Some(payload::encode_feature_wkb(
                 &feature_ref,
                 &geometry_wkb(
-                    geometry.as_ref().expect("bounds imply geometry"),
+                    geometry_value.as_ref().expect("bounds imply geometry"),
                     &bounds,
                     row,
                 )?,
@@ -335,9 +432,14 @@ impl<'a> StreamScanState<'a> {
             PayloadPlan::FeatureJson {
                 properties: projection,
             } => {
-                let geometry = geometry.expect("bounds imply geometry");
-                let projected = project_properties(properties.as_ref(), projection);
-                Some(payload::feature_json_from_parts(
+                let geometry = geometry.as_deref().expect("bounds imply geometry");
+                let projected = project_properties_raw_cached(
+                    feature.properties.as_deref(),
+                    parsed_properties.as_ref(),
+                    projection,
+                    row,
+                )?;
+                Some(payload::feature_json_from_raw_parts(
                     &feature_ref,
                     geometry,
                     Some(serde_json::Value::Object(projected)),
@@ -385,18 +487,6 @@ impl<'a> StreamScanState<'a> {
             num_rows: self.row as u64,
         }
     }
-}
-
-#[derive(Deserialize)]
-struct StreamFeature {
-    #[serde(rename = "type")]
-    feature_type: Option<String>,
-    #[serde(default)]
-    geometry: Option<serde_json::Value>,
-    #[serde(default)]
-    properties: Option<serde_json::Value>,
-    #[serde(default)]
-    id: Option<serde_json::Value>,
 }
 
 struct FeatureCollectionSeed<'a, 'req> {
@@ -492,7 +582,7 @@ impl<'de, 'a, 'req> Visitor<'de> for FeaturesVisitor<'a, 'req> {
     where
         A: SeqAccess<'de>,
     {
-        while let Some(feature) = seq.next_element::<StreamFeature>()? {
+        while let Some(feature) = seq.next_element::<RawFeature>()? {
             self.state
                 .process_feature(feature)
                 .map_err(de::Error::custom)?;
@@ -518,8 +608,9 @@ fn feature_id(value: Option<&serde_json::Value>) -> Option<String> {
 
 #[derive(Debug, Clone)]
 struct GeoJsonFeature {
-    geometry: Option<serde_json::Value>,
-    properties: Option<serde_json::Map<String, serde_json::Value>>,
+    geometry: Option<Box<RawValue>>,
+    geometry_type: Option<String>,
+    properties: Option<Box<RawValue>>,
     feature_id: Option<String>,
 }
 
@@ -549,11 +640,7 @@ impl GeoJsonDataset {
     pub fn profile(&self) -> Result<GeometryProfile, GeoError> {
         let mut types: Vec<String> = Vec::new();
         for feature in &self.features {
-            if let Some(kind) = feature
-                .geometry
-                .as_ref()
-                .and_then(|geometry| geometry.get("type"))
-                .and_then(serde_json::Value::as_str)
+            if let Some(kind) = feature.geometry_type.as_deref()
                 && !types.iter().any(|t| t == kind)
             {
                 types.push(kind.to_string());
@@ -595,7 +682,12 @@ impl GeoJsonDataset {
         let mut entries = scan_core::vec_with_capacity_hint(self.features.len());
         let mut detected_dims = CoordinateDims::Unknown;
         for (row, feature) in self.features.iter().enumerate() {
-            let Some(bounds) = scan_geometry(feature.geometry.as_ref(), row, collect_lons)? else {
+            let geometry = feature
+                .geometry
+                .as_deref()
+                .map(|geometry| parse_geometry_raw(geometry, row))
+                .transpose()?;
+            let Some(bounds) = scan_geometry(geometry.as_ref(), row, collect_lons)? else {
                 match req.nulls {
                     NullPolicy::Skip => continue,
                     NullPolicy::Error => return Err(GeoError::NullGeometry { row }),
@@ -610,15 +702,16 @@ impl GeoJsonDataset {
                 PayloadPlan::RowWkb => Some(payload::encode_feature_wkb(
                     &feature_ref,
                     &geometry_wkb(
-                        feature.geometry.as_ref().expect("bounds imply geometry"),
+                        geometry.as_ref().expect("bounds imply geometry"),
                         &bounds,
                         row,
                     )?,
                 )),
                 PayloadPlan::FeatureJson { properties } => {
-                    let geometry = feature.geometry.clone().expect("bounds imply geometry");
-                    let projected = project_properties(feature.properties.as_ref(), properties);
-                    Some(payload::feature_json_from_parts(
+                    let geometry = feature.geometry.as_deref().expect("bounds imply geometry");
+                    let projected =
+                        project_properties_raw(feature.properties.as_deref(), properties, row)?;
+                    Some(payload::feature_json_from_raw_parts(
                         &feature_ref,
                         geometry,
                         Some(serde_json::Value::Object(projected)),
@@ -718,16 +811,17 @@ impl GeoJsonDataset {
         let PropertyProjection::Include(include) = projection else {
             return Ok(());
         };
-        for name in include {
-            let known = self.features.iter().any(|feature| {
-                feature
-                    .properties
-                    .as_ref()
-                    .is_some_and(|properties| properties.contains_key(name))
-            });
-            if !known {
-                return Err(GeoError::PropertyColumnNotFound(name.clone()));
+        let mut missing: HashSet<String> = include.iter().cloned().collect();
+        for (row, feature) in self.features.iter().enumerate() {
+            if missing.is_empty() {
+                break;
             }
+            if let Some(properties) = parse_properties_raw(feature.properties.as_deref(), row)? {
+                missing.retain(|name| !properties.contains_key(name));
+            }
+        }
+        if let Some(name) = missing.into_iter().next() {
+            return Err(GeoError::PropertyColumnNotFound(name));
         }
         Ok(())
     }
@@ -755,20 +849,28 @@ impl GeoJsonDataset {
         if feature_ref.feature_id.is_none() {
             feature_ref.feature_id.clone_from(&source.feature_id);
         }
-        let geometry_wkb = match (geometry, source.geometry.as_ref()) {
+        let geometry_value = if (matches!(geometry, GeometryReadMode::Wkb) || geometry_json)
+            && source.geometry.is_some()
+        {
+            Some(parse_geometry_raw(
+                source.geometry.as_deref().expect("checked above"),
+                row,
+            )?)
+        } else {
+            None
+        };
+        let geometry_wkb = match (geometry, geometry_value.as_ref()) {
             (GeometryReadMode::Omit, _) | (_, None) => None,
             (GeometryReadMode::Wkb, Some(geometry)) => {
                 Some(geometry_wkb_from_value(geometry, row)?)
             }
         };
+        let properties = project_properties_raw(source.properties.as_deref(), properties, row)?;
         Ok(FeatureRecord {
             feature: feature_ref,
             geometry_wkb,
-            geometry_json: geometry_json.then(|| source.geometry.clone()).flatten(),
-            properties: serde_json::Value::Object(project_properties(
-                source.properties.as_ref(),
-                properties,
-            )),
+            geometry_json: geometry_json.then_some(geometry_value).flatten(),
+            properties: serde_json::Value::Object(properties),
         })
     }
 }

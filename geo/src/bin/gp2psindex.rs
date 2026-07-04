@@ -13,8 +13,6 @@ use arrow_json::LineDelimitedWriter;
 use base64::Engine as _;
 #[cfg(feature = "flatgeobuf")]
 use packed_spatial_index_geo::open_flatgeobuf;
-#[cfg(feature = "geojson")]
-use packed_spatial_index_geo::open_geojson;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, Box3D, ConvertRequest, DuplicateFeatureRows, EnvelopePolicy,
     FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRecord, FeatureRef,
@@ -25,6 +23,8 @@ use packed_spatial_index_geo::{
     SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity,
     open_geo_index, open_geoparquet,
 };
+#[cfg(feature = "geojson")]
+use packed_spatial_index_geo::{convert_geojson_stream, open_geojson};
 
 const USAGE: &str = "\
 usage:
@@ -217,8 +217,16 @@ fn convert_source(
         SourceKind::GeoJson => {
             #[cfg(feature = "geojson")]
             {
-                let mut dataset = open_geojson(File::open(input)?)?;
-                Ok(dataset.convert_into(request, out)?)
+                let out_len = out.len();
+                match convert_geojson_stream(File::open(input)?, request.clone(), out) {
+                    Ok(artifact) => Ok(artifact),
+                    Err(err) if is_geojson_stream_shape_error(&err) => {
+                        out.truncate(out_len);
+                        let mut dataset = open_geojson(File::open(input)?)?;
+                        Ok(dataset.convert_into(request, out)?)
+                    }
+                    Err(err) => Err(Box::new(err)),
+                }
             }
             #[cfg(not(feature = "geojson"))]
             {
@@ -227,6 +235,16 @@ fn convert_source(
             }
         }
     }
+}
+
+#[cfg(feature = "geojson")]
+fn is_geojson_stream_shape_error(err: &GeoError) -> bool {
+    matches!(
+        err,
+        GeoError::GeoJson(message)
+            if message.contains("document type is not `FeatureCollection`")
+                || message.contains("FeatureCollection has no `features` array")
+    )
 }
 
 fn scan_source(

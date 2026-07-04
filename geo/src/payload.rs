@@ -1,9 +1,12 @@
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 use std::collections::HashSet;
 
 #[cfg(feature = "parquet")]
 use parquet::file::metadata::ParquetMetaData;
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "_source")]
+use crate::GeoError;
 
 /// Content type used for [`PayloadPlan::RowRef`] payload sections.
 pub const FEATURE_REF_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-ref";
@@ -28,7 +31,7 @@ pub enum PropertyProjection {
     Exclude(Vec<String>),
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 pub(crate) fn encode_feature_ref(feature: &FeatureRef) -> Vec<u8> {
     let mut out = Vec::with_capacity(FEATURE_REF_RECORD_LEN);
     out.extend_from_slice(&feature.row_number.to_le_bytes());
@@ -40,11 +43,33 @@ pub(crate) fn encode_feature_ref(feature: &FeatureRef) -> Vec<u8> {
     out
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 pub(crate) fn encode_feature_wkb(feature: &FeatureRef, wkb: &[u8]) -> Vec<u8> {
     let mut out = encode_feature_ref(feature);
     out.extend_from_slice(wkb);
     out
+}
+
+/// Serialize a GeoJSON `Feature` payload from already-materialized geometry
+/// and properties JSON. Format-specific callers supply the geometry however
+/// they hold it — decoded from WKB (Parquet) or taken straight from the
+/// source (GeoJSON) — so this stays free of arrow and WKB concerns.
+#[cfg(feature = "_source")]
+pub(crate) fn feature_json_from_parts(
+    feature: &FeatureRef,
+    geometry: serde_json::Value,
+    properties: Option<serde_json::Value>,
+) -> Result<Vec<u8>, GeoError> {
+    let properties =
+        properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let feature = serde_json::json!({
+        "type": "Feature",
+        "id": feature.feature_id.as_deref().unwrap_or(""),
+        "feature_ref": feature,
+        "geometry": geometry,
+        "properties": properties,
+    });
+    serde_json::to_vec(&feature).map_err(|e| GeoError::Wkb(e.to_string()))
 }
 
 /// Decode a fixed-width [`FeatureRef`] payload.
@@ -90,7 +115,7 @@ fn decode_u16_option(bytes: [u8; 2]) -> Option<u16> {
     }
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 pub(crate) fn unique_feature_count(features: &[FeatureRef]) -> usize {
     features
         .iter()
@@ -99,7 +124,7 @@ pub(crate) fn unique_feature_count(features: &[FeatureRef]) -> usize {
         .len()
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 pub(crate) fn entries_may_duplicate_rows(features: &[FeatureRef]) -> bool {
     let mut seen = HashSet::new();
     features
@@ -118,8 +143,8 @@ pub(crate) fn source_fingerprint(meta: &ParquetMetaData) -> String {
     format!("fnv64:{hash:016x}")
 }
 
-#[cfg(feature = "parquet")]
-fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
+#[cfg(feature = "_source")]
+pub(crate) fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
     for b in bytes {
         hash ^= u64::from(*b);
         hash = hash.wrapping_mul(0x100_0000_01b3);

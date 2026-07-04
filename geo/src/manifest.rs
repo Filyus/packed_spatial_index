@@ -70,14 +70,14 @@ pub(crate) const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";
 pub(crate) const FORMAT_VERSION: u64 = 2;
 pub(crate) const SUPERBLOCK_LEN: usize = 32;
 pub(crate) const CHUNK_ENTRY_LEN: usize = 24;
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 const CHUNK_FLAG_CRITICAL: u32 = 1;
 pub(crate) const TAG_GEO_MANIFEST: [u8; 4] = *b"geoM";
 
 #[derive(Debug, Clone)]
 struct Chunk {
     tag: [u8; 4],
-    #[cfg_attr(not(feature = "parquet"), allow(dead_code))]
+    #[cfg_attr(not(feature = "_source"), allow(dead_code))]
     flags: u32,
     content: Vec<u8>,
 }
@@ -112,7 +112,7 @@ pub(crate) fn read_geo_manifest_content(content: &[u8]) -> Result<GeoArtifactMan
     serde_json::from_value(value).map_err(|e| GeoError::Container(e.to_string()))
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 pub(crate) fn append_geo_manifest(
     bytes: &[u8],
     manifest: &GeoArtifactManifest,
@@ -180,7 +180,7 @@ fn parse_chunks(bytes: &[u8]) -> Result<Vec<Chunk>, GeoError> {
     Ok(chunks)
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 fn write_chunks(chunks: &[Chunk], out: &mut Vec<u8>) -> Result<(), GeoError> {
     let offsets = plan_offsets(chunks)?;
     let total = offsets
@@ -206,7 +206,7 @@ fn write_chunks(chunks: &[Chunk], out: &mut Vec<u8>) -> Result<(), GeoError> {
     Ok(())
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 fn plan_offsets(chunks: &[Chunk]) -> Result<Vec<usize>, GeoError> {
     let dir_len = chunks
         .len()
@@ -249,12 +249,12 @@ pub(crate) fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, GeoError> {
     Ok(u64::from_le_bytes(slice.try_into().unwrap()))
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
     bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }

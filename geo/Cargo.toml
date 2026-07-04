@@ -3,11 +3,11 @@ name = "packed_spatial_index_geo"
 version = "0.17.0"
 edition = "2024"
 rust-version = "1.89"
-description = "Build streamable PSINDEX spatial indexes from GeoParquet and native Parquet geospatial data."
+description = "Build streamable PSINDEX spatial indexes from GeoParquet, FlatGeobuf, GeoJSON, and native Parquet geospatial data."
 license = "Apache-2.0"
 repository = "https://github.com/Filyus/packed_spatial_index"
 readme = "README.md"
-keywords = ["geoparquet", "spatial", "rtree", "geoarrow", "index"]
+keywords = ["geoparquet", "flatgeobuf", "geojson", "spatial", "index"]
 categories = ["science::geo", "data-structures"]
 # Dev-only verification scripts (e.g. the pyarrow cross-check) and wrangler's
 # local cache (Cloudflare account id) stay out of the published crate.
@@ -21,15 +21,25 @@ name = "gp2psindex"
 required-features = ["parquet"]
 
 [features]
-default = ["parquet"]
+default = ["parquet", "flatgeobuf", "geojson"]
 # The Parquet source side: read Parquet / GeoParquet files — discovery,
 # inspection, validation, feature read-back — and build/convert indexes from
 # them. Pulls in arrow + parquet. Without it the crate is query-only: open a
 # pre-built PSINDEX artifact and query it (open_geo_index, search_*,
 # filter_hits, payload decode) with no arrow or parquet — small enough for
 # wasm32.
-parquet = ["dep:arrow", "dep:arrow-json", "dep:arrow-select", "dep:parquet"]
+parquet = ["dep:arrow", "dep:arrow-json", "dep:arrow-select", "dep:parquet", "_source"]
+# FlatGeobuf source side: open .fgb files and build/convert indexes from them.
+flatgeobuf = ["dep:flatgeobuf", "_source"]
+# GeoJSON source side: open GeoJSON documents and build/convert indexes from
+# them. Costs no extra dependencies — geozero's GeoJSON support and serde_json
+# are already unconditional.
+geojson = ["_source"]
 async = ["packed_spatial_index/async"]
+# Internal umbrella for the shared source-side scan/build/convert core that
+# every input format (parquet, and future formats) plugs into. Enabled
+# automatically by the format features — do not enable directly.
+_source = []
 
 [dependencies]
 # Query/build engine. `stream` + `f32-storage` so the converter can emit compact
@@ -45,6 +55,9 @@ arrow-select = { version = "59", optional = true }
 parquet = { version = "59", features = ["geospatial"], optional = true }
 # WKB envelope fallback when a file has no bbox covering column.
 geozero = { version = "0.15", features = ["with-wkb", "with-geojson", "with-geo"] }
+# FlatGeobuf reader/writer behind the `flatgeobuf` feature. Default features
+# off: they pull an HTTP range client (reqwest/tokio) we don't use.
+flatgeobuf = { version = "6", default-features = false, optional = true }
 # Pure-Rust planar predicates for exact post-filtering of bbox candidates.
 geo = { version = "0.33", default-features = false }
 geo-types = "0.7"

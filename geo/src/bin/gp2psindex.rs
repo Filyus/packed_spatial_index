@@ -1,6 +1,8 @@
 //! Command-line converter and inspector for geospatial Parquet inputs.
 
 use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -9,21 +11,27 @@ use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use arrow_json::LineDelimitedWriter;
 use base64::Engine as _;
+#[cfg(feature = "flatgeobuf")]
+use packed_spatial_index_geo::open_flatgeobuf;
+#[cfg(feature = "geojson")]
+use packed_spatial_index_geo::open_geojson;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, Box3D, ConvertRequest, DuplicateFeatureRows, EnvelopePolicy,
-    FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRef, FeatureRows,
-    GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoDiscovery,
-    GeoError, GeoQuery2D, GeometryProfile, GeometryReadMode, GeometrySelector, IndexDimsRequest,
-    InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan, PropertyProjection, RangeReader,
-    SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport,
-    ValidationSeverity, open, open_geo_index,
+    FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRecord, FeatureRef,
+    FeatureRows, GeoArtifact, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D,
+    GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D, GeometryProfile, GeometryReadMode,
+    GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NonPlanarExactPolicy,
+    NullPolicy, PayloadPlan, PropertyProjection, RangeReader, ScanRequest, SliceReader,
+    SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity,
+    open, open_geo_index,
 };
 
 const USAGE: &str = "\
 usage:
-  gp2psindex discover <input.parquet> [--json]
-  gp2psindex inspect <input.parquet> [--geometry-column name] [--exact] [--json]
-  gp2psindex build <input.parquet> <output.psi>
+  gp2psindex discover <input> [--format parquet|flatgeobuf|geojson] [--json]
+  gp2psindex inspect <input> [--format parquet|flatgeobuf|geojson] [--geometry-column name] [--exact] [--json]
+  gp2psindex build <input> <output.psi>
+      [--format parquet|flatgeobuf|geojson]
       [--geometry-column name]
       [--dims auto|2d|3d]
       [--precision f64|f32]
@@ -32,7 +40,8 @@ usage:
       [--properties none|all|include:a,b|exclude:a,b]
       [--antimeridian reject|split|world]
       [--no-interleave]
-  gp2psindex validate <input.parquet>
+  gp2psindex validate <input>
+      [--format parquet|flatgeobuf|geojson]
       [--geometry-column name]
       [--exact]
       [--json]
@@ -42,7 +51,8 @@ usage:
       [--payload none|row-ref|row-wkb|feature-json]
       [--properties none|all|include:a,b|exclude:a,b]
       [--antimeridian reject|split|world]
-  gp2psindex query <source.parquet> <index.psi>
+  gp2psindex query <source> <index.psi>
+      [--format parquet|flatgeobuf|geojson]
       (--bbox xmin,ymin,xmax,ymax | --radius lon,lat,metres)
       [--exact]
       [--predicate intersects]
@@ -81,32 +91,292 @@ fn run(args: Vec<String>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceKind {
+    Parquet,
+    FlatGeobuf,
+    GeoJson,
+}
+
+fn source_kind(
+    path: &str,
+    format: Option<String>,
+) -> Result<SourceKind, Box<dyn std::error::Error>> {
+    if let Some(format) = format {
+        return match format.as_str() {
+            "parquet" => Ok(SourceKind::Parquet),
+            "flatgeobuf" | "fgb" => Ok(SourceKind::FlatGeobuf),
+            "geojson" | "json" => Ok(SourceKind::GeoJson),
+            _ => Err(format!("invalid --format `{format}`").into()),
+        };
+    }
+    if let Some(kind) = source_kind_from_extension(path) {
+        return Ok(kind);
+    }
+    source_kind_from_signature(path)
+}
+
+fn source_kind_from_extension(path: &str) -> Option<SourceKind> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "parquet" | "pq" => Some(SourceKind::Parquet),
+        "fgb" => Some(SourceKind::FlatGeobuf),
+        "geojson" | "json" => Some(SourceKind::GeoJson),
+        _ => None,
+    }
+}
+
+fn source_kind_from_signature(path: &str) -> Result<SourceKind, Box<dyn std::error::Error>> {
+    let mut file = File::open(path)?;
+    let mut buf = [0u8; 16];
+    let len = file.read(&mut buf)?;
+    let bytes = &buf[..len];
+    if bytes.starts_with(b"PAR1") {
+        return Ok(SourceKind::Parquet);
+    }
+    if bytes.starts_with(b"fgb\x03fgb\0") {
+        return Ok(SourceKind::FlatGeobuf);
+    }
+    if bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| byte == b'{' || byte == b'[')
+    {
+        return Ok(SourceKind::GeoJson);
+    }
+    Err("could not detect input format; pass --format parquet|flatgeobuf|geojson".into())
+}
+
+fn inspect_source_profile(
+    kind: SourceKind,
+    input: &str,
+    selector: GeometrySelector,
+) -> Result<GeometryProfile, Box<dyn std::error::Error>> {
+    match kind {
+        SourceKind::Parquet => {
+            let mut dataset = open(File::open(input)?)?;
+            Ok(dataset.inspect(InspectRequest {
+                selector,
+                exact: false,
+            })?)
+        }
+        SourceKind::FlatGeobuf => {
+            check_single_geometry_selector(&selector, "FlatGeobuf")?;
+            #[cfg(feature = "flatgeobuf")]
+            {
+                Ok(open_flatgeobuf(File::open(input)?)?.profile())
+            }
+            #[cfg(not(feature = "flatgeobuf"))]
+            {
+                let _ = input;
+                Err("this gp2psindex build was compiled without FlatGeobuf support".into())
+            }
+        }
+        SourceKind::GeoJson => {
+            check_single_geometry_selector(&selector, "GeoJSON")?;
+            #[cfg(feature = "geojson")]
+            {
+                Ok(open_geojson(File::open(input)?)?.profile())
+            }
+            #[cfg(not(feature = "geojson"))]
+            {
+                let _ = input;
+                Err("this gp2psindex build was compiled without GeoJSON support".into())
+            }
+        }
+    }
+}
+
+fn convert_source(
+    kind: SourceKind,
+    input: &str,
+    request: ConvertRequest,
+    out: &mut Vec<u8>,
+) -> Result<GeoArtifact, Box<dyn std::error::Error>> {
+    match kind {
+        SourceKind::Parquet => {
+            let mut dataset = open(File::open(input)?)?;
+            Ok(dataset.convert_into(request, out)?)
+        }
+        SourceKind::FlatGeobuf => {
+            #[cfg(feature = "flatgeobuf")]
+            {
+                let mut dataset = open_flatgeobuf(File::open(input)?)?;
+                Ok(dataset.convert_into(request, out)?)
+            }
+            #[cfg(not(feature = "flatgeobuf"))]
+            {
+                let _ = (input, request, out);
+                Err("this gp2psindex build was compiled without FlatGeobuf support".into())
+            }
+        }
+        SourceKind::GeoJson => {
+            #[cfg(feature = "geojson")]
+            {
+                let mut dataset = open_geojson(File::open(input)?)?;
+                Ok(dataset.convert_into(request, out)?)
+            }
+            #[cfg(not(feature = "geojson"))]
+            {
+                let _ = (input, request, out);
+                Err("this gp2psindex build was compiled without GeoJSON support".into())
+            }
+        }
+    }
+}
+
+fn scan_source(
+    kind: SourceKind,
+    input: &str,
+    request: ScanRequest,
+) -> Result<GeometryScan, Box<dyn std::error::Error>> {
+    match kind {
+        SourceKind::Parquet => {
+            let mut dataset = open(File::open(input)?)?;
+            Ok(dataset.scan(request)?)
+        }
+        SourceKind::FlatGeobuf => {
+            #[cfg(feature = "flatgeobuf")]
+            {
+                let mut dataset = open_flatgeobuf(File::open(input)?)?;
+                Ok(dataset.scan(request)?)
+            }
+            #[cfg(not(feature = "flatgeobuf"))]
+            {
+                let _ = (input, request);
+                Err("this gp2psindex build was compiled without FlatGeobuf support".into())
+            }
+        }
+        SourceKind::GeoJson => {
+            #[cfg(feature = "geojson")]
+            {
+                let mut dataset = open_geojson(File::open(input)?)?;
+                Ok(dataset.scan(request)?)
+            }
+            #[cfg(not(feature = "geojson"))]
+            {
+                let _ = (input, request);
+                Err("this gp2psindex build was compiled without GeoJSON support".into())
+            }
+        }
+    }
+}
+
+fn validate_source(
+    kind: SourceKind,
+    input: &str,
+    request: ScanRequest,
+    as_json: bool,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    match scan_source(kind, input, request) {
+        Ok(scan) => {
+            let profile = scan_profile(&scan);
+            if as_json {
+                serde_json::to_writer_pretty(
+                    std::io::stdout(),
+                    &serde_json::json!({ "ok": true, "profile": profile }),
+                )?;
+                println!();
+            } else {
+                println!("status: ok");
+                print_profile(profile);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            if as_json {
+                serde_json::to_writer_pretty(
+                    std::io::stdout(),
+                    &serde_json::json!({ "ok": false, "error": err.to_string() }),
+                )?;
+                println!();
+            } else {
+                eprintln!("status: error");
+                eprintln!("issue: {err}");
+            }
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+fn scan_profile(scan: &GeometryScan) -> &GeometryProfile {
+    match scan {
+        GeometryScan::D2(scan) => &scan.profile,
+        GeometryScan::D3(scan) => &scan.profile,
+    }
+}
+
+fn check_single_geometry_selector(
+    selector: &GeometrySelector,
+    source: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match selector {
+        GeometrySelector::Default | GeometrySelector::FirstUsable => Ok(()),
+        GeometrySelector::Name(name) if name == "geometry" => Ok(()),
+        GeometrySelector::Name(name) => Err(Box::new(GeoError::GeometryColumnNotFound(
+            name.clone(),
+        ))),
+        GeometrySelector::GeoParquetPrimary | GeometrySelector::SingleNativeParquet => {
+            Err(format!(
+                "selector applies to Parquet sources; use Default or Name(\"geometry\") for {source}"
+            )
+            .into())
+        }
+    }
+}
+
 fn discover_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
-    parsed.no_unknown_flags(&["--json"])?;
-    let input = parsed.required_pos(0, "input.parquet")?;
+    parsed.no_unknown_flags(&["--format", "--json"])?;
+    let input = parsed.required_pos(0, "input")?;
     parsed.no_extra_pos(1)?;
-    let dataset = open(File::open(input)?)?;
-    if parsed.flag("--json") {
-        serde_json::to_writer_pretty(std::io::stdout(), dataset.discovery())?;
-        println!();
-    } else {
-        print_discovery(dataset.discovery());
+    let kind = source_kind(input, parsed.option("--format")?)?;
+    match kind {
+        SourceKind::Parquet => {
+            let dataset = open(File::open(input)?)?;
+            if parsed.flag("--json") {
+                serde_json::to_writer_pretty(std::io::stdout(), dataset.discovery())?;
+                println!();
+            } else {
+                print_discovery(dataset.discovery());
+            }
+        }
+        SourceKind::FlatGeobuf | SourceKind::GeoJson => {
+            let profile = inspect_source_profile(kind, input, GeometrySelector::Default)?;
+            if parsed.flag("--json") {
+                serde_json::to_writer_pretty(std::io::stdout(), &profile)?;
+                println!();
+            } else {
+                print_profile(&profile);
+            }
+        }
     }
     Ok(())
 }
 
 fn inspect_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
-    parsed.no_unknown_flags(&["--geometry-column", "--exact", "--json"])?;
-    let input = parsed.required_pos(0, "input.parquet")?;
+    parsed.no_unknown_flags(&["--format", "--geometry-column", "--exact", "--json"])?;
+    let input = parsed.required_pos(0, "input")?;
     parsed.no_extra_pos(1)?;
+    let kind = source_kind(input, parsed.option("--format")?)?;
     let selector = geometry_selector(parsed.option("--geometry-column")?);
-    let mut dataset = open(File::open(input)?)?;
-    let profile = dataset.inspect(InspectRequest {
-        selector,
-        exact: parsed.flag("--exact"),
-    })?;
+    let profile = match kind {
+        SourceKind::Parquet => {
+            let mut dataset = open(File::open(input)?)?;
+            dataset.inspect(InspectRequest {
+                selector,
+                exact: parsed.flag("--exact"),
+            })?
+        }
+        SourceKind::FlatGeobuf | SourceKind::GeoJson => {
+            inspect_source_profile(kind, input, selector)?
+        }
+    };
     if parsed.flag("--json") {
         serde_json::to_writer_pretty(std::io::stdout(), &profile)?;
         println!();
@@ -119,6 +389,7 @@ fn inspect_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
     parsed.no_unknown_flags(&[
+        "--format",
         "--geometry-column",
         "--dims",
         "--precision",
@@ -128,10 +399,10 @@ fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "--antimeridian",
         "--no-interleave",
     ])?;
-    let input = parsed.required_pos(0, "input.parquet")?;
+    let input = parsed.required_pos(0, "input")?;
     let output = parsed.required_pos(1, "output.psi")?;
     parsed.no_extra_pos(2)?;
-    let mut dataset = open(File::open(input)?)?;
+    let kind = source_kind(input, parsed.option("--format")?)?;
     let payload = parse_payload(
         parsed.option("--payload")?.as_deref().unwrap_or("row-wkb"),
         parsed.option("--properties")?,
@@ -147,7 +418,7 @@ fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         ..ConvertRequest::default()
     };
     let mut bytes = Vec::new();
-    let artifact = dataset.convert_into(request, &mut bytes)?;
+    let artifact = convert_source(kind, input, request, &mut bytes)?;
     std::fs::write(output, &bytes)?;
     println!(
         "wrote {output}: {} bytes, {} features, {} index entries",
@@ -161,6 +432,7 @@ fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn validate_cmd(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
     parsed.no_unknown_flags(&[
+        "--format",
         "--geometry-column",
         "--exact",
         "--json",
@@ -171,42 +443,64 @@ fn validate_cmd(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>>
         "--properties",
         "--antimeridian",
     ])?;
-    let input = parsed.required_pos(0, "input.parquet")?;
+    let input = parsed.required_pos(0, "input")?;
     parsed.no_extra_pos(1)?;
+    let kind = source_kind(input, parsed.option("--format")?)?;
     let payload = parse_payload(
         parsed.option("--payload")?.as_deref().unwrap_or("row-wkb"),
         parsed.option("--properties")?,
     )?;
-    let mut dataset = open(File::open(input)?)?;
-    let report = dataset.validate(ValidateRequest {
-        selector: geometry_selector(parsed.option("--geometry-column")?),
-        exact: parsed.flag("--exact"),
-        dims: parse_dims(parsed.option("--dims")?.as_deref().unwrap_or("auto"))?,
-        nulls: parse_nulls(parsed.option("--nulls")?.as_deref().unwrap_or("skip"))?,
-        envelope: parse_antimeridian(parsed.option("--antimeridian")?)?,
-        payload,
-    })?;
-    if parsed.flag("--json") {
-        serde_json::to_writer_pretty(std::io::stdout(), &report)?;
-        println!();
-    } else {
-        print_validation(&report);
+    let selector = geometry_selector(parsed.option("--geometry-column")?);
+    let dims = parse_dims(parsed.option("--dims")?.as_deref().unwrap_or("auto"))?;
+    let nulls = parse_nulls(parsed.option("--nulls")?.as_deref().unwrap_or("skip"))?;
+    let envelope = parse_antimeridian(parsed.option("--antimeridian")?)?;
+    match kind {
+        SourceKind::Parquet => {
+            let mut dataset = open(File::open(input)?)?;
+            let report = dataset.validate(ValidateRequest {
+                selector,
+                exact: parsed.flag("--exact"),
+                dims,
+                nulls,
+                envelope,
+                payload,
+            })?;
+            if parsed.flag("--json") {
+                serde_json::to_writer_pretty(std::io::stdout(), &report)?;
+                println!();
+            } else {
+                print_validation(&report);
+            }
+            let has_warning = report
+                .issues
+                .iter()
+                .any(|issue| issue.severity == ValidationSeverity::Warning);
+            let failed = !report.ok || (parsed.flag("--strict") && has_warning);
+            Ok(if failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
+        }
+        SourceKind::FlatGeobuf | SourceKind::GeoJson => validate_source(
+            kind,
+            input,
+            ScanRequest {
+                selector,
+                dims,
+                nulls,
+                envelope,
+                payload,
+            },
+            parsed.flag("--json"),
+        ),
     }
-    let has_warning = report
-        .issues
-        .iter()
-        .any(|issue| issue.severity == ValidationSeverity::Warning);
-    let failed = !report.ok || (parsed.flag("--strict") && has_warning);
-    Ok(if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    })
 }
 
 fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
     parsed.no_unknown_flags(&[
+        "--format",
         "--bbox",
         "--radius",
         "--exact",
@@ -220,9 +514,10 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "--ndjson",
         "--allow-source-mismatch",
     ])?;
-    let source = parsed.required_pos(0, "source.parquet")?;
+    let source = parsed.required_pos(0, "source")?;
     let index_path = parsed.required_pos(1, "index.psi")?;
     parsed.no_extra_pos(2)?;
+    let kind = source_kind(source, parsed.option("--format")?)?;
 
     if parsed.flag("--json") && parsed.flag("--ndjson") {
         return Err("--json and --ndjson are mutually exclusive".into());
@@ -233,11 +528,11 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = artifact.manifest().clone();
 
     let features = match artifact {
-        GeoArtifactIndex::D2(index) => query_cmd_2d(&parsed, source, &index)?,
+        GeoArtifactIndex::D2(index) => query_cmd_2d(&parsed, source, kind, &index)?,
         GeoArtifactIndex::D3(index) => query_cmd_3d(&parsed, &index)?,
     };
 
-    query_cmd_finish(&parsed, source, &manifest, features)
+    query_cmd_finish(&parsed, source, kind, &manifest, features)
 }
 
 /// 2D query path: `--bbox` (4 numbers) or `--radius`, with optional `--exact`
@@ -245,6 +540,7 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn query_cmd_2d<R: RangeReader>(
     parsed: &Parsed<'_>,
     source: &str,
+    kind: SourceKind,
     index: &GeoArtifactIndex2D<R>,
 ) -> Result<Vec<FeatureRef>, Box<dyn std::error::Error>> {
     let bbox = parsed.option("--bbox")?;
@@ -275,21 +571,41 @@ fn query_cmd_2d<R: RangeReader>(
         return Ok(features);
     }
 
-    let expected_source_fingerprint =
-        (!parsed.flag("--allow-source-mismatch")).then_some(manifest.source_fingerprint.clone());
-    let mut dataset = open(File::open(source)?)?;
-    Ok(dataset.filter_features(FeatureFilterRequest {
-        features,
-        selector: GeometrySelector::Name(manifest.selected_column.clone()),
-        query,
-        predicate: parse_spatial_predicate(predicate.as_deref().unwrap_or("intersects"))?,
-        non_planar: if treat_nonplanar {
-            NonPlanarExactPolicy::TreatAsPlanar
-        } else {
-            NonPlanarExactPolicy::Reject
-        },
-        expected_source_fingerprint,
-    })?)
+    let predicate = parse_spatial_predicate(predicate.as_deref().unwrap_or("intersects"))?;
+    let non_planar = if treat_nonplanar {
+        NonPlanarExactPolicy::TreatAsPlanar
+    } else {
+        NonPlanarExactPolicy::Reject
+    };
+    if matches!(kind, SourceKind::Parquet) {
+        let expected_source_fingerprint = (!parsed.flag("--allow-source-mismatch"))
+            .then_some(manifest.source_fingerprint.clone());
+        let mut dataset = open(File::open(source)?)?;
+        return Ok(dataset.filter_features(FeatureFilterRequest {
+            features,
+            selector: GeometrySelector::Name(manifest.selected_column.clone()),
+            query,
+            predicate,
+            non_planar,
+            expected_source_fingerprint,
+        })?);
+    }
+
+    let hits = index.search_hits(query.clone())?;
+    Ok(index
+        .filter_hits(
+            hits,
+            query,
+            predicate,
+            if treat_nonplanar {
+                NonPlanarExactPolicy::TreatAsPlanar
+            } else {
+                NonPlanarExactPolicy::Reject
+            },
+        )?
+        .into_iter()
+        .map(|hit| hit.feature)
+        .collect())
 }
 
 /// 3D query path: `--bbox` only (6 numbers). `--radius`, `--exact`,
@@ -337,6 +653,7 @@ fn query_cmd_3d<R: RangeReader>(
 fn query_cmd_finish(
     parsed: &Parsed<'_>,
     source: &str,
+    kind: SourceKind,
     manifest: &GeoArtifactManifest,
     features: Vec<FeatureRef>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -348,8 +665,7 @@ fn query_cmd_finish(
     let expected_source_fingerprint =
         (!parsed.flag("--allow-source-mismatch")).then_some(manifest.source_fingerprint.clone());
 
-    let mut dataset = open(File::open(source)?)?;
-    let rows = dataset.read_features(FeatureReadRequest {
+    let request = FeatureReadRequest {
         features,
         selector: GeometrySelector::Name(manifest.selected_column.clone()),
         properties,
@@ -357,8 +673,18 @@ fn query_cmd_finish(
         order,
         duplicates,
         expected_source_fingerprint,
-    })?;
-    print_query_rows(&rows, parsed.flag("--json"))?;
+    };
+    match kind {
+        SourceKind::Parquet => {
+            let mut dataset = open(File::open(source)?)?;
+            let rows = dataset.read_features(request)?;
+            print_query_rows(&rows, parsed.flag("--json"))?;
+        }
+        SourceKind::FlatGeobuf | SourceKind::GeoJson => {
+            let records = read_feature_records(kind, source, request)?;
+            print_feature_records(&records, parsed.flag("--json"))?;
+        }
+    }
     Ok(())
 }
 
@@ -624,6 +950,92 @@ fn split_names(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn read_feature_records(
+    kind: SourceKind,
+    source: &str,
+    request: FeatureReadRequest,
+) -> Result<Vec<FeatureRecord>, Box<dyn std::error::Error>> {
+    match kind {
+        SourceKind::Parquet => Err("Parquet read-back uses FeatureRows, not FeatureRecord".into()),
+        SourceKind::FlatGeobuf => {
+            #[cfg(feature = "flatgeobuf")]
+            {
+                let mut dataset = open_flatgeobuf(File::open(source)?)?;
+                Ok(dataset.read_features(request)?)
+            }
+            #[cfg(not(feature = "flatgeobuf"))]
+            {
+                let _ = (source, request);
+                Err("this gp2psindex build was compiled without FlatGeobuf support".into())
+            }
+        }
+        SourceKind::GeoJson => {
+            #[cfg(feature = "geojson")]
+            {
+                let dataset = open_geojson(File::open(source)?)?;
+                Ok(dataset.read_features(request)?)
+            }
+            #[cfg(not(feature = "geojson"))]
+            {
+                let _ = (source, request);
+                Err("this gp2psindex build was compiled without GeoJSON support".into())
+            }
+        }
+    }
+}
+
+fn print_feature_records(
+    records: &[FeatureRecord],
+    as_json_array: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let values = records
+        .iter()
+        .map(feature_record_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    if as_json_array {
+        serde_json::to_writer_pretty(std::io::stdout(), &values)?;
+        println!();
+    } else {
+        for value in values {
+            serde_json::to_writer(std::io::stdout(), &value)?;
+            println!();
+        }
+    }
+    Ok(())
+}
+
+fn feature_record_value(
+    record: &FeatureRecord,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut feature = serde_json::Map::new();
+    feature.insert(
+        "type".to_string(),
+        serde_json::Value::String("Feature".to_string()),
+    );
+    if let Some(id) = &record.feature.feature_id {
+        feature.insert("id".to_string(), serde_json::Value::String(id.clone()));
+    }
+    feature.insert(
+        "feature_ref".to_string(),
+        serde_json::to_value(&record.feature)?,
+    );
+    feature.insert(
+        "geometry".to_string(),
+        record
+            .geometry_json
+            .clone()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    feature.insert("properties".to_string(), record.properties.clone());
+    if let Some(wkb) = &record.geometry_wkb {
+        feature.insert(
+            "geometry_wkb".to_string(),
+            serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(wkb)),
+        );
+    }
+    Ok(serde_json::Value::Object(feature))
+}
+
 fn print_query_rows(
     rows: &FeatureRows,
     as_json_array: bool,
@@ -807,6 +1219,7 @@ fn option_takes_value(arg: &str) -> bool {
         arg,
         "--geometry-column"
             | "--dims"
+            | "--format"
             | "--precision"
             | "--nulls"
             | "--payload"

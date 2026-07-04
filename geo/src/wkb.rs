@@ -1,14 +1,16 @@
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 use geozero::GeomProcessor;
 #[cfg(feature = "parquet")]
 use geozero::geojson::GeoJsonString;
 #[cfg(feature = "parquet")]
 use geozero::wkb::{FromWkb, WkbDialect};
 
+#[cfg(feature = "_source")]
+use crate::CoordinateDims;
 #[cfg(feature = "parquet")]
-use crate::{CoordinateDims, GeoError, GeometryKind};
+use crate::{GeoError, GeometryKind};
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 #[derive(Debug, Clone)]
 pub(crate) struct Coord {
     pub x: f64,
@@ -17,7 +19,7 @@ pub(crate) struct Coord {
     pub m: Option<f64>,
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 #[derive(Debug, Clone)]
 pub(crate) struct GeometryBounds {
     pub min: [f64; 3],
@@ -28,9 +30,9 @@ pub(crate) struct GeometryBounds {
     pub from_covering: bool,
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 impl GeometryBounds {
-    #[cfg(feature = "parquet")]
+    #[cfg(feature = "_source")]
     pub(crate) fn new(_collect_lons: bool) -> Self {
         Self {
             min: [f64::INFINITY; 3],
@@ -42,7 +44,7 @@ impl GeometryBounds {
         }
     }
 
-    #[cfg(feature = "parquet")]
+    #[cfg(feature = "_source")]
     pub(crate) fn add_coord(&mut self, coord: &Coord, collect_lons: bool) {
         self.min[0] = self.min[0].min(coord.x);
         self.min[1] = self.min[1].min(coord.y);
@@ -65,7 +67,7 @@ impl GeometryBounds {
         }
     }
 
-    #[cfg(feature = "parquet")]
+    #[cfg(feature = "_source")]
     pub(crate) fn as_3d(&self) -> [f64; 6] {
         [
             self.min[0],
@@ -86,16 +88,16 @@ impl GeometryBounds {
     }
 }
 
-#[cfg(feature = "parquet")]
-struct BoundsProcessor {
+#[cfg(feature = "_source")]
+pub(crate) struct BoundsProcessor {
     bounds: GeometryBounds,
     collect_lons: bool,
     non_finite: bool,
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 impl BoundsProcessor {
-    #[cfg(feature = "parquet")]
+    #[cfg(feature = "_source")]
     fn new(collect_lons: bool) -> Self {
         Self {
             bounds: GeometryBounds::new(collect_lons),
@@ -104,7 +106,7 @@ impl BoundsProcessor {
         }
     }
 
-    #[cfg(feature = "parquet")]
+    #[cfg(feature = "_source")]
     fn add_coord(&mut self, coord: Coord) {
         if !coord.x.is_finite()
             || !coord.y.is_finite()
@@ -118,7 +120,7 @@ impl BoundsProcessor {
     }
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 impl GeomProcessor for BoundsProcessor {
     fn multi_dim(&self) -> bool {
         true
@@ -155,20 +157,40 @@ impl GeomProcessor for BoundsProcessor {
 
 #[cfg(feature = "parquet")]
 pub(crate) fn bounds(bytes: &[u8], collect_lons: bool) -> Result<Option<GeometryBounds>, GeoError> {
-    let mut processor = BoundsProcessor::new(collect_lons);
     let mut cursor = std::io::Cursor::new(bytes);
-    if let Err(err) = geozero::wkb::process_wkb_geom(&mut cursor, &mut processor) {
-        return Err(GeoError::Wkb(err.to_string()));
-    }
-    if processor.non_finite {
-        return Err(GeoError::Wkb(
-            "geometry contains a non-finite coordinate".to_string(),
-        ));
-    }
-    let mut out = processor.bounds;
+    let mut out = match bounds_from_geozero(
+        |processor| geozero::wkb::process_wkb_geom(&mut cursor, processor),
+        collect_lons,
+    )
+    .map_err(GeoError::Wkb)?
+    {
+        Some(bounds) => bounds,
+        None => return Ok(None),
+    };
     if let Some(header_dims) = dims_from_wkb(bytes) {
         out.dims = out.dims.merge(header_dims);
     }
+    Ok(Some(out))
+}
+
+/// Run any geozero geometry-processing closure through the shared
+/// [`BoundsProcessor`] accumulator: same non-finite rejection, dimension
+/// detection, and antimeridian longitude collection for every source format.
+/// Errors are returned as plain strings so each format can wrap them in its
+/// own [`GeoError`] variant.
+#[cfg(feature = "_source")]
+pub(crate) fn bounds_from_geozero(
+    process: impl FnOnce(&mut BoundsProcessor) -> geozero::error::Result<()>,
+    collect_lons: bool,
+) -> Result<Option<GeometryBounds>, String> {
+    let mut processor = BoundsProcessor::new(collect_lons);
+    if let Err(err) = process(&mut processor) {
+        return Err(err.to_string());
+    }
+    if processor.non_finite {
+        return Err("geometry contains a non-finite coordinate".to_string());
+    }
+    let out = processor.bounds;
     Ok(out.any.then_some(out))
 }
 

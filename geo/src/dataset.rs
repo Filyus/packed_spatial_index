@@ -8,19 +8,18 @@ use serde::{Deserialize, Serialize};
 use crate::PropertyProjection;
 use crate::build::{BuildRequest, GeoArtifact, GeoIndex};
 use crate::discovery::{self, ColumnState};
-use crate::feature_read::{
-    self, DuplicateFeatureRows, FeatureReadOrder, FeatureReadRequest, FeatureRows, GeometryReadMode,
-};
+use crate::feature_read::{self, FeatureRows};
 use crate::filter;
 use crate::payload;
-use crate::scan::{self, GeometryScan, ScanRequest, ScanRequestForInspect};
+use crate::scan::{self, ScanRequestForInspect};
 use crate::validation;
 use crate::{
-    AntimeridianPolicy, ConvertRequest, CoordinateDims, DiscoveryWarning, EdgeModel,
-    EnvelopePolicy, FeatureFilterRequest, FeatureRef, GeoDiscovery, GeoError, GeometryColumn,
-    GeometryEncoding, GeometryProfile, GeometrySelectionReason, GeometrySelector,
-    NativeGeospatialStatsReport, NullPolicy, PayloadPlan, SelectionStatus, ValidationCode,
-    ValidationReport, ValidationSeverity,
+    AntimeridianPolicy, ConvertRequest, CoordinateDims, DiscoveryWarning, DuplicateFeatureRows,
+    EdgeModel, EnvelopePolicy, FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest,
+    FeatureRef, GeoDiscovery, GeoError, GeometryColumn, GeometryEncoding, GeometryProfile,
+    GeometryReadMode, GeometryScan, GeometrySelectionReason, GeometrySelector, IndexDimsRequest,
+    NativeGeospatialStatsReport, NullPolicy, PayloadPlan, ScanRequest, SelectionStatus,
+    ValidationCode, ValidationReport, ValidationSeverity,
 };
 
 /// Open a GeoParquet or native Parquet geospatial dataset.
@@ -987,18 +986,6 @@ fn scan_error_code(err: &GeoError) -> ValidationCode {
         GeoError::Antimeridian { .. } => ValidationCode::AntimeridianWrap,
         _ => ValidationCode::ExactScanFailed,
     }
-}
-
-/// Requested index dimensionality.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IndexDimsRequest {
-    /// Infer dimensions.
-    Auto,
-    /// Force 2D envelopes.
-    D2,
-    /// Force 3D envelopes.
-    D3,
 }
 
 /// Request for [`GeoDataset::inspect`](crate::GeoDataset::inspect).

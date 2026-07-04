@@ -4,6 +4,26 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- Added FlatGeobuf and GeoJSON source support behind default `flatgeobuf` and
+  `geojson` features. New entrypoints `open_flatgeobuf`, `open_geojson`, and
+  `open_geojson_slice` can scan, build, convert, and read features back through
+  the shared source-side builder core.
+- Added `FeatureRecord` read-back for non-Arrow sources and moved
+  `FeatureReadRequest` / `GeometryReadMode` / read ordering and duplicate
+  controls to the format-neutral source API.
+- Added `gp2psindex --format parquet|flatgeobuf|geojson` plus extension /
+  signature detection for `discover`, `inspect`, `build`, `validate`, and
+  `query`.
+- Marked source metadata enums and `GeoError` as `#[non_exhaustive]`, and added
+  FlatGeobuf / GeoJSON source and encoding variants for the new input formats.
+
+### Persistence
+
+- Converted FlatGeobuf and GeoJSON sources now record `source_format:
+  "flatgeobuf"` / `"geojson"` and a stable source fingerprint in `geoM`.
+
 ## [0.17.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.16.1...psi-geo-v0.17.0) - 2026-07-03
 
 ### API

@@ -38,7 +38,9 @@ pub(crate) fn is_supported_encoding(value: &GeometryEncoding) -> bool {
         | GeometryEncoding::ParquetGeometry
         | GeometryEncoding::ParquetGeography { .. } => true,
         GeometryEncoding::GeoArrow { kind, .. } => *kind != GeometryKind::Unknown,
-        GeometryEncoding::Unknown(_) => false,
+        // FlatGeobuf/GeoJson encodings belong to their own sources and never
+        // appear in a Parquet column.
+        _ => false,
     }
 }
 

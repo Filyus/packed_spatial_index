@@ -174,6 +174,8 @@ pub(crate) fn artifact_manifest(
         source_format: match profile.source {
             GeometryMetadataSource::GeoParquet => "geoparquet".to_string(),
             GeometryMetadataSource::ParquetGeospatial => "parquet-geospatial".to_string(),
+            GeometryMetadataSource::FlatGeobuf => "flatgeobuf".to_string(),
+            GeometryMetadataSource::GeoJson => "geojson".to_string(),
         },
         source_fingerprint: source_fingerprint.to_string(),
         selected_column: profile.column.clone(),
@@ -1084,7 +1086,7 @@ impl GeoArtifact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan::{GeometryScan2D, GeometryScan3D};
+    use crate::scan_core::{GeometryScan2D, GeometryScan3D};
     use crate::{
         CoordinateDims, CrsInfo, EdgeModel, FEATURE_REF_RECORD_LEN, GeometryMetadataSource,
         GeometryTypeSet, PropertyProjection, WkbFlavor,

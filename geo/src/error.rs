@@ -1,6 +1,7 @@
-/// Error returned by geospatial Parquet discovery, scanning, conversion, and
+/// Error returned by geospatial source discovery, scanning, conversion, and
 /// artifact reading.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GeoError {
     /// Parquet reader error.
     #[cfg(feature = "parquet")]
@@ -10,6 +11,14 @@ pub enum GeoError {
     #[cfg(feature = "parquet")]
     #[error("arrow: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
+    /// FlatGeobuf read or parse error.
+    #[cfg(feature = "flatgeobuf")]
+    #[error("flatgeobuf: {0}")]
+    FlatGeobuf(String),
+    /// GeoJSON parse error.
+    #[cfg(feature = "geojson")]
+    #[error("geojson: {0}")]
+    GeoJson(String),
     /// Invalid or unsupported geospatial metadata.
     #[error("geoparquet metadata: {0}")]
     Metadata(String),

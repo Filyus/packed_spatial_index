@@ -14,20 +14,26 @@ use crate::geoarrow;
 #[cfg(feature = "parquet")]
 use crate::validation;
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 /// Source that made a geometry column discoverable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GeometryMetadataSource {
     /// GeoParquet `geo` file metadata.
     GeoParquet,
     /// Apache Parquet native `GEOMETRY` or `GEOGRAPHY` logical type.
     ParquetGeospatial,
+    /// FlatGeobuf file header.
+    FlatGeobuf,
+    /// GeoJSON document structure (RFC 7946).
+    GeoJson,
 }
 
 /// Geometry encoding advertised by metadata or discovered from native Parquet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "encoding", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GeometryEncoding {
     /// WKB bytes.
     Wkb {
@@ -48,6 +54,10 @@ pub enum GeometryEncoding {
         /// Declared geography edge interpolation algorithm.
         algorithm: EdgeAlgorithm,
     },
+    /// FlatGeobuf flatbuffer geometry encoding.
+    FlatGeobuf,
+    /// GeoJSON geometry objects (RFC 7946).
+    GeoJson,
     /// Unknown or unsupported encoding string.
     Unknown(String),
 }
@@ -84,6 +94,8 @@ impl std::fmt::Display for GeometryEncoding {
             GeometryEncoding::ParquetGeography { algorithm } => {
                 write!(f, "GEOGRAPHY({algorithm})")
             }
+            GeometryEncoding::FlatGeobuf => f.write_str("FlatGeobuf"),
+            GeometryEncoding::GeoJson => f.write_str("GeoJSON"),
             GeometryEncoding::Unknown(value) => f.write_str(value),
         }
     }
@@ -200,12 +212,12 @@ pub enum CoordinateDims {
 }
 
 impl CoordinateDims {
-    #[cfg(feature = "parquet")]
+    #[cfg(feature = "_source")]
     pub(crate) fn has_z(self) -> bool {
         matches!(self, CoordinateDims::Xyz | CoordinateDims::Xyzm)
     }
 
-    #[cfg(feature = "parquet")]
+    #[cfg(any(feature = "parquet", feature = "flatgeobuf"))]
     pub(crate) fn has_m(self) -> bool {
         matches!(self, CoordinateDims::Xym | CoordinateDims::Xyzm)
     }
@@ -218,7 +230,7 @@ impl CoordinateDims {
         }
     }
 
-    #[cfg(feature = "parquet")]
+    #[cfg(feature = "_source")]
     pub(crate) fn merge(self, other: Self) -> Self {
         use CoordinateDims::{Unknown, Xy, Xym, Xyz, Xyzm};
         match (self, other) {
@@ -342,7 +354,7 @@ pub enum CrsInfo {
 }
 
 impl CrsInfo {
-    #[cfg(feature = "parquet")]
+    #[cfg(feature = "_source")]
     pub(crate) fn as_index_crs(&self) -> Option<String> {
         match self {
             CrsInfo::Present { value } => Some(value.to_string()),
@@ -353,7 +365,7 @@ impl CrsInfo {
         }
     }
 
-    #[cfg(feature = "parquet")]
+    #[cfg(any(feature = "parquet", feature = "flatgeobuf"))]
     pub(crate) fn is_known_projected(&self) -> bool {
         let Some(value) = self.as_index_crs() else {
             return false;
@@ -371,7 +383,7 @@ impl CrsInfo {
     }
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 /// Geometry type names known for a column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeometryTypeSet {
@@ -379,15 +391,14 @@ pub struct GeometryTypeSet {
     pub types: Vec<String>,
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(any(feature = "parquet", feature = "flatgeobuf"))]
 impl GeometryTypeSet {
-    #[cfg(feature = "parquet")]
     pub(crate) fn unknown() -> Self {
         Self { types: Vec::new() }
     }
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 /// Declared dataset or column extent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeclaredExtent {
@@ -395,10 +406,11 @@ pub struct DeclaredExtent {
     pub values: Vec<f64>,
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 /// Source used to produce per-row bounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RowBoundsSource {
     /// GeoParquet bbox covering column.
     Covering,
@@ -406,6 +418,8 @@ pub enum RowBoundsSource {
     WkbEnvelope,
     /// Envelope computed by scanning GeoArrow arrays.
     GeoArrowScan,
+    /// Envelope computed by streaming feature geometries.
+    FeatureScan,
 }
 
 #[cfg(feature = "parquet")]
@@ -581,7 +595,7 @@ pub enum GeometrySelector {
     FirstUsable,
 }
 
-#[cfg(feature = "parquet")]
+#[cfg(feature = "_source")]
 /// Profile of a selected geometry column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeometryProfile {

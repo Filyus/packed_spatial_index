@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.18.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.18.1...psi-geo-v0.18.2) - 2026-07-04
+
 ### Safety
 
 - Hardened WKB envelope scanning with a crate-local bounded parser that caps

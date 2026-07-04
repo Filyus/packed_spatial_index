@@ -389,6 +389,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
             selector: req.selector,
             properties: PropertyProjection::None,
             geometry: GeometryReadMode::Wkb,
+            geometry_json: false,
             order: FeatureReadOrder::RequestOrder,
             duplicates: DuplicateFeatureRows::KeepParts,
             expected_source_fingerprint: req.expected_source_fingerprint,
@@ -401,6 +402,14 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         let mut exact = Vec::new();
         for row in 0..rows.features.len() {
             if wkb.is_null(row) {
+                continue;
+            }
+            if let Some(matched) =
+                filter::exact_wkb_predicate_matches(wkb.value(row), &query, req.predicate)?
+            {
+                if matched {
+                    exact.push(rows.features[row].clone());
+                }
                 continue;
             }
             let Some(geometry) = filter::decode_geo_geometry(wkb.value(row))? else {

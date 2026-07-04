@@ -268,6 +268,10 @@ fn number_at(array: &ArrayRef, row: usize) -> Result<f64, GeoError> {
 }
 
 fn visit_parts<F: FnMut(&Coord)>(parts: &GeometryParts, mut f: F) {
+    visit_parts_dyn(parts, &mut f);
+}
+
+fn visit_parts_dyn(parts: &GeometryParts, f: &mut dyn FnMut(&Coord)) {
     match parts {
         GeometryParts::Point(coord) => f(coord),
         GeometryParts::LineString(line) => {
@@ -289,6 +293,11 @@ fn visit_parts<F: FnMut(&Coord)>(parts: &GeometryParts, mut f: F) {
                         f(coord);
                     }
                 }
+            }
+        }
+        GeometryParts::GeometryCollection(children) => {
+            for (_, child) in children {
+                visit_parts_dyn(child, f);
             }
         }
     }

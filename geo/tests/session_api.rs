@@ -4,7 +4,9 @@ use std::process::Command;
 use std::sync::Arc;
 use std::{env, fs};
 
-use arrow::array::{ArrayRef, BinaryArray, Float64Array, ListArray, StringArray, StructArray};
+use arrow::array::{
+    ArrayRef, BinaryArray, Float32Array, Float64Array, ListArray, StringArray, StructArray,
+};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
 use arrow::record_batch::RecordBatch;
@@ -2115,6 +2117,37 @@ fn covering_interval_does_not_wrap_when_min_is_before_max() {
     };
     assert_eq!(scan.boxes, vec![Box2D::new(-170.0, -5.0, 170.0, 5.0)]);
     assert_eq!(scan.features[0].part, None);
+}
+
+#[test]
+fn covering_scan_borrows_float32_columns() {
+    let data = write_geoparquet(
+        vec![
+            ("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))])),
+            (
+                "xmin",
+                Arc::new(Float32Array::from(vec![-12.5_f32])) as ArrayRef,
+            ),
+            (
+                "ymin",
+                Arc::new(Float32Array::from(vec![1.25_f32])) as ArrayRef,
+            ),
+            (
+                "xmax",
+                Arc::new(Float32Array::from(vec![15.5_f32])) as ArrayRef,
+            ),
+            (
+                "ymax",
+                Arc::new(Float32Array::from(vec![4.25_f32])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb_with_covering(),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    let GeometryScan::D2(scan) = dataset.scan(Default::default()).unwrap() else {
+        panic!("expected 2D scan");
+    };
+    assert_eq!(scan.boxes, vec![Box2D::new(-12.5, 1.25, 15.5, 4.25)]);
 }
 
 #[test]

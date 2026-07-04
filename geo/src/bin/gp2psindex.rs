@@ -670,6 +670,7 @@ fn query_cmd_finish(
         selector: GeometrySelector::Name(manifest.selected_column.clone()),
         properties,
         geometry,
+        geometry_json: true,
         order,
         duplicates,
         expected_source_fingerprint,

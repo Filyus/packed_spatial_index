@@ -234,19 +234,33 @@ pub(crate) fn binary_column<'a>(
     }
 }
 
-struct CoveringArrays {
-    xmin: Vec<f64>,
-    ymin: Vec<f64>,
-    zmin: Option<Vec<f64>>,
-    xmax: Vec<f64>,
-    ymax: Vec<f64>,
-    zmax: Option<Vec<f64>>,
+struct CoveringArrays<'a> {
+    xmin: FloatValues<'a>,
+    ymin: FloatValues<'a>,
+    zmin: Option<FloatValues<'a>>,
+    xmax: FloatValues<'a>,
+    ymax: FloatValues<'a>,
+    zmax: Option<FloatValues<'a>>,
 }
 
-fn covering_arrays(
-    batch: &RecordBatch,
+enum FloatValues<'a> {
+    F64(&'a Float64Array),
+    F32(&'a Float32Array),
+}
+
+impl FloatValues<'_> {
+    fn value(&self, row: usize) -> f64 {
+        match self {
+            Self::F64(values) => values.value(row),
+            Self::F32(values) => values.value(row) as f64,
+        }
+    }
+}
+
+fn covering_arrays<'a>(
+    batch: &'a RecordBatch,
     covering: Option<&GeoParquetBboxCovering>,
-) -> Result<Option<CoveringArrays>, GeoError> {
+) -> Result<Option<CoveringArrays<'a>>, GeoError> {
     let Some(covering) = covering else {
         return Ok(None);
     };
@@ -268,12 +282,12 @@ fn covering_arrays(
     }))
 }
 
-fn f64_path(batch: &RecordBatch, path: &[String]) -> Result<Vec<f64>, GeoError> {
+fn f64_path<'a>(batch: &'a RecordBatch, path: &[String]) -> Result<FloatValues<'a>, GeoError> {
     let arr = descend(batch, path)?;
     if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
-        Ok((0..a.len()).map(|i| a.value(i)).collect())
+        Ok(FloatValues::F64(a))
     } else if let Some(a) = arr.as_any().downcast_ref::<Float32Array>() {
-        Ok((0..a.len()).map(|i| a.value(i) as f64).collect())
+        Ok(FloatValues::F32(a))
     } else {
         Err(GeoError::Metadata(format!(
             "bbox covering path {path:?} is not a float column ({:?})",
@@ -308,7 +322,7 @@ fn scan_one_row(
     state: &ColumnState,
     geom: &ArrayRef,
     binary: Option<&WkbCol<'_>>,
-    covering: Option<&CoveringArrays>,
+    covering: Option<&CoveringArrays<'_>>,
     row: usize,
     collect_lons: bool,
     need_geometry_payload: bool,
@@ -350,15 +364,15 @@ fn scan_one_row(
 }
 
 fn bounds_from_covering(
-    covering: &CoveringArrays,
+    covering: &CoveringArrays<'_>,
     row: usize,
     collect_lons: bool,
 ) -> Result<GeometryBounds, GeoError> {
     let mut bounds = GeometryBounds::new(collect_lons);
-    bounds.min[0] = covering.xmin[row];
-    bounds.min[1] = covering.ymin[row];
-    bounds.max[0] = covering.xmax[row];
-    bounds.max[1] = covering.ymax[row];
+    bounds.min[0] = covering.xmin.value(row);
+    bounds.min[1] = covering.ymin.value(row);
+    bounds.max[0] = covering.xmax.value(row);
+    bounds.max[1] = covering.ymax.value(row);
     if !bounds.min[0].is_finite()
         || !bounds.min[1].is_finite()
         || !bounds.max[0].is_finite()
@@ -369,8 +383,8 @@ fn bounds_from_covering(
         ));
     }
     if let (Some(zmin), Some(zmax)) = (&covering.zmin, &covering.zmax) {
-        bounds.min[2] = zmin[row];
-        bounds.max[2] = zmax[row];
+        bounds.min[2] = zmin.value(row);
+        bounds.max[2] = zmax.value(row);
         if !bounds.min[2].is_finite() || !bounds.max[2].is_finite() {
             return Err(GeoError::Metadata(
                 "bbox covering contains a non-finite coordinate".to_string(),

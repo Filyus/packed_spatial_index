@@ -63,7 +63,9 @@ pub use fgb::{FgbDataset, open_flatgeobuf};
 pub use filter::FeatureFilterRequest;
 pub use geodetic::{AntimeridianPolicy, EnvelopePolicy, NullPolicy};
 #[cfg(feature = "geojson")]
-pub use geojson::{GeoJsonDataset, open_geojson, open_geojson_slice};
+pub use geojson::{
+    GeoJsonDataset, build_geojson_stream, convert_geojson_stream, open_geojson, open_geojson_slice,
+};
 pub use manifest::{GeoArtifactManifest, StoragePrecision, read_geo_manifest};
 pub use payload::{
     FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN,

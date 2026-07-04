@@ -13,7 +13,10 @@ use crate::{
     FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy,
     PayloadPlan, SpatialPredicate, StoragePrecision, decode_feature_ref_payload,
     decode_feature_wkb_payload,
-    filter::{decode_geo_geometry, exact_predicate_matches, prepare_filter_query},
+    filter::{
+        decode_geo_geometry, exact_predicate_matches, exact_wkb_predicate_matches,
+        prepare_filter_query,
+    },
     manifest::{
         CHUNK_ENTRY_LEN, FORMAT_MAGIC, FORMAT_VERSION, SUPERBLOCK_LEN, TAG_GEO_MANIFEST,
         read_geo_manifest_content, read_u32, read_u64,
@@ -270,6 +273,14 @@ impl<R> GeoArtifactIndex2D<R> {
         )?;
         let mut kept = Vec::new();
         for hit in hits {
+            if let GeoPayload::RowWkb(wkb) = &hit.payload
+                && let Some(matched) = exact_wkb_predicate_matches(wkb, &prepared, predicate)?
+            {
+                if matched {
+                    kept.push(hit);
+                }
+                continue;
+            }
             let geometry = match &hit.payload {
                 GeoPayload::RowWkb(wkb) => decode_geo_geometry(wkb)?,
                 GeoPayload::FeatureJson(feature) => feature_json_geometry(feature)?,

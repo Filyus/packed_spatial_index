@@ -1,7 +1,6 @@
 # GeoParquet compatibility fixtures
 
-Small regression fixtures copied from the ignored external compatibility
-corpus.
+Small regression fixtures copied from upstream compatibility samples.
 
 Sources:
 
@@ -15,5 +14,4 @@ Sources:
   `example/files/example_geometry-mixed-dimensions_geo.parquet`.
 
 The upstream repositories publish these samples for interoperability testing.
-Keep this directory intentionally small; the larger compatibility corpus stays
-under ignored `dev/`.
+Keep this directory intentionally small.

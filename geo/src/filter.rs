@@ -129,6 +129,19 @@ pub(crate) fn exact_predicate_matches(
     }
 }
 
+pub(crate) fn exact_wkb_predicate_matches(
+    bytes: &[u8],
+    query: &PreparedFilterQuery,
+    predicate: SpatialPredicate,
+) -> Result<Option<bool>, GeoError> {
+    match (query, predicate) {
+        (PreparedFilterQuery::Box2D(bbox), SpatialPredicate::Intersects) => {
+            wkb::bbox_intersects_point_or_multipoint(bytes, *bbox)
+        }
+        _ => Ok(None),
+    }
+}
+
 fn spherical_radius_matches(
     geometry: &geo_types::Geometry<f64>,
     query: SphericalRadius,

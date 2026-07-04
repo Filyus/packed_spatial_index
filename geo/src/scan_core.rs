@@ -255,6 +255,12 @@ pub struct FeatureReadRequest {
     pub properties: PropertyProjection,
     /// Optional WKB geometry materialization.
     pub geometry: GeometryReadMode,
+    /// Optional GeoJSON geometry materialization for non-Arrow source read-back.
+    ///
+    /// Defaults off because GeoJSON geometry can be expensive to clone or
+    /// synthesize from streaming formats when callers only need properties or
+    /// WKB.
+    pub geometry_json: bool,
     /// Output row order.
     pub order: FeatureReadOrder,
     /// Duplicate source-row handling.
@@ -288,6 +294,7 @@ impl Default for FeatureReadRequest {
             selector: GeometrySelector::Default,
             properties: PropertyProjection::AllNonGeometry,
             geometry: GeometryReadMode::Omit,
+            geometry_json: false,
             order: FeatureReadOrder::SourceOrder,
             duplicates: DuplicateFeatureRows::DedupRows,
             expected_source_fingerprint: None,
@@ -302,7 +309,7 @@ pub struct FeatureRecord {
     pub feature: FeatureRef,
     /// WKB geometry when requested by [`FeatureReadRequest::geometry`].
     pub geometry_wkb: Option<Vec<u8>>,
-    /// GeoJSON geometry, when the source row has a non-null geometry.
+    /// GeoJSON geometry, when requested and the source row has a non-null geometry.
     pub geometry_json: Option<serde_json::Value>,
     /// Projected source properties as a JSON object.
     pub properties: serde_json::Value,

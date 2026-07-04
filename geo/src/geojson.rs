@@ -1,21 +1,23 @@
 //! GeoJSON (RFC 7946) source: open a GeoJSON document and build/convert
 //! PSINDEX artifacts from it through the shared scan core.
 //!
-//! The whole document is parsed into memory up front — GeoJSON has no row
-//! groups or metadata footer to stream from, and the source documents this
-//! crate targets (fixture sets, API responses, hand-maintained layers) are
-//! small next to the Parquet datasets the `parquet` feature handles. A
-//! streaming reader can come later without changing this module's API.
+//! The eager dataset parses a document into memory for repeatable read-back.
+//! For one-shot conversion/build of large FeatureCollections, use the
+//! streaming helpers in this module.
 
-use geozero::GeozeroGeometry;
-use geozero::geojson::GeoJson;
+use std::collections::HashSet;
+use std::fmt;
+use std::io::{self, Read};
+
+use serde::Deserialize;
+use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use crate::payload::{self, FeatureRef};
 use crate::scan_core::{self, FeatureReadRequest, FeatureRecord, GeometryReadMode, ScanEntry};
-use crate::wkb::{self, GeometryBounds};
+use crate::wkb::{self, Coord, GeometryBounds, GeometryParts};
 use crate::{
     BuildRequest, ConvertRequest, CoordinateDims, CrsInfo, DeclaredExtent, EdgeModel,
-    EnvelopePolicy, GeoArtifact, GeoError, GeoIndex, GeoSource, GeometryEncoding,
+    EnvelopePolicy, GeoArtifact, GeoError, GeoIndex, GeoSource, GeometryEncoding, GeometryKind,
     GeometryMetadataSource, GeometryProfile, GeometryScan, GeometrySelector, GeometryTypeSet,
     NullPolicy, PayloadPlan, PropertyProjection, RowBoundsSource, ScanRequest,
 };
@@ -39,12 +41,57 @@ const GEOMETRY_COLUMN: &str = "geometry";
 /// println!("{} features", dataset.profile()?.num_rows);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn open_geojson<R: std::io::Read>(mut reader: R) -> Result<GeoJsonDataset, GeoError> {
+pub fn open_geojson<R: Read>(mut reader: R) -> Result<GeoJsonDataset, GeoError> {
     let mut bytes = Vec::new();
     reader
         .read_to_end(&mut bytes)
         .map_err(|e| GeoError::GeoJson(e.to_string()))?;
     open_geojson_slice(&bytes)
+}
+
+/// Convert a GeoJSON `FeatureCollection` from a reader without retaining the
+/// full document or all parsed features.
+///
+/// This one-shot path accepts `FeatureCollection` documents only. Use
+/// [`open_geojson`] for repeatable in-memory access or for single Feature /
+/// bare geometry inputs.
+pub fn convert_geojson_stream<R: Read>(
+    reader: R,
+    req: ConvertRequest,
+    out: &mut Vec<u8>,
+) -> Result<GeoArtifact, GeoError> {
+    let selector = req.selector.clone();
+    let (scan, fingerprint) = scan_geojson_stream(
+        reader,
+        ScanRequest {
+            selector,
+            dims: req.dims,
+            nulls: req.nulls,
+            envelope: req.envelope,
+            payload: req.payload.clone(),
+        },
+    )?;
+    GeoArtifact::from_scan(&scan, &req, &fingerprint, out)
+}
+
+/// Build an in-memory index from a GeoJSON `FeatureCollection` without
+/// retaining the full source document.
+///
+/// This one-shot path accepts `FeatureCollection` documents only. Use
+/// [`open_geojson`] for repeatable in-memory access or for single Feature /
+/// bare geometry inputs.
+pub fn build_geojson_stream<R: Read>(reader: R, req: BuildRequest) -> Result<GeoIndex, GeoError> {
+    let (scan, _) = scan_geojson_stream(
+        reader,
+        ScanRequest {
+            selector: req.selector,
+            dims: req.dims,
+            nulls: req.nulls,
+            envelope: req.envelope,
+            payload: PayloadPlan::None,
+        },
+    )?;
+    GeoIndex::from_scan(&scan, &req.build)
 }
 
 /// Open a GeoJSON document from an in-memory byte slice.
@@ -154,6 +201,319 @@ fn parse_feature(value: &serde_json::Value, row: usize) -> Result<GeoJsonFeature
         properties,
         feature_id,
     })
+}
+
+fn scan_geojson_stream<R: Read>(
+    reader: R,
+    req: ScanRequest,
+) -> Result<(GeometryScan, String), GeoError> {
+    check_geojson_selector(&req.selector)?;
+    let mut reader = HashingReader::new(reader);
+    let mut state = StreamScanState::new(&req);
+    {
+        let mut deserializer = serde_json::Deserializer::from_reader(&mut reader);
+        FeatureCollectionSeed { state: &mut state }
+            .deserialize(&mut deserializer)
+            .map_err(|e| GeoError::GeoJson(e.to_string()))?;
+        deserializer
+            .end()
+            .map_err(|e| GeoError::GeoJson(e.to_string()))?;
+    }
+    state.check_property_projection()?;
+    let fingerprint = format!("fnv64:{:016x}", reader.hash);
+    let profile = state.profile();
+    let detected_dims = state.detected_dims;
+    let entries = state.entries;
+    Ok((
+        scan_core::assemble_scan(entries, &req, profile, detected_dims)?,
+        fingerprint,
+    ))
+}
+
+struct HashingReader<R> {
+    inner: R,
+    hash: u64,
+}
+
+impl<R> HashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hash: 0xcbf2_9ce4_8422_2325,
+        }
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let len = self.inner.read(buf)?;
+        self.hash = payload::fnv(self.hash, &buf[..len]);
+        Ok(len)
+    }
+}
+
+struct StreamScanState<'a> {
+    req: &'a ScanRequest,
+    entries: Vec<ScanEntry>,
+    detected_dims: CoordinateDims,
+    extent: Option<DeclaredExtent>,
+    types: Vec<String>,
+    seen_properties: HashSet<String>,
+    row: usize,
+}
+
+impl<'a> StreamScanState<'a> {
+    fn new(req: &'a ScanRequest) -> Self {
+        Self {
+            req,
+            entries: Vec::new(),
+            detected_dims: CoordinateDims::Unknown,
+            extent: None,
+            types: Vec::new(),
+            seen_properties: HashSet::new(),
+            row: 0,
+        }
+    }
+
+    fn process_feature(&mut self, feature: StreamFeature) -> Result<(), GeoError> {
+        let row = self.row;
+        self.row += 1;
+        if feature.feature_type.as_deref() != Some("Feature") {
+            return Err(GeoError::GeoJson(format!(
+                "features[{row}] is not a Feature object"
+            )));
+        }
+        let geometry = match feature.geometry {
+            None | Some(serde_json::Value::Null) => None,
+            Some(geometry) => {
+                let kind = geometry_type(&geometry, row)?;
+                if !self.types.iter().any(|t| t == kind) {
+                    self.types.push(kind.to_string());
+                }
+                Some(geometry)
+            }
+        };
+        let properties = match feature.properties {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Object(map)) => {
+                for key in map.keys() {
+                    self.seen_properties.insert(key.clone());
+                }
+                Some(map)
+            }
+            Some(_) => {
+                return Err(GeoError::GeoJson(format!(
+                    "features[{row}] properties is not an object"
+                )));
+            }
+        };
+        let Some(bounds) = scan_geometry(
+            geometry.as_ref(),
+            row,
+            matches!(self.req.envelope, EnvelopePolicy::Geographic { .. }),
+        )?
+        else {
+            match self.req.nulls {
+                NullPolicy::Skip => return Ok(()),
+                NullPolicy::Error => return Err(GeoError::NullGeometry { row }),
+            }
+        };
+        self.detected_dims = self.detected_dims.merge(bounds.dims);
+        let mut feature_ref = FeatureRef::row_number(row as u64);
+        feature_ref.feature_id = feature_id(feature.id.as_ref());
+        let payload_bytes = match &self.req.payload {
+            PayloadPlan::None => None,
+            PayloadPlan::RowRef => Some(payload::encode_feature_ref(&feature_ref)),
+            PayloadPlan::RowWkb => Some(payload::encode_feature_wkb(
+                &feature_ref,
+                &geometry_wkb(
+                    geometry.as_ref().expect("bounds imply geometry"),
+                    &bounds,
+                    row,
+                )?,
+            )),
+            PayloadPlan::FeatureJson {
+                properties: projection,
+            } => {
+                let geometry = geometry.expect("bounds imply geometry");
+                let projected = project_properties(properties.as_ref(), projection);
+                Some(payload::feature_json_from_parts(
+                    &feature_ref,
+                    geometry,
+                    Some(serde_json::Value::Object(projected)),
+                )?)
+            }
+        };
+        self.entries.push(ScanEntry {
+            bounds,
+            feature: feature_ref,
+            payload: payload_bytes,
+        });
+        Ok(())
+    }
+
+    fn check_property_projection(&self) -> Result<(), GeoError> {
+        let PayloadPlan::FeatureJson {
+            properties: PropertyProjection::Include(include),
+        } = &self.req.payload
+        else {
+            return Ok(());
+        };
+        for name in include {
+            if !self.seen_properties.contains(name) {
+                return Err(GeoError::PropertyColumnNotFound(name.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    fn profile(&self) -> GeometryProfile {
+        GeometryProfile {
+            column: GEOMETRY_COLUMN.to_string(),
+            source: GeometryMetadataSource::GeoJson,
+            encoding: GeometryEncoding::GeoJson,
+            crs: CrsInfo::ImpliedDefault {
+                value: "OGC:CRS84".to_string(),
+            },
+            edges: EdgeModel::Planar,
+            coordinate_dims: CoordinateDims::Unknown,
+            geometry_types: GeometryTypeSet {
+                types: self.types.clone(),
+            },
+            extent: self.extent.clone(),
+            row_bounds: vec![RowBoundsSource::FeatureScan],
+            num_rows: self.row as u64,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct StreamFeature {
+    #[serde(rename = "type")]
+    feature_type: Option<String>,
+    #[serde(default)]
+    geometry: Option<serde_json::Value>,
+    #[serde(default)]
+    properties: Option<serde_json::Value>,
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+}
+
+struct FeatureCollectionSeed<'a, 'req> {
+    state: &'a mut StreamScanState<'req>,
+}
+
+impl<'de, 'a, 'req> DeserializeSeed<'de> for FeatureCollectionSeed<'a, 'req> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(FeatureCollectionVisitor { state: self.state })
+    }
+}
+
+struct FeatureCollectionVisitor<'a, 'req> {
+    state: &'a mut StreamScanState<'req>,
+}
+
+impl<'de, 'a, 'req> Visitor<'de> for FeatureCollectionVisitor<'a, 'req> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a GeoJSON FeatureCollection object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let state = self.state;
+        let mut doc_type: Option<String> = None;
+        let mut saw_features = false;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "type" => doc_type = Some(map.next_value()?),
+                "bbox" => {
+                    let value: serde_json::Value = map.next_value()?;
+                    state.extent = declared_extent_from_bbox(&value);
+                }
+                "features" => {
+                    saw_features = true;
+                    map.next_value_seed(FeaturesSeed { state: &mut *state })?;
+                }
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        if doc_type.as_deref() != Some("FeatureCollection") {
+            return Err(de::Error::custom(
+                "document type is not `FeatureCollection`",
+            ));
+        }
+        if !saw_features {
+            return Err(de::Error::custom(
+                "FeatureCollection has no `features` array",
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct FeaturesSeed<'a, 'req> {
+    state: &'a mut StreamScanState<'req>,
+}
+
+impl<'de, 'a, 'req> DeserializeSeed<'de> for FeaturesSeed<'a, 'req> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(FeaturesVisitor { state: self.state })
+    }
+}
+
+struct FeaturesVisitor<'a, 'req> {
+    state: &'a mut StreamScanState<'req>,
+}
+
+impl<'de, 'a, 'req> Visitor<'de> for FeaturesVisitor<'a, 'req> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a FeatureCollection features array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(feature) = seq.next_element::<StreamFeature>()? {
+            self.state
+                .process_feature(feature)
+                .map_err(de::Error::custom)?;
+        }
+        Ok(())
+    }
+}
+
+fn declared_extent_from_bbox(value: &serde_json::Value) -> Option<DeclaredExtent> {
+    let bbox = value.as_array()?;
+    let values: Vec<f64> = bbox.iter().filter_map(serde_json::Value::as_f64).collect();
+    (values.len() == bbox.len() && (values.len() == 4 || values.len() == 6))
+        .then_some(DeclaredExtent { values })
+}
+
+fn feature_id(value: Option<&serde_json::Value>) -> Option<String> {
+    match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(id)) => Some(id.clone()),
+        Some(other) => Some(other.to_string()),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -334,21 +694,12 @@ impl GeoJsonDataset {
         )?;
         output
             .into_iter()
-            .map(|feature| self.read_one(feature, req.geometry, &req.properties))
+            .map(|feature| self.read_one(feature, req.geometry, req.geometry_json, &req.properties))
             .collect()
     }
 
     fn check_selector(&self, selector: &GeometrySelector) -> Result<(), GeoError> {
-        match selector {
-            GeometrySelector::Default | GeometrySelector::FirstUsable => Ok(()),
-            GeometrySelector::Name(name) if name == GEOMETRY_COLUMN => Ok(()),
-            GeometrySelector::Name(name) => Err(GeoError::GeometryColumnNotFound(name.clone())),
-            GeometrySelector::GeoParquetPrimary | GeometrySelector::SingleNativeParquet => {
-                Err(GeoError::Metadata(
-                    "selector applies to Parquet sources; use Default or Name(\"geometry\") for GeoJSON".to_string(),
-                ))
-            }
-        }
+        check_geojson_selector(selector)
     }
 
     fn check_expected_fingerprint(&self, expected: Option<&String>) -> Result<(), GeoError> {
@@ -385,6 +736,7 @@ impl GeoJsonDataset {
         &self,
         mut feature_ref: FeatureRef,
         geometry: GeometryReadMode,
+        geometry_json: bool,
         properties: &PropertyProjection,
     ) -> Result<FeatureRecord, GeoError> {
         let row = usize::try_from(feature_ref.row_number).map_err(|_| {
@@ -412,12 +764,25 @@ impl GeoJsonDataset {
         Ok(FeatureRecord {
             feature: feature_ref,
             geometry_wkb,
-            geometry_json: source.geometry.clone(),
+            geometry_json: geometry_json.then(|| source.geometry.clone()).flatten(),
             properties: serde_json::Value::Object(project_properties(
                 source.properties.as_ref(),
                 properties,
             )),
         })
+    }
+}
+
+fn check_geojson_selector(selector: &GeometrySelector) -> Result<(), GeoError> {
+    match selector {
+        GeometrySelector::Default | GeometrySelector::FirstUsable => Ok(()),
+        GeometrySelector::Name(name) if name == GEOMETRY_COLUMN => Ok(()),
+        GeometrySelector::Name(name) => Err(GeoError::GeometryColumnNotFound(name.clone())),
+        GeometrySelector::GeoParquetPrimary | GeometrySelector::SingleNativeParquet => {
+            Err(GeoError::Metadata(
+                "selector applies to Parquet sources; use Default or Name(\"geometry\") for GeoJSON".to_string(),
+            ))
+        }
     }
 }
 
@@ -429,10 +794,11 @@ fn scan_geometry(
     let Some(geometry) = geometry else {
         return Ok(None);
     };
-    let text = geometry.to_string();
-    let geojson = GeoJson(&text);
-    wkb::bounds_from_geozero(|processor| geojson.process_geom(processor), collect_lons)
-        .map_err(|message| GeoError::GeoJson(format!("features[{row}]: {message}")))
+    let mut bounds = GeometryBounds::new(collect_lons);
+    visit_geometry_coords(geometry, row, &mut |coord| {
+        bounds.add_coord(coord, collect_lons);
+    })?;
+    Ok(bounds.any.then_some(bounds))
 }
 
 fn geometry_wkb(
@@ -440,22 +806,238 @@ fn geometry_wkb(
     bounds: &GeometryBounds,
     row: usize,
 ) -> Result<Vec<u8>, GeoError> {
-    use geozero::ToWkb;
     let dims = if bounds.dims.has_z() {
-        geozero::CoordDimensions::xyz()
+        CoordinateDims::Xyz
     } else {
-        geozero::CoordDimensions::xy()
+        CoordinateDims::Xy
     };
-    let text = geometry.to_string();
-    GeoJson(&text)
-        .to_wkb(dims)
-        .map_err(|e| GeoError::GeoJson(format!("features[{row}]: {e}")))
+    let (kind, parts) = geometry_parts(geometry, row, dims)?;
+    Ok(wkb::write_geometry(kind, dims, parts))
 }
 
 fn geometry_wkb_from_value(geometry: &serde_json::Value, row: usize) -> Result<Vec<u8>, GeoError> {
     let bounds =
         scan_geometry(Some(geometry), row, false)?.ok_or(GeoError::NullGeometry { row })?;
     geometry_wkb(geometry, &bounds, row)
+}
+
+fn visit_geometry_coords(
+    geometry: &serde_json::Value,
+    row: usize,
+    f: &mut impl FnMut(&Coord),
+) -> Result<(), GeoError> {
+    match geometry_type(geometry, row)? {
+        "Point" => {
+            if let Some(coord) = coord_value(coordinates(geometry, row)?, row)? {
+                f(&coord);
+            }
+        }
+        "MultiPoint" | "LineString" => visit_coord_sequence(coordinates(geometry, row)?, row, f)?,
+        "MultiLineString" | "Polygon" => visit_line_sequence(coordinates(geometry, row)?, row, f)?,
+        "MultiPolygon" => {
+            for polygon in array(coordinates(geometry, row)?, "coordinates", row)? {
+                visit_line_sequence(polygon, row, f)?;
+            }
+        }
+        "GeometryCollection" => {
+            let geometries = geometry.get("geometries").ok_or_else(|| {
+                geojson_feature_error(row, "GeometryCollection has no `geometries` array")
+            })?;
+            for child in array(geometries, "geometries", row)? {
+                visit_geometry_coords(child, row, f)?;
+            }
+        }
+        other => {
+            return Err(geojson_feature_error(
+                row,
+                &format!("unsupported geometry type `{other}`"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn visit_coord_sequence(
+    value: &serde_json::Value,
+    row: usize,
+    f: &mut impl FnMut(&Coord),
+) -> Result<(), GeoError> {
+    for value in array(value, "coordinates", row)? {
+        let Some(coord) = coord_value(value, row)? else {
+            return Err(geojson_feature_error(
+                row,
+                "coordinate has fewer than two numbers",
+            ));
+        };
+        f(&coord);
+    }
+    Ok(())
+}
+
+fn visit_line_sequence(
+    value: &serde_json::Value,
+    row: usize,
+    f: &mut impl FnMut(&Coord),
+) -> Result<(), GeoError> {
+    for line in array(value, "coordinates", row)? {
+        visit_coord_sequence(line, row, f)?;
+    }
+    Ok(())
+}
+
+fn geometry_parts(
+    geometry: &serde_json::Value,
+    row: usize,
+    dims: CoordinateDims,
+) -> Result<(GeometryKind, GeometryParts), GeoError> {
+    match geometry_type(geometry, row)? {
+        "Point" => Ok((
+            GeometryKind::Point,
+            GeometryParts::Point(
+                coord_value(coordinates(geometry, row)?, row)?.unwrap_or_else(|| empty_point(dims)),
+            ),
+        )),
+        "LineString" => Ok((
+            GeometryKind::LineString,
+            GeometryParts::LineString(coord_sequence(coordinates(geometry, row)?, row)?),
+        )),
+        "Polygon" => Ok((
+            GeometryKind::Polygon,
+            GeometryParts::Polygon(line_sequence(coordinates(geometry, row)?, row)?),
+        )),
+        "MultiPoint" => Ok((
+            GeometryKind::MultiPoint,
+            GeometryParts::LineString(coord_sequence(coordinates(geometry, row)?, row)?),
+        )),
+        "MultiLineString" => Ok((
+            GeometryKind::MultiLineString,
+            GeometryParts::Polygon(line_sequence(coordinates(geometry, row)?, row)?),
+        )),
+        "MultiPolygon" => {
+            let mut polygons = Vec::new();
+            for polygon in array(coordinates(geometry, row)?, "coordinates", row)? {
+                polygons.push(line_sequence(polygon, row)?);
+            }
+            Ok((
+                GeometryKind::MultiPolygon,
+                GeometryParts::MultiPolygon(polygons),
+            ))
+        }
+        "GeometryCollection" => {
+            let geometries = geometry.get("geometries").ok_or_else(|| {
+                geojson_feature_error(row, "GeometryCollection has no `geometries` array")
+            })?;
+            let mut children = Vec::new();
+            for child in array(geometries, "geometries", row)? {
+                children.push(geometry_parts(child, row, dims)?);
+            }
+            Ok((
+                GeometryKind::Unknown,
+                GeometryParts::GeometryCollection(children),
+            ))
+        }
+        other => Err(geojson_feature_error(
+            row,
+            &format!("unsupported geometry type `{other}`"),
+        )),
+    }
+}
+
+fn coord_sequence(value: &serde_json::Value, row: usize) -> Result<Vec<Coord>, GeoError> {
+    let values = array(value, "coordinates", row)?;
+    let mut coords = Vec::with_capacity(values.len());
+    for value in values {
+        let Some(coord) = coord_value(value, row)? else {
+            return Err(geojson_feature_error(
+                row,
+                "coordinate has fewer than two numbers",
+            ));
+        };
+        coords.push(coord);
+    }
+    Ok(coords)
+}
+
+fn line_sequence(value: &serde_json::Value, row: usize) -> Result<Vec<Vec<Coord>>, GeoError> {
+    let values = array(value, "coordinates", row)?;
+    let mut lines = Vec::with_capacity(values.len());
+    for value in values {
+        lines.push(coord_sequence(value, row)?);
+    }
+    Ok(lines)
+}
+
+fn geometry_type(geometry: &serde_json::Value, row: usize) -> Result<&str, GeoError> {
+    geometry
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| geojson_feature_error(row, "geometry has no `type` member"))
+}
+
+fn coordinates(geometry: &serde_json::Value, row: usize) -> Result<&serde_json::Value, GeoError> {
+    geometry
+        .get("coordinates")
+        .ok_or_else(|| geojson_feature_error(row, "geometry has no `coordinates` member"))
+}
+
+fn array<'a>(
+    value: &'a serde_json::Value,
+    context: &str,
+    row: usize,
+) -> Result<&'a Vec<serde_json::Value>, GeoError> {
+    value
+        .as_array()
+        .ok_or_else(|| geojson_feature_error(row, &format!("{context} is not an array")))
+}
+
+fn coord_value(value: &serde_json::Value, row: usize) -> Result<Option<Coord>, GeoError> {
+    let values = array(value, "coordinate", row)?;
+    if values.is_empty() {
+        return Ok(None);
+    }
+    if values.len() < 2 {
+        return Err(geojson_feature_error(
+            row,
+            "coordinate has fewer than two numbers",
+        ));
+    }
+    let x = finite_coord(values.first(), row, "x")?;
+    let y = finite_coord(values.get(1), row, "y")?;
+    let z = values
+        .get(2)
+        .map(|value| finite_coord(Some(value), row, "z"))
+        .transpose()?;
+    Ok(Some(Coord { x, y, z, m: None }))
+}
+
+fn finite_coord(
+    value: Option<&serde_json::Value>,
+    row: usize,
+    axis: &str,
+) -> Result<f64, GeoError> {
+    let value = value
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| geojson_feature_error(row, &format!("coordinate {axis} is not a number")))?;
+    if !value.is_finite() {
+        return Err(geojson_feature_error(
+            row,
+            "geometry contains a non-finite coordinate",
+        ));
+    }
+    Ok(value)
+}
+
+fn empty_point(dims: CoordinateDims) -> Coord {
+    Coord {
+        x: f64::NAN,
+        y: f64::NAN,
+        z: dims.has_z().then_some(f64::NAN),
+        m: None,
+    }
+}
+
+fn geojson_feature_error(row: usize, message: &str) -> GeoError {
+    GeoError::GeoJson(format!("features[{row}]: {message}"))
 }
 
 fn project_properties(

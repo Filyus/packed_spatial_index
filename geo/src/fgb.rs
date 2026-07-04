@@ -363,6 +363,10 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
             req.duplicates,
         )?;
         let wanted: HashSet<u64> = output.iter().map(|feature| feature.row_number).collect();
+        let mut remaining_outputs: HashMap<u64, usize> = HashMap::new();
+        for feature in &output {
+            *remaining_outputs.entry(feature.row_number).or_default() += 1;
+        }
         let reader = self.reader.take().ok_or(GeoError::DatasetConsumed)?;
         let mut features = reader
             .select_all()
@@ -378,7 +382,13 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
             if wanted.contains(&row) {
                 materialized.insert(
                     row,
-                    materialize_feature(feature, req.geometry, &req.properties, row as usize)?,
+                    materialize_feature(
+                        feature,
+                        req.geometry,
+                        req.geometry_json,
+                        &req.properties,
+                        row as usize,
+                    )?,
                 );
             }
             row += 1;
@@ -386,7 +396,23 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
         output
             .into_iter()
             .map(|feature| {
-                let Some(record) = materialized.get(&feature.row_number) else {
+                let take_last = {
+                    let remaining = remaining_outputs
+                        .get_mut(&feature.row_number)
+                        .expect("requested row has an output counter");
+                    if *remaining == 1 {
+                        true
+                    } else {
+                        *remaining -= 1;
+                        false
+                    }
+                };
+                let Some(record) = (if take_last {
+                    remaining_outputs.remove(&feature.row_number);
+                    materialized.remove(&feature.row_number)
+                } else {
+                    materialized.get(&feature.row_number).cloned()
+                }) else {
                     return Err(GeoError::FeatureRowOutOfBounds {
                         row_number: feature.row_number,
                         num_rows: row,
@@ -394,9 +420,9 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
                 };
                 Ok(FeatureRecord {
                     feature,
-                    geometry_wkb: record.geometry_wkb.clone(),
-                    geometry_json: record.geometry_json.clone(),
-                    properties: record.properties.clone(),
+                    geometry_wkb: record.geometry_wkb,
+                    geometry_json: record.geometry_json,
+                    properties: record.properties,
                 })
             })
             .collect()
@@ -450,16 +476,22 @@ struct MaterializedFgbFeature {
 fn materialize_feature(
     feature: &flatgeobuf::FgbFeature,
     geometry: GeometryReadMode,
+    geometry_json: bool,
     properties: &PropertyProjection,
     row: usize,
 ) -> Result<MaterializedFgbFeature, GeoError> {
-    let bounds = wkb::bounds_from_geozero(|processor| feature.process_geom(processor), false)
-        .map_err(|message| GeoError::FlatGeobuf(format!("features[{row}]: {message}")))?;
+    let needs_geometry = matches!(geometry, GeometryReadMode::Wkb) || geometry_json;
+    let bounds = if needs_geometry {
+        wkb::bounds_from_geozero(|processor| feature.process_geom(processor), false)
+            .map_err(|message| GeoError::FlatGeobuf(format!("features[{row}]: {message}")))?
+    } else {
+        None
+    };
     let geometry_wkb = match (geometry, bounds.as_ref()) {
         (GeometryReadMode::Omit, _) | (_, None) => None,
         (GeometryReadMode::Wkb, Some(bounds)) => Some(feature_wkb(feature, bounds, row)?),
     };
-    let geometry_json = if bounds.is_some() {
+    let geometry_json = if geometry_json && bounds.is_some() {
         Some(feature_geometry_json(feature, row)?)
     } else {
         None

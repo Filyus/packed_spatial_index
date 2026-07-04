@@ -1,10 +1,13 @@
 #![cfg(feature = "geojson")]
 
+use std::io::Cursor;
+
 use packed_spatial_index_geo::{
-    AntimeridianPolicy, ConvertRequest, EnvelopePolicy, FeatureReadOrder, FeatureReadRequest,
-    FeatureRef, GeoArtifactIndex, GeoError, GeometryMetadataSource, GeometryReadMode, GeometryScan,
-    IndexDimsRequest, NullPolicy, PayloadPlan, PropertyProjection, ScanRequest, SliceReader,
-    open_geo_index, open_geojson_slice, read_geo_manifest,
+    AntimeridianPolicy, BuildRequest, ConvertRequest, EnvelopePolicy, FeatureReadOrder,
+    FeatureReadRequest, FeatureRef, GeoArtifactIndex, GeoError, GeoIndex, GeometryMetadataSource,
+    GeometryReadMode, GeometryScan, IndexDimsRequest, NullPolicy, PayloadPlan, PropertyProjection,
+    ScanRequest, SliceReader, build_geojson_stream, convert_geojson_stream, open_geo_index,
+    open_geojson_slice, read_geo_manifest,
 };
 
 fn sample_geojson() -> &'static [u8] {
@@ -80,6 +83,7 @@ fn geojson_read_features_preserves_order_duplicates_and_properties() {
             ],
             properties: PropertyProjection::Include(vec!["name".to_string()]),
             geometry: GeometryReadMode::Wkb,
+            geometry_json: true,
             order: FeatureReadOrder::RequestOrder,
             duplicates: packed_spatial_index_geo::DuplicateFeatureRows::KeepParts,
             expected_source_fingerprint: Some(source.source_fingerprint().to_string()),
@@ -104,6 +108,20 @@ fn geojson_read_features_preserves_order_duplicates_and_properties() {
     );
     assert!(records.iter().all(|record| record.geometry_wkb.is_some()));
     assert!(records.iter().all(|record| record.geometry_json.is_some()));
+}
+
+#[test]
+fn geojson_read_features_defaults_geometry_json_off() {
+    let source = open_geojson_slice(sample_geojson()).unwrap();
+    let records = source
+        .read_features(FeatureReadRequest {
+            features: vec![FeatureRef::row_number(0)],
+            geometry: GeometryReadMode::Wkb,
+            ..FeatureReadRequest::default()
+        })
+        .unwrap();
+    assert!(records[0].geometry_wkb.is_some());
+    assert!(records[0].geometry_json.is_none());
 }
 
 #[test]
@@ -204,6 +222,112 @@ fn geojson_antimeridian_split_and_reject() {
         })
         .unwrap_err();
     assert!(matches!(err, GeoError::Antimeridian { row: 0 }));
+}
+
+#[test]
+fn geojson_direct_walker_covers_geometry_types_and_wkb_payloads() {
+    let doc = br#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{}},
+        {"type":"Feature","geometry":{"type":"MultiPoint","coordinates":[[2.0,3.0],[3.0,4.0]]},"properties":{}},
+        {"type":"Feature","geometry":{"type":"LineString","coordinates":[[4.0,5.0],[5.0,6.0]]},"properties":{}},
+        {"type":"Feature","geometry":{"type":"MultiLineString","coordinates":[[[6.0,7.0],[7.0,8.0]]]},"properties":{}},
+        {"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[8.0,9.0],[9.0,9.0],[9.0,10.0],[8.0,9.0]]]},"properties":{}},
+        {"type":"Feature","geometry":{"type":"MultiPolygon","coordinates":[[[[10.0,11.0],[11.0,11.0],[11.0,12.0],[10.0,11.0]]]]},"properties":{}},
+        {"type":"Feature","geometry":{"type":"GeometryCollection","geometries":[{"type":"Point","coordinates":[12.0,13.0]},{"type":"LineString","coordinates":[[13.0,14.0],[14.0,15.0]]}]},"properties":{}}
+    ]}"#;
+    let mut source = open_geojson_slice(doc).unwrap();
+    let scan = source
+        .scan(ScanRequest {
+            payload: PayloadPlan::RowWkb,
+            ..ScanRequest::default()
+        })
+        .unwrap();
+    let GeometryScan::D2(scan) = scan else {
+        panic!("expected 2D scan");
+    };
+    assert_eq!(scan.features.len(), 7);
+    assert!(
+        scan.payloads()
+            .unwrap()
+            .iter()
+            .all(|payload| !payload.is_empty())
+    );
+    assert!(
+        scan.profile
+            .geometry_types
+            .types
+            .iter()
+            .any(|kind| kind == "GeometryCollection")
+    );
+}
+
+#[test]
+fn geojson_direct_walker_handles_empty_and_invalid_coordinates() {
+    let empty = br#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","geometry":{"type":"LineString","coordinates":[]},"properties":{}}
+    ]}"#;
+    let mut source = open_geojson_slice(empty).unwrap();
+    let err = source.scan(ScanRequest::default()).unwrap_err();
+    assert!(matches!(err, GeoError::NullGeometry { row: 0 }));
+    let scan = source
+        .scan(ScanRequest {
+            nulls: NullPolicy::Skip,
+            ..ScanRequest::default()
+        })
+        .unwrap();
+    let GeometryScan::D2(scan) = scan else {
+        panic!("expected 2D scan");
+    };
+    assert!(scan.features.is_empty());
+
+    let invalid = br#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","geometry":{"type":"Point","coordinates":["x",2.0]},"properties":{}}
+    ]}"#;
+    let mut source = open_geojson_slice(invalid).unwrap();
+    let err = source.scan(ScanRequest::default()).unwrap_err();
+    assert!(err.to_string().contains("coordinate x is not a number"));
+}
+
+#[test]
+fn geojson_stream_convert_and_build_match_eager_source_identity() {
+    let eager = open_geojson_slice(sample_geojson()).unwrap();
+    let mut bytes = Vec::new();
+    let artifact = convert_geojson_stream(
+        Cursor::new(sample_geojson()),
+        ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            nulls: NullPolicy::Skip,
+            ..ConvertRequest::default()
+        },
+        &mut bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        artifact.manifest.source_fingerprint,
+        eager.source_fingerprint()
+    );
+    assert_eq!(artifact.manifest.feature_count, 2);
+    assert_eq!(artifact.manifest.index_entry_count, 2);
+
+    let GeoIndex::D2(index) = build_geojson_stream(
+        Cursor::new(sample_geojson()),
+        BuildRequest {
+            nulls: NullPolicy::Skip,
+            ..BuildRequest::default()
+        },
+    )
+    .unwrap() else {
+        panic!("expected 2D stream-built index");
+    };
+    let hits = index
+        .search_features(packed_spatial_index_geo::Box2D::new(20.0, 0.0, 30.0, 5.0))
+        .unwrap();
+    assert_eq!(
+        hits.iter()
+            .map(|feature| feature.row_number)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
 }
 
 #[cfg(feature = "parquet")]

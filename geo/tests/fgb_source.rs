@@ -6,9 +6,9 @@ use flatgeobuf::{ColumnType, FgbCrs, FgbWriter, FgbWriterOptions, GeometryType};
 use geozero::geojson::GeoJson;
 use geozero::{ColumnValue, PropertyProcessor};
 use packed_spatial_index_geo::{
-    ConvertRequest, FeatureReadRequest, FeatureRef, GeoArtifactIndex, GeoError,
-    GeometryMetadataSource, GeometryReadMode, PayloadPlan, PropertyProjection, SliceReader,
-    open_flatgeobuf, open_geo_index, read_geo_manifest,
+    ConvertRequest, DuplicateFeatureRows, FeatureReadOrder, FeatureReadRequest, FeatureRef,
+    GeoArtifactIndex, GeoError, GeometryMetadataSource, GeometryReadMode, PayloadPlan,
+    PropertyProjection, SliceReader, open_flatgeobuf, open_geo_index, read_geo_manifest,
 };
 
 fn sample_fgb() -> Vec<u8> {
@@ -88,6 +88,7 @@ fn flatgeobuf_read_features_materializes_properties_and_geometry() {
             features: vec![FeatureRef::row_number(1)],
             properties: PropertyProjection::Include(vec!["name".to_string()]),
             geometry: GeometryReadMode::Wkb,
+            geometry_json: true,
             expected_source_fingerprint: Some(source.source_fingerprint().to_string()),
             ..FeatureReadRequest::default()
         })
@@ -104,6 +105,43 @@ fn flatgeobuf_read_features_materializes_properties_and_geometry() {
     );
     assert!(records[0].geometry_wkb.is_some());
     assert!(records[0].geometry_json.is_some());
+}
+
+#[test]
+fn flatgeobuf_read_features_defaults_geometry_json_off() {
+    let bytes = sample_fgb();
+    let mut source = open_flatgeobuf(Cursor::new(bytes)).unwrap();
+    let records = source
+        .read_features(FeatureReadRequest {
+            features: vec![FeatureRef::row_number(0)],
+            geometry: GeometryReadMode::Wkb,
+            ..FeatureReadRequest::default()
+        })
+        .unwrap();
+
+    assert!(records[0].geometry_wkb.is_some());
+    assert!(records[0].geometry_json.is_none());
+}
+
+#[test]
+fn flatgeobuf_read_features_keeps_duplicate_rows_after_move_out() {
+    let bytes = sample_fgb();
+    let mut source = open_flatgeobuf(Cursor::new(bytes)).unwrap();
+    let records = source
+        .read_features(FeatureReadRequest {
+            features: vec![FeatureRef::row_number(1), FeatureRef::row_number(1)],
+            geometry: GeometryReadMode::Wkb,
+            order: FeatureReadOrder::RequestOrder,
+            duplicates: DuplicateFeatureRows::KeepParts,
+            ..FeatureReadRequest::default()
+        })
+        .unwrap();
+
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].feature.row_number, 1);
+    assert_eq!(records[1].feature.row_number, 1);
+    assert!(records.iter().all(|record| record.geometry_wkb.is_some()));
+    assert!(records.iter().all(|record| record.geometry_json.is_none()));
 }
 
 #[test]

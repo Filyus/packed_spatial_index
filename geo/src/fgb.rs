@@ -226,7 +226,7 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
             .select_all()
             .map_err(|e| GeoError::FlatGeobuf(e.to_string()))?;
         let collect_lons = matches!(req.envelope, EnvelopePolicy::Geographic { .. });
-        let mut entries = Vec::new();
+        let mut entries = scan_core::vec_with_u64_capacity_hint(self.header.features_count);
         let mut detected_dims = CoordinateDims::Unknown;
         let mut row = 0usize;
         loop {

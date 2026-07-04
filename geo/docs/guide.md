@@ -82,6 +82,21 @@ Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `open_geo_index` (or `open_geo_index_async` with the `async` feature) and, when
 only metadata is needed, `read_geo_manifest`.
 
+## Source-side memory model
+
+Building or converting from a source is a full-dataset step today. GeoJSON is
+loaded and parsed eagerly before scanning. FlatGeobuf opens from the header and
+streams features during `scan` / `build` / `convert`, but the builder still
+collects the scan, optional payloads, index data, and converted bytes in memory.
+GeoParquet scans are more selective — using column projection, record batches,
+and bbox covering columns when available — but they also materialize the scan and
+output artifact before returning.
+
+The low-memory, range-friendly path starts after conversion: open a `PSINDEX`
+with `open_geo_index` / `open_geo_index_async` and query its index and payload
+chunks directly. Exact filtering or source read-back requires the original
+source file.
+
 ## Half-size in-memory index (f32 accelerator)
 
 `IndexBuildOptions { precision: StoragePrecision::F32, .. }` builds

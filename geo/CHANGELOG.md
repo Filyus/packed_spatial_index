@@ -4,6 +4,17 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Performance
+
+- Reduced temporary allocation and payload copying during source scans by
+  reusing known row / feature count hints and moving payload bytes for unsplit
+  index entries.
+
+### Documentation
+
+- Clarified the source-side memory model for GeoJSON, FlatGeobuf, GeoParquet,
+  and the range-friendly converted `PSINDEX` query path.
+
 ## [0.18.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.17.0...psi-geo-v0.18.0) - 2026-07-04
 
 ### API

@@ -40,6 +40,19 @@ pub(crate) struct ScanEntry {
     pub(crate) payload: Option<Vec<u8>>,
 }
 
+pub(crate) fn vec_with_capacity_hint<T>(capacity: usize) -> Vec<T> {
+    let mut values = Vec::new();
+    let _ = values.try_reserve(capacity);
+    values
+}
+
+pub(crate) fn vec_with_u64_capacity_hint<T>(capacity: u64) -> Vec<T> {
+    match usize::try_from(capacity) {
+        Ok(capacity) => vec_with_capacity_hint(capacity),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub(crate) enum ResolvedDims {
     D2,
     D3,
@@ -358,12 +371,12 @@ impl Default for ScanRequest {
 }
 
 pub(crate) trait PayloadVec {
-    fn payload_payloads(&self) -> Option<Vec<Vec<u8>>>;
+    fn payload_payloads(&self, capacity: usize) -> Option<Vec<Vec<u8>>>;
 }
 
 impl PayloadVec for ScanRequest {
-    fn payload_payloads(&self) -> Option<Vec<Vec<u8>>> {
-        (!matches!(self.payload, PayloadPlan::None)).then(Vec::new)
+    fn payload_payloads(&self, capacity: usize) -> Option<Vec<Vec<u8>>> {
+        (!matches!(self.payload, PayloadPlan::None)).then(|| vec_with_capacity_hint(capacity))
     }
 }
 
@@ -378,25 +391,46 @@ pub(crate) fn assemble_scan(
     detected_dims: CoordinateDims,
 ) -> Result<GeometryScan, GeoError> {
     let dims = resolve_scan_dims(req.dims, detected_dims, &entries)?;
+    let capacity = entries.len();
     profile.coordinate_dims = detected_dims;
 
     match dims {
         ResolvedDims::D2 => {
-            let mut boxes = Vec::new();
-            let mut features = Vec::new();
-            let mut payloads = req.payload_payloads();
+            let mut boxes = vec_with_capacity_hint(capacity);
+            let mut features = vec_with_capacity_hint(capacity);
+            let mut payloads = req.payload_payloads(capacity);
             for entry in entries {
-                let parts = split_2d(&entry.bounds, req.envelope, entry.feature.row_number)?;
+                let ScanEntry {
+                    bounds,
+                    feature,
+                    mut payload,
+                } = entry;
+                let parts = split_2d(&bounds, req.envelope, feature.row_number)?;
+                let part_count = parts.len();
                 let has_parts = parts.len() > 1;
+                let mut feature = Some(feature);
                 for (part_index, bbox) in parts.into_iter().enumerate() {
-                    let mut feature = entry.feature.clone();
+                    let last_part = part_index + 1 == part_count;
+                    let mut feature = if last_part {
+                        feature.take().expect("last part consumes feature ref")
+                    } else {
+                        feature
+                            .as_ref()
+                            .expect("feature ref remains available until last part")
+                            .clone()
+                    };
                     if has_parts {
                         feature.part = Some(part_index as u16);
                     }
                     boxes.push(bbox);
                     features.push(feature);
                     if let Some(payloads) = payloads.as_mut() {
-                        payloads.push(entry.payload.clone().unwrap_or_default());
+                        let payload = if last_part {
+                            payload.take().unwrap_or_default()
+                        } else {
+                            payload.as_ref().cloned().unwrap_or_default()
+                        };
+                        payloads.push(payload);
                     }
                 }
             }
@@ -411,21 +445,41 @@ pub(crate) fn assemble_scan(
             }))
         }
         ResolvedDims::D3 => {
-            let mut boxes = Vec::new();
-            let mut features = Vec::new();
-            let mut payloads = req.payload_payloads();
+            let mut boxes = vec_with_capacity_hint(capacity);
+            let mut features = vec_with_capacity_hint(capacity);
+            let mut payloads = req.payload_payloads(capacity);
             for entry in entries {
-                let parts = split_3d(&entry.bounds, req.envelope, entry.feature.row_number)?;
+                let ScanEntry {
+                    bounds,
+                    feature,
+                    mut payload,
+                } = entry;
+                let parts = split_3d(&bounds, req.envelope, feature.row_number)?;
+                let part_count = parts.len();
                 let has_parts = parts.len() > 1;
+                let mut feature = Some(feature);
                 for (part_index, bbox) in parts.into_iter().enumerate() {
-                    let mut feature = entry.feature.clone();
+                    let last_part = part_index + 1 == part_count;
+                    let mut feature = if last_part {
+                        feature.take().expect("last part consumes feature ref")
+                    } else {
+                        feature
+                            .as_ref()
+                            .expect("feature ref remains available until last part")
+                            .clone()
+                    };
                     if has_parts {
                         feature.part = Some(part_index as u16);
                     }
                     boxes.push(bbox);
                     features.push(feature);
                     if let Some(payloads) = payloads.as_mut() {
-                        payloads.push(entry.payload.clone().unwrap_or_default());
+                        let payload = if last_part {
+                            payload.take().unwrap_or_default()
+                        } else {
+                            payload.as_ref().cloned().unwrap_or_default()
+                        };
+                        payloads.push(payload);
                     }
                 }
             }

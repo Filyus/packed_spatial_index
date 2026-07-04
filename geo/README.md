@@ -82,6 +82,22 @@ That leaves the crate query-only — [`open_geo_index`][open_geo_index] /
 payload geometry), and payload decoding — compiling to `wasm32`. Only reading a
 source file needs a format feature.
 
+## Memory model
+
+Source builds and converted `PSINDEX` queries are different paths:
+
+- GeoJSON sources are parsed eagerly: `open_geojson` reads the whole document,
+  and the dataset keeps the parsed features in memory.
+- FlatGeobuf sources open from the header and stream the feature section during
+  `scan` / `build` / `convert`, but those operations still materialize the
+  source scan, optional payloads, index data, and converted bytes in memory.
+- GeoParquet uses Arrow / Parquet column projection, record batches, and
+  GeoParquet bbox coverings when available, but source `build` / `convert` is
+  still a full-dataset materialization step.
+- Pre-built `PSINDEX` artifacts are the range-friendly query path: opening and
+  searching an artifact read only the directory and requested index / payload
+  chunks. Exact filtering or source read-back still needs the original source.
+
 ## API at a glance
 
 Open the Parquet source once with [`open_geoparquet`][open_geoparquet], inspect the metadata-only

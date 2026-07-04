@@ -232,7 +232,7 @@ impl GeoJsonDataset {
             self.check_property_projection(properties)?;
         }
         let collect_lons = matches!(req.envelope, EnvelopePolicy::Geographic { .. });
-        let mut entries = Vec::new();
+        let mut entries = scan_core::vec_with_capacity_hint(self.features.len());
         let mut detected_dims = CoordinateDims::Unknown;
         for (row, feature) in self.features.iter().enumerate() {
             let Some(bounds) = scan_geometry(feature.geometry.as_ref(), row, collect_lons)? else {

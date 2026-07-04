@@ -48,7 +48,7 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
         .with_projection(projection)
         .build()
         .map_err(GeoError::from)?;
-    let mut entries = Vec::new();
+    let mut entries = scan_core::vec_with_u64_capacity_hint(dataset.discovery().num_rows);
     let mut detected_dims = state.info.coordinate_dims;
     let collect_lons = matches!(req.envelope, EnvelopePolicy::Geographic { .. });
     let mut row_base = 0u64;

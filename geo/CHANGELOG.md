@@ -4,6 +4,13 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.19.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.19.1...psi-geo-v0.19.2) - 2026-07-05
+
+### Documentation
+
+- Moved the memory model into a dedicated guide page covering index building,
+  artifact querying, GeoJSON streaming, and read-back geometry materialization.
+
 ## [0.19.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.19.0...psi-geo-v0.19.1) - 2026-07-05
 
 ### Documentation

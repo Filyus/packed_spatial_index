@@ -84,31 +84,6 @@ That leaves the crate query-only — [`open_geo_index`][open_geo_index] /
 payload geometry), and payload decoding — compiling to `wasm32`. Only reading a
 source file needs a format feature.
 
-## Memory model
-
-Source builds and converted `PSINDEX` queries are different paths:
-
-- Eager GeoJSON sources (`open_geojson` / `open_geojson_slice`) read the whole
-  document and keep feature records in memory for repeatable scan, build,
-  convert, and read-back operations.
-- Streaming GeoJSON helpers (`build_geojson_stream` / `convert_geojson_stream`)
-  accept `FeatureCollection` documents and process one feature at a time. They
-  still retain the scan entries, requested payload bytes, index data, and
-  converted bytes needed by the result, but not the full source document or all
-  parsed features.
-- FlatGeobuf sources open from the header and stream the feature section during
-  `scan` / `build` / `convert`, but those operations still materialize the
-  source scan, optional payloads, index data, and converted bytes in memory.
-- GeoParquet uses Arrow / Parquet column projection, record batches, and
-  GeoParquet bbox coverings when available, but source `build` / `convert` is
-  still a full-dataset materialization step.
-- Pre-built `PSINDEX` artifacts are the range-friendly query path: opening and
-  searching an artifact read only the directory and requested index / payload
-  chunks. Exact filtering or source read-back still needs the original source.
-- Source read-back does not materialize GeoJSON geometry by default. Request
-  WKB with `GeometryReadMode::Wkb`, or set `FeatureReadRequest::geometry_json`
-  only when downstream code needs JSON geometry values.
-
 ## API at a glance
 
 Open the Parquet source once with [`open_geoparquet`][open_geoparquet], inspect the metadata-only
@@ -176,6 +151,9 @@ cargo run --example feature_json_payload
 - **[Guide](docs/guide.md)** — validate before building, convert to a
   streamable `PSINDEX`, query source rows back with exact filtering, spherical
   radius queries.
+- **[Memory model](docs/memory-model.md)** — what stays in memory while
+  building from GeoParquet, FlatGeobuf, or GeoJSON, and why querying an existing
+  `PSINDEX` is the low-memory path.
 - **[When to use it](docs/when-to-use.md)** — accelerator vs. converter, and
   how this crate differs from
   [`oxigdal-geoparquet`](https://crates.io/crates/oxigdal-geoparquet).
@@ -192,7 +170,7 @@ cargo install packed_spatial_index_geo --locked
 Run it directly after install, or prefix the same arguments with
 `cargo run --bin gp2psindex --` from a repository checkout.
 
-Start with discovery when you do not know which geometry columns the file
+Start with discovery when you don't know which geometry columns the file
 contains. `gp2psindex` detects `.parquet`, `.fgb`, `.geojson`, and `.json`
 inputs by extension and falls back to a small signature check; pass `--format`
 to override detection.

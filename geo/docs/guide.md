@@ -82,20 +82,15 @@ Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `open_geo_index` (or `open_geo_index_async` with the `async` feature) and, when
 only metadata is needed, `read_geo_manifest`.
 
-## Source-side memory model
+## Memory and source files
 
-Building or converting from a source is a full-dataset step today. GeoJSON is
-loaded and parsed eagerly before scanning. FlatGeobuf opens from the header and
-streams features during `scan` / `build` / `convert`, but the builder still
-collects the scan, optional payloads, index data, and converted bytes in memory.
-GeoParquet scans are more selective — using column projection, record batches,
-and bbox covering columns when available — but they also materialize the scan and
-output artifact before returning.
+Building or converting from a source file assembles the output boxes, payloads,
+and index in memory. Opening an existing `PSINDEX` is the low-memory query path:
+range-friendly searches read only the artifact directory plus the index and
+payload chunks they need.
 
-The low-memory, range-friendly path starts after conversion: open a `PSINDEX`
-with `open_geo_index` / `open_geo_index_async` and query its index and payload
-chunks directly. Exact filtering or source read-back requires the original
-source file.
+See the [memory model](memory-model.md) for the per-format behavior of
+GeoParquet, FlatGeobuf, and GeoJSON.
 
 ## Half-size in-memory index (f32 accelerator)
 
@@ -225,8 +220,8 @@ It reads geometry WKB internally; open a fresh dataset session for
 
 The query is not limited to a rectangle. Pass `GeoQuery2D::polygon` or
 `GeoQuery2D::multi_polygon` (the `geo_types` crate is re-exported) to query an
-arbitrary planar polygon: index search still narrows candidates by the
-polygon's bounding box; the exact step then drops the bbox false-positives
+arbitrary planar polygon: index search narrows candidates by the polygon's
+bounding box; the exact step then drops the bbox false-positives
 that fall in holes or concavities.
 
 **When to filter exactly** — a non-rectangular query leaves bbox
@@ -444,7 +439,7 @@ Two distance choices, matching this crate's existing planar/geographic split
   `x`/`y` are longitude/latitude degrees.
 
 kNN is in-memory-accelerator only: it has no streaming/artifact-reader
-equivalent in the core crate, so `GeoArtifactIndex2D`/`3D` do not gain a kNN
+equivalent in the core crate, so `GeoArtifactIndex2D`/`3D` don't gain a kNN
 method. This was already promised in [When to use
 it](when-to-use.md#reach-for-the-accelerator-when) ("fast windowed / kNN /
 raycast lookups") but not previously implemented.

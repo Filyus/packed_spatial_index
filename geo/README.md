@@ -52,7 +52,7 @@ Requires Rust 1.89 or newer.
 
 ```toml
 [dependencies]
-packed_spatial_index_geo = "0.18"
+packed_spatial_index_geo = "0.19"
 ```
 
 ### Features
@@ -64,7 +64,9 @@ packed_spatial_index_geo = "0.18"
   then scan, build, convert, and read features back without Arrow.
 - **`geojson`** *(default)* — open GeoJSON with `open_geojson` /
   `open_geojson_slice`, then scan, build, convert, and read features back.
-  GeoJSON is parsed eagerly in memory.
+  `build_geojson_stream` / `convert_geojson_stream` provide one-shot
+  `FeatureCollection` build and convert paths without retaining the full
+  source document.
 - **`async`** — open and query streamable `PSINDEX` artifacts over an
   [`AsyncRangeReader`][AsyncRangeReader], adding `open_geo_index_async` and `search_hits_async`.
 
@@ -73,7 +75,7 @@ feature so `arrow` / `parquet` never enter the build:
 
 ```toml
 [dependencies]
-packed_spatial_index_geo = { version = "0.18", default-features = false, features = ["async"] }
+packed_spatial_index_geo = { version = "0.19", default-features = false, features = ["async"] }
 ```
 
 That leaves the crate query-only — [`open_geo_index`][open_geo_index] /
@@ -86,8 +88,14 @@ source file needs a format feature.
 
 Source builds and converted `PSINDEX` queries are different paths:
 
-- GeoJSON sources are parsed eagerly: `open_geojson` reads the whole document,
-  and the dataset keeps the parsed features in memory.
+- Eager GeoJSON sources (`open_geojson` / `open_geojson_slice`) read the whole
+  document and keep feature records in memory for repeatable scan, build,
+  convert, and read-back operations.
+- Streaming GeoJSON helpers (`build_geojson_stream` / `convert_geojson_stream`)
+  accept `FeatureCollection` documents and process one feature at a time. They
+  still retain the scan entries, requested payload bytes, index data, and
+  converted bytes needed by the result, but not the full source document or all
+  parsed features.
 - FlatGeobuf sources open from the header and stream the feature section during
   `scan` / `build` / `convert`, but those operations still materialize the
   source scan, optional payloads, index data, and converted bytes in memory.
@@ -97,6 +105,9 @@ Source builds and converted `PSINDEX` queries are different paths:
 - Pre-built `PSINDEX` artifacts are the range-friendly query path: opening and
   searching an artifact read only the directory and requested index / payload
   chunks. Exact filtering or source read-back still needs the original source.
+- Source read-back does not materialize GeoJSON geometry by default. Request
+  WKB with `GeometryReadMode::Wkb`, or set `FeatureReadRequest::geometry_json`
+  only when downstream code needs JSON geometry values.
 
 ## API at a glance
 
@@ -111,6 +122,7 @@ files.
 | --- | --- |
 | Open GeoParquet | [`open_geoparquet`][open_geoparquet] |
 | Open GeoJSON | [`open_geojson`][open_geojson], [`open_geojson_slice`][open_geojson_slice] |
+| Stream GeoJSON build / convert | [`build_geojson_stream`][build_geojson_stream], [`convert_geojson_stream`][convert_geojson_stream] |
 | Open FlatGeobuf | [`open_flatgeobuf`][open_flatgeobuf] |
 | Discover columns | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery] |
 | Select a column | [`GeoDataset::select`][select], [`GeometrySelector`][GeometrySelector] |
@@ -281,7 +293,8 @@ gp2psindex query input.parquet output.psi \
   explicitly.
 - FlatGeobuf and GeoJSON sources expose a single geometry named `geometry`.
   GeoJSON input accepts `FeatureCollection`, single `Feature`, and bare geometry
-  documents; v1 parses the whole document in memory.
+  documents through eager `open_geojson`. The streaming GeoJSON APIs accept
+  `FeatureCollection` only.
 - Use `open_geoparquet(...).discovery()` when a file may contain several geometry
   candidates and you want metadata-only selection status before reading rows.
 - Boxes come from the **bbox covering** column when present, otherwise from each
@@ -315,6 +328,8 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [open_geoparquet]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geoparquet.html
 [open_geojson]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geojson.html
 [open_geojson_slice]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geojson_slice.html
+[build_geojson_stream]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.build_geojson_stream.html
+[convert_geojson_stream]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.convert_geojson_stream.html
 [open_flatgeobuf]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_flatgeobuf.html
 [GeoDataset]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html
 [discovery]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.discovery

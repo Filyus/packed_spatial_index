@@ -4,6 +4,13 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.19.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.19.0...psi-geo-v0.19.1) - 2026-07-05
+
+### Documentation
+
+- Updated the GeoJSON memory model and install snippets to describe the
+  `0.19` eager-vs-streaming source paths and opt-in geometry JSON read-back.
+
 ## [0.19.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.18.2...psi-geo-v0.19.0) - 2026-07-05
 
 ### API

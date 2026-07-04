@@ -4,6 +4,30 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.18.2...psi-geo-v0.19.0) - 2026-07-05
+
+### API
+
+- Added `FeatureReadRequest::geometry_json` and made GeoJSON geometry read-back
+  opt-in so `read_features` can return WKB or projected properties without
+  materializing unwanted JSON geometry.
+- Added one-shot GeoJSON `FeatureCollection` streaming entrypoints for building
+  and converting large GeoJSON inputs without retaining the full parsed document.
+
+### Performance
+
+- Reduced GeoJSON source scan and conversion memory peaks by walking raw feature
+  geometry directly for bounds and WKB emission instead of reparsing serialized
+  geometry JSON.
+- Reduced FlatGeobuf read-back memory peaks by materializing only requested
+  geometry output and by preserving source-order reads without extra record
+  cloning where possible.
+- Improved FlatGeobuf `FeatureJson` payload conversion by assembling payloads
+  from raw geometry JSON instead of parsing the geometry back into a
+  `serde_json::Value`.
+- Reduced temporary allocation in GeoParquet bbox-covering scans and added fast
+  WKB paths for common GeoJSON conversion and point exact-filter cases.
+
 ## [0.18.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.18.1...psi-geo-v0.18.2) - 2026-07-04
 
 ### Safety

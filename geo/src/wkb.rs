@@ -118,6 +118,14 @@ impl BoundsProcessor {
         }
         self.bounds.add_coord(&coord, self.collect_lons);
     }
+
+    #[cfg(feature = "_source")]
+    fn finish(self) -> Result<Option<GeometryBounds>, String> {
+        if self.non_finite {
+            return Err("geometry contains a non-finite coordinate".to_string());
+        }
+        Ok(self.bounds.any.then_some(self.bounds))
+    }
 }
 
 #[cfg(feature = "_source")]
@@ -157,20 +165,9 @@ impl GeomProcessor for BoundsProcessor {
 
 #[cfg(feature = "parquet")]
 pub(crate) fn bounds(bytes: &[u8], collect_lons: bool) -> Result<Option<GeometryBounds>, GeoError> {
-    let mut cursor = std::io::Cursor::new(bytes);
-    let mut out = match bounds_from_geozero(
-        |processor| geozero::wkb::process_wkb_geom(&mut cursor, processor),
-        collect_lons,
-    )
-    .map_err(GeoError::Wkb)?
-    {
-        Some(bounds) => bounds,
-        None => return Ok(None),
-    };
-    if let Some(header_dims) = dims_from_wkb(bytes) {
-        out.dims = out.dims.merge(header_dims);
-    }
-    Ok(Some(out))
+    WkbBoundsReader::new(bytes, collect_lons)
+        .read()
+        .map_err(GeoError::Wkb)
 }
 
 /// Run any geozero geometry-processing closure through the shared
@@ -187,11 +184,298 @@ pub(crate) fn bounds_from_geozero(
     if let Err(err) = process(&mut processor) {
         return Err(err.to_string());
     }
-    if processor.non_finite {
-        return Err("geometry contains a non-finite coordinate".to_string());
+    processor.finish()
+}
+
+#[cfg(feature = "parquet")]
+const WKB_MAX_NESTING_DEPTH: usize = 128;
+
+#[cfg(feature = "parquet")]
+const WKB_HEADER_BYTES: usize = 5;
+
+#[cfg(feature = "parquet")]
+#[derive(Clone, Copy)]
+struct WkbHeader {
+    little: bool,
+    base_type: u32,
+    dims: CoordinateDims,
+}
+
+#[cfg(feature = "parquet")]
+impl WkbHeader {
+    fn coord_count(self) -> usize {
+        2 + usize::from(self.dims.has_z()) + usize::from(self.dims.has_m())
     }
-    let out = processor.bounds;
-    Ok(out.any.then_some(out))
+
+    fn coord_bytes(self) -> usize {
+        self.coord_count() * 8
+    }
+}
+
+#[cfg(feature = "parquet")]
+struct WkbBoundsReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    processor: BoundsProcessor,
+}
+
+#[cfg(feature = "parquet")]
+impl<'a> WkbBoundsReader<'a> {
+    fn new(bytes: &'a [u8], collect_lons: bool) -> Self {
+        Self {
+            bytes,
+            pos: 0,
+            processor: BoundsProcessor::new(collect_lons),
+        }
+    }
+
+    fn read(mut self) -> Result<Option<GeometryBounds>, String> {
+        self.read_geometry(0)?;
+        self.processor.finish()
+    }
+
+    fn read_geometry(&mut self, depth: usize) -> Result<(), String> {
+        if depth > WKB_MAX_NESTING_DEPTH {
+            return Err(format!("WKB nesting depth exceeds {WKB_MAX_NESTING_DEPTH}"));
+        }
+        let header = self.read_header()?;
+        self.read_geometry_body(header, depth)
+    }
+
+    fn read_typed_geometry(
+        &mut self,
+        depth: usize,
+        expected: &[u32],
+        context: &str,
+    ) -> Result<(), String> {
+        if depth > WKB_MAX_NESTING_DEPTH {
+            return Err(format!("WKB nesting depth exceeds {WKB_MAX_NESTING_DEPTH}"));
+        }
+        let header = self.read_header()?;
+        if !expected.contains(&header.base_type) {
+            return Err(format!(
+                "expected {context} in WKB collection, found type {}",
+                header.base_type
+            ));
+        }
+        self.read_geometry_body(header, depth)
+    }
+
+    fn read_geometry_body(&mut self, header: WkbHeader, depth: usize) -> Result<(), String> {
+        match header.base_type {
+            1 => self.read_point(header),
+            2 | 8 => self.read_coord_sequence(header),
+            3 | 17 => self.read_polygon(header),
+            4 => self.read_child_collection(header, depth, &[1], "Point"),
+            5 => self.read_child_collection(header, depth, &[2], "LineString"),
+            6 => self.read_child_collection(header, depth, &[3], "Polygon"),
+            7 => self.read_any_collection(header, depth),
+            9 => self.read_child_collection(header, depth, &[2, 8], "curve"),
+            10 => self.read_child_collection(header, depth, &[2, 8, 9], "curve"),
+            11 => self.read_child_collection(header, depth, &[2, 8, 9], "curve"),
+            12 => self.read_child_collection(header, depth, &[3, 10], "surface"),
+            15 => self.read_child_collection(header, depth, &[3], "Polygon"),
+            16 => self.read_child_collection(header, depth, &[17], "Triangle"),
+            other => Err(format!("unsupported WKB geometry type {other}")),
+        }
+    }
+
+    fn read_header(&mut self) -> Result<WkbHeader, String> {
+        let little = match self.read_u8()? {
+            0 => false,
+            1 => true,
+            other => return Err(format!("invalid WKB byte order {other}")),
+        };
+        let raw = self.read_u32(little)?;
+        let ewkb_z = raw & 0x8000_0000 != 0;
+        let ewkb_m = raw & 0x4000_0000 != 0;
+        let ewkb_srid = raw & 0x2000_0000 != 0;
+        let (base_type, dims) = if ewkb_z || ewkb_m || ewkb_srid {
+            if ewkb_srid {
+                self.skip(4)?;
+            }
+            (
+                raw & 0x0000_FFFF,
+                match (ewkb_z, ewkb_m) {
+                    (true, true) => CoordinateDims::Xyzm,
+                    (true, false) => CoordinateDims::Xyz,
+                    (false, true) => CoordinateDims::Xym,
+                    (false, false) => CoordinateDims::Xy,
+                },
+            )
+        } else {
+            let dim_code = raw / 1000;
+            if dim_code > 3 {
+                return Err(format!("unsupported WKB geometry type {raw}"));
+            }
+            (
+                raw % 1000,
+                match dim_code {
+                    1 => CoordinateDims::Xyz,
+                    2 => CoordinateDims::Xym,
+                    3 => CoordinateDims::Xyzm,
+                    _ => CoordinateDims::Xy,
+                },
+            )
+        };
+        if !(1..=17).contains(&base_type) || matches!(base_type, 13 | 14) {
+            return Err(format!("unsupported WKB geometry type {base_type}"));
+        }
+        Ok(WkbHeader {
+            little,
+            base_type,
+            dims,
+        })
+    }
+
+    fn read_point(&mut self, header: WkbHeader) -> Result<(), String> {
+        let coord = self.read_coord(header)?;
+        if is_empty_point_coord(&coord) {
+            return Ok(());
+        }
+        self.processor.add_coord(coord);
+        Ok(())
+    }
+
+    fn read_coord_sequence(&mut self, header: WkbHeader) -> Result<(), String> {
+        let len = self.read_bounded_count(header, header.coord_bytes(), "coordinate sequence")?;
+        for _ in 0..len {
+            let coord = self.read_coord(header)?;
+            self.processor.add_coord(coord);
+        }
+        Ok(())
+    }
+
+    fn read_polygon(&mut self, header: WkbHeader) -> Result<(), String> {
+        let rings = self.read_bounded_count(header, 4, "polygon ring list")?;
+        for _ in 0..rings {
+            self.read_coord_sequence(header)?;
+        }
+        Ok(())
+    }
+
+    fn read_any_collection(&mut self, header: WkbHeader, depth: usize) -> Result<(), String> {
+        let count = self.read_bounded_count(header, WKB_HEADER_BYTES, "geometry collection")?;
+        for _ in 0..count {
+            self.read_geometry(depth + 1)?;
+        }
+        Ok(())
+    }
+
+    fn read_child_collection(
+        &mut self,
+        header: WkbHeader,
+        depth: usize,
+        expected: &[u32],
+        context: &str,
+    ) -> Result<(), String> {
+        let count = self.read_bounded_count(header, WKB_HEADER_BYTES, context)?;
+        for _ in 0..count {
+            self.read_typed_geometry(depth + 1, expected, context)?;
+        }
+        Ok(())
+    }
+
+    fn read_bounded_count(
+        &mut self,
+        header: WkbHeader,
+        min_item_bytes: usize,
+        context: &str,
+    ) -> Result<usize, String> {
+        let count = self.read_u32(header.little)? as usize;
+        let min_bytes = count
+            .checked_mul(min_item_bytes)
+            .ok_or_else(|| format!("WKB {context} count overflows byte size"))?;
+        let remaining = self.remaining();
+        if min_bytes > remaining {
+            return Err(format!(
+                "WKB {context} declares {count} items but only {remaining} bytes remain"
+            ));
+        }
+        Ok(count)
+    }
+
+    fn read_coord(&mut self, header: WkbHeader) -> Result<Coord, String> {
+        Ok(Coord {
+            x: self.read_f64(header.little)?,
+            y: self.read_f64(header.little)?,
+            z: header
+                .dims
+                .has_z()
+                .then(|| self.read_f64(header.little))
+                .transpose()?,
+            m: header
+                .dims
+                .has_m()
+                .then(|| self.read_f64(header.little))
+                .transpose()?,
+        })
+    }
+
+    fn read_u8(&mut self) -> Result<u8, String> {
+        let byte = *self
+            .bytes
+            .get(self.pos)
+            .ok_or_else(|| "unexpected end of WKB".to_string())?;
+        self.pos += 1;
+        Ok(byte)
+    }
+
+    fn read_u32(&mut self, little: bool) -> Result<u32, String> {
+        let bytes = self.read_array::<4>()?;
+        Ok(if little {
+            u32::from_le_bytes(bytes)
+        } else {
+            u32::from_be_bytes(bytes)
+        })
+    }
+
+    fn read_f64(&mut self, little: bool) -> Result<f64, String> {
+        let bytes = self.read_array::<8>()?;
+        let bits = if little {
+            u64::from_le_bytes(bytes)
+        } else {
+            u64::from_be_bytes(bytes)
+        };
+        Ok(f64::from_bits(bits))
+    }
+
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], String> {
+        let end = self
+            .pos
+            .checked_add(N)
+            .ok_or_else(|| "WKB offset overflow".to_string())?;
+        let bytes = self
+            .bytes
+            .get(self.pos..end)
+            .ok_or_else(|| "unexpected end of WKB".to_string())?;
+        self.pos = end;
+        Ok(bytes.try_into().expect("slice length is fixed"))
+    }
+
+    fn skip(&mut self, len: usize) -> Result<(), String> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or_else(|| "WKB offset overflow".to_string())?;
+        if end > self.bytes.len() {
+            return Err("unexpected end of WKB".to_string());
+        }
+        self.pos = end;
+        Ok(())
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.pos)
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn is_empty_point_coord(coord: &Coord) -> bool {
+    coord.x.is_nan()
+        && coord.y.is_nan()
+        && coord.z.is_none_or(f64::is_nan)
+        && coord.m.is_none_or(f64::is_nan)
 }
 
 #[cfg(feature = "parquet")]
@@ -200,43 +484,6 @@ pub(crate) fn geometry_json(bytes: &[u8]) -> Result<serde_json::Value, GeoError>
     let json = GeoJsonString::from_wkb(&mut cursor, WkbDialect::Wkb)
         .map_err(|e| GeoError::Wkb(e.to_string()))?;
     serde_json::from_str(&json.0).map_err(|e| GeoError::Wkb(e.to_string()))
-}
-
-#[cfg(feature = "parquet")]
-pub(crate) fn dims_from_wkb(bytes: &[u8]) -> Option<CoordinateDims> {
-    if bytes.len() < 5 {
-        return None;
-    }
-    let little = match bytes[0] {
-        0 => false,
-        1 => true,
-        _ => return None,
-    };
-    let raw = if little {
-        u32::from_le_bytes(bytes[1..5].try_into().ok()?)
-    } else {
-        u32::from_be_bytes(bytes[1..5].try_into().ok()?)
-    };
-    let ewkb_z = raw & 0x8000_0000 != 0;
-    let ewkb_m = raw & 0x4000_0000 != 0;
-    if ewkb_z || ewkb_m {
-        return Some(match (ewkb_z, ewkb_m) {
-            (true, true) => CoordinateDims::Xyzm,
-            (true, false) => CoordinateDims::Xyz,
-            (false, true) => CoordinateDims::Xym,
-            (false, false) => CoordinateDims::Xy,
-        });
-    }
-    let code = raw % 1000;
-    if raw >= 3000 && code > 0 {
-        Some(CoordinateDims::Xyzm)
-    } else if raw >= 2000 && code > 0 {
-        Some(CoordinateDims::Xym)
-    } else if raw >= 1000 && code > 0 {
-        Some(CoordinateDims::Xyz)
-    } else {
-        Some(CoordinateDims::Xy)
-    }
 }
 
 pub(crate) fn is_empty_point_wkb(bytes: &[u8]) -> bool {

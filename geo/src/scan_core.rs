@@ -46,6 +46,7 @@ pub(crate) fn vec_with_capacity_hint<T>(capacity: usize) -> Vec<T> {
     values
 }
 
+#[cfg(any(feature = "parquet", feature = "flatgeobuf"))]
 pub(crate) fn vec_with_u64_capacity_hint<T>(capacity: u64) -> Vec<T> {
     match usize::try_from(capacity) {
         Ok(capacity) => vec_with_capacity_hint(capacity),

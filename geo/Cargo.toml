@@ -53,8 +53,8 @@ arrow = { version = "59", optional = true }
 arrow-json = { version = "59", optional = true }
 arrow-select = { version = "59", optional = true }
 parquet = { version = "59", features = ["geospatial"], optional = true }
-# WKB envelope fallback when a file has no bbox covering column.
-geozero = { version = "0.15", features = ["with-wkb", "with-geojson", "with-geo"] }
+# Geometry conversion glue for GeoJSON/FlatGeobuf payloads and exact filters.
+geozero = { version = "0.15", default-features = false, features = ["with-wkb", "with-geojson", "with-geo"] }
 # FlatGeobuf reader/writer behind the `flatgeobuf` feature. Default features
 # off: they pull an HTTP range client (reqwest/tokio) we don't use.
 flatgeobuf = { version = "6", default-features = false, optional = true }

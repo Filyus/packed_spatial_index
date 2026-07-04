@@ -4,6 +4,12 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Safety
+
+- Hardened WKB envelope scanning with a crate-local bounded parser that caps
+  nesting depth, rejects impossible count hints before iterating, and avoids the
+  unbounded recursive `geozero` WKB reader on the source scan path.
+
 ## [0.18.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.18.0...psi-geo-v0.18.1) - 2026-07-04
 
 ### Performance

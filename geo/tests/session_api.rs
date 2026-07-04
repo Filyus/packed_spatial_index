@@ -127,6 +127,37 @@ fn wkb_multipoint_2d(coords: &[(f64, f64)]) -> Vec<u8> {
     v
 }
 
+fn ewkb_point_2d_srid(srid: i32, x: f64, y: f64) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(1);
+    v.extend_from_slice(&0x2000_0001u32.to_le_bytes());
+    v.extend_from_slice(&srid.to_le_bytes());
+    v.extend_from_slice(&x.to_le_bytes());
+    v.extend_from_slice(&y.to_le_bytes());
+    v
+}
+
+fn wkb_line_declared_count(count: u32) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(1);
+    v.extend_from_slice(&2u32.to_le_bytes());
+    v.extend_from_slice(&count.to_le_bytes());
+    v
+}
+
+fn wkb_nested_geometry_collection(depth: usize) -> Vec<u8> {
+    let mut child = wkb_point_2d(1.0, 2.0);
+    for _ in 0..depth {
+        let mut parent = Vec::new();
+        parent.push(1);
+        parent.extend_from_slice(&7u32.to_le_bytes());
+        parent.extend_from_slice(&1u32.to_le_bytes());
+        parent.extend_from_slice(&child);
+        child = parent;
+    }
+    child
+}
+
 fn binary_col(values: &[Option<Vec<u8>>]) -> ArrayRef {
     let values: Vec<Option<&[u8]>> = values.iter().map(|value| value.as_deref()).collect();
     Arc::new(BinaryArray::from(values))
@@ -2797,6 +2828,63 @@ fn malformed_wkb_scan_returns_error_without_panic() {
             "malformed WKB case {i} unexpectedly scanned"
         );
     }
+}
+
+#[test]
+fn ewkb_srid_flag_scans_without_geozero_wkb_reader() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[Some(ewkb_point_2d_srid(4326, 3.0, 4.0))]),
+        )],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    let GeometryScan::D2(scan) = dataset.scan(Default::default()).unwrap() else {
+        panic!("expected 2D scan");
+    };
+    assert_eq!(scan.profile.coordinate_dims, CoordinateDims::Xy);
+    assert_eq!(scan.boxes[0], Box2D::new(3.0, 4.0, 3.0, 4.0));
+}
+
+#[test]
+fn wkb_scan_rejects_untrusted_count_hint_without_allocation() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[Some(wkb_line_declared_count(u32::MAX))]),
+        )],
+        geo_meta_wkb(&["LineString"]),
+    );
+    let result = assert_no_panic("huge WKB count hint", || {
+        let mut dataset = open_geoparquet(data).unwrap();
+        dataset.scan(Default::default())
+    });
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("declares"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn wkb_scan_rejects_deep_geometry_collection_without_stack_growth() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[Some(wkb_nested_geometry_collection(130))]),
+        )],
+        geo_meta_wkb(&["GeometryCollection"]),
+    );
+    let result = assert_no_panic("deep WKB geometry collection", || {
+        let mut dataset = open_geoparquet(data).unwrap();
+        dataset.scan(Default::default())
+    });
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("nesting depth"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

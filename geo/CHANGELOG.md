@@ -10,6 +10,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   `geojson` features. New entrypoints `open_flatgeobuf`, `open_geojson`, and
   `open_geojson_slice` can scan, build, convert, and read features back through
   the shared source-side builder core.
+- **Breaking:** renamed `open` to `open_geoparquet` so all source entrypoints
+  are symmetric (`open_geoparquet` / `open_geojson` / `open_flatgeobuf`); no
+  format is privileged by an unsuffixed name.
+- Added a `GeoSource` trait (`profile` / `source_fingerprint` / `scan` /
+  `build` / `convert` / `convert_into`) implemented by every source type, so
+  build/convert pipelines can be written generically over `impl GeoSource`.
+  Each type keeps these as inherent methods too. Read-back stays off the trait
+  (Parquet returns Arrow `FeatureRows`; other sources return `FeatureRecord`).
+- Added `GeoDataset::profile` and made every source's `profile` return
+  `Result<GeometryProfile, GeoError>` for a uniform metadata-profile call.
 - Added `FeatureRecord` read-back for non-Arrow sources and moved
   `FeatureReadRequest` / `GeometryReadMode` / read ordering and duplicate
   controls to the format-neutral source API.

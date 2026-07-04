@@ -573,9 +573,9 @@ pub struct GeometryColumn {
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::{open, GeometrySelector};
+/// use packed_spatial_index_geo::{open_geoparquet, GeometrySelector};
 ///
-/// let dataset = open(File::open("cities.parquet")?)?;
+/// let dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// let column = dataset.select(GeometrySelector::Name("geometry".to_string()))?;
 /// println!("selected {}", column.name);
 /// # Ok::<(), Box<dyn std::error::Error>>(())

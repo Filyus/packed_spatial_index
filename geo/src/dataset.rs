@@ -6,7 +6,7 @@ use parquet::file::reader::ChunkReader;
 use serde::{Deserialize, Serialize};
 
 use crate::PropertyProjection;
-use crate::build::{BuildRequest, GeoArtifact, GeoIndex};
+use crate::build::{BuildRequest, GeoArtifact, GeoIndex, GeoSource};
 use crate::discovery::{self, ColumnState};
 use crate::feature_read::{self, FeatureRows};
 use crate::filter;
@@ -32,13 +32,13 @@ use crate::{
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::open;
+/// use packed_spatial_index_geo::open_geoparquet;
 ///
-/// let dataset = open(File::open("cities.parquet")?)?;
+/// let dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// println!("{} rows", dataset.discovery().num_rows);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn open<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoError> {
+pub fn open_geoparquet<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoError> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
     let native_stats = validation::native_geospatial_stats(builder.metadata());
     let (discovery, states) = discovery::discover_metadata(builder.metadata())?;
@@ -74,9 +74,9 @@ pub fn open<R: ChunkReader + 'static>(reader: R) -> Result<GeoDataset<R>, GeoErr
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex};
+/// use packed_spatial_index_geo::{open_geoparquet, BuildRequest, GeoIndex};
 ///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// let index = dataset.build(BuildRequest::default())?;
 /// match index {
 ///     GeoIndex::D2(index) => println!("2D features: {}", index.metadata.feature_count),
@@ -106,9 +106,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, SelectionStatus};
+    /// use packed_spatial_index_geo::{open_geoparquet, SelectionStatus};
     ///
-    /// let dataset = open(File::open("cities.parquet")?)?;
+    /// let dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// if let SelectionStatus::Selected { column, reason } = &dataset.discovery().default_selection {
     ///     println!("default geometry column: {column} ({reason:?})");
     /// }
@@ -131,9 +131,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::open;
+    /// use packed_spatial_index_geo::open_geoparquet;
     ///
-    /// let dataset = open(File::open("cities.parquet")?)?;
+    /// let dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// println!("source fingerprint: {}", dataset.source_fingerprint());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -151,9 +151,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, GeometrySelector};
+    /// use packed_spatial_index_geo::{open_geoparquet, GeometrySelector};
     ///
-    /// let dataset = open(File::open("cities.parquet")?)?;
+    /// let dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let column = dataset.select(GeometrySelector::Name("geometry".to_string()))?;
     /// println!("selected {}", column.name);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -176,9 +176,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, InspectRequest};
+    /// use packed_spatial_index_geo::{open_geoparquet, InspectRequest};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let profile = dataset.inspect(InspectRequest {
     ///     exact: true,
     ///     ..InspectRequest::default()
@@ -201,6 +201,21 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         ))
     }
 
+    /// Metadata profile of the default-selected geometry column.
+    ///
+    /// Metadata-only (no row scan), mirroring
+    /// `GeoJsonDataset::profile` and `FgbDataset::profile` for parity across
+    /// sources (see [`GeoSource::profile`](crate::GeoSource::profile)). Use
+    /// [`inspect`](Self::inspect) to profile a non-default column or to scan
+    /// rows when dimensions are unknown from metadata.
+    pub fn profile(&self) -> Result<GeometryProfile, GeoError> {
+        let state = self.select_state(&GeometrySelector::Default)?;
+        Ok(discovery::profile_from_state(
+            state,
+            self.discovery.num_rows,
+        ))
+    }
+
     /// Scan feature envelopes, feature references, and optional payloads.
     ///
     /// The scan result contains one index entry per envelope. With geographic
@@ -212,9 +227,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, GeometryScan, ScanRequest};
+    /// use packed_spatial_index_geo::{open_geoparquet, GeometryScan, ScanRequest};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let scan = dataset.scan(ScanRequest::default())?;
     /// match scan {
     ///     GeometryScan::D2(scan) => println!("2D entries: {}", scan.boxes.len()),
@@ -239,9 +254,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, Box2D, BuildRequest, GeoIndex};
+    /// use packed_spatial_index_geo::{open_geoparquet, Box2D, BuildRequest, GeoIndex};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected 2D geometry");
     /// };
@@ -270,9 +285,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, ConvertRequest};
+    /// use packed_spatial_index_geo::{open_geoparquet, ConvertRequest};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let mut bytes = Vec::new();
     /// let artifact = dataset.convert_into(ConvertRequest::default(), &mut bytes)?;
     /// println!("{} bytes, {} features", artifact.bytes_len, artifact.manifest.feature_count);
@@ -302,9 +317,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, ConvertRequest};
+    /// use packed_spatial_index_geo::{open_geoparquet, ConvertRequest};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let bytes = dataset.convert(ConvertRequest::default())?;
     /// std::fs::write("cities.psindex", bytes)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -332,18 +347,18 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// ```no_run
     /// use std::fs::File;
     /// use packed_spatial_index_geo::{
-    ///     open, Box2D, FeatureFilterRequest, FeatureReadRequest,
+    ///     open_geoparquet, Box2D, FeatureFilterRequest, FeatureReadRequest,
     /// };
     ///
     /// let candidates = vec![packed_spatial_index_geo::FeatureRef::row_number(42)];
     /// let query = Box2D::new(-10.0, 35.0, 20.0, 60.0);
     ///
-    /// let mut filter_source = open(File::open("cities.parquet")?)?;
+    /// let mut filter_source = open_geoparquet(File::open("cities.parquet")?)?;
     /// let exact = filter_source.filter_features(
     ///     FeatureFilterRequest::intersects(candidates, query),
     /// )?;
     ///
-    /// let mut read_source = open(File::open("cities.parquet")?)?;
+    /// let mut read_source = open_geoparquet(File::open("cities.parquet")?)?;
     /// let rows = read_source.read_features(FeatureReadRequest::from_features(exact))?;
     /// println!("{} exact rows", rows.batch.num_rows());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -411,7 +426,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// ```no_run
     /// use std::fs::File;
     /// use packed_spatial_index_geo::{
-    ///     open, Box2D, FeatureReadRequest, GeoArtifactIndex, SliceReader, open_geo_index,
+    ///     open_geoparquet, Box2D, FeatureReadRequest, GeoArtifactIndex, SliceReader, open_geo_index,
     /// };
     ///
     /// let bytes = std::fs::read("cities.psindex")?;
@@ -420,7 +435,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// };
     /// let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
     ///
-    /// let mut source = open(File::open("cities.parquet")?)?;
+    /// let mut source = open_geoparquet(File::open("cities.parquet")?)?;
     /// let rows = source.read_features(FeatureReadRequest::from_features(features))?;
     /// println!("{} rows", rows.batch.num_rows());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -523,9 +538,9 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, ValidateRequest};
+    /// use packed_spatial_index_geo::{open_geoparquet, ValidateRequest};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let report = dataset.validate(ValidateRequest::default())?;
     /// println!("validation ok: {}", report.ok);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -908,6 +923,36 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     }
 }
 
+impl<R: ChunkReader + 'static> GeoSource for GeoDataset<R> {
+    fn profile(&self) -> Result<GeometryProfile, GeoError> {
+        GeoDataset::profile(self)
+    }
+
+    fn source_fingerprint(&self) -> &str {
+        GeoDataset::source_fingerprint(self)
+    }
+
+    fn scan(&mut self, req: ScanRequest) -> Result<GeometryScan, GeoError> {
+        GeoDataset::scan(self, req)
+    }
+
+    fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError> {
+        GeoDataset::build(self, req)
+    }
+
+    fn convert(&mut self, req: ConvertRequest) -> Result<Vec<u8>, GeoError> {
+        GeoDataset::convert(self, req)
+    }
+
+    fn convert_into(
+        &mut self,
+        req: ConvertRequest,
+        out: &mut Vec<u8>,
+    ) -> Result<GeoArtifact, GeoError> {
+        GeoDataset::convert_into(self, req, out)
+    }
+}
+
 fn add_profile_unknown_warnings(
     profile: &GeometryProfile,
     native_stats: &[NativeGeospatialStatsReport],
@@ -1012,9 +1057,9 @@ impl Default for InspectRequest {
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::{open, ValidateRequest};
+/// use packed_spatial_index_geo::{open_geoparquet, ValidateRequest};
 ///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// let report = dataset.validate(ValidateRequest {
 ///     exact: true,
 ///     ..ValidateRequest::default()

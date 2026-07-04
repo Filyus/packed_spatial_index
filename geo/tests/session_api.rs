@@ -17,8 +17,8 @@ use packed_spatial_index_geo::{
     GeoQuery2D, GeoQuery3D, GeometryEncoding, GeometryMetadataSource, GeometryReadMode,
     GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NonPlanarExactPolicy,
     NullPolicy, PayloadPlan, PropertyProjection, RangeReader, SliceReader, StoragePrecision,
-    StreamIndex2D, decode_feature_ref_payload, decode_feature_wkb_payload, open, open_geo_index,
-    read_geo_manifest,
+    StreamIndex2D, decode_feature_ref_payload, decode_feature_wkb_payload, open_geo_index,
+    open_geoparquet, read_geo_manifest,
 };
 #[cfg(feature = "async")]
 use packed_spatial_index_geo::{AsyncRangeReader, open_geo_index_async};
@@ -270,7 +270,7 @@ fn geoparquet_primary_discovery_inspect_scan_and_build() {
         geo_meta_wkb(&["Point"]),
     );
 
-    let dataset = open(data.clone()).unwrap();
+    let dataset = open_geoparquet(data.clone()).unwrap();
     assert_eq!(dataset.discovery().num_rows, 2);
     assert_eq!(
         dataset.discovery().default_selection,
@@ -280,12 +280,12 @@ fn geoparquet_primary_discovery_inspect_scan_and_build() {
         }
     );
 
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let profile = dataset.inspect(InspectRequest::default()).unwrap();
     assert_eq!(profile.source, GeometryMetadataSource::GeoParquet);
     assert_eq!(profile.coordinate_dims, CoordinateDims::Xy);
 
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let scan = dataset.scan(Default::default()).unwrap();
     let GeometryScan::D2(scan) = scan else {
         panic!("expected 2D scan");
@@ -293,7 +293,7 @@ fn geoparquet_primary_discovery_inspect_scan_and_build() {
     assert_eq!(scan.boxes.len(), 2);
     assert_eq!(scan.features[1].row_number, 1);
 
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let index = dataset.build(Default::default()).unwrap();
     let GeoIndex::D2(index) = index else {
         panic!("expected 2D index");
@@ -325,7 +325,7 @@ fn feature_refs_include_row_group_positions() {
         geo_meta_wkb(&["Point"]),
         2,
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let GeometryScan::D2(scan) = dataset.scan(Default::default()).unwrap() else {
         panic!("expected 2D scan");
     };
@@ -356,7 +356,7 @@ fn read_features_returns_projected_rows_and_wkb() {
         2,
     );
 
-    let mut indexed = open(data.clone()).unwrap();
+    let mut indexed = open_geoparquet(data.clone()).unwrap();
     let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
         panic!("expected 2D index");
     };
@@ -364,7 +364,7 @@ fn read_features_returns_projected_rows_and_wkb() {
         .search_features(Box2D::new(5.0, 5.0, 25.0, 25.0))
         .unwrap();
 
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let rows = source
         .read_features(FeatureReadRequest {
             features,
@@ -410,7 +410,7 @@ fn read_features_empty_request_keeps_requested_schema() {
         ],
         geo_meta_wkb(&["Point"]),
     );
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let rows = source
         .read_features(FeatureReadRequest {
             properties: PropertyProjection::Include(vec!["name".to_string()]),
@@ -443,7 +443,7 @@ fn read_features_can_preserve_request_order_and_duplicate_parts() {
         ],
         geo_meta_wkb(&["Point"]),
     );
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let rows = source
         .read_features(FeatureReadRequest {
             features: vec![
@@ -500,7 +500,7 @@ fn read_features_reports_fingerprint_and_bounds_errors() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(0.0, 0.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut source = open(data.clone()).unwrap();
+    let mut source = open_geoparquet(data.clone()).unwrap();
     let mismatch = source
         .read_features(FeatureReadRequest {
             features: vec![FeatureRef {
@@ -519,7 +519,7 @@ fn read_features_reports_fingerprint_and_bounds_errors() {
         GeoError::SourceFingerprintMismatch { .. }
     ));
 
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let out_of_bounds = source
         .read_features(FeatureReadRequest {
             features: vec![FeatureRef {
@@ -557,7 +557,7 @@ fn filter_features_removes_bbox_false_positive_and_keeps_points() {
         geo_meta_wkb(&["LineString", "Point"]),
     );
     let query = Box2D::new(0.0, 9.0, 1.0, 10.0);
-    let mut indexed = open(data.clone()).unwrap();
+    let mut indexed = open_geoparquet(data.clone()).unwrap();
     let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
         panic!("expected 2D index");
     };
@@ -570,14 +570,14 @@ fn filter_features_removes_bbox_false_positive_and_keeps_points() {
         vec![0, 1]
     );
 
-    let mut source = open(data.clone()).unwrap();
+    let mut source = open_geoparquet(data.clone()).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(candidates, query))
         .unwrap();
     assert_eq!(exact.len(), 1);
     assert_eq!(exact[0].row_number, 1);
 
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let rows = source
         .read_features(FeatureReadRequest {
             properties: PropertyProjection::Include(vec!["name".to_string()]),
@@ -629,7 +629,7 @@ fn filter_features_supports_polygon_query() {
     );
 
     // A polygon query narrows index candidates by its bounding box: rows 0,1,2.
-    let mut indexed = open(data.clone()).unwrap();
+    let mut indexed = open_geoparquet(data.clone()).unwrap();
     let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
         panic!("expected 2D index");
     };
@@ -645,7 +645,7 @@ fn filter_features_supports_polygon_query() {
     );
 
     // Exact filtering drops the bbox false-positive (row 1 is outside the triangle).
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
             candidates,
@@ -686,7 +686,7 @@ fn polygon_search_prunes_and_filter_hits_removes_bbox_fp() {
     );
 
     // Convert to a PSINDEX artifact carrying WKB geometry payloads, then open it.
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let artifact = dataset.convert(ConvertRequest::default()).unwrap();
     let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(artifact)).unwrap() else {
         panic!("expected 2D artifact");
@@ -759,7 +759,7 @@ fn artifact_polygon_search_items_prunes_without_payload() {
         geo_meta_wkb(&["Point"]),
     );
 
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let artifact = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::None,
@@ -801,7 +801,7 @@ fn artifact_empty_polygon_errors_consistently() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 1.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let artifact = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -832,7 +832,7 @@ fn async_artifact_empty_polygon_errors_consistently() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 1.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let artifact = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -880,7 +880,7 @@ fn filter_hits_supports_feature_json_payload() {
     );
 
     // Artifact with GeoJSON Feature payloads (geometry embedded as GeoJSON, not WKB).
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let artifact = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::FeatureJson {
@@ -931,7 +931,7 @@ fn filter_features_supports_native_parquet_and_geoarrow_sources() {
         &["geometry"],
         vec![vec![wkb_point_2d(5.0, 5.0), wkb_point_2d(10.0, 10.0)]],
     );
-    let mut source = open(native).unwrap();
+    let mut source = open_geoparquet(native).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
@@ -947,7 +947,7 @@ fn filter_features_supports_native_parquet_and_geoarrow_sources() {
         vec![("geometry", geoarrow_points(&[(5.0, 5.0), (10.0, 10.0)]))],
         geo_meta_arrow("point", "Point"),
     );
-    let mut source = open(geoarrow).unwrap();
+    let mut source = open_geoparquet(geoarrow).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
@@ -966,7 +966,7 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(5.0, 5.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut source = open(data.clone()).unwrap();
+    let mut source = open_geoparquet(data.clone()).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
             vec![
@@ -1000,7 +1000,7 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
         vec![("geometry", binary_col(&[Some(vec![1, 2, 3])]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut source = open(malformed).unwrap();
+    let mut source = open_geoparquet(malformed).unwrap();
     assert!(matches!(
         source.filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
@@ -1016,7 +1016,7 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
         )],
         geo_meta_wkb(&["Point"]),
     );
-    let mut source = open(empty).unwrap();
+    let mut source = open_geoparquet(empty).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
@@ -1025,7 +1025,7 @@ fn filter_features_handles_duplicates_malformed_wkb_and_fingerprint() {
         .unwrap();
     assert!(exact.is_empty());
 
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let mismatch = source
         .filter_features(FeatureFilterRequest {
             expected_source_fingerprint: Some("fnv64:0000000000000000".to_string()),
@@ -1053,7 +1053,7 @@ fn filter_features_spherical_radius_matches_points_and_multipoints() {
         )],
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.35, 48.85, 2_000.0);
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
@@ -1079,7 +1079,7 @@ fn filter_features_spherical_radius_matches_points_and_multipoints() {
         )],
         geo_meta_wkb_edges(&["MultiPoint"], "spherical"),
     );
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.35, 48.85, 2_000.0);
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
@@ -1102,7 +1102,7 @@ fn filter_features_spherical_radius_rejects_wrong_edges_and_unsupported_geometry
         vec![("geometry", binary_col(&[Some(wkb_point_2d(2.0, 49.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut source = open(planar).unwrap();
+    let mut source = open_geoparquet(planar).unwrap();
     let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     assert!(matches!(
         source.filter_features(FeatureFilterRequest::intersects(
@@ -1116,7 +1116,7 @@ fn filter_features_spherical_radius_rejects_wrong_edges_and_unsupported_geometry
         vec![("geometry", binary_col(&[Some(wkb_point_2d(2.0, 49.0))]))],
         geo_meta_wkb_edges(&["Point"], "karney"),
     );
-    let mut source = open(unknown_edges).unwrap();
+    let mut source = open_geoparquet(unknown_edges).unwrap();
     let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     assert!(matches!(
         source.filter_features(FeatureFilterRequest::intersects(
@@ -1133,7 +1133,7 @@ fn filter_features_spherical_radius_rejects_wrong_edges_and_unsupported_geometry
         )],
         geo_meta_wkb_edges(&["LineString"], "spherical"),
     );
-    let mut source = open(line).unwrap();
+    let mut source = open_geoparquet(line).unwrap();
     let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     assert!(matches!(
         source.filter_features(FeatureFilterRequest::intersects(
@@ -1153,7 +1153,7 @@ fn filter_features_spherical_radius_handles_empty_malformed_and_candidate_boxes(
         )],
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
-    let mut source = open(empty).unwrap();
+    let mut source = open_geoparquet(empty).unwrap();
     let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
@@ -1167,7 +1167,7 @@ fn filter_features_spherical_radius_handles_empty_malformed_and_candidate_boxes(
         vec![("geometry", binary_col(&[Some(vec![1, 2, 3])]))],
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
-    let mut source = open(malformed).unwrap();
+    let mut source = open_geoparquet(malformed).unwrap();
     let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
     assert!(matches!(
         source.filter_features(FeatureFilterRequest::intersects(
@@ -1197,7 +1197,7 @@ fn filter_features_rejects_non_planar_edges_unless_opted_in() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(5.0, 5.0))]))],
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
-    let mut source = open(data.clone()).unwrap();
+    let mut source = open_geoparquet(data.clone()).unwrap();
     let err = source
         .filter_features(FeatureFilterRequest::intersects(
             vec![FeatureRef::row_number(0)],
@@ -1206,7 +1206,7 @@ fn filter_features_rejects_non_planar_edges_unless_opted_in() {
         .unwrap_err();
     assert!(matches!(err, GeoError::NonPlanarExactPredicate { .. }));
 
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest {
             non_planar: NonPlanarExactPolicy::TreatAsPlanar,
@@ -1234,7 +1234,7 @@ fn row_ref_artifact_hits_feed_read_features() {
         ],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let bytes = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -1247,7 +1247,7 @@ fn row_ref_artifact_hits_feed_read_features() {
     let manifest = index.manifest().clone();
     let hits = index.search_hits(Box2D::new(9.0, 9.0, 9.0, 9.0)).unwrap();
 
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let rows = source
         .read_features(FeatureReadRequest {
             selector: GeometrySelector::Name(manifest.selected_column),
@@ -1285,7 +1285,7 @@ fn row_ref_artifact_hits_feed_exact_filter_then_read_features() {
         ],
         geo_meta_wkb(&["LineString", "Point"]),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let bytes = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -1300,7 +1300,7 @@ fn row_ref_artifact_hits_feed_exact_filter_then_read_features() {
     let hits = index.search_hits(query).unwrap();
     assert_eq!(hits.len(), 2);
 
-    let mut source = open(data.clone()).unwrap();
+    let mut source = open_geoparquet(data.clone()).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest {
             selector: GeometrySelector::Name(manifest.selected_column.clone()),
@@ -1313,7 +1313,7 @@ fn row_ref_artifact_hits_feed_exact_filter_then_read_features() {
         vec![1]
     );
 
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let rows = source
         .read_features(FeatureReadRequest {
             selector: GeometrySelector::Name(manifest.selected_column),
@@ -1344,7 +1344,7 @@ fn read_features_emits_wkb_for_geoarrow_geometry() {
         ],
         geo_meta_arrow("point", "Point"),
     );
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let rows = source
         .read_features(FeatureReadRequest {
             features: vec![FeatureRef {
@@ -1370,7 +1370,7 @@ fn read_features_emits_wkb_for_geoarrow_geometry() {
 
 #[test]
 fn native_parquet_single_and_ambiguous_selection() {
-    let dataset = open(srid_fixture()).unwrap();
+    let dataset = open_geoparquet(srid_fixture()).unwrap();
     assert!(matches!(
         dataset.discovery().columns[0].encoding,
         GeometryEncoding::ParquetGeometry
@@ -1384,18 +1384,18 @@ fn native_parquet_single_and_ambiguous_selection() {
         &["geom_a", "geom_b"],
         vec![vec![wkb_point_2d(0.0, 0.0)], vec![wkb_point_2d(10.0, 10.0)]],
     );
-    let dataset = open(data.clone()).unwrap();
+    let dataset = open_geoparquet(data.clone()).unwrap();
     assert!(matches!(
         dataset.discovery().default_selection,
         packed_spatial_index_geo::SelectionStatus::Ambiguous { .. }
     ));
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     assert!(matches!(
         dataset.scan(Default::default()),
         Err(GeoError::AmbiguousGeometryColumn { .. })
     ));
 
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let scan = dataset
         .scan(packed_spatial_index_geo::ScanRequest {
             selector: GeometrySelector::Name("geom_b".to_string()),
@@ -1410,7 +1410,7 @@ fn native_parquet_single_and_ambiguous_selection() {
 
 #[test]
 fn explicit_missing_column_is_clear_error() {
-    let dataset = open(srid_fixture()).unwrap();
+    let dataset = open_geoparquet(srid_fixture()).unwrap();
     assert!(matches!(
         dataset.select(GeometrySelector::Name("missing".to_string())),
         Err(GeoError::GeometryColumnNotFound(name)) if name == "missing"
@@ -1458,7 +1458,7 @@ fn geoarrow_point_and_nested_encodings_scan_without_covering() {
             vec![("geometry", array)],
             geo_meta_arrow(encoding, geometry_type),
         );
-        let mut dataset = open(data).unwrap();
+        let mut dataset = open_geoparquet(data).unwrap();
         let scan = dataset.scan(Default::default()).unwrap();
         let GeometryScan::D2(scan) = scan else {
             panic!("expected 2D scan for {encoding}");
@@ -1473,7 +1473,7 @@ fn geoarrow_row_wkb_payload_and_manifest_roundtrip() {
         vec![("geometry", geoarrow_points(&[(1.0, 2.0)]))],
         geo_meta_arrow("point", "Point"),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset.convert(ConvertRequest::default()).unwrap();
     let manifest = read_geo_manifest(&bytes).unwrap().unwrap();
     assert_eq!(manifest.selected_column, "geometry");
@@ -1494,7 +1494,7 @@ fn geo_artifact_reader_searches_default_row_wkb_payloads() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 2.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset.convert(ConvertRequest::default()).unwrap();
 
     let artifact = open_geo_index(SliceReader::new(bytes)).unwrap();
@@ -1527,7 +1527,7 @@ fn geo_artifact_reader_searches_row_ref_payloads() {
         )],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -1556,7 +1556,7 @@ fn feature_json_includes_projected_properties() {
         ],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::FeatureJson {
@@ -1588,7 +1588,7 @@ fn geo_artifact_reader_searches_feature_json_payloads() {
         ],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::FeatureJson {
@@ -1614,7 +1614,7 @@ fn geo_artifact_reader_uses_manifest_precision_for_f32_artifacts() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(9.0, 10.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset
         .convert(ConvertRequest {
             precision: StoragePrecision::F32,
@@ -1659,7 +1659,7 @@ fn async_geo_artifact_reader_searches_2d_box_and_polygon() {
             )],
             geo_meta_wkb(&["Point"]),
         );
-        let mut dataset = open(data).unwrap();
+        let mut dataset = open_geoparquet(data).unwrap();
         let bytes = dataset
             .convert(ConvertRequest {
                 precision,
@@ -1726,7 +1726,7 @@ fn geo_artifact_reader_searches_3d_artifacts() {
         vec![("geometry", binary_col(&[Some(wkb_point_3d(1.0, 2.0, 3.0))]))],
         geo_meta_wkb(&["Point Z"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset
         .convert(ConvertRequest {
             dims: IndexDimsRequest::D3,
@@ -1776,7 +1776,7 @@ fn geo_artifact_frustum_query_prunes_over_bounding_box() {
             )],
             geo_meta_wkb(&["Point Z"]),
         );
-        let mut dataset = open(data).unwrap();
+        let mut dataset = open_geoparquet(data).unwrap();
         let bytes = dataset
             .convert(ConvertRequest {
                 dims: IndexDimsRequest::D3,
@@ -1846,7 +1846,7 @@ fn async_geo_artifact_frustum_query_prunes_over_bounding_box() {
             )],
             geo_meta_wkb(&["Point Z"]),
         );
-        let mut dataset = open(data).unwrap();
+        let mut dataset = open_geoparquet(data).unwrap();
         let bytes = dataset
             .convert(ConvertRequest {
                 dims: IndexDimsRequest::D3,
@@ -1905,7 +1905,7 @@ fn geo_artifact_reader_does_not_require_known_length() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(6.0, 7.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset.convert(ConvertRequest::default()).unwrap();
 
     let GeoArtifactIndex::D2(index) = open_geo_index(NoLenReader(SliceReader::new(bytes))).unwrap()
@@ -1943,7 +1943,7 @@ fn geo_artifact_reader_caps_unknown_length_directory_and_manifest() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(6.0, 7.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset.convert(ConvertRequest::default()).unwrap();
 
     let mut huge_directory = bytes.clone();
@@ -2017,7 +2017,7 @@ fn antimeridian_split_duplicates_feature_ref_parts() {
         )],
         geo_meta_wkb(&["LineString"]),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let scan = dataset
         .scan(packed_spatial_index_geo::ScanRequest {
             envelope: EnvelopePolicy::Geographic {
@@ -2039,7 +2039,7 @@ fn antimeridian_split_duplicates_feature_ref_parts() {
         assert!(bbox.min_x <= bbox.max_x);
     }
 
-    let mut source = open(data).unwrap();
+    let mut source = open_geoparquet(data).unwrap();
     let exact = source
         .filter_features(FeatureFilterRequest::intersects(
             scan.features,
@@ -2070,7 +2070,7 @@ fn covering_interval_does_not_wrap_when_min_is_before_max() {
         ],
         geo_meta_wkb_with_covering(),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let GeometryScan::D2(scan) = dataset
         .scan(packed_spatial_index_geo::ScanRequest {
             envelope: EnvelopePolicy::Geographic {
@@ -2104,7 +2104,7 @@ fn covering_interval_wraps_only_when_min_exceeds_max() {
         ],
         geo_meta_wkb_with_covering(),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let GeometryScan::D2(scan) = dataset
         .scan(packed_spatial_index_geo::ScanRequest {
             envelope: EnvelopePolicy::Geographic {
@@ -2145,7 +2145,7 @@ fn covering_interval_wrap_under_planar_is_rejected() {
         ],
         geo_meta_wkb_with_covering(),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let err = dataset.scan(Default::default()).unwrap_err();
     assert!(matches!(err, GeoError::Antimeridian { row: 0 }));
 }
@@ -2159,13 +2159,13 @@ fn null_skip_preserves_source_row_number_and_row_ref_payload() {
         )],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     assert!(matches!(
         dataset.scan(Default::default()),
         Err(GeoError::NullGeometry { row: 0 })
     ));
 
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -2185,7 +2185,7 @@ fn null_skip_preserves_source_row_number_and_row_ref_payload() {
 #[test]
 fn native_3d_fixture_scans_as_3d() {
     let data = native_parquet(&["geometry"], vec![vec![wkb_point_3d(1.0, 2.0, 3.0)]]);
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let scan = dataset
         .scan(packed_spatial_index_geo::ScanRequest {
             dims: IndexDimsRequest::D3,
@@ -2203,7 +2203,7 @@ fn native_3d_fixture_scans_as_3d() {
 
 #[test]
 fn apache_native_fixture_currently_opens() {
-    let mut dataset = open(geometry_fixture()).unwrap();
+    let mut dataset = open_geoparquet(geometry_fixture()).unwrap();
     let profile = dataset
         .inspect(InspectRequest {
             exact: true,
@@ -2246,7 +2246,7 @@ fn cli_query_json_smoke() {
         ],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let psindex = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -2311,7 +2311,7 @@ fn cli_query_exact_filters_candidates_and_handles_non_planar_policy() {
         ],
         geo_meta_wkb(&["LineString", "Point"]),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let psindex = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -2387,7 +2387,7 @@ fn cli_query_exact_filters_candidates_and_handles_non_planar_policy() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(5.0, 5.0))]))],
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
-    let mut dataset = open(non_planar.clone()).unwrap();
+    let mut dataset = open_geoparquet(non_planar.clone()).unwrap();
     let non_planar_index = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -2454,7 +2454,7 @@ fn cli_query_spherical_radius_filters_geography_points() {
         ],
         geo_meta_wkb_edges(&["Point"], "spherical"),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let psindex = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -2544,7 +2544,7 @@ fn cli_query_spherical_radius_filters_geography_points() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(179.8, 0.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(planar.clone()).unwrap();
+    let mut dataset = open_geoparquet(planar.clone()).unwrap();
     let planar_index = dataset
         .convert(ConvertRequest {
             payload: PayloadPlan::RowRef,
@@ -2590,7 +2590,7 @@ fn cli_query_accepts_3d_bbox_and_rejects_2d_only_flags() {
         ],
         geo_meta_wkb(&["Point Z"]),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let psindex = dataset
         .convert(ConvertRequest {
             dims: IndexDimsRequest::D3,
@@ -2727,7 +2727,7 @@ fn geo_manifest_reader_handles_corrupt_bytes_without_panic() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 2.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let bytes = dataset.convert(ConvertRequest::default()).unwrap();
     assert!(read_geo_manifest(&bytes).unwrap().is_some());
 
@@ -2789,7 +2789,7 @@ fn malformed_wkb_scan_returns_error_without_panic() {
             geo_meta_wkb(&["Point"]),
         );
         let result = assert_no_panic(&format!("malformed WKB case {i}"), || {
-            let mut dataset = open(data).unwrap();
+            let mut dataset = open_geoparquet(data).unwrap();
             dataset.scan(Default::default())
         });
         assert!(
@@ -2810,7 +2810,7 @@ fn iso_wkb_dimension_codes_drive_scan_dimensions() {
             vec![("geometry", binary_col(&[Some(wkb)]))],
             geo_meta_wkb(&["Point"]),
         );
-        let mut dataset = open(data).unwrap();
+        let mut dataset = open_geoparquet(data).unwrap();
         let GeometryScan::D3(scan) = dataset.scan(Default::default()).unwrap() else {
             panic!("expected 3D scan for {dims:?}");
         };
@@ -2823,7 +2823,7 @@ fn iso_wkb_dimension_codes_drive_scan_dimensions() {
         vec![("geometry", binary_col(&[Some(wkb_point_m(1.0, 2.0, 8.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let GeometryScan::D2(scan) = dataset.scan(Default::default()).unwrap() else {
         panic!("expected 2D scan for POINT M");
     };
@@ -2837,7 +2837,7 @@ fn non_finite_wkb_coordinate_is_not_indexed() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(f64::NAN, 2.0))]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let err = dataset.scan(Default::default()).unwrap_err();
     assert!(
         err.to_string().contains("non-finite"),
@@ -2851,7 +2851,7 @@ fn malformed_geoparquet_metadata_errors_without_panic() {
         vec![("geometry", binary_col(&[Some(wkb_point_2d(1.0, 2.0))]))],
         "{ not json".to_string(),
     );
-    let result = assert_no_panic("malformed GeoParquet metadata", || open(data));
+    let result = assert_no_panic("malformed GeoParquet metadata", || open_geoparquet(data));
     assert!(matches!(result, Err(GeoError::Metadata(_))));
 }
 
@@ -2868,7 +2868,7 @@ fn feature_json_missing_property_projection_errors_without_panic() {
         geo_meta_wkb(&["Point"]),
     );
     let result = assert_no_panic("missing FeatureJson property projection", || {
-        let mut dataset = open(data).unwrap();
+        let mut dataset = open_geoparquet(data).unwrap();
         dataset.convert(ConvertRequest {
             payload: PayloadPlan::FeatureJson {
                 properties: PropertyProjection::Include(vec!["missing".to_string()]),

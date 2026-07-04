@@ -213,9 +213,9 @@ impl FeatureRef {
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::{open, ConvertRequest, PayloadPlan, PropertyProjection};
+/// use packed_spatial_index_geo::{open_geoparquet, ConvertRequest, PayloadPlan, PropertyProjection};
 ///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// let bytes = dataset.convert(ConvertRequest {
 ///     payload: PayloadPlan::FeatureJson {
 ///         properties: PropertyProjection::AllNonGeometry,

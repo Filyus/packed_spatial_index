@@ -6,7 +6,8 @@ use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, CoordinateDims, EnvelopePolicy, GeometrySelectionReason, GeometrySelector,
-    PayloadPlan, PropertyProjection, SelectionStatus, ValidateRequest, ValidationCode, open,
+    PayloadPlan, PropertyProjection, SelectionStatus, ValidateRequest, ValidationCode,
+    open_geoparquet,
 };
 use parquet::arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions};
 use parquet::basic::{GeometryType, LogicalType, Repetition, Type as ParquetPhysicalType};
@@ -125,7 +126,7 @@ fn has_issue(report: &packed_spatial_index_geo::ValidationReport, code: Validati
 
 #[test]
 fn validation_metadata_only_succeeds_on_official_wkb_fixture() {
-    let mut dataset = open(compat_point_wkb_fixture()).unwrap();
+    let mut dataset = open_geoparquet(compat_point_wkb_fixture()).unwrap();
     let report = dataset.validate(ValidateRequest::default()).unwrap();
     assert!(report.ok);
     assert!(report.issues.is_empty());
@@ -142,7 +143,7 @@ fn validation_metadata_only_succeeds_on_official_wkb_fixture() {
 
 #[test]
 fn validation_reports_native_parquet_geospatial_stats() {
-    let mut dataset = open(compat_native_crs_fixture()).unwrap();
+    let mut dataset = open_geoparquet(compat_native_crs_fixture()).unwrap();
     let report = dataset.validate(ValidateRequest::default()).unwrap();
     assert!(report.ok);
     assert_eq!(report.native_stats.len(), 1);
@@ -157,7 +158,7 @@ fn validation_reports_native_parquet_geospatial_stats() {
 
 #[test]
 fn validation_rejects_geographic_policy_for_projected_crs() {
-    let mut dataset = open(compat_native_crs_fixture()).unwrap();
+    let mut dataset = open_geoparquet(compat_native_crs_fixture()).unwrap();
     let report = dataset
         .validate(ValidateRequest {
             envelope: EnvelopePolicy::Geographic {
@@ -172,7 +173,7 @@ fn validation_rejects_geographic_policy_for_projected_crs() {
 
 #[test]
 fn validation_reports_explicit_missing_and_ambiguous_selection() {
-    let mut dataset = open(compat_point_wkb_fixture()).unwrap();
+    let mut dataset = open_geoparquet(compat_point_wkb_fixture()).unwrap();
     let missing = dataset
         .validate(ValidateRequest {
             selector: GeometrySelector::Name("missing".to_string()),
@@ -186,7 +187,7 @@ fn validation_reports_explicit_missing_and_ambiguous_selection() {
         &["geom_a", "geom_b"],
         vec![vec![wkb_point_2d(0.0, 0.0)], vec![wkb_point_2d(1.0, 1.0)]],
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let report = dataset.validate(ValidateRequest::default()).unwrap();
     assert!(!report.ok);
     assert!(has_issue(&report, ValidationCode::AmbiguousGeometryColumn));
@@ -194,7 +195,7 @@ fn validation_reports_explicit_missing_and_ambiguous_selection() {
 
 #[test]
 fn validation_warns_for_geography_coordinate_aabb() {
-    let mut dataset = open(geography_fixture()).unwrap();
+    let mut dataset = open_geoparquet(geography_fixture()).unwrap();
     let report = dataset.validate(ValidateRequest::default()).unwrap();
     assert!(report.ok);
     assert!(has_issue(&report, ValidationCode::GeographyCoordinateAabb));
@@ -209,7 +210,7 @@ fn validation_exact_antimeridian_rejects_or_splits() {
         )],
         geo_meta_wkb(&["LineString"]),
     );
-    let mut dataset = open(data.clone()).unwrap();
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
     let rejected = dataset
         .validate(ValidateRequest {
             exact: true,
@@ -222,7 +223,7 @@ fn validation_exact_antimeridian_rejects_or_splits() {
     assert!(!rejected.ok);
     assert!(has_issue(&rejected, ValidationCode::AntimeridianWrap));
 
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let split = dataset
         .validate(ValidateRequest {
             exact: true,
@@ -242,7 +243,7 @@ fn validation_exact_malformed_wkb_is_report_error_without_panic() {
         vec![("geometry", binary_col(&[Some(vec![1, 1, 0])]))],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let report = dataset
         .validate(ValidateRequest {
             exact: true,
@@ -265,7 +266,7 @@ fn validation_feature_json_missing_projection_is_report_error() {
         ],
         geo_meta_wkb(&["Point"]),
     );
-    let mut dataset = open(data).unwrap();
+    let mut dataset = open_geoparquet(data).unwrap();
     let report = dataset
         .validate(ValidateRequest {
             payload: PayloadPlan::FeatureJson {

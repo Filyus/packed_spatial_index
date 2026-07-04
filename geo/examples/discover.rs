@@ -1,13 +1,13 @@
 //! List usable geometry columns before choosing what to index.
 
 use bytes::Bytes;
-use packed_spatial_index_geo::{SelectionStatus, open};
+use packed_spatial_index_geo::{SelectionStatus, open_geoparquet};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = Bytes::from_static(include_bytes!(
         "../tests/fixtures/parquet-geospatial/crs-srid.parquet"
     ));
-    let dataset = open(data)?;
+    let dataset = open_geoparquet(data)?;
     let discovery = dataset.discovery();
 
     println!("rows: {}", discovery.num_rows);

@@ -37,9 +37,9 @@ geometry from the payload — with no `arrow` / `parquet`, small enough for
 
 ```rust,no_run
 use std::fs::File;
-use packed_spatial_index_geo::{open, BuildRequest, Box2D, GeoIndex};
+use packed_spatial_index_geo::{open_geoparquet, BuildRequest, Box2D, GeoIndex};
 
-let mut dataset = open(File::open("cities.parquet")?)?;
+let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let index = dataset.build(BuildRequest::default())?;
 let GeoIndex::D2(index) = index else { panic!("expected 2D geometry") };
 let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
@@ -57,7 +57,7 @@ packed_spatial_index_geo = "0.17"
 
 ### Features
 
-- **`parquet`** *(default)* — the Parquet source side: `open`, `GeoDataset`
+- **`parquet`** *(default)* — the Parquet source side: `open_geoparquet`, `GeoDataset`
   (discovery, inspection, validation, feature read-back), `build` / `convert`,
   and the `gp2psindex` CLI. Pulls in `arrow` + `parquet`.
 - **`flatgeobuf`** *(default)* — open `.fgb` sources with `open_flatgeobuf`,
@@ -84,7 +84,7 @@ source file needs a format feature.
 
 ## API at a glance
 
-Open the Parquet source once with [`open`][open], inspect the metadata-only
+Open the Parquet source once with [`open_geoparquet`][open_geoparquet], inspect the metadata-only
 [`GeoDiscovery`][GeoDiscovery], then run the operation you need through the
 [`GeoDataset`][GeoDataset] session. Geometry selection is explicit where it
 matters: use [`GeometrySelector::Name`][GeometrySelector] for a named column, or
@@ -93,7 +93,7 @@ files.
 
 | Task | Start here |
 | --- | --- |
-| Open a source | [`open`][open] |
+| Open GeoParquet | [`open_geoparquet`][open_geoparquet] |
 | Open GeoJSON | [`open_geojson`][open_geojson], [`open_geojson_slice`][open_geojson_slice] |
 | Open FlatGeobuf | [`open_flatgeobuf`][open_flatgeobuf] |
 | Discover columns | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery] |
@@ -266,7 +266,7 @@ gp2psindex query input.parquet output.psi \
 - FlatGeobuf and GeoJSON sources expose a single geometry named `geometry`.
   GeoJSON input accepts `FeatureCollection`, single `Feature`, and bare geometry
   documents; v1 parses the whole document in memory.
-- Use `open(...).discovery()` when a file may contain several geometry
+- Use `open_geoparquet(...).discovery()` when a file may contain several geometry
   candidates and you want metadata-only selection status before reading rows.
 - Boxes come from the **bbox covering** column when present, otherwise from each
   geometry's **WKB** or **GeoArrow** envelope.
@@ -296,7 +296,7 @@ gp2psindex query input.parquet output.psi \
 Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial_index/blob/main/LICENSE).
 
 <!-- docs.rs API links -->
-[open]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open.html
+[open_geoparquet]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geoparquet.html
 [open_geojson]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geojson.html
 [open_geojson_slice]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geojson_slice.html
 [open_flatgeobuf]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_flatgeobuf.html

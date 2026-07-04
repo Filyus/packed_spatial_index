@@ -33,7 +33,7 @@ use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 use packed_spatial_index_geo::{
     ConvertRequest, FeatureFilterRequest, FeatureReadRequest, FeatureRef, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoQuery2D, GeometryReadMode, NonPlanarExactPolicy, PropertyProjection,
-    SliceReader, SpatialPredicate, open, open_geo_index,
+    SliceReader, SpatialPredicate, open_geo_index, open_geoparquet,
 };
 
 const N: usize = 100_000;
@@ -52,7 +52,7 @@ fn main() {
 
     for &cols in &[2usize, 40] {
         let data = build_dataset(N, cols);
-        let artifact = open(data.clone())
+        let artifact = open_geoparquet(data.clone())
             .unwrap()
             .convert(ConvertRequest::default())
             .unwrap();
@@ -79,7 +79,7 @@ fn main() {
                 let cands = index
                     .search_features(GeoQuery2D::polygon(poly.clone()))
                     .unwrap();
-                let mut filter_source = open(data.clone()).unwrap();
+                let mut filter_source = open_geoparquet(data.clone()).unwrap();
                 let survivors = filter_source
                     .filter_features(FeatureFilterRequest::intersects(
                         cands,
@@ -139,7 +139,7 @@ fn filter_hits_refs<R: packed_spatial_index_geo::RangeReader>(
 
 /// Materialize the given feature refs with all property columns + WKB geometry.
 fn read_full(data: &Bytes, features: Vec<FeatureRef>) -> usize {
-    let mut source = open(data.clone()).unwrap();
+    let mut source = open_geoparquet(data.clone()).unwrap();
     source
         .read_features(FeatureReadRequest {
             properties: PropertyProjection::AllNonGeometry,
@@ -155,7 +155,7 @@ fn read_full(data: &Bytes, features: Vec<FeatureRef>) -> usize {
 fn phase_breakdown() {
     let cols = 40;
     let data = build_dataset(N, cols);
-    let artifact = open(data.clone())
+    let artifact = open_geoparquet(data.clone())
         .unwrap()
         .convert(ConvertRequest::default())
         .unwrap();

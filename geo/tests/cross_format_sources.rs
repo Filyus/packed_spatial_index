@@ -9,8 +9,8 @@ use flatgeobuf::{ColumnType, FgbCrs, FgbWriter, FgbWriterOptions, GeometryType};
 use geozero::geojson::GeoJson;
 use geozero::{ColumnValue, PropertyProcessor};
 use packed_spatial_index_geo::{
-    Box2D, BuildRequest, GeoIndex, GeometryScan, ScanRequest, open, open_flatgeobuf,
-    open_geojson_slice,
+    Box2D, BuildRequest, GeoIndex, GeoSource, GeometryScan, ScanRequest, open_flatgeobuf,
+    open_geojson_slice, open_geoparquet,
 };
 use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
@@ -119,10 +119,10 @@ fn query_west(index: GeoIndex) -> Vec<u64> {
 
 #[test]
 fn parquet_geojson_and_flatgeobuf_scan_and_query_match() {
-    let mut parquet = open(sample_parquet()).unwrap();
+    let mut parquet = open_geoparquet(sample_parquet()).unwrap();
     let parquet_scan = scan_signature(parquet.scan(ScanRequest::default()).unwrap());
     let parquet_query = query_west(
-        open(sample_parquet())
+        open_geoparquet(sample_parquet())
             .unwrap()
             .build(BuildRequest::default())
             .unwrap(),
@@ -151,4 +151,21 @@ fn parquet_geojson_and_flatgeobuf_scan_and_query_match() {
     assert_eq!(geojson_query, vec![0]);
     assert_eq!(fgb_query, vec![0]);
     assert_eq!(parquet_query, vec![0]);
+}
+
+/// Build and query through the format-agnostic `GeoSource` trait: one generic
+/// function drives all three sources, proving the trait unifies the build path.
+fn query_west_via_trait<S: GeoSource>(mut source: S) -> Vec<u64> {
+    query_west(source.build(BuildRequest::default()).unwrap())
+}
+
+#[test]
+fn geo_source_trait_drives_every_format() {
+    let parquet = query_west_via_trait(open_geoparquet(sample_parquet()).unwrap());
+    let geojson = query_west_via_trait(open_geojson_slice(sample_geojson()).unwrap());
+    let fgb = query_west_via_trait(open_flatgeobuf(std::io::Cursor::new(sample_fgb())).unwrap());
+
+    assert_eq!(parquet, vec![0]);
+    assert_eq!(geojson, parquet);
+    assert_eq!(fgb, parquet);
 }

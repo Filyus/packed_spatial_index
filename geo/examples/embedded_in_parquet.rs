@@ -32,7 +32,8 @@ use parquet::file::properties::WriterProperties;
 
 use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 use packed_spatial_index_geo::{
-    ConvertRequest, GeoArtifactIndex, GeoQuery2D, RangeReader, SliceReader, open, open_geo_index,
+    ConvertRequest, GeoArtifactIndex, GeoQuery2D, RangeReader, SliceReader, open_geo_index,
+    open_geoparquet,
 };
 
 const N: usize = 100_000;
@@ -41,7 +42,7 @@ const PSIDX_MAGIC: &[u8; 4] = b"PSIX";
 
 fn main() {
     let parquet = build_dataset(N);
-    let index = open(parquet.clone())
+    let index = open_geoparquet(parquet.clone())
         .unwrap()
         .convert(ConvertRequest::default())
         .unwrap();

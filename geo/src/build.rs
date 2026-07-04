@@ -12,8 +12,40 @@ use crate::{
     AntimeridianPolicy, EnvelopePolicy, FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE,
     FEATURE_WKB_CONTENT_TYPE, FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D,
     GeometryMetadataSource, GeometryProfile, GeometryScan, GeometrySelector, IndexDimsRequest,
-    NullPolicy, PayloadPlan, StoragePrecision,
+    NullPolicy, PayloadPlan, ScanRequest, StoragePrecision,
 };
+
+/// A geospatial source that can be scanned, built, and converted into a
+/// `PSINDEX` artifact.
+///
+/// Implemented by every input format — `GeoDataset` (Parquet / GeoParquet),
+/// `GeoJsonDataset`, and `FgbDataset` — so build / convert pipelines can be
+/// written generically over `impl GeoSource` without naming a concrete source.
+/// Each type also keeps these as inherent methods, so `dataset.build(..)` works
+/// without importing the trait.
+///
+/// Read-back is intentionally *not* on this trait: Parquet returns Arrow
+/// `FeatureRows` via `GeoDataset::read_features`, while the non-Arrow sources
+/// return [`FeatureRecord`](crate::FeatureRecord) values.
+/// Call `read_features` on the concrete type when you need it.
+pub trait GeoSource {
+    /// Metadata profile of the selected geometry.
+    fn profile(&self) -> Result<GeometryProfile, GeoError>;
+    /// Stable fingerprint of the opened source.
+    fn source_fingerprint(&self) -> &str;
+    /// Scan feature envelopes, references, and optional payloads.
+    fn scan(&mut self, req: ScanRequest) -> Result<GeometryScan, GeoError>;
+    /// Build an in-memory [`GeoIndex`].
+    fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError>;
+    /// Convert into a streamable `PSINDEX` buffer.
+    fn convert(&mut self, req: ConvertRequest) -> Result<Vec<u8>, GeoError>;
+    /// Convert into a caller-provided buffer, returning artifact metadata.
+    fn convert_into(
+        &mut self,
+        req: ConvertRequest,
+        out: &mut Vec<u8>,
+    ) -> Result<GeoArtifact, GeoError>;
+}
 
 pub(crate) fn builder_2d(count: usize, opts: &IndexBuildOptions) -> Index2DBuilder {
     let mut builder = Index2DBuilder::new(count);
@@ -235,17 +267,17 @@ impl Default for IndexBuildOptions {
     }
 }
 
-/// Request for [`GeoDataset::build`](crate::GeoDataset::build).
+/// Request for a source `build` call.
 ///
 /// # Example
 ///
 /// ```no_run
 /// use std::fs::File;
 /// use packed_spatial_index_geo::{
-///     open, BuildRequest, GeometrySelector, IndexDimsRequest, NullPolicy,
+///     open_geoparquet, BuildRequest, GeometrySelector, IndexDimsRequest, NullPolicy,
 /// };
 ///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// let index = dataset.build(BuildRequest {
 ///     selector: GeometrySelector::Name("geometry".to_string()),
 ///     dims: IndexDimsRequest::D2,
@@ -281,16 +313,15 @@ impl Default for BuildRequest {
     }
 }
 
-/// Request for [`GeoDataset::convert`](crate::GeoDataset::convert) and
-/// [`GeoDataset::convert_into`](crate::GeoDataset::convert_into).
+/// Request for source `convert` and `convert_into` calls.
 ///
 /// # Example
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::{open, ConvertRequest, StoragePrecision};
+/// use packed_spatial_index_geo::{open_geoparquet, ConvertRequest, StoragePrecision};
 ///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// let bytes = dataset.convert(ConvertRequest {
 ///     precision: StoragePrecision::F32,
 ///     ..ConvertRequest::default()
@@ -339,9 +370,9 @@ impl Default for ConvertRequest {
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::{open, Box2D, BuildRequest, GeoIndex};
+/// use packed_spatial_index_geo::{open_geoparquet, Box2D, BuildRequest, GeoIndex};
 ///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// match dataset.build(BuildRequest::default())? {
 ///     GeoIndex::D2(index) => {
 ///         let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
@@ -368,12 +399,11 @@ pub enum GeoIndex {
 impl GeoIndex {
     /// Build an in-memory index from an already-computed [`GeometryScan`].
     ///
-    /// [`GeoDataset::build`](crate::GeoDataset::build) and
-    /// [`GeoDataset::convert_into`](crate::GeoDataset::convert_into) each call
-    /// [`GeoDataset::scan`](crate::GeoDataset::scan) internally, so producing
+    /// Source `build` and `convert_into` calls each call `scan` internally, so
+    /// producing
     /// both an in-memory index and a converted artifact from one
     /// `GeoDataset` normally scans the source twice. Call
-    /// [`GeoDataset::scan`](crate::GeoDataset::scan) once instead, then build
+    /// `scan` once instead, then build
     /// both outputs from the result with this function and
     /// [`GeoArtifact::from_scan`].
     ///
@@ -382,11 +412,11 @@ impl GeoIndex {
     /// ```no_run
     /// use std::fs::File;
     /// use packed_spatial_index_geo::{
-    ///     open, ConvertRequest, GeoArtifact, GeoIndex, IndexBuildOptions, PayloadPlan,
+    ///     open_geoparquet, ConvertRequest, GeoArtifact, GeoIndex, IndexBuildOptions, PayloadPlan,
     ///     ScanRequest,
     /// };
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let scan = dataset.scan(ScanRequest {
     ///     payload: PayloadPlan::RowWkb,
     ///     ..ScanRequest::default()
@@ -519,9 +549,9 @@ impl GeoIndex2D {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, Point2D};
+    /// use packed_spatial_index_geo::{open_geoparquet, BuildRequest, GeoIndex, Point2D};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected a 2D index");
     /// };
@@ -548,9 +578,9 @@ impl GeoIndex2D {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex};
+    /// use packed_spatial_index_geo::{open_geoparquet, BuildRequest, GeoIndex};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected a 2D index");
     /// };
@@ -589,9 +619,9 @@ impl GeoIndex2D {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, Point2D, Ray2D};
+    /// use packed_spatial_index_geo::{open_geoparquet, BuildRequest, GeoIndex, Point2D, Ray2D};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected a 2D index");
     /// };
@@ -617,9 +647,9 @@ impl GeoIndex2D {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, Point2D, Ray2D};
+    /// use packed_spatial_index_geo::{open_geoparquet, BuildRequest, GeoIndex, Point2D, Ray2D};
     ///
-    /// let mut dataset = open(File::open("cities.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected a 2D index");
     /// };
@@ -655,10 +685,10 @@ impl GeoIndex2D {
 /// ```no_run
 /// use std::fs::File;
 /// use packed_spatial_index_geo::{
-///     open, Box2D, BuildRequest, GeoIndex, IndexBuildOptions, StoragePrecision,
+///     open_geoparquet, Box2D, BuildRequest, GeoIndex, IndexBuildOptions, StoragePrecision,
 /// };
 ///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// let GeoIndex::D2F32(index) = dataset.build(BuildRequest {
 ///     build: IndexBuildOptions {
 ///         precision: StoragePrecision::F32,
@@ -759,9 +789,9 @@ impl GeoIndex3D {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{Box3D, BuildRequest, GeoIndex, IndexDimsRequest, open};
+    /// use packed_spatial_index_geo::{Box3D, BuildRequest, GeoIndex, IndexDimsRequest, open_geoparquet};
     ///
-    /// let mut dataset = open(File::open("elevations.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
     /// let GeoIndex::D3(index) = dataset.build(BuildRequest {
     ///     dims: IndexDimsRequest::D3,
     ///     ..BuildRequest::default()
@@ -798,9 +828,9 @@ impl GeoIndex3D {
     ///
     /// ```no_run
     /// use std::fs::File;
-    /// use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, IndexDimsRequest, Point3D};
+    /// use packed_spatial_index_geo::{open_geoparquet, BuildRequest, GeoIndex, IndexDimsRequest, Point3D};
     ///
-    /// let mut dataset = open(File::open("elevations.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
     /// let GeoIndex::D3(index) = dataset.build(BuildRequest {
     ///     dims: IndexDimsRequest::D3,
     ///     ..BuildRequest::default()
@@ -835,10 +865,10 @@ impl GeoIndex3D {
     /// ```no_run
     /// use std::fs::File;
     /// use packed_spatial_index_geo::{
-    ///     open, BuildRequest, GeoIndex, IndexDimsRequest, Point3D, Ray3D,
+    ///     open_geoparquet, BuildRequest, GeoIndex, IndexDimsRequest, Point3D, Ray3D,
     /// };
     ///
-    /// let mut dataset = open(File::open("elevations.parquet")?)?;
+    /// let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
     /// let GeoIndex::D3(index) = dataset.build(BuildRequest {
     ///     dims: IndexDimsRequest::D3,
     ///     ..BuildRequest::default()
@@ -888,10 +918,10 @@ impl GeoIndex3D {
 /// ```no_run
 /// use std::fs::File;
 /// use packed_spatial_index_geo::{
-///     open, Box3D, BuildRequest, GeoIndex, IndexBuildOptions, IndexDimsRequest, StoragePrecision,
+///     open_geoparquet, Box3D, BuildRequest, GeoIndex, IndexBuildOptions, IndexDimsRequest, StoragePrecision,
 /// };
 ///
-/// let mut dataset = open(File::open("elevations.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
 /// let GeoIndex::D3F32(index) = dataset.build(BuildRequest {
 ///     dims: IndexDimsRequest::D3,
 ///     build: IndexBuildOptions {
@@ -1002,10 +1032,8 @@ impl GeoArtifact {
     /// artifact. Existing contents of `out` are replaced.
     ///
     /// Pairs with [`GeoIndex::from_scan`] to build both an in-memory index
-    /// and a converted artifact from one
-    /// [`GeoDataset::scan`](crate::GeoDataset::scan) call. `source_fingerprint`
-    /// comes from
-    /// [`GeoDataset::source_fingerprint`](crate::GeoDataset::source_fingerprint).
+    /// and a converted artifact from one source `scan` call.
+    /// `source_fingerprint` comes from the source's `source_fingerprint()`.
     ///
     /// # Example
     ///

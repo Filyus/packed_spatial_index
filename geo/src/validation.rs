@@ -10,9 +10,9 @@ use crate::{CoordinateDims, GeoDiscovery, GeometryProfile, SelectionStatus};
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::{open, ValidateRequest, ValidationSeverity};
+/// use packed_spatial_index_geo::{open_geoparquet, ValidateRequest, ValidationSeverity};
 ///
-/// let mut dataset = open(File::open("cities.parquet")?)?;
+/// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// let report = dataset.validate(ValidateRequest::default())?;
 /// let warnings = report
 ///     .issues

@@ -38,10 +38,10 @@ pub use artifact::{open_geo_index_async, open_geo_index_with_limits_async};
 #[cfg(feature = "_source")]
 pub use build::{
     BuildRequest, ConvertRequest, GeoArtifact, GeoIndex, GeoIndex2D, GeoIndex2DF32, GeoIndex3D,
-    GeoIndex3DF32, GeoIndexMetadata, IndexBuildOptions,
+    GeoIndex3DF32, GeoIndexMetadata, GeoSource, IndexBuildOptions,
 };
 #[cfg(feature = "parquet")]
-pub use dataset::{GeoDataset, InspectRequest, ValidateRequest, open};
+pub use dataset::{GeoDataset, InspectRequest, ValidateRequest, open_geoparquet};
 #[cfg(feature = "parquet")]
 pub use discovery::{
     ColumnCapabilities, DiscoveryWarning, FileGeoMetadata, GeoDiscovery, GeometryColumn,

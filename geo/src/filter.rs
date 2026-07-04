@@ -172,10 +172,10 @@ fn spherical_radius_matches(
 /// ```no_run
 /// use std::fs::File;
 /// use packed_spatial_index_geo::{
-///     open, Box2D, FeatureFilterRequest, FeatureRef,
+///     open_geoparquet, Box2D, FeatureFilterRequest, FeatureRef,
 /// };
 ///
-/// let mut source = open(File::open("cities.parquet")?)?;
+/// let mut source = open_geoparquet(File::open("cities.parquet")?)?;
 /// let exact = source.filter_features(FeatureFilterRequest::intersects(
 ///     vec![FeatureRef::row_number(42)],
 ///     Box2D::new(-10.0, 35.0, 20.0, 60.0),

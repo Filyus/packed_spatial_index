@@ -3,14 +3,14 @@
 use bytes::Bytes;
 use packed_spatial_index_geo::{
     Box2D, ConvertRequest, GeoArtifactIndex, GeoPayload, PayloadPlan, PropertyProjection,
-    SliceReader, open, open_geo_index,
+    SliceReader, open_geo_index, open_geoparquet,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = Bytes::from_static(include_bytes!(
         "../tests/fixtures/parquet-geospatial/crs-srid.parquet"
     ));
-    let mut dataset = open(data)?;
+    let mut dataset = open_geoparquet(data)?;
     let artifact_bytes = dataset.convert(ConvertRequest {
         payload: PayloadPlan::FeatureJson {
             properties: PropertyProjection::AllNonGeometry,

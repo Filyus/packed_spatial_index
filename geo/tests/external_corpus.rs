@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use packed_spatial_index_geo::{NullPolicy, ValidateRequest, open};
+use packed_spatial_index_geo::{NullPolicy, ValidateRequest, open_geoparquet};
 
 #[test]
 #[ignore = "set PSI_GEO_CORPUS to an external fixture corpus to run this smoke"]
@@ -20,7 +20,7 @@ fn external_geo_corpus_validates_and_builds() {
     );
 
     for path in files {
-        let mut dataset = open(File::open(&path).unwrap()).unwrap_or_else(|err| {
+        let mut dataset = open_geoparquet(File::open(&path).unwrap()).unwrap_or_else(|err| {
             panic!("open failed for {}: {err}", path.display());
         });
         let report = dataset
@@ -37,7 +37,7 @@ fn external_geo_corpus_validates_and_builds() {
             report.issues
         );
 
-        let mut dataset = open(File::open(&path).unwrap()).unwrap_or_else(|err| {
+        let mut dataset = open_geoparquet(File::open(&path).unwrap()).unwrap_or_else(|err| {
             panic!("reopen failed for {}: {err}", path.display());
         });
         dataset

@@ -26,8 +26,8 @@ use parquet::file::properties::WriterProperties;
 
 use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 use packed_spatial_index_geo::{
-    Box2D, ConvertRequest, GeoArtifactIndex, GeoQuery2D, RangeReader, SliceReader, open,
-    open_geo_index,
+    Box2D, ConvertRequest, GeoArtifactIndex, GeoQuery2D, RangeReader, SliceReader, open_geo_index,
+    open_geoparquet,
 };
 
 const N: usize = 100_000;
@@ -83,7 +83,7 @@ fn measure(artifact: &[u8], query: GeoQuery2D) -> (usize, u64, usize) {
 
 fn main() {
     let parquet = build_dataset(N);
-    let artifact = open(parquet)
+    let artifact = open_geoparquet(parquet)
         .unwrap()
         .convert(ConvertRequest::default())
         .unwrap();

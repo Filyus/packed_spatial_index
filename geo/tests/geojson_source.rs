@@ -36,7 +36,7 @@ fn sample_geojson() -> &'static [u8] {
 #[test]
 fn geojson_convert_manifest_and_query_round_trip() {
     let mut source = open_geojson_slice(sample_geojson()).unwrap();
-    let profile = source.profile();
+    let profile = source.profile().unwrap();
     assert_eq!(profile.source, GeometryMetadataSource::GeoJson);
     assert_eq!(profile.num_rows, 3);
     assert_eq!(profile.extent.unwrap().values, vec![-10.0, 0.0, 30.0, 5.0]);

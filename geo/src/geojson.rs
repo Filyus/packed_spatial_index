@@ -15,9 +15,9 @@ use crate::scan_core::{self, FeatureReadRequest, FeatureRecord, GeometryReadMode
 use crate::wkb::{self, GeometryBounds};
 use crate::{
     BuildRequest, ConvertRequest, CoordinateDims, CrsInfo, DeclaredExtent, EdgeModel,
-    EnvelopePolicy, GeoArtifact, GeoError, GeoIndex, GeometryEncoding, GeometryMetadataSource,
-    GeometryProfile, GeometryScan, GeometrySelector, GeometryTypeSet, NullPolicy, PayloadPlan,
-    PropertyProjection, RowBoundsSource, ScanRequest,
+    EnvelopePolicy, GeoArtifact, GeoError, GeoIndex, GeoSource, GeometryEncoding,
+    GeometryMetadataSource, GeometryProfile, GeometryScan, GeometrySelector, GeometryTypeSet,
+    NullPolicy, PayloadPlan, PropertyProjection, RowBoundsSource, ScanRequest,
 };
 
 /// Name under which the (single, implicit) GeoJSON geometry is selectable.
@@ -36,7 +36,7 @@ const GEOMETRY_COLUMN: &str = "geometry";
 /// use packed_spatial_index_geo::open_geojson;
 ///
 /// let mut dataset = open_geojson(File::open("cities.geojson")?)?;
-/// println!("{} features", dataset.profile().num_rows);
+/// println!("{} features", dataset.profile()?.num_rows);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn open_geojson<R: std::io::Read>(mut reader: R) -> Result<GeoJsonDataset, GeoError> {
@@ -60,7 +60,7 @@ pub fn open_geojson<R: std::io::Read>(mut reader: R) -> Result<GeoJsonDataset, G
 ///     {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{"name":"a"}}
 /// ]}"#;
 /// let dataset = open_geojson_slice(doc.as_bytes())?;
-/// assert_eq!(dataset.profile().num_rows, 1);
+/// assert_eq!(dataset.profile()?.num_rows, 1);
 /// # Ok::<(), packed_spatial_index_geo::GeoError>(())
 /// ```
 pub fn open_geojson_slice(bytes: &[u8]) -> Result<GeoJsonDataset, GeoError> {
@@ -165,7 +165,7 @@ struct GeoJsonFeature {
 
 /// An opened GeoJSON document, ready to scan, build, or convert.
 ///
-/// Unlike the Parquet [`GeoDataset`](crate::GeoDataset), the parsed features
+/// Unlike the Parquet `GeoDataset`, the parsed features
 /// stay in memory, so scan/build/convert calls do not consume the dataset and
 /// can be repeated.
 #[derive(Debug, Clone)]
@@ -182,7 +182,11 @@ impl GeoJsonDataset {
     /// removed CRS negotiation), so the CRS is reported as the implied
     /// default `OGC:CRS84` and the edge model as planar. Coordinate
     /// dimensions are reported as unknown until a scan detects them.
-    pub fn profile(&self) -> GeometryProfile {
+    ///
+    /// Returns `Result` for signature parity with the other sources (see
+    /// [`GeoSource::profile`](crate::GeoSource::profile)); GeoJSON profiling
+    /// never fails.
+    pub fn profile(&self) -> Result<GeometryProfile, GeoError> {
         let mut types: Vec<String> = Vec::new();
         for feature in &self.features {
             if let Some(kind) = feature
@@ -195,7 +199,7 @@ impl GeoJsonDataset {
                 types.push(kind.to_string());
             }
         }
-        GeometryProfile {
+        Ok(GeometryProfile {
             column: GEOMETRY_COLUMN.to_string(),
             source: GeometryMetadataSource::GeoJson,
             encoding: GeometryEncoding::GeoJson,
@@ -208,7 +212,7 @@ impl GeoJsonDataset {
             extent: self.extent.clone(),
             row_bounds: vec![RowBoundsSource::FeatureScan],
             num_rows: self.features.len() as u64,
-        }
+        })
     }
 
     /// Stable fingerprint of the source document (FNV-64 over the raw bytes).
@@ -218,7 +222,7 @@ impl GeoJsonDataset {
 
     /// Scan feature envelopes, feature references, and optional payloads.
     ///
-    /// Mirrors [`GeoDataset::scan`](crate::GeoDataset::scan): the same
+    /// Mirrors `GeoDataset::scan`: the same
     /// [`ScanRequest`] policies apply, including geographic antimeridian
     /// splitting — GeoJSON coordinates are always lon/lat, so
     /// [`EnvelopePolicy::Geographic`] is always legal.
@@ -267,12 +271,12 @@ impl GeoJsonDataset {
                 payload: payload_bytes,
             });
         }
-        scan_core::assemble_scan(entries, &req, self.profile(), detected_dims)
+        scan_core::assemble_scan(entries, &req, self.profile()?, detected_dims)
     }
 
     /// Build an in-memory [`GeoIndex`] over the document's features.
     ///
-    /// Mirrors [`GeoDataset::build`](crate::GeoDataset::build).
+    /// Mirrors `GeoDataset::build`.
     pub fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError> {
         let scan = self.scan(ScanRequest {
             selector: req.selector,
@@ -286,7 +290,7 @@ impl GeoJsonDataset {
 
     /// Convert the document into a streamable `PSINDEX` buffer.
     ///
-    /// Mirrors [`GeoDataset::convert_into`](crate::GeoDataset::convert_into);
+    /// Mirrors `GeoDataset::convert_into`;
     /// the artifact manifest records `source_format: "geojson"`.
     pub fn convert_into(
         &mut self,
@@ -474,5 +478,35 @@ fn project_properties(
             .filter(|(key, _)| !exclude.iter().any(|name| name == *key))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
+    }
+}
+
+impl GeoSource for GeoJsonDataset {
+    fn profile(&self) -> Result<GeometryProfile, GeoError> {
+        GeoJsonDataset::profile(self)
+    }
+
+    fn source_fingerprint(&self) -> &str {
+        GeoJsonDataset::source_fingerprint(self)
+    }
+
+    fn scan(&mut self, req: ScanRequest) -> Result<GeometryScan, GeoError> {
+        GeoJsonDataset::scan(self, req)
+    }
+
+    fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError> {
+        GeoJsonDataset::build(self, req)
+    }
+
+    fn convert(&mut self, req: ConvertRequest) -> Result<Vec<u8>, GeoError> {
+        GeoJsonDataset::convert(self, req)
+    }
+
+    fn convert_into(
+        &mut self,
+        req: ConvertRequest,
+        out: &mut Vec<u8>,
+    ) -> Result<GeoArtifact, GeoError> {
+        GeoJsonDataset::convert_into(self, req, out)
     }
 }

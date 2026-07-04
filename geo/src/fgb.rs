@@ -17,9 +17,9 @@ use crate::scan_core::{self, FeatureReadRequest, FeatureRecord, GeometryReadMode
 use crate::wkb;
 use crate::{
     BuildRequest, ConvertRequest, CoordinateDims, CrsInfo, DeclaredExtent, EdgeModel,
-    EnvelopePolicy, GeoArtifact, GeoError, GeoIndex, GeometryEncoding, GeometryMetadataSource,
-    GeometryProfile, GeometryScan, GeometrySelector, GeometryTypeSet, NullPolicy, PayloadPlan,
-    PropertyProjection, RowBoundsSource, ScanRequest,
+    EnvelopePolicy, GeoArtifact, GeoError, GeoIndex, GeoSource, GeometryEncoding,
+    GeometryMetadataSource, GeometryProfile, GeometryScan, GeometrySelector, GeometryTypeSet,
+    NullPolicy, PayloadPlan, PropertyProjection, RowBoundsSource, ScanRequest,
 };
 
 /// Name under which the (single, implicit) FlatGeobuf geometry is selectable.
@@ -30,7 +30,7 @@ const GEOMETRY_COLUMN: &str = "geometry";
 /// Reads and snapshots the header only; features are streamed later by
 /// [`FgbDataset::scan`], [`FgbDataset::build`], or [`FgbDataset::convert`],
 /// which consume the reader (mirroring the Parquet
-/// [`GeoDataset`](crate::GeoDataset)'s take-then-use pattern).
+/// `GeoDataset`'s take-then-use pattern).
 ///
 /// # Example
 ///
@@ -39,7 +39,7 @@ const GEOMETRY_COLUMN: &str = "geometry";
 /// use packed_spatial_index_geo::open_flatgeobuf;
 ///
 /// let mut dataset = open_flatgeobuf(File::open("cities.fgb")?)?;
-/// println!("{} features", dataset.profile().num_rows);
+/// println!("{} features", dataset.profile()?.num_rows);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn open_flatgeobuf<R: std::io::Read + std::io::Seek>(
@@ -173,8 +173,12 @@ pub struct FgbDataset<R> {
 
 impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
     /// Profile of the (implicit) FlatGeobuf geometry column, from the header.
-    pub fn profile(&self) -> GeometryProfile {
-        GeometryProfile {
+    ///
+    /// Returns `Result` for signature parity with the other sources (see
+    /// [`GeoSource::profile`](crate::GeoSource::profile)); FlatGeobuf profiling
+    /// never fails.
+    pub fn profile(&self) -> Result<GeometryProfile, GeoError> {
+        Ok(GeometryProfile {
             column: GEOMETRY_COLUMN.to_string(),
             source: GeometryMetadataSource::FlatGeobuf,
             encoding: GeometryEncoding::FlatGeobuf,
@@ -185,7 +189,7 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
             extent: self.header.extent.clone(),
             row_bounds: vec![RowBoundsSource::FeatureScan],
             num_rows: self.header.features_count,
-        }
+        })
     }
 
     /// Stable fingerprint of the source header (FNV-64 over its fields).
@@ -195,7 +199,7 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
 
     /// Scan feature envelopes, feature references, and optional payloads.
     ///
-    /// Mirrors [`GeoDataset::scan`](crate::GeoDataset::scan), including the
+    /// Mirrors `GeoDataset::scan`, including the
     /// projected-CRS guard for [`EnvelopePolicy::Geographic`]. Consumes the
     /// feature reader.
     pub fn scan(&mut self, req: ScanRequest) -> Result<GeometryScan, GeoError> {
@@ -286,7 +290,7 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
             });
             row += 1;
         }
-        let mut profile = self.profile();
+        let mut profile = self.profile()?;
         // A features_count of 0 means "unknown" in the FlatGeobuf header;
         // after a full pass the real count is known.
         if profile.num_rows == 0 {
@@ -297,7 +301,7 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
 
     /// Build an in-memory [`GeoIndex`] over the file's features.
     ///
-    /// Mirrors [`GeoDataset::build`](crate::GeoDataset::build). Consumes the
+    /// Mirrors `GeoDataset::build`. Consumes the
     /// feature reader.
     pub fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError> {
         let scan = self.scan(ScanRequest {
@@ -312,7 +316,7 @@ impl<R: std::io::Read + std::io::Seek> FgbDataset<R> {
 
     /// Convert the file into a streamable `PSINDEX` buffer.
     ///
-    /// Mirrors [`GeoDataset::convert_into`](crate::GeoDataset::convert_into);
+    /// Mirrors `GeoDataset::convert_into`;
     /// the artifact manifest records `source_format: "flatgeobuf"`. Consumes
     /// the feature reader.
     pub fn convert_into(
@@ -578,4 +582,34 @@ fn json_value(value: &ColumnValue) -> Result<serde_json::Value, String> {
             serde_json::Value::from(base64::engine::general_purpose::STANDARD.encode(v))
         }
     })
+}
+
+impl<R: std::io::Read + std::io::Seek> GeoSource for FgbDataset<R> {
+    fn profile(&self) -> Result<GeometryProfile, GeoError> {
+        FgbDataset::profile(self)
+    }
+
+    fn source_fingerprint(&self) -> &str {
+        FgbDataset::source_fingerprint(self)
+    }
+
+    fn scan(&mut self, req: ScanRequest) -> Result<GeometryScan, GeoError> {
+        FgbDataset::scan(self, req)
+    }
+
+    fn build(&mut self, req: BuildRequest) -> Result<GeoIndex, GeoError> {
+        FgbDataset::build(self, req)
+    }
+
+    fn convert(&mut self, req: ConvertRequest) -> Result<Vec<u8>, GeoError> {
+        FgbDataset::convert(self, req)
+    }
+
+    fn convert_into(
+        &mut self,
+        req: ConvertRequest,
+        out: &mut Vec<u8>,
+    ) -> Result<GeoArtifact, GeoError> {
+        FgbDataset::convert_into(self, req, out)
+    }
 }

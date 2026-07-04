@@ -53,7 +53,7 @@ fn sample_fgb() -> Vec<u8> {
 fn flatgeobuf_convert_manifest_and_query_round_trip() {
     let bytes = sample_fgb();
     let mut source = open_flatgeobuf(Cursor::new(bytes)).unwrap();
-    let profile = source.profile();
+    let profile = source.profile().unwrap();
     assert_eq!(profile.source, GeometryMetadataSource::FlatGeobuf);
     assert_eq!(profile.num_rows, 2);
 

@@ -23,7 +23,7 @@ use packed_spatial_index_geo::{
     GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NonPlanarExactPolicy,
     NullPolicy, PayloadPlan, PropertyProjection, RangeReader, ScanRequest, SliceReader,
     SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity,
-    open, open_geo_index,
+    open_geo_index, open_geoparquet,
 };
 
 const USAGE: &str = "\
@@ -158,7 +158,7 @@ fn inspect_source_profile(
 ) -> Result<GeometryProfile, Box<dyn std::error::Error>> {
     match kind {
         SourceKind::Parquet => {
-            let mut dataset = open(File::open(input)?)?;
+            let mut dataset = open_geoparquet(File::open(input)?)?;
             Ok(dataset.inspect(InspectRequest {
                 selector,
                 exact: false,
@@ -168,7 +168,7 @@ fn inspect_source_profile(
             check_single_geometry_selector(&selector, "FlatGeobuf")?;
             #[cfg(feature = "flatgeobuf")]
             {
-                Ok(open_flatgeobuf(File::open(input)?)?.profile())
+                Ok(open_flatgeobuf(File::open(input)?)?.profile()?)
             }
             #[cfg(not(feature = "flatgeobuf"))]
             {
@@ -180,7 +180,7 @@ fn inspect_source_profile(
             check_single_geometry_selector(&selector, "GeoJSON")?;
             #[cfg(feature = "geojson")]
             {
-                Ok(open_geojson(File::open(input)?)?.profile())
+                Ok(open_geojson(File::open(input)?)?.profile()?)
             }
             #[cfg(not(feature = "geojson"))]
             {
@@ -199,7 +199,7 @@ fn convert_source(
 ) -> Result<GeoArtifact, Box<dyn std::error::Error>> {
     match kind {
         SourceKind::Parquet => {
-            let mut dataset = open(File::open(input)?)?;
+            let mut dataset = open_geoparquet(File::open(input)?)?;
             Ok(dataset.convert_into(request, out)?)
         }
         SourceKind::FlatGeobuf => {
@@ -236,7 +236,7 @@ fn scan_source(
 ) -> Result<GeometryScan, Box<dyn std::error::Error>> {
     match kind {
         SourceKind::Parquet => {
-            let mut dataset = open(File::open(input)?)?;
+            let mut dataset = open_geoparquet(File::open(input)?)?;
             Ok(dataset.scan(request)?)
         }
         SourceKind::FlatGeobuf => {
@@ -337,7 +337,7 @@ fn discover_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let kind = source_kind(input, parsed.option("--format")?)?;
     match kind {
         SourceKind::Parquet => {
-            let dataset = open(File::open(input)?)?;
+            let dataset = open_geoparquet(File::open(input)?)?;
             if parsed.flag("--json") {
                 serde_json::to_writer_pretty(std::io::stdout(), dataset.discovery())?;
                 println!();
@@ -367,7 +367,7 @@ fn inspect_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let selector = geometry_selector(parsed.option("--geometry-column")?);
     let profile = match kind {
         SourceKind::Parquet => {
-            let mut dataset = open(File::open(input)?)?;
+            let mut dataset = open_geoparquet(File::open(input)?)?;
             dataset.inspect(InspectRequest {
                 selector,
                 exact: parsed.flag("--exact"),
@@ -456,7 +456,7 @@ fn validate_cmd(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>>
     let envelope = parse_antimeridian(parsed.option("--antimeridian")?)?;
     match kind {
         SourceKind::Parquet => {
-            let mut dataset = open(File::open(input)?)?;
+            let mut dataset = open_geoparquet(File::open(input)?)?;
             let report = dataset.validate(ValidateRequest {
                 selector,
                 exact: parsed.flag("--exact"),
@@ -580,7 +580,7 @@ fn query_cmd_2d<R: RangeReader>(
     if matches!(kind, SourceKind::Parquet) {
         let expected_source_fingerprint = (!parsed.flag("--allow-source-mismatch"))
             .then_some(manifest.source_fingerprint.clone());
-        let mut dataset = open(File::open(source)?)?;
+        let mut dataset = open_geoparquet(File::open(source)?)?;
         return Ok(dataset.filter_features(FeatureFilterRequest {
             features,
             selector: GeometrySelector::Name(manifest.selected_column.clone()),
@@ -676,7 +676,7 @@ fn query_cmd_finish(
     };
     match kind {
         SourceKind::Parquet => {
-            let mut dataset = open(File::open(source)?)?;
+            let mut dataset = open_geoparquet(File::open(source)?)?;
             let rows = dataset.read_features(request)?;
             print_query_rows(&rows, parsed.flag("--json"))?;
         }

@@ -13,9 +13,9 @@ building or converting:
 
 ```rust
 use std::fs::File;
-use packed_spatial_index_geo::{open, ValidateRequest, ValidationSeverity};
+use packed_spatial_index_geo::{open_geoparquet, ValidateRequest, ValidationSeverity};
 
-let mut dataset = open(File::open("cities.parquet")?)?;
+let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let report = dataset.validate(ValidateRequest::default())?;
 
 for issue in &report.issues {
@@ -36,9 +36,9 @@ diagnostics; they are not used as per-row index bounds.
 
 ```rust
 use std::fs::File;
-use packed_spatial_index_geo::{open, ConvertRequest};
+use packed_spatial_index_geo::{open_geoparquet, ConvertRequest};
 
-let mut dataset = open(File::open("cities.parquet")?)?;
+let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let psindex: Vec<u8> = dataset.convert(ConvertRequest::default())?;
 std::fs::write("cities.psindex", &psindex)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -91,9 +91,11 @@ only metadata is needed, `read_geo_manifest`.
 
 ```rust
 use std::fs::File;
-use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, IndexBuildOptions, StoragePrecision};
+use packed_spatial_index_geo::{
+    open_geoparquet, BuildRequest, GeoIndex, IndexBuildOptions, StoragePrecision,
+};
 
-let mut dataset = open(File::open("cities.parquet")?)?;
+let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let GeoIndex::D2F32(index) = dataset.build(BuildRequest {
     build: IndexBuildOptions {
         precision: StoragePrecision::F32,
@@ -124,10 +126,11 @@ once and build both outputs from the result instead:
 ```rust
 use std::fs::File;
 use packed_spatial_index_geo::{
-    open, ConvertRequest, GeoArtifact, GeoIndex, IndexBuildOptions, PayloadPlan, ScanRequest,
+    open_geoparquet, ConvertRequest, GeoArtifact, GeoIndex, IndexBuildOptions, PayloadPlan,
+    ScanRequest,
 };
 
-let mut dataset = open(File::open("cities.parquet")?)?;
+let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let scan = dataset.scan(ScanRequest {
     payload: PayloadPlan::RowWkb,
     ..ScanRequest::default()
@@ -164,7 +167,7 @@ file after an index query:
 ```rust
 use std::fs::File;
 use packed_spatial_index_geo::{
-    open, open_geo_index, Box2D, FeatureFilterRequest, FeatureReadRequest,
+    open_geoparquet, open_geo_index, Box2D, FeatureFilterRequest, FeatureReadRequest,
     GeoArtifactIndex, GeometryReadMode, PropertyProjection, SliceReader,
 };
 
@@ -180,14 +183,14 @@ let selector = packed_spatial_index_geo::GeometrySelector::Name(
 );
 let expected_source_fingerprint = Some(manifest.source_fingerprint);
 let bbox = Box2D::new(-10.0, 35.0, 20.0, 60.0);
-let mut filter_source = open(File::open("cities.parquet")?)?;
+let mut filter_source = open_geoparquet(File::open("cities.parquet")?)?;
 let filtered = filter_source.filter_features(FeatureFilterRequest {
     selector: selector.clone(),
     expected_source_fingerprint: expected_source_fingerprint.clone(),
     ..FeatureFilterRequest::intersects_from_hits(hits, bbox)
 })?;
 
-let mut row_source = open(File::open("cities.parquet")?)?;
+let mut row_source = open_geoparquet(File::open("cities.parquet")?)?;
 let rows = row_source.read_features(FeatureReadRequest {
     selector,
     expected_source_fingerprint,
@@ -234,7 +237,7 @@ directly:
 ```rust
 # use std::fs::File;
 # use packed_spatial_index_geo::{
-#     open, Box2D, FeatureReadRequest, GeoArtifactIndex, GeometryReadMode,
+#     open_geoparquet, Box2D, FeatureReadRequest, GeoArtifactIndex, GeometryReadMode,
 #     PropertyProjection, SliceReader, open_geo_index,
 # };
 # let bytes = std::fs::read("cities.psindex")?;
@@ -243,7 +246,7 @@ directly:
 # };
 # let manifest = index.manifest().clone();
 # let hits = index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
-# let mut source = open(File::open("cities.parquet")?)?;
+# let mut source = open_geoparquet(File::open("cities.parquet")?)?;
 let rows = source.read_features(FeatureReadRequest {
     selector: packed_spatial_index_geo::GeometrySelector::Name(
         manifest.selected_column,
@@ -282,7 +285,7 @@ The API path uses the same request type as planar exact filtering:
 ```rust
 use std::fs::File;
 use packed_spatial_index_geo::{
-    open, open_geo_index, FeatureFilterRequest, FeatureReadRequest,
+    open_geoparquet, open_geo_index, FeatureFilterRequest, FeatureReadRequest,
     GeoArtifactIndex, PropertyProjection, SliceReader,
 };
 
@@ -296,12 +299,12 @@ let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(
 );
 let hits = index.search_hits(query.clone())?;
 
-let mut filter_source = open(File::open("places.parquet")?)?;
+let mut filter_source = open_geoparquet(File::open("places.parquet")?)?;
 let exact = filter_source.filter_features(
     FeatureFilterRequest::intersects_from_hits(hits, query),
 )?;
 
-let mut read_source = open(File::open("places.parquet")?)?;
+let mut read_source = open_geoparquet(File::open("places.parquet")?)?;
 let rows = read_source.read_features(FeatureReadRequest {
     properties: PropertyProjection::Include(vec!["name".to_string()]),
     ..FeatureReadRequest::from_features(exact)
@@ -355,10 +358,11 @@ covering box:
 ```rust
 use std::fs::File;
 use packed_spatial_index_geo::{
-    open, Box3D, BuildRequest, ClipSpaceZ, Frustum3D, GeoIndex, GeoQuery3D, IndexDimsRequest,
+    open_geoparquet, Box3D, BuildRequest, ClipSpaceZ, Frustum3D, GeoIndex, GeoQuery3D,
+    IndexDimsRequest,
 };
 
-let mut dataset = open(File::open("elevations.parquet")?)?;
+let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
 let GeoIndex::D3(index) = dataset.build(BuildRequest {
     dims: IndexDimsRequest::D3,
     ..BuildRequest::default()
@@ -401,9 +405,9 @@ features to a point" directly, without a bounding box:
 
 ```rust
 use std::fs::File;
-use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, Point2D};
+use packed_spatial_index_geo::{open_geoparquet, BuildRequest, GeoIndex, Point2D};
 
-let mut dataset = open(File::open("cities.parquet")?)?;
+let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     panic!("expected a 2D index");
 };
@@ -437,9 +441,11 @@ features does this ray cross":
 
 ```rust
 use std::fs::File;
-use packed_spatial_index_geo::{open, BuildRequest, GeoIndex, IndexDimsRequest, Point3D, Ray3D};
+use packed_spatial_index_geo::{
+    open_geoparquet, BuildRequest, GeoIndex, IndexDimsRequest, Point3D, Ray3D,
+};
 
-let mut dataset = open(File::open("elevations.parquet")?)?;
+let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
 let GeoIndex::D3(index) = dataset.build(BuildRequest {
     dims: IndexDimsRequest::D3,
     ..BuildRequest::default()

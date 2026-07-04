@@ -229,8 +229,8 @@ pub enum DuplicateFeatureRows {
 /// Request for source read-back by [`FeatureRef`].
 ///
 /// The same request type is accepted by Parquet, GeoJSON, and FlatGeobuf
-/// sources. Parquet returns [`FeatureRows`](crate::FeatureRows), while
-/// non-Arrow sources return [`FeatureRecord`] values.
+/// sources. Parquet returns `FeatureRows`, while non-Arrow sources return
+/// [`FeatureRecord`] values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureReadRequest {
     /// Feature refs to read from the source dataset.
@@ -330,8 +330,7 @@ pub(crate) fn ordered_feature_refs(
     Ok(selected.into_iter().map(|(_, feature)| feature).collect())
 }
 
-/// Request for a source scan such as
-/// [`GeoDataset::scan`](crate::dataset::GeoDataset::scan).
+/// Request for a source scan such as `GeoDataset::scan`.
 #[derive(Debug, Clone)]
 pub struct ScanRequest {
     /// Geometry column selector.
@@ -454,8 +453,7 @@ pub enum GeometryScan {
 
 /// 2D scan result.
 ///
-/// Obtain one from a source scan such as
-/// [`GeoDataset::scan`](crate::GeoDataset::scan): it cannot be
+/// Obtain one from a source scan such as `GeoDataset::scan`: it cannot be
 /// constructed outside this crate, and the payload/provenance fields are
 /// read-only through accessors ([`payload`](Self::payload),
 /// [`payloads`](Self::payloads), [`nulls`](Self::nulls),
@@ -507,8 +505,7 @@ impl GeometryScan2D {
 
 /// 3D scan result.
 ///
-/// Obtain one from a source scan such as
-/// [`GeoDataset::scan`](crate::GeoDataset::scan): it cannot be
+/// Obtain one from a source scan such as `GeoDataset::scan`: it cannot be
 /// constructed outside this crate, and the payload/provenance fields are
 /// read-only through accessors ([`payload`](Self::payload),
 /// [`payloads`](Self::payloads), [`nulls`](Self::nulls),

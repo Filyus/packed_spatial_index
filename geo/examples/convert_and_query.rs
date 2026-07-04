@@ -2,14 +2,15 @@
 
 use bytes::Bytes;
 use packed_spatial_index_geo::{
-    Box2D, ConvertRequest, GeoArtifactIndex, GeoPayload, SliceReader, open, open_geo_index,
+    Box2D, ConvertRequest, GeoArtifactIndex, GeoPayload, SliceReader, open_geo_index,
+    open_geoparquet,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = Bytes::from_static(include_bytes!(
         "../tests/fixtures/parquet-geospatial/crs-geography.parquet"
     ));
-    let mut dataset = open(data)?;
+    let mut dataset = open_geoparquet(data)?;
     let artifact_bytes = dataset.convert(ConvertRequest::default())?;
 
     let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(artifact_bytes))? else {

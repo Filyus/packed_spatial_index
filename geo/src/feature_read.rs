@@ -568,9 +568,9 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use packed_spatial_index_geo::{open, FeatureReadRequest, FeatureRef};
+/// use packed_spatial_index_geo::{open_geoparquet, FeatureReadRequest, FeatureRef};
 ///
-/// let mut source = open(File::open("cities.parquet")?)?;
+/// let mut source = open_geoparquet(File::open("cities.parquet")?)?;
 /// let rows = source.read_features(FeatureReadRequest::from_features(vec![
 ///     FeatureRef {
 ///         row_number: 42,

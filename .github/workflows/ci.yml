@@ -142,9 +142,15 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check --manifest-path geo/Cargo.toml
       - name: Lint
-        run: cargo clippy --manifest-path geo/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path geo/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Check query-only feature gate
+        run: cargo check --manifest-path geo/Cargo.toml --no-default-features
+      - name: Check FlatGeobuf without Parquet
+        run: cargo check --manifest-path geo/Cargo.toml --no-default-features --features flatgeobuf
+      - name: Check GeoJSON without Parquet
+        run: cargo check --manifest-path geo/Cargo.toml --no-default-features --features geojson
       - name: Test
-        run: cargo test --manifest-path geo/Cargo.toml
+        run: cargo test --manifest-path geo/Cargo.toml --all-features
 
   # The geo crate's MSRV is pinned by its heavy deps (and the core path-dep) to
   # 1.89; verify it stays buildable there, like the core msrv job.
@@ -162,7 +168,7 @@ jobs:
           key: geo-msrv
           workspaces: geo
       - name: Check geo MSRV
-        run: cargo check --manifest-path geo/Cargo.toml
+        run: cargo check --manifest-path geo/Cargo.toml --all-features
 
   # The Rust demo crates are not in the published package and not built by the
   # other legs, so compile-check them here — a core API change can't silently rot

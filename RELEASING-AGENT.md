@@ -210,6 +210,7 @@ by which files the commit touched.
 | 12 | Sorting and Encoding | `packed_spatial_index` | `sort`, `sortkey`, `hilbert`, `morton`, `encoders` | keep |
 | 13 | Discovery | `packed_spatial_index_geo` | `discovery`, `discover`, `inspect` | keep |
 | 14 | Validation | `packed_spatial_index_geo` | `validation`, `validate`, `diagnostics` | keep |
+| 15 | Server | `packed_spatial_index_server` | `server`, `http`, `catalog`, `features-api` | keep |
 | 20 | Benchmarks | — | `bench`, `benches`, `flatgeobuf`, `static-aabb`, `compare` | drop |
 | 90 | Documentation | the touched crate | `docs`, `readme`, `rustdoc`, `examples` | case-by-case |
 | 91 | Tests | — | `test`, `tests`, `correctness`, `fuzz` | drop |

@@ -6,8 +6,8 @@ Operational notes for an AI agent (Codex/Claude) working in this repo.
 
 - Subjects use **domain prefixes**, not conventional `feat:`/`fix:`. Pick the
   prefix from the [changelog taxonomy](RELEASING-AGENT.md#changelog-taxonomy)
-  (e.g. `search:`, `knn:`, `raycast:`, `perf:`, `builder2d:`, `docs:`, `bench:`,
-  `lint:`). The prefix decides the changelog group.
+  (e.g. `search:`, `knn:`, `raycast:`, `server:`, `perf:`, `builder2d:`,
+  `docs:`, `bench:`, `lint:`). The prefix decides the changelog group.
 - Put benchmark tables and perf numbers in the commit **body**, never the
   subject — only the subject reaches release notes.
 - Measure before committing a perf change: A/B with `git stash` on a quiet

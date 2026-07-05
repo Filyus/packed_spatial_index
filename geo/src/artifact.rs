@@ -5,8 +5,8 @@ use geozero::geojson::GeoJson;
 #[cfg(feature = "async")]
 use packed_spatial_index::AsyncRangeReader;
 use packed_spatial_index::{
-    Box2D, Overlaps2D, RangeReader, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D,
-    StreamIndex3DF32, StreamLimits,
+    Box2D, Overlaps2D, RangeReader, StreamDirectory, StreamError, StreamIndex2D, StreamIndex2DF32,
+    StreamIndex3D, StreamIndex3DF32, StreamLimits,
 };
 
 use crate::{
@@ -189,6 +189,48 @@ impl<R> GeoArtifactIndex<R> {
             GeoArtifactIndex::D3(index) => index.manifest(),
         }
     }
+
+    /// Split off the reader, keeping a reusable [`GeoArtifactDirectory`]. No I/O.
+    ///
+    /// Cache the directory and rebuild a fresh artifact index per request with
+    /// [`from_directory`](Self::from_directory) to skip the container directory,
+    /// `geoM` manifest, and inner stream-directory reads on warm requests.
+    pub fn into_directory(self) -> (GeoArtifactDirectory, R) {
+        match self {
+            GeoArtifactIndex::D2(index) => index.into_directory(),
+            GeoArtifactIndex::D3(index) => index.into_directory(),
+        }
+    }
+
+    /// Rebuild an artifact index from a cached [`GeoArtifactDirectory`] and a
+    /// fresh reader. No I/O: the manifest and stream directory were parsed when
+    /// the artifact was first opened.
+    pub fn from_directory(dir: &GeoArtifactDirectory, reader: R) -> Result<Self, GeoError> {
+        Self::from_directory_with_limits(dir, reader, StreamLimits::default())
+    }
+
+    /// [`from_directory`](Self::from_directory) with per-query [`StreamLimits`].
+    pub fn from_directory_with_limits(
+        dir: &GeoArtifactDirectory,
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, GeoError> {
+        match dir.manifest.dims.index_dims() {
+            Some(2) => Ok(GeoArtifactIndex::D2(
+                GeoArtifactIndex2D::from_directory_with_limits(dir, reader, limits)?,
+            )),
+            Some(3) => Ok(GeoArtifactIndex::D3(
+                GeoArtifactIndex3D::from_directory_with_limits(dir, reader, limits)?,
+            )),
+            None => Err(GeoError::UnsupportedArtifact(format!(
+                "cached directory has unknown coordinate dimensions {:?}",
+                dir.manifest.dims
+            ))),
+            Some(other) => Err(GeoError::UnsupportedArtifact(format!(
+                "cached directory has unsupported coordinate dimension count {other}"
+            ))),
+        }
+    }
 }
 
 /// A 2D geospatial artifact index.
@@ -204,6 +246,53 @@ impl<R> GeoArtifactIndex2D<R> {
     /// Return the parsed `geoM` manifest.
     pub fn manifest(&self) -> &GeoArtifactManifest {
         &self.manifest
+    }
+
+    /// Split off the reader, keeping a reusable [`GeoArtifactDirectory`]. No I/O.
+    pub fn into_directory(self) -> (GeoArtifactDirectory, R) {
+        let (inner, reader) = match self.index {
+            GeoStreamIndex2D::F64(index) => index.into_directory(),
+            GeoStreamIndex2D::F32(index) => index.into_directory(),
+        };
+        (
+            GeoArtifactDirectory {
+                inner,
+                manifest: self.manifest,
+            },
+            reader,
+        )
+    }
+
+    /// Rebuild a 2D artifact index from a cached [`GeoArtifactDirectory`] and a
+    /// fresh reader. No I/O.
+    pub fn from_directory(dir: &GeoArtifactDirectory, reader: R) -> Result<Self, GeoError> {
+        Self::from_directory_with_limits(dir, reader, StreamLimits::default())
+    }
+
+    /// [`from_directory`](Self::from_directory) with per-query [`StreamLimits`].
+    pub fn from_directory_with_limits(
+        dir: &GeoArtifactDirectory,
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, GeoError> {
+        if dir.manifest.dims.index_dims() != Some(2) {
+            return Err(GeoError::UnsupportedArtifact(format!(
+                "cached directory is not 2D (dims {:?})",
+                dir.manifest.dims
+            )));
+        }
+        let index = match dir.manifest.storage_precision {
+            StoragePrecision::F64 => GeoStreamIndex2D::F64(
+                StreamIndex2D::from_directory_with_limits(&dir.inner, reader, limits)?,
+            ),
+            StoragePrecision::F32 => GeoStreamIndex2D::F32(
+                StreamIndex2DF32::from_directory_with_limits(&dir.inner, reader, limits)?,
+            ),
+        };
+        Ok(Self {
+            index,
+            manifest: dir.manifest.clone(),
+        })
     }
 
     /// Exactly filter geo hits by the geometry stored in their payloads — the
@@ -529,6 +618,93 @@ impl<R> GeoArtifactIndex3D<R> {
     /// Return the parsed `geoM` manifest.
     pub fn manifest(&self) -> &GeoArtifactManifest {
         &self.manifest
+    }
+
+    /// Split off the reader, keeping a reusable [`GeoArtifactDirectory`]. No I/O.
+    pub fn into_directory(self) -> (GeoArtifactDirectory, R) {
+        let (inner, reader) = match self.index {
+            GeoStreamIndex3D::F64(index) => index.into_directory(),
+            GeoStreamIndex3D::F32(index) => index.into_directory(),
+        };
+        (
+            GeoArtifactDirectory {
+                inner,
+                manifest: self.manifest,
+            },
+            reader,
+        )
+    }
+
+    /// Rebuild a 3D artifact index from a cached [`GeoArtifactDirectory`] and a
+    /// fresh reader. No I/O.
+    pub fn from_directory(dir: &GeoArtifactDirectory, reader: R) -> Result<Self, GeoError> {
+        Self::from_directory_with_limits(dir, reader, StreamLimits::default())
+    }
+
+    /// [`from_directory`](Self::from_directory) with per-query [`StreamLimits`].
+    pub fn from_directory_with_limits(
+        dir: &GeoArtifactDirectory,
+        reader: R,
+        limits: StreamLimits,
+    ) -> Result<Self, GeoError> {
+        if dir.manifest.dims.index_dims() != Some(3) {
+            return Err(GeoError::UnsupportedArtifact(format!(
+                "cached directory is not 3D (dims {:?})",
+                dir.manifest.dims
+            )));
+        }
+        let index = match dir.manifest.storage_precision {
+            StoragePrecision::F64 => GeoStreamIndex3D::F64(
+                StreamIndex3D::from_directory_with_limits(&dir.inner, reader, limits)?,
+            ),
+            StoragePrecision::F32 => GeoStreamIndex3D::F32(
+                StreamIndex3DF32::from_directory_with_limits(&dir.inner, reader, limits)?,
+            ),
+        };
+        Ok(Self {
+            index,
+            manifest: dir.manifest.clone(),
+        })
+    }
+}
+
+/// Reusable, reader-independent metadata for an opened geospatial artifact.
+///
+/// This caches the inner core [`StreamDirectory`] plus the parsed `geoM`
+/// manifest. Split one off with [`GeoArtifactIndex::into_directory`], then
+/// rebuild a fresh index from it with [`GeoArtifactIndex::from_directory`] and a
+/// new reader. Reattaching performs no I/O, so a server or worker can pay the
+/// container, manifest, and stream-directory reads once per warm cache entry.
+#[derive(Clone)]
+pub struct GeoArtifactDirectory {
+    inner: StreamDirectory,
+    manifest: GeoArtifactManifest,
+}
+
+impl GeoArtifactDirectory {
+    /// Return the parsed `geoM` manifest cached with the directory.
+    pub fn manifest(&self) -> &GeoArtifactManifest {
+        &self.manifest
+    }
+
+    /// Number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.inner.num_items()
+    }
+
+    /// Whether the artifact has no indexed items.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Packed node size of the artifact index.
+    pub fn node_size(&self) -> usize {
+        self.inner.node_size()
+    }
+
+    /// Whether the artifact carries an item payload section.
+    pub fn has_payload(&self) -> bool {
+        self.inner.has_payload()
     }
 }
 

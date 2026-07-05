@@ -4,6 +4,12 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- Added `GeoArtifactDirectory` plus `into_directory` / `from_directory` helpers
+  on geo artifact indexes so servers and workers can cache parsed artifact
+  metadata and reattach fresh readers without repeating open-time range reads.
+
 ## [0.19.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.19.1...psi-geo-v0.19.2) - 2026-07-05
 
 ### Documentation

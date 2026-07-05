@@ -1,7 +1,10 @@
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::{env, fs};
 
 use arrow::array::{
@@ -15,12 +18,13 @@ use bytes::Bytes;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, DuplicateFeatureRows,
     EnvelopePolicy, FEATURE_REF_RECORD_LEN, FeatureFilterRequest, FeatureReadOrder,
-    FeatureReadRequest, FeatureRef, Frustum3D, GeoArtifactIndex, GeoError, GeoIndex, GeoPayload,
-    GeoQuery2D, GeoQuery3D, GeometryEncoding, GeometryMetadataSource, GeometryReadMode,
-    GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NonPlanarExactPolicy,
-    NullPolicy, PayloadPlan, PropertyProjection, RangeReader, SliceReader, StoragePrecision,
-    StreamIndex2D, decode_feature_ref_payload, decode_feature_wkb_payload, open_geo_index,
-    open_geoparquet, read_geo_manifest,
+    FeatureReadRequest, FeatureRef, Frustum3D, GeoArtifactIndex, GeoArtifactIndex2D,
+    GeoArtifactIndex3D, GeoError, GeoHit, GeoIndex, GeoPayload, GeoQuery2D, GeoQuery3D,
+    GeometryEncoding, GeometryMetadataSource, GeometryReadMode, GeometryScan, GeometrySelector,
+    IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
+    PropertyProjection, RangeReader, SliceReader, StoragePrecision, StreamIndex2D,
+    decode_feature_ref_payload, decode_feature_wkb_payload, open_geo_index, open_geoparquet,
+    read_geo_manifest,
 };
 #[cfg(feature = "async")]
 use packed_spatial_index_geo::{AsyncRangeReader, open_geo_index_async};
@@ -103,6 +107,35 @@ impl AsyncRangeReader for AsyncSlice {
 
     fn len(&self) -> Option<u64> {
         Some(self.0.len() as u64)
+    }
+}
+
+struct CountingReader {
+    inner: SliceReader<Vec<u8>>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl CountingReader {
+    fn new(bytes: Vec<u8>) -> (Self, Arc<AtomicUsize>) {
+        let reads = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                inner: SliceReader::new(bytes),
+                reads: reads.clone(),
+            },
+            reads,
+        )
+    }
+}
+
+impl RangeReader for CountingReader {
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.read_exact_at(offset, buf)
+    }
+
+    fn len(&self) -> Option<u64> {
+        self.inner.len()
     }
 }
 
@@ -3001,4 +3034,176 @@ fn feature_json_missing_property_projection_errors_without_panic() {
         result,
         Err(GeoError::PropertyColumnNotFound(name)) if name == "missing"
     ));
+}
+
+#[test]
+fn geo_artifact_directory_reattach_2d_matches_and_skips_open_reads() {
+    for precision in [StoragePrecision::F64, StoragePrecision::F32] {
+        let artifact = artifact_2d(precision);
+        let query = Box2D::new(0.0, 0.0, 10.0, 10.0);
+
+        let (reader, fresh_reads) = CountingReader::new(artifact.clone());
+        let GeoArtifactIndex::D2(index) = open_geo_index(reader).unwrap() else {
+            panic!("expected 2D artifact");
+        };
+        let baseline_rows = sorted_hit_rows(&index.search_hits(query).unwrap());
+        let fresh_total_reads = fresh_reads.load(Ordering::SeqCst);
+
+        let (dir, _spent_reader) = index.into_directory();
+        assert_eq!(dir.manifest().storage_precision, precision);
+        assert_eq!(dir.num_items(), 4);
+        assert!(!dir.is_empty());
+        assert!(dir.node_size() > 0);
+        assert!(dir.has_payload());
+
+        let (reader, warm_reads) = CountingReader::new(artifact.clone());
+        let reattached = GeoArtifactIndex2D::from_directory(&dir, reader).unwrap();
+        assert_eq!(
+            warm_reads.load(Ordering::SeqCst),
+            0,
+            "from_directory must not read"
+        );
+
+        let warm_rows = sorted_hit_rows(&reattached.search_hits(query).unwrap());
+        assert_eq!(warm_rows, baseline_rows);
+        assert_eq!(warm_rows, vec![0, 1, 2]);
+        assert!(
+            warm_reads.load(Ordering::SeqCst) < fresh_total_reads,
+            "warm query read {} times, fresh open + query read {} times",
+            warm_reads.load(Ordering::SeqCst),
+            fresh_total_reads
+        );
+
+        let (reader, enum_reads) = CountingReader::new(artifact);
+        let enum_index = GeoArtifactIndex::from_directory(&dir, reader).unwrap();
+        assert_eq!(
+            enum_reads.load(Ordering::SeqCst),
+            0,
+            "enum from_directory must not read"
+        );
+        let GeoArtifactIndex::D2(enum_index) = enum_index else {
+            panic!("expected enum reattach to preserve 2D");
+        };
+        assert_eq!(
+            sorted_hit_rows(&enum_index.search_hits(query).unwrap()),
+            baseline_rows
+        );
+    }
+}
+
+#[test]
+fn geo_artifact_directory_reattach_3d_matches_and_dispatches_precision() {
+    for precision in [StoragePrecision::F64, StoragePrecision::F32] {
+        let artifact = artifact_3d(precision);
+        let query = Box3D::new(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
+
+        let (reader, fresh_reads) = CountingReader::new(artifact.clone());
+        let GeoArtifactIndex::D3(index) = open_geo_index(reader).unwrap() else {
+            panic!("expected 3D artifact");
+        };
+        let baseline_rows = sorted_hit_rows(&index.search_hits(query).unwrap());
+        let fresh_total_reads = fresh_reads.load(Ordering::SeqCst);
+
+        let (dir, _spent_reader) = index.into_directory();
+        assert_eq!(dir.manifest().storage_precision, precision);
+        assert_eq!(dir.manifest().dims, CoordinateDims::Xyz);
+
+        let (reader, warm_reads) = CountingReader::new(artifact);
+        let reattached = GeoArtifactIndex3D::from_directory(&dir, reader).unwrap();
+        assert_eq!(
+            warm_reads.load(Ordering::SeqCst),
+            0,
+            "from_directory must not read"
+        );
+
+        let warm_rows = sorted_hit_rows(&reattached.search_hits(query).unwrap());
+        assert_eq!(warm_rows, baseline_rows);
+        assert_eq!(warm_rows, vec![0, 1, 2]);
+        assert!(
+            warm_reads.load(Ordering::SeqCst) < fresh_total_reads,
+            "warm query read {} times, fresh open + query read {} times",
+            warm_reads.load(Ordering::SeqCst),
+            fresh_total_reads
+        );
+    }
+}
+
+#[test]
+fn geo_artifact_directory_rejects_typed_dimension_mismatch() {
+    let GeoArtifactIndex::D2(index2d) =
+        open_geo_index(SliceReader::new(artifact_2d(StoragePrecision::F64))).unwrap()
+    else {
+        panic!("expected 2D artifact");
+    };
+    let (dir2d, _reader) = index2d.into_directory();
+    let err = match GeoArtifactIndex3D::from_directory(&dir2d, SliceReader::new(Vec::new())) {
+        Ok(_) => panic!("2D directory must not reattach as 3D"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, GeoError::UnsupportedArtifact(message) if message.contains("not 3D")));
+
+    let GeoArtifactIndex::D3(index3d) =
+        open_geo_index(SliceReader::new(artifact_3d(StoragePrecision::F64))).unwrap()
+    else {
+        panic!("expected 3D artifact");
+    };
+    let (dir3d, _reader) = index3d.into_directory();
+    let err = match GeoArtifactIndex2D::from_directory(&dir3d, SliceReader::new(Vec::new())) {
+        Ok(_) => panic!("3D directory must not reattach as 2D"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, GeoError::UnsupportedArtifact(message) if message.contains("not 2D")));
+}
+
+fn artifact_2d(precision: StoragePrecision) -> Vec<u8> {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                Some(wkb_point_2d(1.0, 1.0)),
+                Some(wkb_point_2d(5.0, 5.0)),
+                Some(wkb_point_2d(9.0, 9.0)),
+                Some(wkb_point_2d(50.0, 50.0)),
+            ]),
+        )],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    dataset
+        .convert(ConvertRequest {
+            precision,
+            ..ConvertRequest::default()
+        })
+        .unwrap()
+}
+
+fn artifact_3d(precision: StoragePrecision) -> Vec<u8> {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                Some(wkb_point_3d(1.0, 1.0, 1.0)),
+                Some(wkb_point_3d(5.0, 5.0, 5.0)),
+                Some(wkb_point_3d(9.0, 9.0, 9.0)),
+                Some(wkb_point_3d(50.0, 50.0, 50.0)),
+            ]),
+        )],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    dataset
+        .convert(ConvertRequest {
+            precision,
+            ..ConvertRequest::default()
+        })
+        .unwrap()
+}
+
+fn sorted_hit_rows(hits: &[GeoHit]) -> Vec<u64> {
+    let mut rows = hits
+        .iter()
+        .map(|hit| hit.feature.row_number)
+        .collect::<Vec<_>>();
+    rows.sort_unstable();
+    rows
 }

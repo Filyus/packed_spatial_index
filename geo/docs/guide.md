@@ -82,6 +82,34 @@ Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `open_geo_index` (or `open_geo_index_async` with the `async` feature) and, when
 only metadata is needed, `read_geo_manifest`.
 
+## Reuse artifact open metadata
+
+Servers and workers often create a fresh range reader per request. Open the
+artifact once, split off its reusable directory, then reattach each new reader
+without rereading the container directory, `geoM` manifest, or stream directory:
+
+```rust
+use packed_spatial_index_geo::{
+    open_geo_index, Box2D, GeoArtifactIndex, SliceReader,
+};
+
+let bytes = std::fs::read("cities.psindex")?;
+let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes.clone()))? else {
+    panic!("expected a 2D artifact");
+};
+let (directory, _spent_reader) = index.into_directory();
+
+// Later, with a fresh local, HTTP range, or object-storage reader:
+let GeoArtifactIndex::D2(index) =
+    GeoArtifactIndex::from_directory(&directory, SliceReader::new(bytes))?
+else {
+    panic!("expected a 2D artifact");
+};
+let hits = index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+println!("{} hits", hits.len());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## Memory and source files
 
 Building or converting from a source file assembles the output boxes, payloads,

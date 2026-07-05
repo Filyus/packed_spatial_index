@@ -30,8 +30,8 @@ mod validation;
 mod wkb;
 
 pub use artifact::{
-    GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoHit, GeoPayload, open_geo_index,
-    open_geo_index_with_limits,
+    GeoArtifactDirectory, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoHit,
+    GeoPayload, open_geo_index, open_geo_index_with_limits,
 };
 #[cfg(feature = "async")]
 pub use artifact::{open_geo_index_async, open_geo_index_with_limits_async};

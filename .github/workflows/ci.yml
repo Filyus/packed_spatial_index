@@ -170,6 +170,30 @@ jobs:
       - name: Check geo MSRV
         run: cargo check --manifest-path geo/Cargo.toml --all-features
 
+  # The local native server is a separate binary crate, not part of the root
+  # package or geo crate. Keep it in CI so the artifact-first API can't drift.
+  server:
+    name: server crate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: server
+          workspaces: server
+      - name: Check formatting
+        run: cargo fmt --all --check --manifest-path server/Cargo.toml
+      - name: Test
+        run: cargo test --manifest-path server/Cargo.toml --locked
+      - name: Lint
+        run: cargo clippy --manifest-path server/Cargo.toml --all-targets --locked -- -D warnings
+
   # The Rust demo crates are not in the published package and not built by the
   # other legs, so compile-check them here — a core API change can't silently rot
   # the worker or the seed tools.

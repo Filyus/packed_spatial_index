@@ -13,7 +13,7 @@ publish = false
 
 [dependencies]
 packed_spatial_index = { path = "../..", default-features = false, features = ["stream"] }
-rand = "0.10.1"
+rand = "0.10.2"
 
 [profile.release]
 opt-level = 3

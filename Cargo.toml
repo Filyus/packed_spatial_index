@@ -55,7 +55,7 @@ criterion = { version = "0.8.2", features = ["html_reports"] }
 # Minimal executor to drive async streaming tests (no runtime in the crate).
 pollster = "0.4"
 flatgeobuf = { version = "6.0.1", default-features = false }
-nalgebra = { version = "0.35.0", default-features = false, features = ["std"] }
+nalgebra = { version = "0.34.2", default-features = false, features = ["std"] }
 proptest = "1"
 rand = "0.10.2"
 static_aabb2d_index = "2"

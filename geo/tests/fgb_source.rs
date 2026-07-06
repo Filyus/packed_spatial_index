@@ -73,7 +73,7 @@ fn flatgeobuf_convert_manifest_and_query_round_trip() {
         panic!("expected 2D artifact");
     };
     let hits = index
-        .search_hits(packed_spatial_index_geo::Box2D::new(20.0, 0.0, 30.0, 5.0))
+        .search_matches(packed_spatial_index_geo::Box2D::new(20.0, 0.0, 30.0, 5.0))
         .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].feature.row_number, 1);

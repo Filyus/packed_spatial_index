@@ -110,7 +110,7 @@ fn query_west(index: GeoIndex) -> Vec<u64> {
         panic!("expected 2D index");
     };
     index
-        .search_features(Box2D::new(-10.0, 0.0, 0.0, 2.0))
+        .search_feature_refs(Box2D::new(-10.0, 0.0, 0.0, 2.0))
         .unwrap()
         .into_iter()
         .map(|feature| feature.row_number)

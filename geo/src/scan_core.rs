@@ -226,7 +226,7 @@ pub enum GeometryReadMode {
 pub enum FeatureReadOrder {
     /// Return rows sorted by source row number.
     SourceOrder,
-    /// Return rows in the requested hit/feature order.
+    /// Return rows in the requested match/feature-ref order.
     RequestOrder,
 }
 
@@ -271,17 +271,17 @@ pub struct FeatureReadRequest {
 
 impl FeatureReadRequest {
     /// Create a default read request from feature refs.
-    pub fn from_features(features: Vec<FeatureRef>) -> Self {
+    pub fn from_feature_refs(features: Vec<FeatureRef>) -> Self {
         Self {
             features,
             ..Self::default()
         }
     }
 
-    /// Create a default read request from artifact hits.
-    pub fn from_hits(hits: Vec<crate::GeoHit>) -> Self {
+    /// Create a default read request from artifact matches.
+    pub fn from_matches(matches: Vec<crate::GeoMatch>) -> Self {
         Self {
-            features: hits.into_iter().map(|hit| hit.feature).collect(),
+            features: matches.into_iter().map(|m| m.feature).collect(),
             ..Self::default()
         }
     }

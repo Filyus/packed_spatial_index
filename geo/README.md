@@ -42,7 +42,7 @@ use packed_spatial_index_geo::{open_geoparquet, BuildRequest, Box2D, GeoIndex};
 let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let index = dataset.build(BuildRequest::default())?;
 let GeoIndex::D2(index) = index else { panic!("expected 2D geometry") };
-let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+let features = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -68,7 +68,7 @@ packed_spatial_index_geo = "0.20"
   `FeatureCollection` build and convert paths without retaining the full
   source document.
 - **`async`** — open and query streamable `PSINDEX` artifacts over an
-  [`AsyncRangeReader`][AsyncRangeReader], adding `open_geo_index_async` and `search_hits_async`.
+  [`AsyncRangeReader`][AsyncRangeReader], adding `open_geo_index_async` and `search_matches_async`.
 
 To query a pre-built `PSINDEX` from a browser or edge worker, drop the default
 feature so `arrow` / `parquet` never enter the build:
@@ -79,8 +79,8 @@ packed_spatial_index_geo = { version = "0.20", default-features = false, feature
 ```
 
 That leaves the crate query-only — [`open_geo_index`][open_geo_index] /
-`open_geo_index_async`, `search_items` / `search_hits`,
-[`GeoArtifactIndex2D::filter_hits`][filter_hits] (exact intersection over the
+`open_geo_index_async`, `search_entry_ids` / `search_matches`,
+[`GeoArtifactIndex2D::filter_matches`][filter_matches] (exact intersection over the
 payload geometry), and payload decoding — compiling to `wasm32`. Only reading a
 source file needs a format feature.
 
@@ -107,32 +107,37 @@ files.
 | Build an index | [`GeoDataset::build`][build], [`GeoIndex`][GeoIndex] |
 | Build a half-size (`f32`) index | [`IndexBuildOptions::precision`][IndexBuildOptions], [`StoragePrecision`][StoragePrecision] |
 | Build an index and a `PSINDEX` in one scan | [`GeoIndex::from_scan`][from_scan], [`GeoArtifact::from_scan`][artifact_from_scan] |
-| Query the index | [`GeoIndex2D::search_features`][search_features_2d], [`GeoIndex3D::search_features`][search_features_3d] |
-| Nearest features (kNN) | [`GeoIndex2D::nearest_features`][nearest_features], `nearest_features_haversine` |
-| Raycast features | [`GeoIndex3D::raycast_features`][raycast_features], `raycast_closest_feature` |
+| Query the index | [`GeoIndex2D::search_feature_refs`][search_feature_refs_2d], [`GeoIndex3D::search_feature_refs`][search_feature_refs_3d] |
+| Nearest features (kNN) | [`GeoIndex2D::nearest_feature_refs`][nearest_feature_refs], `nearest_feature_refs_haversine` |
+| Raycast features | [`GeoIndex3D::raycast_feature_refs`][raycast_feature_refs], `raycast_closest_feature_ref` |
 | Convert to `PSINDEX` | [`GeoDataset::convert`][convert] |
 | Open a `PSINDEX` | [`open_geo_index`][open_geo_index] |
 | Open a `PSINDEX` over async range I/O | [`open_geo_index_async`][open_geo_index_async] (`async` feature) |
 | Reuse parsed `PSINDEX` open metadata | [`GeoArtifactDirectory`][GeoArtifactDirectory], [`into_directory`][into_directory] / [`from_directory`][from_directory] |
-| Query a `PSINDEX` | [`GeoArtifactIndex2D::search_hits`][search_hits], [`GeoHit`][GeoHit] |
+| Query a `PSINDEX` | [`GeoArtifactIndex2D::search_matches`][search_matches], [`GeoMatch`][GeoMatch] |
 | Choose a query shape | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius), [`GeoQuery3D`][GeoQuery3D] (box / frustum) |
-| Exact-filter source hits | [`GeoDataset::filter_features`][filter_features], [`FeatureFilterRequest`][FeatureFilterRequest] |
-| Exact-filter `PSINDEX` hits | [`GeoArtifactIndex2D::filter_hits`][filter_hits] |
+| Exact-filter source features | [`GeoDataset::filter_features`][filter_features], [`FeatureFilterRequest`][FeatureFilterRequest] |
+| Exact-filter `PSINDEX` matches | [`GeoArtifactIndex2D::filter_matches`][filter_matches] |
 | Read Parquet source rows | [`GeoDataset::read_features`][read_features], [`FeatureReadRequest`][FeatureReadRequest] |
 | Read GeoJSON / FlatGeobuf source rows | `read_features`, [`FeatureRecord`][FeatureRecord] |
 | Tune requests | [`IndexDimsRequest`][IndexDimsRequest], [`NullPolicy`][NullPolicy] |
 | Pick payloads | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
 | Use the CLI | See [CLI](#cli) |
 
-The in-memory `GeoIndex` search methods return [`FeatureRef`][FeatureRef]
-values. A feature ref always carries the source `row_number`; scans and converted
-artifacts also fill `row_group` / `row_in_group` so source rows can be read back
-efficiently. `part` is set when one source row becomes multiple index entries,
-for example after antimeridian splitting.
+Query results use one vocabulary across the crate: `*_entry_ids` methods
+return index-entry ids (the core crate calls these compact item ids),
+`*_feature_refs` methods return [`FeatureRef`][FeatureRef] values, and
+`*_matches` methods return [`GeoMatch`][GeoMatch] records pairing each entry
+with its decoded payload.
+All three are entry-level: the same source feature can appear more than once
+when it was split into multiple index entries, for example after antimeridian
+splitting — `part` tells the entries apart. A feature ref always carries the
+source `row_number`; scans and converted artifacts also fill `row_group` /
+`row_in_group` so source rows can be read back efficiently.
 
 Enable the `async` feature to open the same streamable artifacts through an
 `AsyncRangeReader`. The async artifact methods mirror window, polygon, and 3D
-frustum candidate queries, including payload-returning `search_hits_async`.
+frustum candidate queries, including payload-returning `search_matches_async`.
 When each request needs a fresh range reader, split an opened artifact with
 `GeoArtifactIndex::into_directory` and cache the returned
 [`GeoArtifactDirectory`][GeoArtifactDirectory]. Later requests can call
@@ -325,8 +330,8 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [convert]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert
 [convert_into]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.convert_into
 [filter_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.filter_features
-[filter_hits]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.filter_hits
-[search_hits]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_hits
+[filter_matches]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.filter_matches
+[search_matches]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_matches
 [read_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDataset.html#method.read_features
 [GeoDiscovery]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoDiscovery.html
 [GeometryColumnInfo]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeometryColumnInfo.html
@@ -340,8 +345,8 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [GeometryScan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometryScan.html
 [BuildRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.BuildRequest.html
 [GeoIndex]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoIndex.html
-[search_features_2d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.search_features
-[search_features_3d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.search_features
+[search_feature_refs_2d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.search_feature_refs
+[search_feature_refs_3d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.search_feature_refs
 [ConvertRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ConvertRequest.html
 [GeoArtifact]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifact.html
 [open_geo_index]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/fn.open_geo_index.html
@@ -350,15 +355,15 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [GeoArtifactDirectory]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactDirectory.html
 [into_directory]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoArtifactIndex.html#method.into_directory
 [from_directory]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoArtifactIndex.html#method.from_directory
-[GeoHit]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoHit.html
+[GeoMatch]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoMatch.html
 [GeoQuery2D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery2D.html
 [GeoQuery3D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery3D.html
 [GeoPayload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoPayload.html
 [IndexBuildOptions]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.IndexBuildOptions.html
 [from_scan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoIndex.html#method.from_scan
 [artifact_from_scan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifact.html#method.from_scan
-[nearest_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.nearest_features
-[raycast_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.raycast_features
+[nearest_feature_refs]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.nearest_feature_refs
+[raycast_feature_refs]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.raycast_feature_refs
 [IndexDimsRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.IndexDimsRequest.html
 [StoragePrecision]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.StoragePrecision.html
 [NullPolicy]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.NullPolicy.html

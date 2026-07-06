@@ -9,8 +9,8 @@
 //!   A  read-all       — materialize ALL bbox candidates (no exact step).
 //!   B  filter_features — exact-filter by RE-READING source geometry, then read
 //!                        survivors.
-//!   C  filter_hits     — exact-filter the geometry already in the artifact
-//!                        payload (`search_hits` → `filter_hits`), then read
+//!   C  filter_matches     — exact-filter the geometry already in the artifact
+//!                        payload (`search_matches` → `filter_matches`), then read
 //!                        survivors. No source geometry re-read.
 //!
 //! B's filter re-reads every candidate's geometry (≈ the cost of reading the
@@ -42,11 +42,11 @@ fn main() {
     println!("=== exact polygon filtering: full query time, A vs B vs C ===");
     println!(
         "N={N} points uniform over [-10,10]^2. A=read-all, B=filter_features (re-reads geometry), \
-         C=filter_hits (geometry from artifact payload). Lower is better.\n"
+         C=filter_matches (geometry from artifact payload). Lower is better.\n"
     );
     println!(
         "{:>4}  {:<6} {:>6} {:>8} {:>8} {:>10} {:>10} {:>10} {:>7}",
-        "f64", "query", "reject", "K", "M", "A read", "B feat", "C hits", "C/A"
+        "f64", "query", "reject", "K", "M", "A read", "B feat", "C exact", "C/A"
     );
     println!("{}", "-".repeat(82));
 
@@ -68,7 +68,7 @@ fn main() {
             // A: materialize ALL bbox candidates.
             let a_ms = best_ms(5, || {
                 let cands = index
-                    .search_features(GeoQuery2D::polygon(poly.clone()))
+                    .search_feature_refs(GeoQuery2D::polygon(poly.clone()))
                     .unwrap();
                 k = cands.len();
                 read_full(&data, cands)
@@ -77,7 +77,7 @@ fn main() {
             // B: exact-filter by re-reading source geometry, then read survivors.
             let b_ms = best_ms(5, || {
                 let cands = index
-                    .search_features(GeoQuery2D::polygon(poly.clone()))
+                    .search_feature_refs(GeoQuery2D::polygon(poly.clone()))
                     .unwrap();
                 let mut filter_source = open_geoparquet(data.clone()).unwrap();
                 let survivors = filter_source
@@ -91,7 +91,7 @@ fn main() {
 
             // C: exact-filter the geometry already in the payload, then read survivors.
             let c_ms = best_ms(5, || {
-                let survivors = filter_hits_refs(&index, &poly);
+                let survivors = filter_matches_refs(&index, &poly);
                 m = survivors.len();
                 read_full(&data, survivors)
             });
@@ -116,24 +116,24 @@ fn main() {
     phase_breakdown();
 }
 
-/// `search_hits` → `filter_hits`, returning surviving feature refs.
-fn filter_hits_refs<R: packed_spatial_index_geo::RangeReader>(
+/// `search_matches` → `filter_matches`, returning surviving feature refs.
+fn filter_matches_refs<R: packed_spatial_index_geo::RangeReader>(
     index: &GeoArtifactIndex2D<R>,
     poly: &Polygon<f64>,
 ) -> Vec<FeatureRef> {
-    let hits = index
-        .search_hits(GeoQuery2D::polygon(poly.clone()))
+    let matches = index
+        .search_matches(GeoQuery2D::polygon(poly.clone()))
         .unwrap();
     index
-        .filter_hits(
-            hits,
+        .filter_matches(
+            matches,
             GeoQuery2D::polygon(poly.clone()),
             SpatialPredicate::Intersects,
             NonPlanarExactPolicy::Reject,
         )
         .unwrap()
         .into_iter()
-        .map(|hit| hit.feature)
+        .map(|m| m.feature)
         .collect()
 }
 
@@ -144,7 +144,7 @@ fn read_full(data: &Bytes, features: Vec<FeatureRef>) -> usize {
         .read_features(FeatureReadRequest {
             properties: PropertyProjection::AllNonGeometry,
             geometry: GeometryReadMode::Wkb,
-            ..FeatureReadRequest::from_features(features)
+            ..FeatureReadRequest::from_feature_refs(features)
         })
         .unwrap()
         .batch
@@ -165,52 +165,54 @@ fn phase_breakdown() {
     let poly = band(-10.0, -10.0, 10.0, 10.0, 0.5);
 
     // Warm caches so the per-phase single-run timings below are comparable.
-    std::hint::black_box(filter_hits_refs(&index, &poly));
+    std::hint::black_box(filter_matches_refs(&index, &poly));
     std::hint::black_box(read_full(
         &data,
         index
-            .search_features(GeoQuery2D::polygon(poly.clone()))
+            .search_feature_refs(GeoQuery2D::polygon(poly.clone()))
             .unwrap(),
     ));
 
     let t = Instant::now();
-    let hits = index
-        .search_hits(GeoQuery2D::polygon(poly.clone()))
+    let matches = index
+        .search_matches(GeoQuery2D::polygon(poly.clone()))
         .unwrap();
-    let t_search_hits = ms(t);
-    let k = hits.len();
+    let t_search_matches = ms(t);
+    let k = matches.len();
 
     let t = Instant::now();
     let survivors: Vec<FeatureRef> = index
-        .filter_hits(
-            hits,
+        .filter_matches(
+            matches,
             GeoQuery2D::polygon(poly.clone()),
             SpatialPredicate::Intersects,
             NonPlanarExactPolicy::Reject,
         )
         .unwrap()
         .into_iter()
-        .map(|hit| hit.feature)
+        .map(|m| m.feature)
         .collect();
-    let t_filter_hits = ms(t);
+    let t_filter_matches = ms(t);
     let m = survivors.len();
 
     let t = Instant::now();
     read_full(&data, survivors);
     let t_read_m = ms(t);
 
-    let cands = index.search_features(GeoQuery2D::polygon(poly)).unwrap();
+    let cands = index
+        .search_feature_refs(GeoQuery2D::polygon(poly))
+        .unwrap();
     let t = Instant::now();
     read_full(&data, cands);
     let t_read_k = ms(t);
 
     println!("=== phase breakdown (f64 cols=40, query=band, K={k}, M={m}) ===");
-    println!("  search_hits (geom payload)  {t_search_hits:>8.2} ms");
-    println!("  filter_hits (no re-read)    {t_filter_hits:>8.2} ms");
+    println!("  search_matches (geom payload)  {t_search_matches:>8.2} ms");
+    println!("  filter_matches (no re-read)    {t_filter_matches:>8.2} ms");
     println!("  read survivors (M)          {t_read_m:>8.2} ms");
     println!("  read candidates (K)         {t_read_k:>8.2} ms");
     println!(
-        "\n  C trades a cheap geometry pass (search_hits + filter_hits) for reading M rows\n  \
+        "\n  C trades a cheap geometry pass (search_matches + filter_matches) for reading M rows\n  \
          instead of K. It wins once read(K) - read(M) exceeds that pass — see the matrix."
     );
 }

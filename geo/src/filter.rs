@@ -193,7 +193,7 @@ fn spherical_radius_matches(
 ///     vec![FeatureRef::row_number(42)],
 ///     Box2D::new(-10.0, 35.0, 20.0, 60.0),
 /// ))?;
-/// println!("{} exact hits", exact.len());
+/// println!("{} exact features", exact.len());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -225,8 +225,11 @@ impl FeatureFilterRequest {
         }
     }
 
-    /// Create an `intersects` request from artifact hits and a 2D query.
-    pub fn intersects_from_hits<Q: Into<GeoQuery2D>>(hits: Vec<crate::GeoHit>, query: Q) -> Self {
-        Self::intersects(hits.into_iter().map(|hit| hit.feature).collect(), query)
+    /// Create an `intersects` request from artifact matches and a 2D query.
+    pub fn intersects_from_matches<Q: Into<GeoQuery2D>>(
+        matches: Vec<crate::GeoMatch>,
+        query: Q,
+    ) -> Self {
+        Self::intersects(matches.into_iter().map(|m| m.feature).collect(), query)
     }
 }

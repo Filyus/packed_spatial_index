@@ -23,11 +23,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let query = Box2D::new(-1.0e9, -1.0e9, 1.0e9, 1.0e9);
-    let hits = index.search_hits(query)?;
-    let Some(hit) = hits.first() else {
+    let matches = index.search_matches(query)?;
+    let Some(m) = matches.first() else {
         panic!("sample fixture should match the broad query");
     };
-    let GeoPayload::FeatureJson(feature) = &hit.payload else {
+    let GeoPayload::FeatureJson(feature) = &m.payload else {
         panic!("expected GeoJSON Feature payload");
     };
 
@@ -36,8 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_or(0, serde_json::Map::len);
     println!(
         "row {}: {} with {property_count} projected properties",
-        hit.feature.row_number, feature["geometry"]["type"]
+        m.feature.row_number, feature["geometry"]["type"]
     );
-    assert_eq!(feature["feature_ref"]["row_number"], hit.feature.row_number);
+    assert_eq!(feature["feature_ref"]["row_number"], m.feature.row_number);
     Ok(())
 }

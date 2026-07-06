@@ -375,8 +375,8 @@ impl Default for ConvertRequest {
 /// let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 /// match dataset.build(BuildRequest::default())? {
 ///     GeoIndex::D2(index) => {
-///         let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
-///         println!("{} candidate features", hits.len());
+///         let refs = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+///         println!("{} candidate feature refs", refs.len());
 ///     }
 ///     GeoIndex::D3(_) => println!("3D index"),
 ///     GeoIndex::D2F32(_) | GeoIndex::D3F32(_) => {
@@ -498,7 +498,7 @@ impl GeoIndex {
 pub struct GeoIndex2D {
     /// Core index.
     pub index: Index2D,
-    /// Feature reference per compact item id.
+    /// Feature reference per index entry id.
     pub features: Vec<FeatureRef>,
     /// Build metadata.
     pub metadata: GeoIndexMetadata,
@@ -506,16 +506,16 @@ pub struct GeoIndex2D {
 
 impl GeoIndex2D {
     /// Search and return source feature references.
-    pub fn search_features<Q: Into<GeoQuery2D>>(
+    pub fn search_feature_refs<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
         let boxes = query.into().candidate_boxes_2d()?;
         let mut features = Vec::new();
-        // A single core search yields each item id at most once, so duplicates
+        // A single core search yields each entry id at most once, so duplicates
         // only arise across multiple candidate boxes (e.g. antimeridian splits).
         // Fast-path the common single-box query with no dedup bookkeeping; for
-        // multi-box queries dedup by item id in O(1) via a set rather than the
+        // multi-box queries dedup by entry id in O(1) via a set rather than the
         // former O(K^2) `Vec::contains` scan.
         if boxes.len() == 1 {
             for id in self.index.search(boxes[0]) {
@@ -539,9 +539,9 @@ impl GeoIndex2D {
     }
 
     /// Up to `max_results` nearest features to `point`, planar Euclidean
-    /// distance, nearest first, paired with each hit's squared distance.
+    /// distance, nearest first, paired with each result's squared distance.
     ///
-    /// For lon/lat data, prefer [`nearest_features_haversine`][Self::nearest_features_haversine] —
+    /// For lon/lat data, prefer [`nearest_feature_refs_haversine`][Self::nearest_feature_refs_haversine] —
     /// Euclidean distance on raw longitude/latitude degrees is not a
     /// geographic distance (a degree of longitude shrinks toward the poles).
     ///
@@ -555,12 +555,16 @@ impl GeoIndex2D {
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected a 2D index");
     /// };
-    /// for (feature, dist_sq) in index.nearest_features(Point2D::new(13.4, 52.5), 3) {
+    /// for (feature, dist_sq) in index.nearest_feature_refs(Point2D::new(13.4, 52.5), 3) {
     ///     println!("row {}: squared distance {dist_sq}", feature.row_number);
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn nearest_features(&self, point: Point2D, max_results: usize) -> Vec<(FeatureRef, f64)> {
+    pub fn nearest_feature_refs(
+        &self,
+        point: Point2D,
+        max_results: usize,
+    ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
             let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
         })
@@ -568,10 +572,10 @@ impl GeoIndex2D {
 
     /// Up to `max_results` nearest features to a lon/lat query point by
     /// great-circle (haversine) distance in metres, nearest first, paired
-    /// with each hit's distance in metres.
+    /// with each result's distance in metres.
     ///
     /// Use for geographic data (`x` = longitude, `y` = latitude in degrees);
-    /// see [`nearest_features`][Self::nearest_features] for planar Euclidean
+    /// see [`nearest_feature_refs`][Self::nearest_feature_refs] for planar Euclidean
     /// distance instead.
     ///
     /// # Example
@@ -584,12 +588,12 @@ impl GeoIndex2D {
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected a 2D index");
     /// };
-    /// for (feature, metres) in index.nearest_features_haversine(13.0, 52.4, 1, f64::INFINITY) {
+    /// for (feature, metres) in index.nearest_feature_refs_haversine(13.0, 52.4, 1, f64::INFINITY) {
     ///     println!("row {}: {metres:.0}m away", feature.row_number);
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn nearest_features_haversine(
+    pub fn nearest_feature_refs_haversine(
         &self,
         lon: f64,
         lat: f64,
@@ -607,7 +611,7 @@ impl GeoIndex2D {
 
     /// Every candidate feature this ray segment's box overlaps, in traversal
     /// order (not sorted by hit distance) — for the ordered closest hit, use
-    /// [`raycast_closest_feature`](Self::raycast_closest_feature).
+    /// [`raycast_closest_feature_ref`](Self::raycast_closest_feature_ref).
     ///
     /// This is a broad-phase result: it returns every feature whose
     /// *bounding box* the ray touches, not features whose true geometry the
@@ -626,12 +630,12 @@ impl GeoIndex2D {
     ///     panic!("expected a 2D index");
     /// };
     /// let ray = Ray2D::new(Point2D::new(0.0, 0.0), 1.0, 0.0, 100.0);
-    /// for feature in index.raycast_features(ray) {
+    /// for feature in index.raycast_feature_refs(ray) {
     ///     println!("row {}", feature.row_number);
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn raycast_features(&self, ray: Ray2D) -> Vec<FeatureRef> {
+    pub fn raycast_feature_refs(&self, ray: Ray2D) -> Vec<FeatureRef> {
         self.index
             .raycast(ray)
             .into_iter()
@@ -654,12 +658,12 @@ impl GeoIndex2D {
     ///     panic!("expected a 2D index");
     /// };
     /// let ray = Ray2D::new(Point2D::new(0.0, 0.0), 1.0, 0.0, 100.0);
-    /// if let Some((feature, t)) = index.raycast_closest_feature(ray) {
+    /// if let Some((feature, t)) = index.raycast_closest_feature_ref(ray) {
     ///     println!("row {} at t={t}", feature.row_number);
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn raycast_closest_feature(&self, ray: Ray2D) -> Option<(FeatureRef, f64)> {
+    pub fn raycast_closest_feature_ref(&self, ray: Ray2D) -> Option<(FeatureRef, f64)> {
         let (id, t) = self.index.raycast_closest(ray)?;
         self.features.get(id).cloned().map(|f| (f, t))
     }
@@ -699,14 +703,14 @@ impl GeoIndex2D {
 /// else {
 ///     panic!("expected an f32 2D index");
 /// };
-/// let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
-/// println!("{} candidate features", hits.len());
+/// let refs = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+/// println!("{} candidate feature refs", refs.len());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct GeoIndex2DF32 {
     /// Core index.
     pub index: Index2DF32,
-    /// Feature reference per compact item id.
+    /// Feature reference per index entry id.
     pub features: Vec<FeatureRef>,
     /// Build metadata.
     pub metadata: GeoIndexMetadata,
@@ -717,7 +721,7 @@ impl GeoIndex2DF32 {
     ///
     /// Only [`GeoQuery2D::Box2D`] is supported; any other query variant
     /// returns [`GeoError::UnsupportedArtifact`].
-    pub fn search_features<Q: Into<GeoQuery2D>>(
+    pub fn search_feature_refs<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
@@ -738,14 +742,18 @@ impl GeoIndex2DF32 {
     }
 
     /// Up to `max_results` nearest features to `point`, planar Euclidean
-    /// distance, nearest first, paired with each hit's squared distance.
+    /// distance, nearest first, paired with each result's squared distance.
     ///
-    /// Unlike [`search_features`](Self::search_features), this is not
+    /// Unlike [`search_feature_refs`](Self::search_feature_refs), this is not
     /// restricted to a query shape — the underlying core kNN search works on
     /// `f32`-precision storage the same way it does on `f64`. There is no
     /// haversine variant here: the core custom-metric kNN entry point
     /// (`neighbors_metric`) is not implemented for `f32`-precision indexes.
-    pub fn nearest_features(&self, point: Point2D, max_results: usize) -> Vec<(FeatureRef, f64)> {
+    pub fn nearest_feature_refs(
+        &self,
+        point: Point2D,
+        max_results: usize,
+    ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
             let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
         })
@@ -753,12 +761,12 @@ impl GeoIndex2DF32 {
 
     /// Every candidate feature this ray segment's (rounded) box overlaps, in
     /// traversal order. Broad-phase only — see
-    /// [`GeoIndex2D::raycast_features`] for the same caveat.
+    /// [`GeoIndex2D::raycast_feature_refs`] for the same caveat.
     ///
-    /// There is no `raycast_closest_feature` on this type: the core
+    /// There is no `raycast_closest_feature_ref` on this type: the core
     /// `f32`-precision index does not implement closest-hit raycast, only
     /// all-hits.
-    pub fn raycast_features(&self, ray: Ray2D) -> Vec<FeatureRef> {
+    pub fn raycast_feature_refs(&self, ray: Ray2D) -> Vec<FeatureRef> {
         self.index
             .raycast(ray)
             .into_iter()
@@ -776,7 +784,7 @@ impl GeoIndex2DF32 {
 pub struct GeoIndex3D {
     /// Core index.
     pub index: Index3D,
-    /// Feature reference per compact item id.
+    /// Feature reference per index entry id.
     pub features: Vec<FeatureRef>,
     /// Build metadata.
     pub metadata: GeoIndexMetadata,
@@ -799,11 +807,11 @@ impl GeoIndex3D {
     /// else {
     ///     panic!("expected a 3D index");
     /// };
-    /// let hits = index.search_features(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))?;
-    /// println!("{} candidate features", hits.len());
+    /// let refs = index.search_feature_refs(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))?;
+    /// println!("{} candidate feature refs", refs.len());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn search_features<Q: Into<GeoQuery3D>>(
+    pub fn search_feature_refs<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
@@ -818,7 +826,7 @@ impl GeoIndex3D {
     }
 
     /// Up to `max_results` nearest features to `point`, planar Euclidean
-    /// distance, nearest first, paired with each hit's squared distance.
+    /// distance, nearest first, paired with each result's squared distance.
     ///
     /// There is no haversine variant for 3D data — core has no built-in
     /// geographic distance metric that also accounts for a third (elevation)
@@ -838,12 +846,16 @@ impl GeoIndex3D {
     /// else {
     ///     panic!("expected a 3D index");
     /// };
-    /// for (feature, dist_sq) in index.nearest_features(Point3D::new(13.4, 52.5, 34.0), 3) {
+    /// for (feature, dist_sq) in index.nearest_feature_refs(Point3D::new(13.4, 52.5, 34.0), 3) {
     ///     println!("row {}: squared distance {dist_sq}", feature.row_number);
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn nearest_features(&self, point: Point3D, max_results: usize) -> Vec<(FeatureRef, f64)> {
+    pub fn nearest_feature_refs(
+        &self,
+        point: Point3D,
+        max_results: usize,
+    ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
             let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
         })
@@ -851,7 +863,7 @@ impl GeoIndex3D {
 
     /// Every candidate feature this ray segment's box overlaps, in traversal
     /// order (not sorted by hit distance) — for the ordered closest hit, use
-    /// [`raycast_closest_feature`](Self::raycast_closest_feature).
+    /// [`raycast_closest_feature_ref`](Self::raycast_closest_feature_ref).
     ///
     /// This is a broad-phase result: it returns every feature whose
     /// *bounding box* the ray touches, not features whose true geometry the
@@ -877,12 +889,12 @@ impl GeoIndex3D {
     ///     panic!("expected a 3D index");
     /// };
     /// let ray = Ray3D::new(Point3D::new(0.0, 0.0, 100.0), 0.0, 0.0, -1.0, 200.0);
-    /// for feature in index.raycast_features(ray) {
+    /// for feature in index.raycast_feature_refs(ray) {
     ///     println!("row {}", feature.row_number);
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn raycast_features(&self, ray: Ray3D) -> Vec<FeatureRef> {
+    pub fn raycast_feature_refs(&self, ray: Ray3D) -> Vec<FeatureRef> {
         self.index
             .raycast(ray)
             .into_iter()
@@ -893,7 +905,7 @@ impl GeoIndex3D {
     /// The closest feature this ray segment's box hits, paired with the
     /// entry parameter `t` (in units of the ray's direction length), or
     /// `None` if the ray misses every feature's box.
-    pub fn raycast_closest_feature(&self, ray: Ray3D) -> Option<(FeatureRef, f64)> {
+    pub fn raycast_closest_feature_ref(&self, ray: Ray3D) -> Option<(FeatureRef, f64)> {
         let (id, t) = self.index.raycast_closest(ray)?;
         self.features.get(id).cloned().map(|f| (f, t))
     }
@@ -933,14 +945,14 @@ impl GeoIndex3D {
 /// else {
 ///     panic!("expected an f32 3D index");
 /// };
-/// let hits = index.search_features(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))?;
-/// println!("{} candidate features", hits.len());
+/// let refs = index.search_feature_refs(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))?;
+/// println!("{} candidate feature refs", refs.len());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct GeoIndex3DF32 {
     /// Core index.
     pub index: Index3DF32,
-    /// Feature reference per compact item id.
+    /// Feature reference per index entry id.
     pub features: Vec<FeatureRef>,
     /// Build metadata.
     pub metadata: GeoIndexMetadata,
@@ -951,7 +963,7 @@ impl GeoIndex3DF32 {
     ///
     /// Only [`GeoQuery3D::Box3D`] is supported; a [`GeoQuery3D::Frustum3D`]
     /// query returns [`GeoError::UnsupportedArtifact`].
-    pub fn search_features<Q: Into<GeoQuery3D>>(
+    pub fn search_feature_refs<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
@@ -972,13 +984,17 @@ impl GeoIndex3DF32 {
     }
 
     /// Up to `max_results` nearest features to `point`, planar Euclidean
-    /// distance, nearest first, paired with each hit's squared distance.
+    /// distance, nearest first, paired with each result's squared distance.
     ///
-    /// Unlike [`search_features`](Self::search_features), this is not
+    /// Unlike [`search_feature_refs`](Self::search_feature_refs), this is not
     /// restricted to a query shape. There is no haversine variant: the core
     /// custom-metric kNN entry point is not implemented for `f32`-precision
     /// indexes.
-    pub fn nearest_features(&self, point: Point3D, max_results: usize) -> Vec<(FeatureRef, f64)> {
+    pub fn nearest_feature_refs(
+        &self,
+        point: Point3D,
+        max_results: usize,
+    ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
             let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
         })
@@ -986,12 +1002,12 @@ impl GeoIndex3DF32 {
 
     /// Every candidate feature this ray segment's (rounded) box overlaps, in
     /// traversal order. Broad-phase only — see
-    /// [`GeoIndex3D::raycast_features`] for the same caveat.
+    /// [`GeoIndex3D::raycast_feature_refs`] for the same caveat.
     ///
-    /// There is no `raycast_closest_feature` on this type: the core
+    /// There is no `raycast_closest_feature_ref` on this type: the core
     /// `f32`-precision index does not implement closest-hit raycast, only
     /// all-hits.
-    pub fn raycast_features(&self, ray: Ray3D) -> Vec<FeatureRef> {
+    pub fn raycast_feature_refs(&self, ray: Ray3D) -> Vec<FeatureRef> {
         self.index
             .raycast(ray)
             .into_iter()
@@ -1191,7 +1207,7 @@ mod tests {
             panic!("expected GeoIndex::D2F32");
         };
         let hits = index
-            .search_features(Box2D::new(-1.0, -1.0, 2.0, 2.0))
+            .search_feature_refs(Box2D::new(-1.0, -1.0, 2.0, 2.0))
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].row_number, 0);
@@ -1208,7 +1224,7 @@ mod tests {
             panic!("expected GeoIndex::D3F32");
         };
         let hits = index
-            .search_features(Box3D::new(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0))
+            .search_feature_refs(Box3D::new(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0))
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].row_number, 0);
@@ -1233,7 +1249,7 @@ mod tests {
             ]),
             vec![],
         ));
-        let err = index.search_features(polygon).unwrap_err();
+        let err = index.search_feature_refs(polygon).unwrap_err();
         assert!(matches!(err, GeoError::UnsupportedArtifact(_)));
     }
 
@@ -1277,7 +1293,7 @@ mod tests {
 
         let bbox = frustum.bounding_box().expect("non-degenerate frustum");
         let mut bbox_rows: Vec<u64> = index
-            .search_features(bbox)
+            .search_feature_refs(bbox)
             .unwrap()
             .iter()
             .map(|f| f.row_number)
@@ -1290,7 +1306,7 @@ mod tests {
         );
 
         let mut frustum_rows: Vec<u64> = index
-            .search_features(frustum)
+            .search_feature_refs(frustum)
             .unwrap()
             .iter()
             .map(|f| f.row_number)
@@ -1322,18 +1338,18 @@ mod tests {
             [0.0, 0.0, 1.0, 1.0],
             [0.0, 0.0, -1.0, 1.0],
         ]);
-        let err = index.search_features(frustum).unwrap_err();
+        let err = index.search_feature_refs(frustum).unwrap_err();
         assert!(matches!(err, GeoError::UnsupportedArtifact(_)));
     }
 
     #[test]
-    fn nearest_features_orders_by_planar_distance() {
+    fn nearest_feature_refs_orders_by_planar_distance() {
         let GeoIndex::D2(index) =
             GeoIndex::from_scan(&scan_2d(), &IndexBuildOptions::default()).unwrap()
         else {
             panic!("expected GeoIndex::D2");
         };
-        let hits = index.nearest_features(Point2D::new(0.0, 0.0), 2);
+        let hits = index.nearest_feature_refs(Point2D::new(0.0, 0.0), 2);
         let rows: Vec<u64> = hits.iter().map(|(f, _)| f.row_number).collect();
         assert_eq!(rows, vec![0, 1], "nearest boxes first, farthest last");
         // Distances are nondecreasing.
@@ -1341,17 +1357,21 @@ mod tests {
     }
 
     #[test]
-    fn nearest_features_max_results_zero_is_empty() {
+    fn nearest_feature_refs_max_results_zero_is_empty() {
         let GeoIndex::D2(index) =
             GeoIndex::from_scan(&scan_2d(), &IndexBuildOptions::default()).unwrap()
         else {
             panic!("expected GeoIndex::D2");
         };
-        assert!(index.nearest_features(Point2D::new(0.0, 0.0), 0).is_empty());
+        assert!(
+            index
+                .nearest_feature_refs(Point2D::new(0.0, 0.0), 0)
+                .is_empty()
+        );
     }
 
     #[test]
-    fn nearest_features_haversine_orders_by_great_circle_distance() {
+    fn nearest_feature_refs_haversine_orders_by_great_circle_distance() {
         // Berlin and Paris, matching core's own neighbors_metric doc example.
         let scan = GeometryScan::D2(GeometryScan2D {
             boxes: vec![
@@ -1371,7 +1391,7 @@ mod tests {
             panic!("expected GeoIndex::D2");
         };
 
-        let hits = index.nearest_features_haversine(13.0, 52.4, 1, f64::INFINITY);
+        let hits = index.nearest_feature_refs_haversine(13.0, 52.4, 1, f64::INFINITY);
         assert_eq!(hits.len(), 1);
         assert_eq!(
             hits[0].0.row_number, 0,
@@ -1381,13 +1401,13 @@ mod tests {
         // A tight cutoff excludes even the nearest city.
         assert!(
             index
-                .nearest_features_haversine(13.0, 52.4, 1, 1.0)
+                .nearest_feature_refs_haversine(13.0, 52.4, 1, 1.0)
                 .is_empty()
         );
     }
 
     #[test]
-    fn f32_nearest_features_matches_f64_ordering() {
+    fn f32_nearest_feature_refs_matches_f64_ordering() {
         let opts = IndexBuildOptions {
             precision: StoragePrecision::F32,
             ..IndexBuildOptions::default()
@@ -1395,19 +1415,19 @@ mod tests {
         let GeoIndex::D2F32(index) = GeoIndex::from_scan(&scan_2d(), &opts).unwrap() else {
             panic!("expected GeoIndex::D2F32");
         };
-        let hits = index.nearest_features(Point2D::new(0.0, 0.0), 2);
+        let hits = index.nearest_feature_refs(Point2D::new(0.0, 0.0), 2);
         let rows: Vec<u64> = hits.iter().map(|(f, _)| f.row_number).collect();
         assert_eq!(rows, vec![0, 1]);
 
         let GeoIndex::D3F32(index) = GeoIndex::from_scan(&scan_3d(), &opts).unwrap() else {
             panic!("expected GeoIndex::D3F32");
         };
-        let hits = index.nearest_features(Point3D::new(0.0, 0.0, 0.0), 1);
+        let hits = index.nearest_feature_refs(Point3D::new(0.0, 0.0, 0.0), 1);
         assert_eq!(hits[0].0.row_number, 0);
     }
 
     #[test]
-    fn raycast_features_and_closest_hit_on_f64_2d_index() {
+    fn raycast_feature_refs_and_closest_hit_on_f64_2d_index() {
         let GeoIndex::D2(index) =
             GeoIndex::from_scan(&scan_2d(), &IndexBuildOptions::default()).unwrap()
         else {
@@ -1416,25 +1436,25 @@ mod tests {
         // Diagonal ray from (-1,-1) crosses all three boxes at t=1,6,11.
         let ray = Ray2D::new(Point2D::new(-1.0, -1.0), 1.0, 1.0, 20.0);
         let mut rows: Vec<u64> = index
-            .raycast_features(ray)
+            .raycast_feature_refs(ray)
             .iter()
             .map(|f| f.row_number)
             .collect();
         rows.sort_unstable();
         assert_eq!(rows, vec![0, 1, 2], "diagonal ray crosses all three boxes");
 
-        let (closest, t) = index.raycast_closest_feature(ray).unwrap();
+        let (closest, t) = index.raycast_closest_feature_ref(ray).unwrap();
         assert_eq!(closest.row_number, 0, "nearest box along the ray");
         assert!((t - 1.0).abs() < 1e-9);
 
         // A short ray that stops before reaching any box.
         let short_ray = Ray2D::new(Point2D::new(-1.0, -1.0), 1.0, 1.0, 0.5);
-        assert!(index.raycast_features(short_ray).is_empty());
-        assert!(index.raycast_closest_feature(short_ray).is_none());
+        assert!(index.raycast_feature_refs(short_ray).is_empty());
+        assert!(index.raycast_closest_feature_ref(short_ray).is_none());
     }
 
     #[test]
-    fn raycast_features_and_closest_hit_on_f64_3d_index() {
+    fn raycast_feature_refs_and_closest_hit_on_f64_3d_index() {
         let GeoIndex::D3(index) =
             GeoIndex::from_scan(&scan_3d(), &IndexBuildOptions::default()).unwrap()
         else {
@@ -1442,20 +1462,20 @@ mod tests {
         };
         let ray = Ray3D::new(Point3D::new(-1.0, -1.0, -1.0), 1.0, 1.0, 1.0, 20.0);
         let mut rows: Vec<u64> = index
-            .raycast_features(ray)
+            .raycast_feature_refs(ray)
             .iter()
             .map(|f| f.row_number)
             .collect();
         rows.sort_unstable();
         assert_eq!(rows, vec![0, 1]);
 
-        let (closest, t) = index.raycast_closest_feature(ray).unwrap();
+        let (closest, t) = index.raycast_closest_feature_ref(ray).unwrap();
         assert_eq!(closest.row_number, 0);
         assert!((t - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn f32_raycast_features_matches_f64_2d() {
+    fn f32_raycast_feature_refs_matches_f64_2d() {
         let opts = IndexBuildOptions {
             precision: StoragePrecision::F32,
             ..IndexBuildOptions::default()
@@ -1465,7 +1485,7 @@ mod tests {
         };
         let ray = Ray2D::new(Point2D::new(-1.0, -1.0), 1.0, 1.0, 20.0);
         let mut rows: Vec<u64> = index
-            .raycast_features(ray)
+            .raycast_feature_refs(ray)
             .iter()
             .map(|f| f.row_number)
             .collect();

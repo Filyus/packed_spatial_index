@@ -59,7 +59,7 @@ usage:
       [--treat-nonplanar-as-planar]
       [--geometry none|wkb]
       [--properties none|all|include:a,b|exclude:a,b]
-      [--order source|hit]
+      [--order source|match]
       [--duplicates dedup|parts]
       [--json|--ndjson]
       [--allow-source-mismatch]
@@ -584,7 +584,7 @@ fn query_cmd_2d<R: RangeReader>(
     }
 
     let manifest = index.manifest().clone();
-    let features = index.search_features(query.clone())?;
+    let features = index.search_feature_refs(query.clone())?;
     if !exact {
         return Ok(features);
     }
@@ -609,10 +609,10 @@ fn query_cmd_2d<R: RangeReader>(
         })?);
     }
 
-    let hits = index.search_hits(query.clone())?;
+    let matches = index.search_matches(query.clone())?;
     Ok(index
-        .filter_hits(
-            hits,
+        .filter_matches(
+            matches,
             query,
             predicate,
             if treat_nonplanar {
@@ -622,7 +622,7 @@ fn query_cmd_2d<R: RangeReader>(
             },
         )?
         .into_iter()
-        .map(|hit| hit.feature)
+        .map(|m| m.feature)
         .collect())
 }
 
@@ -641,7 +641,7 @@ fn query_cmd_3d<R: RangeReader>(
             "--exact is not supported for a 3D index: exact source-geometry filtering is \
              implemented only for 2D (the planar predicate stack is 2D-only). A 3D query returns \
              a bounding-box (envelope) candidate set, which for non-point geometry -- or any f32 \
-             index -- is a superset, not the exact hit set"
+             index -- is a superset, not the exact match set"
                 .into(),
         );
     }
@@ -664,7 +664,7 @@ fn query_cmd_3d<R: RangeReader>(
         return Err("--bbox is required for a 3D index (--radius is 2D-only)".into());
     };
     let bbox3d = parse_bbox3d(&value)?;
-    Ok(index.search_features(bbox3d)?)
+    Ok(index.search_feature_refs(bbox3d)?)
 }
 
 /// Shared tail: read projected rows for `features` back from `source` and print them.
@@ -856,7 +856,7 @@ fn parse_geometry_read(value: &str) -> Result<GeometryReadMode, Box<dyn std::err
 fn parse_feature_order(value: &str) -> Result<FeatureReadOrder, Box<dyn std::error::Error>> {
     match value {
         "source" => Ok(FeatureReadOrder::SourceOrder),
-        "hit" => Ok(FeatureReadOrder::RequestOrder),
+        "match" | "hit" => Ok(FeatureReadOrder::RequestOrder),
         _ => Err(format!("invalid --order `{value}`").into()),
     }
 }

@@ -89,14 +89,14 @@ fn main() {
     let GeoArtifactIndex::D2(index_reader) = open_geo_index(reader).unwrap() else {
         panic!("expected a 2D artifact");
     };
-    let hits = index_reader
-        .search_hits(GeoQuery2D::polygon(donut()))
+    let matches = index_reader
+        .search_matches(GeoQuery2D::polygon(donut()))
         .unwrap();
 
     let read = counters.bytes.get();
     println!(
-        "    polygon query → {} hits in {} range reads, {} bytes read = {:.2}% of the {}-byte file",
-        hits.len(),
+        "    polygon query → {} matches in {} range reads, {} bytes read = {:.2}% of the {}-byte file",
+        matches.len(),
         counters.reads.get(),
         read,
         100.0 * read as f64 / embedded.len() as f64,

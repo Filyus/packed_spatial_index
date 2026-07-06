@@ -57,16 +57,16 @@ let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else 
     panic!("expected a 2D artifact");
 };
 
-for hit in index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
-    if let GeoPayload::RowWkb(wkb) = hit.payload {
-        println!("row {}: {} WKB bytes", hit.feature.row_number, wkb.len());
+for m in index.search_matches(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    if let GeoPayload::RowWkb(wkb) = m.payload {
+        println!("row {}: {} WKB bytes", m.feature.row_number, wkb.len());
     }
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 `ConvertRequest { precision: StoragePrecision::F32, .. }` makes a roughly
-half-size file (queries become a conservative superset; re-check exact hits
+half-size file (queries become a conservative superset; re-check exact matches
 against the payload geometry). `ConvertRequest` skips null or empty geometries
 by default; `BuildRequest` errors by default.
 
@@ -105,8 +105,8 @@ let GeoArtifactIndex::D2(index) =
 else {
     panic!("expected a 2D artifact");
 };
-let hits = index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
-println!("{} hits", hits.len());
+let matches = index.search_matches(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+println!("{} matches", matches.len());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -214,7 +214,7 @@ let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else 
     panic!("expected a 2D artifact");
 };
 let manifest = index.manifest().clone();
-let hits = index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+let matches = index.search_matches(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 
 let selector = packed_spatial_index_geo::GeometrySelector::Name(
     manifest.selected_column,
@@ -225,7 +225,7 @@ let mut filter_source = open_geoparquet(File::open("cities.parquet")?)?;
 let filtered = filter_source.filter_features(FeatureFilterRequest {
     selector: selector.clone(),
     expected_source_fingerprint: expected_source_fingerprint.clone(),
-    ..FeatureFilterRequest::intersects_from_hits(hits, bbox)
+    ..FeatureFilterRequest::intersects_from_matches(matches, bbox)
 })?;
 
 let mut row_source = open_geoparquet(File::open("cities.parquet")?)?;
@@ -234,7 +234,7 @@ let rows = row_source.read_features(FeatureReadRequest {
     expected_source_fingerprint,
     properties: PropertyProjection::Include(vec!["name".to_string()]),
     geometry: GeometryReadMode::Wkb,
-    ..FeatureReadRequest::from_features(filtered)
+    ..FeatureReadRequest::from_feature_refs(filtered)
 })?;
 
 println!("{} rows", rows.batch.num_rows());
@@ -242,7 +242,7 @@ println!("{} rows", rows.batch.num_rows());
 ```
 
 `filter_features` applies exact planar predicates to the source geometries, so
-the final read-back step can work with true hits instead of bbox candidates.
+the final read-back step can work with true matches instead of bbox candidates.
 It reads geometry WKB internally; open a fresh dataset session for
 `read_features` after filtering.
 
@@ -258,8 +258,8 @@ removes them:
 
 - **Filter** when you need the exact shape; without it the result is the bbox
   superset (everything in the bounding box).
-- **Use `filter_hits`, not `filter_features`, for speed.**
-  `GeoArtifactIndex2D::filter_hits` tests the geometry that `search_hits`
+- **Use `filter_matches`, not `filter_features`, for speed.**
+  `GeoArtifactIndex2D::filter_matches` tests the geometry that `search_matches`
   already fetched, so it adds no source re-read. Measured (~100k points,
   `examples/end_to_end_box_vs_polygon.rs`) it beats reading all candidates
   above ~60% rejection (93% × 40 columns ≈ 1.3×). `filter_features` re-reads
@@ -269,7 +269,7 @@ removes them:
   the geometry) or rejection is low (below ~50%, where reading all candidates
   is faster anyway).
 
-If candidate filtering is enough, skip the exact step and read the hit refs
+If candidate filtering is enough, skip the exact step and read the matched refs
 directly:
 
 ```rust
@@ -283,7 +283,7 @@ directly:
 #     panic!("expected a 2D artifact");
 # };
 # let manifest = index.manifest().clone();
-# let hits = index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+# let matches = index.search_matches(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 # let mut source = open_geoparquet(File::open("cities.parquet")?)?;
 let rows = source.read_features(FeatureReadRequest {
     selector: packed_spatial_index_geo::GeometrySelector::Name(
@@ -292,7 +292,7 @@ let rows = source.read_features(FeatureReadRequest {
     expected_source_fingerprint: Some(manifest.source_fingerprint),
     properties: PropertyProjection::Include(vec!["name".to_string()]),
     geometry: GeometryReadMode::Wkb,
-    ..FeatureReadRequest::from_hits(hits)
+    ..FeatureReadRequest::from_matches(matches)
 })?;
 
 println!("{} rows", rows.batch.num_rows());
@@ -335,17 +335,17 @@ let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else 
 let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(
     -73.9857, 40.7484, 500.0,
 );
-let hits = index.search_hits(query.clone())?;
+let matches = index.search_matches(query.clone())?;
 
 let mut filter_source = open_geoparquet(File::open("places.parquet")?)?;
 let exact = filter_source.filter_features(
-    FeatureFilterRequest::intersects_from_hits(hits, query),
+    FeatureFilterRequest::intersects_from_matches(matches, query),
 )?;
 
 let mut read_source = open_geoparquet(File::open("places.parquet")?)?;
 let rows = read_source.read_features(FeatureReadRequest {
     properties: PropertyProjection::Include(vec!["name".to_string()]),
-    ..FeatureReadRequest::from_features(exact)
+    ..FeatureReadRequest::from_feature_refs(exact)
 })?;
 
 println!("{} rows", rows.batch.num_rows());
@@ -384,7 +384,7 @@ source-geometry filtering is implemented only for 2D (the planar predicate
 stack is 2D-only), so `--exact`/`--predicate` cannot narrow a 3D result. For
 non-point 3D geometry — or any `f32` index, whose envelopes are rounded
 outward — that candidate set is a superset, so do your own narrow-phase test
-on the returned features if you need exact hits.
+on the returned features if you need exact matches.
 
 ## 3D frustum candidate queries
 
@@ -416,7 +416,7 @@ let view_projection = [
     [0.0, 0.0, 0.0, 1.0],
 ];
 let frustum = Frustum3D::from_view_projection(view_projection, ClipSpaceZ::ZeroToOne);
-let candidates = index.search_features(GeoQuery3D::frustum3d(frustum))?;
+let candidates = index.search_feature_refs(GeoQuery3D::frustum3d(frustum))?;
 # let _ = candidates;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -428,7 +428,7 @@ frustum queries in this crate. Test the returned candidates yourself, the
 same pattern `packed_spatial_index`'s own raycast establishes (see its
 `examples/raycast_mesh.rs`).
 
-`GeoArtifactIndex3D::search_items`/`search_hits`/`search_features` and their
+`GeoArtifactIndex3D::search_entry_ids`/`search_matches`/`search_feature_refs` and their
 async counterparts accept the same query and prune subtrees outside the frustum
 during the streamed descent, for both `f64`- and `f32`-precision artifacts. An
 `f32`-precision *in-memory* index (`GeoIndex3DF32`, see [Half-size in-memory index
@@ -449,7 +449,7 @@ let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     panic!("expected a 2D index");
 };
-for (feature, dist_sq) in index.nearest_features(Point2D::new(13.4, 52.5), 5) {
+for (feature, dist_sq) in index.nearest_feature_refs(Point2D::new(13.4, 52.5), 5) {
     println!("row {}: squared distance {dist_sq}", feature.row_number);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -458,12 +458,12 @@ for (feature, dist_sq) in index.nearest_features(Point2D::new(13.4, 52.5), 5) {
 Two distance choices, matching this crate's existing planar/geographic split
 (`GeoQuery2D::Box2D` vs. `GeoQuery2D::SphericalRadius`):
 
-- **`nearest_features`** — planar Euclidean distance on the stored
+- **`nearest_feature_refs`** — planar Euclidean distance on the stored
   coordinates. Correct for projected/local data; wrong for lon/lat, since a
   degree of longitude shrinks toward the poles.
-- **`nearest_features_haversine`** (2D only) — great-circle distance in
+- **`nearest_feature_refs_haversine`** (2D only) — great-circle distance in
   metres for lon/lat data. Takes a `max_distance_metres` cutoff
-  (`f64::INFINITY` for unbounded); use it, not `nearest_features`, whenever
+  (`f64::INFINITY` for unbounded); use it, not `nearest_feature_refs`, whenever
   `x`/`y` are longitude/latitude degrees.
 
 kNN is in-memory-accelerator only: it has no streaming/artifact-reader
@@ -493,17 +493,17 @@ else {
 };
 
 let ray = Ray3D::new(Point3D::new(0.0, 0.0, 100.0), 0.0, 0.0, -1.0, 200.0);
-if let Some((feature, t)) = index.raycast_closest_feature(ray) {
+if let Some((feature, t)) = index.raycast_closest_feature_ref(ray) {
     println!("closest hit: row {} at t={t}", feature.row_number);
 }
-for feature in index.raycast_features(ray) {
+for feature in index.raycast_feature_refs(ray) {
     println!("candidate: row {}", feature.row_number);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`raycast_features` returns every candidate in traversal order (not sorted by
-distance); `raycast_closest_feature` returns the nearest one with its entry
+`raycast_feature_refs` returns every candidate in traversal order (not sorted by
+distance); `raycast_closest_feature_ref` returns the nearest one with its entry
 parameter `t`. Both are broad-phase: they report a hit when the ray touches a
 feature's *bounding box*, not its true geometry. Test the returned candidates
 yourself — core's own `Ray3D::closest_triangle` if your payload is triangle
@@ -511,8 +511,8 @@ data, or your own intersection test otherwise (see
 `packed_spatial_index`'s `examples/raycast_mesh.rs` for the pattern this
 mirrors).
 
-The `f32`-precision accelerator types have `raycast_features` but not
-`raycast_closest_feature`: core's closest-hit raycast isn't implemented for
+The `f32`-precision accelerator types have `raycast_feature_refs` but not
+`raycast_closest_feature_ref`: core's closest-hit raycast isn't implemented for
 `f32`-precision indexes (all-hits is). Like kNN, raycast is
 in-memory-accelerator only — it was already promised in [When to use
 it](when-to-use.md#reach-for-the-accelerator-when) but not previously

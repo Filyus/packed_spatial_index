@@ -30,7 +30,7 @@ mod validation;
 mod wkb;
 
 pub use artifact::{
-    GeoArtifactDirectory, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoHit,
+    GeoArtifactDirectory, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoMatch,
     GeoPayload, open_geo_index, open_geo_index_with_limits,
 };
 #[cfg(feature = "async")]

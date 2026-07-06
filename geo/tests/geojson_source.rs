@@ -60,7 +60,7 @@ fn geojson_convert_manifest_and_query_round_trip() {
         panic!("expected 2D artifact");
     };
     let hits = index
-        .search_hits(packed_spatial_index_geo::Box2D::new(-10.0, 0.0, 0.0, 2.0))
+        .search_matches(packed_spatial_index_geo::Box2D::new(-10.0, 0.0, 0.0, 2.0))
         .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].feature.row_number, 0);
@@ -320,7 +320,7 @@ fn geojson_stream_convert_and_build_match_eager_source_identity() {
         panic!("expected 2D stream-built index");
     };
     let hits = index
-        .search_features(packed_spatial_index_geo::Box2D::new(20.0, 0.0, 30.0, 5.0))
+        .search_feature_refs(packed_spatial_index_geo::Box2D::new(20.0, 0.0, 30.0, 5.0))
         .unwrap();
     assert_eq!(
         hits.iter()

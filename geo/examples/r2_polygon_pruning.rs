@@ -3,7 +3,7 @@
 //! path — the cost a Worker over R2 actually pays (per-request billing,
 //! subrequest limits, egress / latency), not wall-clock.
 //!
-//! `search_hits(GeoQuery2D::polygon(..))` prunes subtrees outside the polygon
+//! `search_matches(GeoQuery2D::polygon(..))` prunes subtrees outside the polygon
 //! during the streamed descent, so it fetches less data (fewer payload bytes)
 //! than fetching everything in the bounding box. The range-request COUNT is
 //! shape-dependent — pruning fragments the coalesced runs, so a low-rejection
@@ -60,8 +60,8 @@ impl RangeReader for CountingReader {
     }
 }
 
-/// Open the artifact over a counting reader, run one `search_hits`, and return
-/// `(range requests, bytes, hits)` for the query alone (excluding the open).
+/// Open the artifact over a counting reader, run one `search_matches`, and return
+/// `(range requests, bytes, matches)` for the query alone (excluding the open).
 fn measure(artifact: &[u8], query: GeoQuery2D) -> (usize, u64, usize) {
     let counters = Rc::new(Counters::default());
     let reader = CountingReader {
@@ -73,11 +73,11 @@ fn measure(artifact: &[u8], query: GeoQuery2D) -> (usize, u64, usize) {
     };
     let open_reads = counters.reads.get();
     let open_bytes = counters.bytes.get();
-    let hits = index.search_hits(query).unwrap();
+    let matches = index.search_matches(query).unwrap();
     (
         counters.reads.get() - open_reads,
         counters.bytes.get() - open_bytes,
-        hits.len(),
+        matches.len(),
     )
 }
 

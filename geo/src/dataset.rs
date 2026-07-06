@@ -244,8 +244,8 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
 
     /// Build an in-memory [`GeoIndex`] over the selected geometry column.
     ///
-    /// The returned index maps candidate hits back to [`FeatureRef`] values
-    /// rather than compact item ids. Use
+    /// The returned index maps candidate matches back to [`FeatureRef`] values
+    /// rather than index entry ids. Use
     /// [`GeoIndex2D::raw_index`](crate::GeoIndex2D::raw_index) or
     /// [`GeoIndex3D::raw_index`](crate::GeoIndex3D::raw_index) when you need
     /// direct access to the core index.
@@ -260,7 +260,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// let GeoIndex::D2(index) = dataset.build(BuildRequest::default())? else {
     ///     panic!("expected 2D geometry");
     /// };
-    /// let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+    /// let features = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
     /// println!("candidate features: {}", features.len());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -359,7 +359,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// )?;
     ///
     /// let mut read_source = open_geoparquet(File::open("cities.parquet")?)?;
-    /// let rows = read_source.read_features(FeatureReadRequest::from_features(exact))?;
+    /// let rows = read_source.read_features(FeatureReadRequest::from_feature_refs(exact))?;
     /// println!("{} exact rows", rows.batch.num_rows());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -442,10 +442,10 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
     /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
     ///     panic!("expected a 2D artifact");
     /// };
-    /// let features = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+    /// let features = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
     ///
     /// let mut source = open_geoparquet(File::open("cities.parquet")?)?;
-    /// let rows = source.read_features(FeatureReadRequest::from_features(features))?;
+    /// let rows = source.read_features(FeatureReadRequest::from_feature_refs(features))?;
     /// println!("{} rows", rows.batch.num_rows());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```

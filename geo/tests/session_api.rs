@@ -19,7 +19,7 @@ use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, DuplicateFeatureRows,
     EnvelopePolicy, FEATURE_REF_RECORD_LEN, FeatureFilterRequest, FeatureReadOrder,
     FeatureReadRequest, FeatureRef, Frustum3D, GeoArtifactIndex, GeoArtifactIndex2D,
-    GeoArtifactIndex3D, GeoError, GeoHit, GeoIndex, GeoPayload, GeoQuery2D, GeoQuery3D,
+    GeoArtifactIndex3D, GeoError, GeoIndex, GeoMatch, GeoPayload, GeoQuery2D, GeoQuery3D,
     GeometryEncoding, GeometryMetadataSource, GeometryReadMode, GeometryScan, GeometrySelector,
     IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
     PropertyProjection, RangeReader, SliceReader, StoragePrecision, StreamIndex2D,
@@ -365,7 +365,7 @@ fn geoparquet_primary_discovery_inspect_scan_and_build() {
         panic!("expected 2D index");
     };
     let hits = index
-        .search_features(Box2D::new(-1.0, -1.0, 1.0, 1.0))
+        .search_feature_refs(Box2D::new(-1.0, -1.0, 1.0, 1.0))
         .unwrap();
     assert_eq!(hits[0].row_number, 0);
 }
@@ -427,7 +427,7 @@ fn read_features_returns_projected_rows_and_wkb() {
         panic!("expected 2D index");
     };
     let features = index
-        .search_features(Box2D::new(5.0, 5.0, 25.0, 25.0))
+        .search_feature_refs(Box2D::new(5.0, 5.0, 25.0, 25.0))
         .unwrap();
 
     let mut source = open_geoparquet(data).unwrap();
@@ -627,7 +627,7 @@ fn filter_features_removes_bbox_false_positive_and_keeps_points() {
     let GeoIndex::D2(index) = indexed.build(Default::default()).unwrap() else {
         panic!("expected 2D index");
     };
-    let candidates = index.search_features(query).unwrap();
+    let candidates = index.search_feature_refs(query).unwrap();
     assert_eq!(
         candidates
             .iter()
@@ -647,7 +647,7 @@ fn filter_features_removes_bbox_false_positive_and_keeps_points() {
     let rows = source
         .read_features(FeatureReadRequest {
             properties: PropertyProjection::Include(vec!["name".to_string()]),
-            ..FeatureReadRequest::from_features(exact)
+            ..FeatureReadRequest::from_feature_refs(exact)
         })
         .unwrap();
     let names = rows
@@ -700,7 +700,7 @@ fn filter_features_supports_polygon_query() {
         panic!("expected 2D index");
     };
     let candidates = index
-        .search_features(GeoQuery2D::polygon(triangle.clone()))
+        .search_feature_refs(GeoQuery2D::polygon(triangle.clone()))
         .unwrap();
     assert_eq!(
         candidates
@@ -728,7 +728,7 @@ fn filter_features_supports_polygon_query() {
 }
 
 #[test]
-fn polygon_search_prunes_and_filter_hits_removes_bbox_fp() {
+fn polygon_search_prunes_and_filter_matches_removes_bbox_fp() {
     use packed_spatial_index_geo::SpatialPredicate;
     use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 
@@ -773,7 +773,7 @@ fn polygon_search_prunes_and_filter_hits_removes_bbox_fp() {
     // points directly (row 1 is in the bbox but outside the triangle). Order is
     // leaf-based, so compare as sets.
     let pruned = index
-        .search_hits(GeoQuery2D::polygon(triangle.clone()))
+        .search_matches(GeoQuery2D::polygon(triangle.clone()))
         .unwrap();
     let mut pruned_rows = pruned
         .iter()
@@ -782,9 +782,11 @@ fn polygon_search_prunes_and_filter_hits_removes_bbox_fp() {
     pruned_rows.sort_unstable();
     assert_eq!(pruned_rows, vec![0, 2]);
 
-    // A plain box search keeps the bbox false-positive (row 1); filter_hits then
+    // A plain box search keeps the bbox false-positive (row 1); filter_matches then
     // removes it with the exact geometry from the payload.
-    let hits = index.search_hits(Box2D::new(0.0, 0.0, 10.0, 10.0)).unwrap();
+    let hits = index
+        .search_matches(Box2D::new(0.0, 0.0, 10.0, 10.0))
+        .unwrap();
     let mut candidate_rows = hits
         .iter()
         .map(|hit| hit.feature.row_number)
@@ -793,7 +795,7 @@ fn polygon_search_prunes_and_filter_hits_removes_bbox_fp() {
     assert_eq!(candidate_rows, vec![0, 1, 2]);
 
     let exact = index
-        .filter_hits(
+        .filter_matches(
             hits,
             GeoQuery2D::polygon(triangle),
             SpatialPredicate::Intersects,
@@ -809,7 +811,7 @@ fn polygon_search_prunes_and_filter_hits_removes_bbox_fp() {
 }
 
 #[test]
-fn artifact_polygon_search_items_prunes_without_payload() {
+fn artifact_polygon_search_entry_ids_prunes_without_payload() {
     use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 
     let data = write_geoparquet(
@@ -847,13 +849,13 @@ fn artifact_polygon_search_items_prunes_without_payload() {
     );
 
     let mut polygon_items = index
-        .search_items(GeoQuery2D::polygon(triangle.clone()))
+        .search_entry_ids(GeoQuery2D::polygon(triangle.clone()))
         .unwrap();
     polygon_items.sort_unstable();
     assert_eq!(polygon_items, vec![0, 2]);
 
     let mut bbox_items = index
-        .search_items(Box2D::new(0.0, 0.0, 10.0, 10.0))
+        .search_entry_ids(Box2D::new(0.0, 0.0, 10.0, 10.0))
         .unwrap();
     bbox_items.sort_unstable();
     assert_eq!(bbox_items, vec![0, 1, 2]);
@@ -880,11 +882,11 @@ fn artifact_empty_polygon_errors_consistently() {
     let empty = GeoQuery2D::multi_polygon(MultiPolygon::new(vec![]));
 
     assert!(matches!(
-        index.search_items(empty.clone()),
+        index.search_entry_ids(empty.clone()),
         Err(GeoError::EmptyQueryPolygon)
     ));
     assert!(matches!(
-        index.search_hits(empty),
+        index.search_matches(empty),
         Err(GeoError::EmptyQueryPolygon)
     ));
 }
@@ -913,17 +915,17 @@ fn async_artifact_empty_polygon_errors_consistently() {
     let empty = GeoQuery2D::multi_polygon(MultiPolygon::new(vec![]));
 
     assert!(matches!(
-        pollster::block_on(index.search_items_async(empty.clone())),
+        pollster::block_on(index.search_entry_ids_async(empty.clone())),
         Err(GeoError::EmptyQueryPolygon)
     ));
     assert!(matches!(
-        pollster::block_on(index.search_hits_async(empty)),
+        pollster::block_on(index.search_matches_async(empty)),
         Err(GeoError::EmptyQueryPolygon)
     ));
 }
 
 #[test]
-fn filter_hits_supports_feature_json_payload() {
+fn filter_matches_supports_feature_json_payload() {
     use packed_spatial_index_geo::SpatialPredicate;
     use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
 
@@ -969,12 +971,12 @@ fn filter_hits_supports_feature_json_payload() {
         vec![],
     );
 
-    // filter_hits decodes geometry from the GeoJSON payload, no source re-read.
+    // filter_matches decodes geometry from the GeoJSON payload, no source re-read.
     let hits = index
-        .search_hits(GeoQuery2D::polygon(triangle.clone()))
+        .search_matches(GeoQuery2D::polygon(triangle.clone()))
         .unwrap();
     let exact = index
-        .filter_hits(
+        .filter_matches(
             hits,
             GeoQuery2D::polygon(triangle),
             SpatialPredicate::Intersects,
@@ -1311,7 +1313,9 @@ fn row_ref_artifact_hits_feed_read_features() {
         panic!("expected 2D artifact");
     };
     let manifest = index.manifest().clone();
-    let hits = index.search_hits(Box2D::new(9.0, 9.0, 9.0, 9.0)).unwrap();
+    let hits = index
+        .search_matches(Box2D::new(9.0, 9.0, 9.0, 9.0))
+        .unwrap();
 
     let mut source = open_geoparquet(data).unwrap();
     let rows = source
@@ -1319,7 +1323,7 @@ fn row_ref_artifact_hits_feed_read_features() {
             selector: GeometrySelector::Name(manifest.selected_column),
             expected_source_fingerprint: Some(manifest.source_fingerprint),
             properties: PropertyProjection::Include(vec!["name".to_string()]),
-            ..FeatureReadRequest::from_hits(hits)
+            ..FeatureReadRequest::from_matches(hits)
         })
         .unwrap();
     let names = rows
@@ -1363,7 +1367,7 @@ fn row_ref_artifact_hits_feed_exact_filter_then_read_features() {
     };
     let query = Box2D::new(0.0, 9.0, 1.0, 10.0);
     let manifest = index.manifest().clone();
-    let hits = index.search_hits(query).unwrap();
+    let hits = index.search_matches(query).unwrap();
     assert_eq!(hits.len(), 2);
 
     let mut source = open_geoparquet(data.clone()).unwrap();
@@ -1371,7 +1375,7 @@ fn row_ref_artifact_hits_feed_exact_filter_then_read_features() {
         .filter_features(FeatureFilterRequest {
             selector: GeometrySelector::Name(manifest.selected_column.clone()),
             expected_source_fingerprint: Some(manifest.source_fingerprint.clone()),
-            ..FeatureFilterRequest::intersects_from_hits(hits, query)
+            ..FeatureFilterRequest::intersects_from_matches(hits, query)
         })
         .unwrap();
     assert_eq!(
@@ -1385,7 +1389,7 @@ fn row_ref_artifact_hits_feed_exact_filter_then_read_features() {
             selector: GeometrySelector::Name(manifest.selected_column),
             expected_source_fingerprint: Some(manifest.source_fingerprint),
             properties: PropertyProjection::Include(vec!["name".to_string()]),
-            ..FeatureReadRequest::from_features(exact)
+            ..FeatureReadRequest::from_feature_refs(exact)
         })
         .unwrap();
     let names = rows
@@ -1568,7 +1572,9 @@ fn geo_artifact_reader_searches_default_row_wkb_payloads() {
     let GeoArtifactIndex::D2(index) = artifact else {
         panic!("expected 2D artifact");
     };
-    let hits = index.search_hits(Box2D::new(1.0, 2.0, 1.0, 2.0)).unwrap();
+    let hits = index
+        .search_matches(Box2D::new(1.0, 2.0, 1.0, 2.0))
+        .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].feature.row_number, 0);
     let GeoPayload::RowWkb(wkb) = &hits[0].payload else {
@@ -1577,7 +1583,7 @@ fn geo_artifact_reader_searches_default_row_wkb_payloads() {
     assert_eq!(wkb, &wkb_point_2d(1.0, 2.0));
     assert_eq!(
         index
-            .search_features(Box2D::new(1.0, 2.0, 1.0, 2.0))
+            .search_feature_refs(Box2D::new(1.0, 2.0, 1.0, 2.0))
             .unwrap()[0]
             .row_number,
         0
@@ -1605,7 +1611,9 @@ fn geo_artifact_reader_searches_row_ref_payloads() {
     let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
         panic!("expected 2D artifact");
     };
-    let hits = index.search_hits(Box2D::new(5.0, 5.0, 5.0, 5.0)).unwrap();
+    let hits = index
+        .search_matches(Box2D::new(5.0, 5.0, 5.0, 5.0))
+        .unwrap();
     assert_eq!(hits[0].feature.row_number, 1);
     assert_eq!(hits[0].payload, GeoPayload::RowRef);
 }
@@ -1666,7 +1674,9 @@ fn geo_artifact_reader_searches_feature_json_payloads() {
     let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
         panic!("expected 2D artifact");
     };
-    let hits = index.search_hits(Box2D::new(3.0, 4.0, 3.0, 4.0)).unwrap();
+    let hits = index
+        .search_matches(Box2D::new(3.0, 4.0, 3.0, 4.0))
+        .unwrap();
     assert_eq!(hits[0].feature.row_number, 0);
     let GeoPayload::FeatureJson(json) = &hits[0].payload else {
         panic!("expected FeatureJson payload");
@@ -1692,7 +1702,9 @@ fn geo_artifact_reader_uses_manifest_precision_for_f32_artifacts() {
         panic!("expected 2D artifact");
     };
     assert_eq!(index.manifest().storage_precision, StoragePrecision::F32);
-    let hits = index.search_hits(Box2D::new(9.0, 10.0, 9.0, 10.0)).unwrap();
+    let hits = index
+        .search_matches(Box2D::new(9.0, 10.0, 9.0, 10.0))
+        .unwrap();
     assert_eq!(hits[0].feature.row_number, 0);
 }
 
@@ -1746,13 +1758,13 @@ fn async_geo_artifact_reader_searches_2d_box_and_polygon() {
 
         let bbox = Box2D::new(0.0, 0.0, 10.0, 10.0);
         let mut sync_box_rows: Vec<u64> = sync_index
-            .search_features(bbox)
+            .search_feature_refs(bbox)
             .unwrap()
             .iter()
             .map(|feature| feature.row_number)
             .collect();
         let mut async_box_rows: Vec<u64> =
-            pollster::block_on(async_index.search_features_async(bbox))
+            pollster::block_on(async_index.search_feature_refs_async(bbox))
                 .unwrap()
                 .iter()
                 .map(|feature| feature.row_number)
@@ -1762,7 +1774,7 @@ fn async_geo_artifact_reader_searches_2d_box_and_polygon() {
         assert_eq!(async_box_rows, sync_box_rows, "{precision:?} box query");
 
         let mut async_polygon_rows: Vec<u64> = pollster::block_on(
-            async_index.search_features_async(GeoQuery2D::polygon(triangle.clone())),
+            async_index.search_feature_refs_async(GeoQuery2D::polygon(triangle.clone())),
         )
         .unwrap()
         .iter()
@@ -1771,9 +1783,9 @@ fn async_geo_artifact_reader_searches_2d_box_and_polygon() {
         async_polygon_rows.sort_unstable();
         assert_eq!(async_polygon_rows, vec![0, 2], "{precision:?} polygon");
 
-        let hits = pollster::block_on(async_index.search_hits_async(bbox)).unwrap();
+        let hits = pollster::block_on(async_index.search_matches_async(bbox)).unwrap();
         let exact = async_index
-            .filter_hits(
+            .filter_matches(
                 hits,
                 GeoQuery2D::polygon(triangle.clone()),
                 SpatialPredicate::Intersects,
@@ -1782,7 +1794,7 @@ fn async_geo_artifact_reader_searches_2d_box_and_polygon() {
             .unwrap();
         let mut exact_rows: Vec<u64> = exact.iter().map(|hit| hit.feature.row_number).collect();
         exact_rows.sort_unstable();
-        assert_eq!(exact_rows, vec![0, 2], "{precision:?} filter_hits");
+        assert_eq!(exact_rows, vec![0, 2], "{precision:?} filter_matches");
     }
 }
 
@@ -1805,7 +1817,7 @@ fn geo_artifact_reader_searches_3d_artifacts() {
         panic!("expected 3D artifact");
     };
     let hits = index
-        .search_hits(Box3D::new(1.0, 2.0, 3.0, 1.0, 2.0, 3.0))
+        .search_matches(Box3D::new(1.0, 2.0, 3.0, 1.0, 2.0, 3.0))
         .unwrap();
     assert_eq!(hits[0].feature.row_number, 0);
     assert_eq!(hits[0].payload, GeoPayload::RowRef);
@@ -1856,7 +1868,7 @@ fn geo_artifact_frustum_query_prunes_over_bounding_box() {
         };
 
         let mut frustum_rows: Vec<u64> = index
-            .search_features(GeoQuery3D::frustum3d(frustum))
+            .search_feature_refs(GeoQuery3D::frustum3d(frustum))
             .unwrap()
             .iter()
             .map(|f| f.row_number)
@@ -1864,7 +1876,7 @@ fn geo_artifact_frustum_query_prunes_over_bounding_box() {
         frustum_rows.sort_unstable();
 
         let mut bbox_rows: Vec<u64> = index
-            .search_features(bbox)
+            .search_feature_refs(bbox)
             .unwrap()
             .iter()
             .map(|f| f.row_number)
@@ -1929,13 +1941,13 @@ fn async_geo_artifact_frustum_query_prunes_over_bounding_box() {
         };
 
         let mut frustum_items =
-            pollster::block_on(async_index.search_items_async(GeoQuery3D::frustum3d(frustum)))
+            pollster::block_on(async_index.search_entry_ids_async(GeoQuery3D::frustum3d(frustum)))
                 .unwrap();
         frustum_items.sort_unstable();
         assert_eq!(frustum_items, vec![0, 2], "{precision:?} item ids");
 
         let mut frustum_rows: Vec<u64> =
-            pollster::block_on(async_index.search_hits_async(GeoQuery3D::frustum3d(frustum)))
+            pollster::block_on(async_index.search_matches_async(GeoQuery3D::frustum3d(frustum)))
                 .unwrap()
                 .iter()
                 .map(|hit| hit.feature.row_number)
@@ -1943,11 +1955,12 @@ fn async_geo_artifact_frustum_query_prunes_over_bounding_box() {
         frustum_rows.sort_unstable();
         assert_eq!(frustum_rows, vec![0, 2], "{precision:?} frustum hits");
 
-        let mut bbox_rows: Vec<u64> = pollster::block_on(async_index.search_features_async(bbox))
-            .unwrap()
-            .iter()
-            .map(|feature| feature.row_number)
-            .collect();
+        let mut bbox_rows: Vec<u64> =
+            pollster::block_on(async_index.search_feature_refs_async(bbox))
+                .unwrap()
+                .iter()
+                .map(|feature| feature.row_number)
+                .collect();
         bbox_rows.sort_unstable();
         assert_eq!(
             bbox_rows,
@@ -1979,7 +1992,7 @@ fn geo_artifact_reader_does_not_require_known_length() {
         panic!("expected 2D artifact");
     };
     let hits = index
-        .search_features(Box2D::new(6.0, 7.0, 6.0, 7.0))
+        .search_feature_refs(Box2D::new(6.0, 7.0, 6.0, 7.0))
         .unwrap();
     assert_eq!(hits[0].row_number, 0);
 }
@@ -2708,7 +2721,7 @@ fn cli_query_accepts_3d_bbox_and_rejects_2d_only_flags() {
     fs::write(&index_path, &psindex).unwrap();
 
     // A 3D --bbox with six comma-separated numbers dispatches to
-    // GeoArtifactIndex3D::search_features and returns the matching feature.
+    // GeoArtifactIndex3D::search_feature_refs and returns the matching feature.
     let output = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
         .arg("query")
         .arg(&source_path)
@@ -3046,12 +3059,12 @@ fn geo_artifact_directory_reattach_2d_matches_and_skips_open_reads() {
         let GeoArtifactIndex::D2(index) = open_geo_index(reader).unwrap() else {
             panic!("expected 2D artifact");
         };
-        let baseline_rows = sorted_hit_rows(&index.search_hits(query).unwrap());
+        let baseline_rows = sorted_hit_rows(&index.search_matches(query).unwrap());
         let fresh_total_reads = fresh_reads.load(Ordering::SeqCst);
 
         let (dir, _spent_reader) = index.into_directory();
         assert_eq!(dir.manifest().storage_precision, precision);
-        assert_eq!(dir.num_items(), 4);
+        assert_eq!(dir.num_entries(), 4);
         assert!(!dir.is_empty());
         assert!(dir.node_size() > 0);
         assert!(dir.has_payload());
@@ -3064,7 +3077,7 @@ fn geo_artifact_directory_reattach_2d_matches_and_skips_open_reads() {
             "from_directory must not read"
         );
 
-        let warm_rows = sorted_hit_rows(&reattached.search_hits(query).unwrap());
+        let warm_rows = sorted_hit_rows(&reattached.search_matches(query).unwrap());
         assert_eq!(warm_rows, baseline_rows);
         assert_eq!(warm_rows, vec![0, 1, 2]);
         assert!(
@@ -3085,7 +3098,7 @@ fn geo_artifact_directory_reattach_2d_matches_and_skips_open_reads() {
             panic!("expected enum reattach to preserve 2D");
         };
         assert_eq!(
-            sorted_hit_rows(&enum_index.search_hits(query).unwrap()),
+            sorted_hit_rows(&enum_index.search_matches(query).unwrap()),
             baseline_rows
         );
     }
@@ -3101,7 +3114,7 @@ fn geo_artifact_directory_reattach_3d_matches_and_dispatches_precision() {
         let GeoArtifactIndex::D3(index) = open_geo_index(reader).unwrap() else {
             panic!("expected 3D artifact");
         };
-        let baseline_rows = sorted_hit_rows(&index.search_hits(query).unwrap());
+        let baseline_rows = sorted_hit_rows(&index.search_matches(query).unwrap());
         let fresh_total_reads = fresh_reads.load(Ordering::SeqCst);
 
         let (dir, _spent_reader) = index.into_directory();
@@ -3116,7 +3129,7 @@ fn geo_artifact_directory_reattach_3d_matches_and_dispatches_precision() {
             "from_directory must not read"
         );
 
-        let warm_rows = sorted_hit_rows(&reattached.search_hits(query).unwrap());
+        let warm_rows = sorted_hit_rows(&reattached.search_matches(query).unwrap());
         assert_eq!(warm_rows, baseline_rows);
         assert_eq!(warm_rows, vec![0, 1, 2]);
         assert!(
@@ -3199,7 +3212,7 @@ fn artifact_3d(precision: StoragePrecision) -> Vec<u8> {
         .unwrap()
 }
 
-fn sorted_hit_rows(hits: &[GeoHit]) -> Vec<u64> {
+fn sorted_hit_rows(hits: &[GeoMatch]) -> Vec<u64> {
     let mut rows = hits
         .iter()
         .map(|hit| hit.feature.row_number)

@@ -26,7 +26,7 @@ default = ["parquet", "flatgeobuf", "geojson"]
 # inspection, validation, feature read-back — and build/convert indexes from
 # them. Pulls in arrow + parquet. Without it the crate is query-only: open a
 # pre-built PSINDEX artifact and query it (open_geo_index, search_*,
-# filter_hits, payload decode) with no arrow or parquet — small enough for
+# filter_matches, payload decode) with no arrow or parquet — small enough for
 # wasm32.
 parquet = ["dep:arrow", "dep:arrow-json", "dep:arrow-select", "dep:parquet", "_source"]
 # FlatGeobuf source side: open .fgb files and build/convert indexes from them.

@@ -18,16 +18,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let query = Box2D::new(-1.0e9, -1.0e9, 1.0e9, 1.0e9);
-    let hits = index.search_hits(query)?;
-    println!("matched {} artifact entries", hits.len());
+    let matches = index.search_matches(query)?;
+    println!("matched {} artifact entries", matches.len());
 
-    if let Some(hit) = hits.first() {
-        println!("first source row: {}", hit.feature.row_number);
-        if let GeoPayload::RowWkb(wkb) = &hit.payload {
+    if let Some(m) = matches.first() {
+        println!("first source row: {}", m.feature.row_number);
+        if let GeoPayload::RowWkb(wkb) = &m.payload {
             println!("first WKB payload: {} bytes", wkb.len());
         }
     }
 
-    assert!(!hits.is_empty());
+    assert!(!matches.is_empty());
     Ok(())
 }

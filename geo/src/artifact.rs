@@ -60,7 +60,7 @@ impl Overlaps2D for PolygonRegion<'_> {
 /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
 ///     panic!("expected a 2D artifact");
 /// };
-/// let hits = index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+/// let refs = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn open_geo_index<R: RangeReader>(reader: R) -> Result<GeoArtifactIndex<R>, GeoError> {
@@ -235,7 +235,7 @@ impl<R> GeoArtifactIndex<R> {
 
 /// A 2D geospatial artifact index.
 ///
-/// Use [`GeoArtifactIndex2D::search_hits`] when payloads are present and you
+/// Use [`GeoArtifactIndex2D::search_matches`] when payloads are present and you
 /// want decoded [`FeatureRef`] values plus typed payload data.
 pub struct GeoArtifactIndex2D<R> {
     index: GeoStreamIndex2D<R>,
@@ -295,13 +295,13 @@ impl<R> GeoArtifactIndex2D<R> {
         })
     }
 
-    /// Exactly filter geo hits by the geometry stored in their payloads — the
-    /// post-filter step for the streaming path, with no source re-read.
+    /// Exactly filter geo matches by the geometry stored in their payloads —
+    /// the post-filter step for the streaming path, with no source re-read.
     ///
-    /// Index search narrows by bounding box; this keeps only the hits whose
+    /// Index search narrows by bounding box; this keeps only the matches whose
     /// geometry actually satisfies `query` under `predicate`, removing the bbox
     /// false-positives over holes and concavities. Because it tests the geometry
-    /// already fetched by [`GeoArtifactIndex2D::search_hits`], it avoids the
+    /// already fetched by [`GeoArtifactIndex2D::search_matches`], it avoids the
     /// candidate geometry re-read that `GeoDataset::filter_features` (`parquet`
     /// feature) performs.
     ///
@@ -335,24 +335,24 @@ impl<R> GeoArtifactIndex2D<R> {
     ///
     /// // Bounding-box candidates from the artifact, then exact polygon filtering
     /// // on the geometry already in their payloads (no source re-read).
-    /// let hits = index.search_hits(GeoQuery2D::polygon(triangle.clone()))?;
-    /// let exact = index.filter_hits(
-    ///     hits,
+    /// let matches = index.search_matches(GeoQuery2D::polygon(triangle.clone()))?;
+    /// let exact = index.filter_matches(
+    ///     matches,
     ///     GeoQuery2D::polygon(triangle),
     ///     SpatialPredicate::Intersects,
     ///     NonPlanarExactPolicy::Reject,
     /// )?;
-    /// println!("{} exact hits", exact.len());
+    /// println!("{} exact matches", exact.len());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
-    pub fn filter_hits<Q: Into<GeoQuery2D>>(
+    pub fn filter_matches<Q: Into<GeoQuery2D>>(
         &self,
-        hits: Vec<GeoHit>,
+        matches: Vec<GeoMatch>,
         query: Q,
         predicate: SpatialPredicate,
         non_planar: NonPlanarExactPolicy,
-    ) -> Result<Vec<GeoHit>, GeoError> {
+    ) -> Result<Vec<GeoMatch>, GeoError> {
         let prepared = prepare_filter_query(
             &self.manifest.encoding,
             self.manifest.edges,
@@ -361,21 +361,21 @@ impl<R> GeoArtifactIndex2D<R> {
             non_planar,
         )?;
         let mut kept = Vec::new();
-        for hit in hits {
-            if let GeoPayload::RowWkb(wkb) = &hit.payload
+        for m in matches {
+            if let GeoPayload::RowWkb(wkb) = &m.payload
                 && let Some(matched) = exact_wkb_predicate_matches(wkb, &prepared, predicate)?
             {
                 if matched {
-                    kept.push(hit);
+                    kept.push(m);
                 }
                 continue;
             }
-            let geometry = match &hit.payload {
+            let geometry = match &m.payload {
                 GeoPayload::RowWkb(wkb) => decode_geo_geometry(wkb)?,
                 GeoPayload::FeatureJson(feature) => feature_json_geometry(feature)?,
                 GeoPayload::RowRef => {
                     return Err(GeoError::PayloadDecode(
-                        "filter_hits needs a geometry payload (RowWkb or FeatureJson); RowRef has none"
+                        "filter_matches needs a geometry payload (RowWkb or FeatureJson); RowRef has none"
                             .to_string(),
                     ));
                 }
@@ -384,7 +384,7 @@ impl<R> GeoArtifactIndex2D<R> {
                 continue;
             };
             if exact_predicate_matches(&geometry, &prepared, predicate)? {
-                kept.push(hit);
+                kept.push(m);
             }
         }
         Ok(kept)
@@ -392,11 +392,11 @@ impl<R> GeoArtifactIndex2D<R> {
 }
 
 impl<R: RangeReader> GeoArtifactIndex2D<R> {
-    /// Search the underlying core index and return compact item ids.
+    /// Search the underlying core index and return index entry ids.
     ///
     /// This does not decode geo payloads and therefore also works for
     /// [`PayloadPlan::None`] artifacts.
-    pub fn search_items<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<usize>, GeoError> {
+    pub fn search_entry_ids<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<usize>, GeoError> {
         let query = query.into();
         if let GeoQuery2D::Polygon(multi_polygon) = &query {
             ensure_polygon_query_not_empty(multi_polygon)?;
@@ -409,11 +409,11 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
 
         let mut items = Vec::new();
         for bbox in query.candidate_boxes_2d()? {
-            let hits = match &self.index {
+            let raw = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search(bbox)?,
                 GeoStreamIndex2D::F32(index) => index.search(bbox)?,
             };
-            for item in hits {
+            for item in raw {
                 if !items.contains(&item) {
                     items.push(item);
                 }
@@ -426,20 +426,20 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     ///
     /// This requires an artifact payload plan that stores feature refs
     /// (`RowRef`, `RowWkb`, or `FeatureJson`).
-    pub fn search_features<Q: Into<GeoQuery2D>>(
+    pub fn search_feature_refs<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
         Ok(self
-            .search_hits(query)?
+            .search_matches(query)?
             .into_iter()
-            .map(|hit| hit.feature)
+            .map(|m| m.feature)
             .collect())
     }
 
-    /// Search and return decoded geo hits.
+    /// Search and return decoded geo matches.
     ///
-    /// Each hit includes the compact item id, the source [`FeatureRef`], and
+    /// Each match includes the index entry id, the source [`FeatureRef`], and
     /// the decoded [`GeoPayload`] described by the artifact manifest.
     ///
     /// A [`GeoQuery2D::Polygon`] query prunes subtrees that fall outside the
@@ -456,44 +456,44 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
     ///     panic!("expected a 2D artifact");
     /// };
-    /// for hit in index.search_hits(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
-    ///     match &hit.payload {
+    /// for m in index.search_matches(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    ///     match &m.payload {
     ///         GeoPayload::RowWkb(wkb) => {
-    ///             println!("{}: {} WKB bytes", hit.feature.row_number, wkb.len())
+    ///             println!("{}: {} WKB bytes", m.feature.row_number, wkb.len())
     ///         }
-    ///         GeoPayload::FeatureJson(feature) => println!("{}: {feature}", hit.feature.row_number),
-    ///         GeoPayload::RowRef => println!("{}: no geometry payload", hit.feature.row_number),
+    ///         GeoPayload::FeatureJson(feature) => println!("{}: {feature}", m.feature.row_number),
+    ///         GeoPayload::RowRef => println!("{}: no geometry payload", m.feature.row_number),
     ///     }
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn search_hits<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<GeoHit>, GeoError> {
+    pub fn search_matches<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<GeoMatch>, GeoError> {
         let query = query.into();
         if let GeoQuery2D::Polygon(multi_polygon) = &query {
             ensure_polygon_query_not_empty(multi_polygon)?;
             let region = PolygonRegion(multi_polygon);
-            let hits = match &self.index {
+            let raw = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search_payloads_region(&region)?,
                 GeoStreamIndex2D::F32(index) => index.search_payloads_region(&region)?,
             };
-            return decode_hits(&self.manifest.payload_plan, hits);
+            return decode_matches(&self.manifest.payload_plan, raw);
         }
 
         let boxes = query.candidate_boxes_2d()?;
         // Duplicates only arise across multiple candidate boxes; a single box
-        // yields each item once. Skip dedup bookkeeping in the common single-box
-        // case, and dedup by item id in O(1) (not O(K^2) `iter().any`) otherwise.
+        // yields each entry once. Skip dedup bookkeeping in the common single-box
+        // case, and dedup by entry id in O(1) (not O(K^2) `iter().any`) otherwise.
         let dedup = boxes.len() > 1;
         let mut decoded = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for bbox in boxes {
-            let hits = match &self.index {
+            let raw = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search_payloads(bbox)?,
                 GeoStreamIndex2D::F32(index) => index.search_payloads(bbox)?,
             };
-            for hit in decode_hits(&self.manifest.payload_plan, hits)? {
-                if !dedup || seen.insert(hit.item) {
-                    decoded.push(hit);
+            for m in decode_matches(&self.manifest.payload_plan, raw)? {
+                if !dedup || seen.insert(m.entry_id) {
+                    decoded.push(m);
                 }
             }
         }
@@ -504,8 +504,8 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
 #[cfg(feature = "async")]
 impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
     /// Search the underlying core index over async range I/O and return compact
-    /// item ids.
-    pub async fn search_items_async<Q: Into<GeoQuery2D>>(
+    /// index entry ids.
+    pub async fn search_entry_ids_async<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
     ) -> Result<Vec<usize>, GeoError> {
@@ -521,11 +521,11 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
 
         let mut items = Vec::new();
         for bbox in query.candidate_boxes_2d()? {
-            let hits = match &self.index {
+            let raw = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search_async(bbox).await?,
                 GeoStreamIndex2D::F32(index) => index.search_async(bbox).await?,
             };
-            for item in hits {
+            for item in raw {
                 if !items.contains(&item) {
                     items.push(item);
                 }
@@ -535,32 +535,32 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
     }
 
     /// Search over async range I/O and return source feature references.
-    pub async fn search_features_async<Q: Into<GeoQuery2D>>(
+    pub async fn search_feature_refs_async<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
         Ok(self
-            .search_hits_async(query)
+            .search_matches_async(query)
             .await?
             .into_iter()
-            .map(|hit| hit.feature)
+            .map(|m| m.feature)
             .collect())
     }
 
-    /// Search over async range I/O and return decoded geo hits.
-    pub async fn search_hits_async<Q: Into<GeoQuery2D>>(
+    /// Search over async range I/O and return decoded geo matches.
+    pub async fn search_matches_async<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
-    ) -> Result<Vec<GeoHit>, GeoError> {
+    ) -> Result<Vec<GeoMatch>, GeoError> {
         let query = query.into();
         if let GeoQuery2D::Polygon(multi_polygon) = &query {
             ensure_polygon_query_not_empty(multi_polygon)?;
             let region = PolygonRegion(multi_polygon);
-            let hits = match &self.index {
+            let raw = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search_payloads_region_async(&region).await?,
                 GeoStreamIndex2D::F32(index) => index.search_payloads_region_async(&region).await?,
             };
-            return decode_hits(&self.manifest.payload_plan, hits);
+            return decode_matches(&self.manifest.payload_plan, raw);
         }
 
         let boxes = query.candidate_boxes_2d()?;
@@ -568,13 +568,13 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
         let mut decoded = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for bbox in boxes {
-            let hits = match &self.index {
+            let raw = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search_payloads_async(bbox).await?,
                 GeoStreamIndex2D::F32(index) => index.search_payloads_async(bbox).await?,
             };
-            for hit in decode_hits(&self.manifest.payload_plan, hits)? {
-                if !dedup || seen.insert(hit.item) {
-                    decoded.push(hit);
+            for m in decode_matches(&self.manifest.payload_plan, raw)? {
+                if !dedup || seen.insert(m.entry_id) {
+                    decoded.push(m);
                 }
             }
         }
@@ -687,12 +687,12 @@ impl GeoArtifactDirectory {
         &self.manifest
     }
 
-    /// Number of indexed items.
-    pub fn num_items(&self) -> usize {
+    /// Number of index entries.
+    pub fn num_entries(&self) -> usize {
         self.inner.num_items()
     }
 
-    /// Whether the artifact has no indexed items.
+    /// Whether the artifact has no index entries.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -702,14 +702,14 @@ impl GeoArtifactDirectory {
         self.inner.node_size()
     }
 
-    /// Whether the artifact carries an item payload section.
+    /// Whether the artifact carries a payload section.
     pub fn has_payload(&self) -> bool {
         self.inner.has_payload()
     }
 }
 
 impl<R: RangeReader> GeoArtifactIndex3D<R> {
-    /// Search the underlying core index and return compact item ids.
+    /// Search the underlying core index and return index entry ids.
     ///
     /// This does not decode geo payloads and therefore also works for
     /// [`PayloadPlan::None`] artifacts.
@@ -717,7 +717,7 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     /// A [`GeoQuery3D::Frustum3D`] query prunes subtrees that fall outside
     /// the frustum during the streamed descent, for both `f64`- and
     /// `f32`-precision artifacts.
-    pub fn search_items<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<Vec<usize>, GeoError> {
+    pub fn search_entry_ids<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<Vec<usize>, GeoError> {
         match query.into() {
             GeoQuery3D::Box3D(bbox) => match &self.index {
                 GeoStreamIndex3D::F64(index) => Ok(index.search(bbox)?),
@@ -734,20 +734,20 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     ///
     /// This requires an artifact payload plan that stores feature refs
     /// (`RowRef`, `RowWkb`, or `FeatureJson`).
-    pub fn search_features<Q: Into<GeoQuery3D>>(
+    pub fn search_feature_refs<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
         Ok(self
-            .search_hits(query)?
+            .search_matches(query)?
             .into_iter()
-            .map(|hit| hit.feature)
+            .map(|m| m.feature)
             .collect())
     }
 
-    /// Search and return decoded geo hits.
+    /// Search and return decoded geo matches.
     ///
-    /// Each hit includes the compact item id, the source [`FeatureRef`], and
+    /// Each match includes the index entry id, the source [`FeatureRef`], and
     /// the decoded [`GeoPayload`] described by the artifact manifest.
     ///
     /// # Example
@@ -759,32 +759,32 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     /// let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
     ///     panic!("expected a 3D artifact");
     /// };
-    /// for hit in index.search_hits(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))? {
-    ///     match &hit.payload {
+    /// for m in index.search_matches(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))? {
+    ///     match &m.payload {
     ///         GeoPayload::RowWkb(wkb) => {
-    ///             println!("{}: {} WKB bytes", hit.feature.row_number, wkb.len())
+    ///             println!("{}: {} WKB bytes", m.feature.row_number, wkb.len())
     ///         }
-    ///         GeoPayload::FeatureJson(feature) => println!("{}: {feature}", hit.feature.row_number),
-    ///         GeoPayload::RowRef => println!("{}: no geometry payload", hit.feature.row_number),
+    ///         GeoPayload::FeatureJson(feature) => println!("{}: {feature}", m.feature.row_number),
+    ///         GeoPayload::RowRef => println!("{}: no geometry payload", m.feature.row_number),
     ///     }
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn search_hits<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<Vec<GeoHit>, GeoError> {
+    pub fn search_matches<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<Vec<GeoMatch>, GeoError> {
         match query.into() {
             GeoQuery3D::Box3D(bbox) => {
-                let hits = match &self.index {
+                let raw = match &self.index {
                     GeoStreamIndex3D::F64(index) => index.search_payloads(bbox)?,
                     GeoStreamIndex3D::F32(index) => index.search_payloads(bbox)?,
                 };
-                decode_hits(&self.manifest.payload_plan, hits)
+                decode_matches(&self.manifest.payload_plan, raw)
             }
             GeoQuery3D::Frustum3D(frustum) => {
-                let hits = match &self.index {
+                let raw = match &self.index {
                     GeoStreamIndex3D::F64(index) => index.search_payloads_region(&frustum)?,
                     GeoStreamIndex3D::F32(index) => index.search_payloads_region(&frustum)?,
                 };
-                decode_hits(&self.manifest.payload_plan, hits)
+                decode_matches(&self.manifest.payload_plan, raw)
             }
         }
     }
@@ -793,8 +793,8 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
 #[cfg(feature = "async")]
 impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
     /// Search the underlying core index over async range I/O and return compact
-    /// item ids.
-    pub async fn search_items_async<Q: Into<GeoQuery3D>>(
+    /// index entry ids.
+    pub async fn search_entry_ids_async<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
     ) -> Result<Vec<usize>, GeoError> {
@@ -811,33 +811,33 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
     }
 
     /// Search over async range I/O and return source feature references.
-    pub async fn search_features_async<Q: Into<GeoQuery3D>>(
+    pub async fn search_feature_refs_async<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
     ) -> Result<Vec<FeatureRef>, GeoError> {
         Ok(self
-            .search_hits_async(query)
+            .search_matches_async(query)
             .await?
             .into_iter()
-            .map(|hit| hit.feature)
+            .map(|m| m.feature)
             .collect())
     }
 
-    /// Search over async range I/O and return decoded geo hits.
-    pub async fn search_hits_async<Q: Into<GeoQuery3D>>(
+    /// Search over async range I/O and return decoded geo matches.
+    pub async fn search_matches_async<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
-    ) -> Result<Vec<GeoHit>, GeoError> {
+    ) -> Result<Vec<GeoMatch>, GeoError> {
         match query.into() {
             GeoQuery3D::Box3D(bbox) => {
-                let hits = match &self.index {
+                let raw = match &self.index {
                     GeoStreamIndex3D::F64(index) => index.search_payloads_async(bbox).await?,
                     GeoStreamIndex3D::F32(index) => index.search_payloads_async(bbox).await?,
                 };
-                decode_hits(&self.manifest.payload_plan, hits)
+                decode_matches(&self.manifest.payload_plan, raw)
             }
             GeoQuery3D::Frustum3D(frustum) => {
-                let hits = match &self.index {
+                let raw = match &self.index {
                     GeoStreamIndex3D::F64(index) => {
                         index.search_payloads_region_async(&frustum).await?
                     }
@@ -845,27 +845,28 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
                         index.search_payloads_region_async(&frustum).await?
                     }
                 };
-                decode_hits(&self.manifest.payload_plan, hits)
+                decode_matches(&self.manifest.payload_plan, raw)
             }
         }
     }
 }
 
-/// One query hit from a converted geospatial artifact.
+/// One query match from a converted geospatial artifact.
 #[derive(Debug, Clone, PartialEq)]
-pub struct GeoHit {
-    /// Compact item id in the core index.
-    pub item: usize,
+pub struct GeoMatch {
+    /// Index entry id in the artifact (the core crate calls these compact
+    /// item ids). Stable for one artifact build, not across rebuilds.
+    pub entry_id: usize,
     /// Source feature reference stored in the artifact payload.
     pub feature: FeatureRef,
-    /// Decoded payload for the hit.
+    /// Decoded payload for the match.
     pub payload: GeoPayload,
 }
 
 /// Decoded artifact payload.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GeoPayload {
-    /// A `RowRef` payload; the feature ref is available on [`GeoHit::feature`].
+    /// A `RowRef` payload; the feature ref is available on [`GeoMatch::feature`].
     RowRef,
     /// A `RowWkb` payload containing WKB geometry bytes.
     RowWkb(Vec<u8>),
@@ -1028,12 +1029,15 @@ async fn read_manifest_from_reader_async<R: AsyncRangeReader>(
     Err(GeoError::MissingGeoManifest)
 }
 
-fn decode_hits(plan: &PayloadPlan, hits: Vec<(usize, Vec<u8>)>) -> Result<Vec<GeoHit>, GeoError> {
-    hits.into_iter()
-        .map(|(item, payload)| {
+fn decode_matches(
+    plan: &PayloadPlan,
+    raw: Vec<(usize, Vec<u8>)>,
+) -> Result<Vec<GeoMatch>, GeoError> {
+    raw.into_iter()
+        .map(|(entry_id, payload)| {
             let (feature, payload) = decode_payload(plan, &payload)?;
-            Ok(GeoHit {
-                item,
+            Ok(GeoMatch {
+                entry_id,
                 feature,
                 payload,
             })

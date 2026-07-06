@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let query = Box2D::new(-1.0e9, -1.0e9, 1.0e9, 1.0e9);
-    let features = index.search_features(query)?;
+    let features = index.search_feature_refs(query)?;
     println!("matched {} source features", features.len());
 
     assert!(!features.is_empty());

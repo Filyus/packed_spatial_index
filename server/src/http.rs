@@ -7,9 +7,7 @@ use serde::Serialize;
 
 use crate::{
     ServerError, ServerState,
-    query::{
-        CollectionDetail, CollectionSummary, HitsParams, ItemsParams, hits_response, items_response,
-    },
+    query::{CollectionDetail, CollectionSummary, SearchParams, items_response, search_response},
 };
 
 /// Build the HTTP router.
@@ -19,7 +17,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/collections", get(collections))
         .route("/collections/{id}", get(collection))
         .route("/collections/{id}/items", get(items))
-        .route("/collections/{id}/hits", get(hits))
+        .route("/collections/{id}/search", get(search))
         .with_state(state)
 }
 
@@ -62,7 +60,7 @@ async fn collection(
 async fn items(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Query(params): Query<ItemsParams>,
+    Query(params): Query<SearchParams>,
 ) -> Result<Json<crate::query::FeatureCollectionResponse>, ServerError> {
     let collection = state
         .collection(&id)
@@ -70,13 +68,13 @@ async fn items(
     Ok(Json(items_response(&collection, params)?))
 }
 
-async fn hits(
+async fn search(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Query(params): Query<HitsParams>,
-) -> Result<Json<crate::query::HitsResponse>, ServerError> {
+    Query(params): Query<SearchParams>,
+) -> Result<Json<crate::query::SearchResponse>, ServerError> {
     let collection = state
         .collection(&id)
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
-    Ok(Json(hits_response(&collection, params)?))
+    Ok(Json(search_response(&collection, params)?))
 }

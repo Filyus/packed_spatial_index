@@ -167,7 +167,7 @@ fn binary_serves_generated_local_artifacts() {
 
     let (status, body) = get(
         port,
-        "/collections/places_wkb/hits?bbox=-10,0,0,2&payload=full",
+        "/collections/places_wkb/search?bbox=-10,0,0,2&payload=full",
     );
     assert_eq!(status, 200);
     assert!(body.contains("\"kind\":\"row_wkb\""));
@@ -176,6 +176,6 @@ fn binary_serves_generated_local_artifacts() {
     let (status, _) = get(port, "/collections/places_wkb/items?bbox=-10,0,0,2");
     assert_eq!(status, 422);
 
-    let (status, _) = get(port, "/collections/places_json/hits?bbox=10,0,0,2");
+    let (status, _) = get(port, "/collections/places_json/search?bbox=10,0,0,2");
     assert_eq!(status, 400);
 }

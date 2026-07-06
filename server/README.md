@@ -33,16 +33,39 @@ cargo run --manifest-path server/Cargo.toml -- --catalog psindex-server.toml
 - `GET /health`
 - `GET /collections`
 - `GET /collections/{id}`
-- `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy&limit=&offset=&exact=`
-- `GET /collections/{id}/hits?bbox=minx,miny,maxx,maxy&limit=&offset=&exact=&payload=`
+- `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=`
+- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=&level=&payload=`
 
-`/items` returns a GeoJSON `FeatureCollection` only when the artifact carries a
-`FeatureJson` payload. Use `/hits` for all payload modes, including `RowRef`,
-`RowWkb`, and payload-less artifacts.
+`/search` is the artifact-native endpoint; it works for every payload kind
+(`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
+a `matches` array. `/items` is the GeoJSON view: it returns a
+`FeatureCollection` and requires a `feature_json` payload; other artifacts get
+a 422 pointing at `/search`.
 
-`/hits` accepts `payload=none|summary|full`; the default is `summary`. Summary
-mode returns payload kind and cheap metadata, while `full` materializes stored
-payload values such as base64 WKB or embedded GeoJSON features.
+Query parameters:
 
-`/hits` reports matching index entries. `/items` reports source features and
-deduplicates split entries such as antimeridian parts.
+- `bbox` — required; 4 numbers for 2D artifacts, 6 for 3D.
+- `predicate=bbox|intersects` — `bbox` (default) intersects stored envelopes
+  only; `intersects` refines candidates with exact geometry intersection from
+  artifact payloads. Unsupported combinations (3D, payload without geometry)
+  return `unsupported_predicate`.
+- `level=feature|entry` — `/search` only. `feature` (default when the artifact
+  stores feature refs) returns one match per source feature, deduplicating
+  split index entries such as antimeridian parts; `entry` returns raw index
+  entries. Payload-less artifacts only support `entry` and it becomes the
+  default for them.
+- `payload=none|summary|full` — `/search` only; default `summary`. Summary
+  returns payload kind and cheap metadata; `full` materializes stored values
+  such as base64 WKB or embedded GeoJSON features.
+- `limit`, `offset` — pagination over the matched set.
+
+Responses echo the effective query (after defaults) under `query`, so a client
+can always see which `level` and `predicate` actually applied. `numberMatched`
+counts matches before pagination and `numberReturned` after. Each match
+carries `entryId` (index entry ordinal in the artifact; stable per artifact
+build, not across rebuilds) and, when the payload stores one, a `featureRef`
+back to the source feature.
+
+Collection metadata reports the artifact `payloadKind` plus a `capabilities`
+object listing the accepted `predicates`, `levels`, and `payloadModes`, and
+whether `/items` is available.

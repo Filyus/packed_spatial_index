@@ -121,17 +121,12 @@ async fn contract_collections_summary_shape() {
                 "entryCount": 2,
                 "dims": "xy",
                 "storagePrecision": "f64",
-                "payloadPlan": {"kind": "row_ref"},
-                "nodeSize": 16,
-                "hasPayload": true,
+                "payloadKind": "row_ref",
                 "capabilities": {
-                    "bboxSearch": true,
-                    "featureJsonItems": false,
-                    "hits": true,
-                    "exactFilter": false,
-                    "sourceReadBack": false,
-                    "rowWkbPayload": false,
-                    "rowRefPayload": true
+                    "items": false,
+                    "predicates": ["bbox"],
+                    "levels": ["feature", "entry"],
+                    "payloadModes": ["none", "summary", "full"]
                 }
             }
         ]),
@@ -139,9 +134,9 @@ async fn contract_collections_summary_shape() {
 }
 
 #[tokio::test]
-async fn contract_hits_summary_shape() {
+async fn contract_search_summary_shape() {
     let app = router(state_with_payload(PayloadPlan::RowRef));
-    let (status, json) = get_json(app, "/collections/places/hits?bbox=-10,0,0,2").await;
+    let (status, json) = get_json(app, "/collections/places/search?bbox=-10,0,0,2").await;
     assert_eq!(status, StatusCode::OK);
     assert_contract(
         &json,
@@ -149,16 +144,16 @@ async fn contract_hits_summary_shape() {
             "collectionId": "places",
             "query": {
                 "bbox": [-10.0, 0.0, 0.0, 2.0],
-                "exact": false,
-                "exactApplied": false
+                "predicate": "bbox",
+                "level": "feature",
+                "payload": "summary",
+                "limit": 100,
+                "offset": 0
             },
+            "payloadKind": "row_ref",
             "numberMatched": 1,
             "numberReturned": 1,
-            "offset": 0,
-            "limit": 100,
-            "payloadPlan": {"kind": "row_ref"},
-            "payloadMode": "summary",
-            "hits": [
+            "matches": [
                 {
                     "entryId": 0,
                     "featureRef": {
@@ -172,12 +167,15 @@ async fn contract_hits_summary_shape() {
 }
 
 #[tokio::test]
-async fn contract_hits_feature_json_full_shape() {
+async fn contract_search_feature_json_full_shape() {
     let app = router(state_with_payload(PayloadPlan::FeatureJson {
         properties: PropertyProjection::AllNonGeometry,
     }));
-    let (status, json) =
-        get_json(app, "/collections/places/hits?bbox=-10,0,0,2&payload=full").await;
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&payload=full",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_contract(
         &json,
@@ -185,19 +183,16 @@ async fn contract_hits_feature_json_full_shape() {
             "collectionId": "places",
             "query": {
                 "bbox": [-10.0, 0.0, 0.0, 2.0],
-                "exact": false,
-                "exactApplied": false
+                "predicate": "bbox",
+                "level": "feature",
+                "payload": "full",
+                "limit": 100,
+                "offset": 0
             },
+            "payloadKind": "feature_json",
             "numberMatched": 1,
             "numberReturned": 1,
-            "offset": 0,
-            "limit": 100,
-            "payloadPlan": {
-                "kind": "feature_json",
-                "properties": {"kind": "all_non_geometry"}
-            },
-            "payloadMode": "full",
-            "hits": [
+            "matches": [
                 {
                     "entryId": 0,
                     "featureRef": {
@@ -246,12 +241,11 @@ async fn contract_items_feature_collection_shape() {
             ],
             "numberMatched": 1,
             "numberReturned": 1,
-            "offset": 0,
-            "limit": 100,
             "query": {
                 "bbox": [-10.0, 0.0, 0.0, 2.0],
-                "exact": false,
-                "exactApplied": false
+                "predicate": "bbox",
+                "limit": 100,
+                "offset": 0
             }
         }),
     );
@@ -260,7 +254,8 @@ async fn contract_items_feature_collection_shape() {
 #[tokio::test]
 async fn contract_error_shape() {
     let app = router(state_with_payload(PayloadPlan::RowRef));
-    let (status, json) = get_json(app, "/collections/places/hits?bbox=-10,0,0,2&payload=yes").await;
+    let (status, json) =
+        get_json(app, "/collections/places/search?bbox=-10,0,0,2&payload=yes").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_contract(
         &json,
@@ -283,20 +278,23 @@ async fn health_and_collections_work() {
     let (status, json) = get_json(app.clone(), "/collections").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json[0]["id"], "places");
-    assert_eq!(json[0]["capabilities"]["hits"], true);
+    assert_eq!(json[0]["payloadKind"], "row_ref");
+    assert_eq!(json[0]["capabilities"]["items"], false);
     assert_eq!(json[0]["featureCount"], 2);
     assert_eq!(json[0]["entryCount"], 2);
-    assert!(json[0].get("itemCount").is_none());
-    assert!(json[0].get("indexEntryCount").is_none());
+    assert!(json[0].get("payloadPlan").is_none());
+    assert!(json[0].get("hasPayload").is_none());
+    assert!(json[0].get("nodeSize").is_none());
 
     let (status, json) = get_json(app, "/collections/places").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["id"], "places");
     assert_eq!(json["sourceFormat"], "geojson");
+    assert_eq!(json["nodeSize"], 16);
 }
 
 #[tokio::test]
-async fn hits_are_entry_level_items_are_feature_level() {
+async fn search_levels_control_split_entry_grouping() {
     let app = router(state_with_geojson_request(
         ConvertRequest {
             envelope: EnvelopePolicy::Geographic {
@@ -312,21 +310,80 @@ async fn hits_are_entry_level_items_are_feature_level() {
 
     let (status, json) = get_json(
         app.clone(),
-        "/collections/places/hits?bbox=-180,-10,180,10&payload=full",
+        "/collections/places/search?bbox=-180,-10,180,10&level=entry&payload=full",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["query"]["level"], "entry");
     assert_eq!(json["numberMatched"], 2);
     assert_eq!(json["numberReturned"], 2);
-    assert_eq!(json["hits"][0]["featureRef"]["rowNumber"], 0);
-    assert_eq!(json["hits"][1]["featureRef"]["rowNumber"], 0);
-    assert_ne!(json["hits"][0]["entryId"], json["hits"][1]["entryId"]);
+    assert_eq!(json["matches"][0]["featureRef"]["rowNumber"], 0);
+    assert_eq!(json["matches"][1]["featureRef"]["rowNumber"], 0);
+    assert_ne!(json["matches"][0]["entryId"], json["matches"][1]["entryId"]);
+
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-180,-10,180,10",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["query"]["level"], "feature");
+    assert_eq!(json["numberMatched"], 1);
+    assert_eq!(json["numberReturned"], 1);
+    assert!(json["matches"][0]["featureRef"].get("part").is_none());
 
     let (status, json) = get_json(app, "/collections/places/items?bbox=-180,-10,180,10").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 1);
     assert_eq!(json["numberReturned"], 1);
     assert_eq!(json["features"][0]["properties"]["name"], "crossing");
+}
+
+#[tokio::test]
+async fn payloadless_artifact_falls_back_to_entry_level() {
+    let app = router(state_with_payload(PayloadPlan::None));
+
+    let (status, json) = get_json(app.clone(), "/collections").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json[0]["payloadKind"], "none");
+    assert_eq!(json[0]["capabilities"]["levels"], json!(["entry"]));
+    assert_eq!(json[0]["capabilities"]["predicates"], json!(["bbox"]));
+
+    let (status, json) = get_json(app.clone(), "/collections/places/search?bbox=-10,0,0,2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["query"]["level"], "entry");
+    assert_eq!(json["numberMatched"], 1);
+    assert!(json["matches"][0].get("featureRef").is_none());
+    assert_eq!(json["matches"][0]["payload"]["kind"], "none");
+
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&level=feature",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_level");
+}
+
+#[tokio::test]
+async fn intersects_predicate_filters_from_wkb_payload() {
+    let app = router(state_with_payload(PayloadPlan::RowWkb));
+
+    let (status, json) = get_json(app.clone(), "/collections").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json[0]["capabilities"]["predicates"],
+        json!(["bbox", "intersects"])
+    );
+
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&predicate=intersects",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["query"]["predicate"], "intersects");
+    assert_eq!(json["numberMatched"], 1);
 }
 
 #[tokio::test]
@@ -343,8 +400,7 @@ async fn items_returns_geojson_for_feature_json_payload() {
         json["query"]["bbox"],
         serde_json::json!([-10.0, 0.0, 0.0, 2.0])
     );
-    assert_eq!(json["query"]["exact"], false);
-    assert_eq!(json["query"]["exactApplied"], false);
+    assert_eq!(json["query"]["predicate"], "bbox");
     assert_eq!(json["features"][0]["properties"]["name"], "west");
 }
 
@@ -353,43 +409,57 @@ async fn items_rejects_non_feature_json_payload() {
     let app = router(state_with_payload(PayloadPlan::RowWkb));
     let (status, json) = get_json(app, "/collections/places/items?bbox=-10,0,0,2&limit=10").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(json["error"]["message"].as_str().unwrap().contains("/hits"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("/search")
+    );
 }
 
 #[tokio::test]
-async fn hits_returns_row_refs_and_paginates() {
+async fn search_returns_row_refs_and_paginates() {
     let app = router(state_with_payload(PayloadPlan::RowRef));
     let (status, json) = get_json(
         app,
-        "/collections/places/hits?bbox=-10,0,30,5&limit=1&offset=1",
+        "/collections/places/search?bbox=-10,0,30,5&limit=1&offset=1",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 2);
     assert_eq!(json["numberReturned"], 1);
-    assert_eq!(json["payloadMode"], "summary");
+    assert_eq!(json["query"]["payload"], "summary");
     assert_eq!(
         json["query"]["bbox"],
         serde_json::json!([-10.0, 0.0, 30.0, 5.0])
     );
-    assert_eq!(json["query"]["exact"], false);
-    assert_eq!(json["query"]["exactApplied"], false);
-    assert_eq!(json["hits"][0]["entryId"], 1);
-    assert_eq!(json["hits"][0]["featureRef"]["rowNumber"], 1);
-    assert_eq!(json["hits"][0]["payload"]["kind"], "row_ref");
+    assert_eq!(json["query"]["predicate"], "bbox");
+    assert_eq!(json["query"]["limit"], 1);
+    assert_eq!(json["query"]["offset"], 1);
+    assert_eq!(json["matches"][0]["entryId"], 1);
+    assert_eq!(json["matches"][0]["featureRef"]["rowNumber"], 1);
+    assert_eq!(json["matches"][0]["payload"]["kind"], "row_ref");
 }
 
 #[tokio::test]
-async fn hits_can_include_wkb_payload() {
+async fn search_can_include_wkb_payload() {
     let app = router(state_with_payload(PayloadPlan::RowWkb));
-    let (status, json) =
-        get_json(app, "/collections/places/hits?bbox=-10,0,0,2&payload=full").await;
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&payload=full",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["payloadMode"], "full");
-    assert_eq!(json["hits"][0]["payload"]["kind"], "row_wkb");
-    assert!(json["hits"][0]["payload"]["byteLength"].as_u64().unwrap() > 8);
+    assert_eq!(json["query"]["payload"], "full");
+    assert_eq!(json["matches"][0]["payload"]["kind"], "row_wkb");
     assert!(
-        json["hits"][0]["payload"]["wkbBase64"]
+        json["matches"][0]["payload"]["byteLength"]
+            .as_u64()
+            .unwrap()
+            > 8
+    );
+    assert!(
+        json["matches"][0]["payload"]["wkbBase64"]
             .as_str()
             .unwrap()
             .len()
@@ -398,28 +468,34 @@ async fn hits_can_include_wkb_payload() {
 }
 
 #[tokio::test]
-async fn hits_can_include_feature_json_payload() {
+async fn search_can_include_feature_json_payload() {
     let app = router(state_with_payload(PayloadPlan::FeatureJson {
         properties: PropertyProjection::AllNonGeometry,
     }));
-    let (status, json) =
-        get_json(app, "/collections/places/hits?bbox=-10,0,0,2&payload=full").await;
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&payload=full",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["hits"][0]["payload"]["kind"], "feature_json");
+    assert_eq!(json["matches"][0]["payload"]["kind"], "feature_json");
     assert_eq!(
-        json["hits"][0]["payload"]["feature"]["properties"]["name"],
+        json["matches"][0]["payload"]["feature"]["properties"]["name"],
         "west"
     );
 }
 
 #[tokio::test]
-async fn hits_can_omit_payload_objects() {
+async fn search_can_omit_payload_objects() {
     let app = router(state_with_payload(PayloadPlan::RowWkb));
-    let (status, json) =
-        get_json(app, "/collections/places/hits?bbox=-10,0,0,2&payload=none").await;
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&payload=none",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["payloadMode"], "none");
-    assert!(json["hits"][0].get("payload").is_none());
+    assert_eq!(json["query"]["payload"], "none");
+    assert!(json["matches"][0].get("payload").is_none());
 }
 
 #[tokio::test]
@@ -429,13 +505,13 @@ async fn route_errors_are_json() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json["error"]["code"], "collection_not_found");
 
-    let (status, json) = get_json(app.clone(), "/collections/places/hits?bbox=1,2,3").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/search?bbox=1,2,3").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"]["code"], "invalid_bbox");
 
     let (status, json) = get_json(
         app.clone(),
-        "/collections/places/hits?bbox=-10,0,0,2&limit=0",
+        "/collections/places/search?bbox=-10,0,0,2&limit=0",
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -443,11 +519,19 @@ async fn route_errors_are_json() {
 
     let (status, json) = get_json(
         app.clone(),
-        "/collections/places/hits?bbox=-10,0,0,2&payload=yes",
+        "/collections/places/search?bbox=-10,0,0,2&predicate=exact",
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(json["error"]["code"], "invalid_payload");
+    assert_eq!(json["error"]["code"], "invalid_predicate");
+
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-10,0,0,2&level=item",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_level");
 
     let (status, json) = get_json(
         app.clone(),
@@ -457,7 +541,19 @@ async fn route_errors_are_json() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"]["code"], "invalid_payload");
 
-    let (status, json) = get_json(app, "/collections/places/hits?bbox=-10,0,0,2&exact=true").await;
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/items?bbox=-10,0,0,2&level=entry",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_level");
+
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&predicate=intersects",
+    )
+    .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(json["error"]["code"], "exact_filter_unavailable");
+    assert_eq!(json["error"]["code"], "unsupported_predicate");
 }

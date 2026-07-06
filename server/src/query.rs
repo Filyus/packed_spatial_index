@@ -13,51 +13,36 @@ use crate::{Collection, ServerError};
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 10_000;
 
-/// Query parameters accepted by `/items`.
+/// Query parameters accepted by `/search` and `/items`.
+///
+/// `/items` rejects `level` and `payload`; both endpoints share the rest.
 #[derive(Debug, Deserialize)]
-pub struct ItemsParams {
+pub struct SearchParams {
     /// Query bbox as comma-separated numbers.
     #[serde(default)]
     pub bbox: Option<String>,
-    /// Maximum returned features.
+    /// Maximum returned records.
     #[serde(default)]
     pub limit: Option<String>,
-    /// Number of matched features to skip.
+    /// Number of matched records to skip.
     #[serde(default)]
     pub offset: Option<String>,
-    /// Whether to apply exact post-filtering when supported.
+    /// Spatial predicate: `bbox` or `intersects`.
     #[serde(default)]
-    pub exact: Option<String>,
-    /// Payload materialization is only accepted on `/hits`.
+    pub predicate: Option<String>,
+    /// Result level for `/search`: `feature` or `entry`.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Payload materialization mode for `/search`.
     #[serde(default)]
     pub payload: Option<String>,
 }
 
-/// Query parameters accepted by `/hits`.
-#[derive(Debug, Deserialize)]
-pub struct HitsParams {
-    /// Query bbox as comma-separated numbers.
-    #[serde(default)]
-    pub bbox: Option<String>,
-    /// Maximum returned hits.
-    #[serde(default)]
-    pub limit: Option<String>,
-    /// Number of matched hits to skip.
-    #[serde(default)]
-    pub offset: Option<String>,
-    /// Whether to apply exact post-filtering when supported.
-    #[serde(default)]
-    pub exact: Option<String>,
-    /// Payload materialization mode.
-    #[serde(default)]
-    pub payload: Option<String>,
-}
-
-/// Payload materialization mode for `/hits`.
+/// Payload materialization mode for `/search`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadMode {
-    /// Omit the payload object from each hit.
+    /// Omit the payload object from each match.
     None,
     /// Return payload kind and cheap metadata only.
     #[default]
@@ -66,36 +51,87 @@ pub enum PayloadMode {
     Full,
 }
 
-/// Normalized query information included in search responses.
+/// Spatial predicate applied by a search.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryPredicate {
+    /// Envelope intersection against the packed index only.
+    #[default]
+    Bbox,
+    /// Exact geometry intersection refined from artifact payloads.
+    Intersects,
+}
+
+/// Result granularity for `/search`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultLevel {
+    /// One record per source feature; split index entries are deduplicated.
+    Feature,
+    /// One record per index entry, including split parts.
+    Entry,
+}
+
+/// Artifact payload kind in server wire vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PayloadKind {
+    /// Artifact stores no payload section.
+    None,
+    /// Artifact stores fixed-width feature refs.
+    RowRef,
+    /// Artifact stores WKB geometry bytes.
+    RowWkb,
+    /// Artifact stores GeoJSON features.
+    FeatureJson,
+}
+
+impl From<&PayloadPlan> for PayloadKind {
+    fn from(plan: &PayloadPlan) -> Self {
+        match plan {
+            PayloadPlan::None => Self::None,
+            PayloadPlan::RowRef => Self::RowRef,
+            PayloadPlan::RowWkb => Self::RowWkb,
+            PayloadPlan::FeatureJson { .. } => Self::FeatureJson,
+        }
+    }
+}
+
+/// Effective query echoed back in search responses.
+///
+/// Field names match the query parameters exactly; values reflect applied
+/// defaults, so clients can see how an omitted parameter was resolved.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryInfo {
     /// Parsed query bbox.
     pub bbox: Vec<f64>,
-    /// Whether exact filtering was requested.
-    pub exact: bool,
-    /// Whether exact filtering was actually applied.
-    pub exact_applied: bool,
+    /// Applied spatial predicate.
+    pub predicate: QueryPredicate,
+    /// Applied result level; `/items` responses omit it (always feature).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<ResultLevel>,
+    /// Applied payload mode; `/items` responses omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<PayloadMode>,
+    /// Applied limit.
+    pub limit: usize,
+    /// Applied offset.
+    pub offset: usize,
 }
 
-/// Collection capabilities exposed through the HTTP API.
+/// Per-collection query capabilities exposed through the HTTP API.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
-    /// Spatial bbox search is available.
-    pub bbox_search: bool,
-    /// `/items` can return GeoJSON FeatureCollection without source read-back.
-    pub feature_json_items: bool,
-    /// `/hits` can return artifact hits.
-    pub hits: bool,
-    /// Exact 2D filtering can run from artifact payloads.
-    pub exact_filter: bool,
-    /// Original source read-back is wired.
-    pub source_read_back: bool,
-    /// Artifact has WKB geometry payloads.
-    pub row_wkb_payload: bool,
-    /// Artifact has row-reference payloads.
-    pub row_ref_payload: bool,
+    /// Whether `/items` can serve GeoJSON from this artifact.
+    pub items: bool,
+    /// Spatial predicates accepted by `/search` and `/items`.
+    pub predicates: Vec<QueryPredicate>,
+    /// Result levels accepted by `/search`.
+    pub levels: Vec<ResultLevel>,
+    /// Payload modes accepted by `/search`.
+    pub payload_modes: Vec<PayloadMode>,
 }
 
 /// Collection summary returned by list/detail endpoints.
@@ -116,12 +152,8 @@ pub struct CollectionSummary {
     pub dims: CoordinateDims,
     /// Artifact coordinate precision.
     pub storage_precision: StoragePrecision,
-    /// Artifact payload plan.
-    pub payload_plan: PayloadPlan,
-    /// Packed node size.
-    pub node_size: usize,
-    /// Whether the artifact has a payload section.
-    pub has_payload: bool,
+    /// Artifact payload kind.
+    pub payload_kind: PayloadKind,
     /// Server capabilities for this collection.
     pub capabilities: Capabilities,
 }
@@ -133,6 +165,8 @@ pub struct CollectionDetail {
     /// Collection summary.
     #[serde(flatten)]
     pub summary: CollectionSummary,
+    /// Packed node size in the artifact.
+    pub node_size: usize,
     /// Source format label from `geoM`.
     pub source_format: String,
     /// Stable source metadata fingerprint.
@@ -147,50 +181,44 @@ pub struct CollectionDetail {
     pub encoding: GeometryEncoding,
 }
 
-/// `/hits` response.
+/// `/search` response envelope.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HitsResponse {
+pub struct SearchResponse {
     /// Collection id.
     pub collection_id: String,
-    /// Normalized query information.
+    /// Effective query after defaults were applied.
     pub query: QueryInfo,
-    /// Total matched hits before pagination.
-    #[serde(rename = "numberMatched")]
+    /// Artifact payload kind.
+    pub payload_kind: PayloadKind,
+    /// Total matched records before pagination.
     pub number_matched: usize,
-    /// Returned hits after pagination.
-    #[serde(rename = "numberReturned")]
+    /// Returned records after pagination.
     pub number_returned: usize,
-    /// Applied offset.
-    pub offset: usize,
-    /// Applied limit.
-    pub limit: usize,
-    /// Artifact payload plan.
-    pub payload_plan: PayloadPlan,
-    /// Requested payload materialization mode.
-    pub payload_mode: PayloadMode,
-    /// Returned hits.
-    pub hits: Vec<HitRecord>,
+    /// Returned records.
+    pub matches: Vec<MatchRecord>,
 }
 
-/// One `/hits` record.
+/// One `/search` record.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HitRecord {
-    /// Compact index entry id in the artifact.
+pub struct MatchRecord {
+    /// Index entry ordinal in the artifact. Stable for one artifact build,
+    /// not across rebuilds. At feature level this is the representative
+    /// (lowest-part) entry of the source feature.
     pub entry_id: usize,
     /// Source feature ref when the payload contains one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_ref: Option<FeatureRefRecord>,
-    /// Payload summary.
+    /// Payload summary or value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload: Option<HitPayload>,
+    pub payload: Option<MatchPayload>,
 }
 
-/// Payload summary for a hit.
+/// Payload object for a match.
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum HitPayload {
+pub enum MatchPayload {
     /// Artifact has no payload section.
     None,
     /// Payload stores only a feature ref.
@@ -225,7 +253,8 @@ pub struct FeatureRefRecord {
     /// Row within the row group when available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_in_group: Option<u32>,
-    /// Geometry part when a source feature expands into multiple index entries.
+    /// Geometry part for entry-level records of split features; omitted at
+    /// feature level.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part: Option<u16>,
     /// Source feature id when available.
@@ -255,16 +284,10 @@ pub struct FeatureCollectionResponse {
     /// Returned GeoJSON features.
     pub features: Vec<serde_json::Value>,
     /// Total matched features before pagination.
-    #[serde(rename = "numberMatched")]
     pub number_matched: usize,
     /// Returned features after pagination.
-    #[serde(rename = "numberReturned")]
     pub number_returned: usize,
-    /// Applied offset.
-    pub offset: usize,
-    /// Applied limit.
-    pub limit: usize,
-    /// Normalized query information.
+    /// Effective query after defaults were applied.
     pub query: QueryInfo,
 }
 
@@ -280,9 +303,7 @@ impl CollectionSummary {
             entry_count: collection.entry_count(),
             dims: manifest.dims,
             storage_precision: manifest.storage_precision,
-            payload_plan: manifest.payload_plan.clone(),
-            node_size: collection.node_size(),
-            has_payload: collection.has_payload(),
+            payload_kind: PayloadKind::from(&manifest.payload_plan),
             capabilities: capabilities(collection),
         }
     }
@@ -294,6 +315,7 @@ impl CollectionDetail {
         let manifest = collection.manifest();
         Self {
             summary: CollectionSummary::new(collection),
+            node_size: collection.node_size(),
             source_format: manifest.source_format.clone(),
             source_fingerprint: manifest.source_fingerprint.clone(),
             selected_column: manifest.selected_column.clone(),
@@ -304,70 +326,74 @@ impl CollectionDetail {
     }
 }
 
-/// Return capability flags for a collection.
+/// Return query capabilities for a collection.
 pub fn capabilities(collection: &Collection) -> Capabilities {
-    let payload = &collection.manifest().payload_plan;
+    let payload_kind = PayloadKind::from(&collection.manifest().payload_plan);
+    let mut predicates = vec![QueryPredicate::Bbox];
+    if collection.supports_intersects_predicate() {
+        predicates.push(QueryPredicate::Intersects);
+    }
+    let levels = if payload_kind == PayloadKind::None {
+        vec![ResultLevel::Entry]
+    } else {
+        vec![ResultLevel::Feature, ResultLevel::Entry]
+    };
     Capabilities {
-        bbox_search: true,
-        feature_json_items: matches!(payload, PayloadPlan::FeatureJson { .. }),
-        hits: true,
-        exact_filter: collection.supports_exact_filter(),
-        source_read_back: false,
-        row_wkb_payload: matches!(payload, PayloadPlan::RowWkb),
-        row_ref_payload: matches!(payload, PayloadPlan::RowRef),
+        items: payload_kind == PayloadKind::FeatureJson,
+        predicates,
+        levels,
+        payload_modes: vec![PayloadMode::None, PayloadMode::Summary, PayloadMode::Full],
     }
 }
 
-/// Search `/hits`.
-pub fn hits_response(
+/// Search `/search`.
+pub fn search_response(
     collection: &Collection,
-    params: HitsParams,
-) -> Result<HitsResponse, ServerError> {
-    let options = SearchOptions::from_parts(
-        params.bbox.as_deref(),
-        params.limit.as_deref(),
-        params.offset.as_deref(),
-        params.exact.as_deref(),
-    )?;
+    params: SearchParams,
+) -> Result<SearchResponse, ServerError> {
+    let options = SearchOptions::from_params(&params)?;
     let payload_mode = parse_payload_mode(params.payload.as_deref())?;
-    let payload_plan = collection.manifest().payload_plan.clone();
-    let SearchOutcome {
-        mut records,
-        exact_applied,
-    } = search_records(
+    let level = resolve_level(collection, parse_level(params.level.as_deref())?)?;
+    let payload_kind = PayloadKind::from(&collection.manifest().payload_plan);
+    let mut records = search_records(
         collection,
         &options.bbox,
-        options.exact,
+        options.predicate,
         payload_mode,
-        SearchGranularity::IndexEntries,
+        level,
     )?;
     let number_matched = records.len();
     let records = paginate(&mut records, options.offset, options.limit);
-    Ok(HitsResponse {
+    Ok(SearchResponse {
         collection_id: collection.id().to_owned(),
         query: QueryInfo {
             bbox: options.bbox,
-            exact: options.exact,
-            exact_applied,
+            predicate: options.predicate,
+            level: Some(level),
+            payload: Some(payload_mode),
+            limit: options.limit,
+            offset: options.offset,
         },
+        payload_kind,
         number_matched,
         number_returned: records.len(),
-        offset: options.offset,
-        limit: options.limit,
-        payload_plan,
-        payload_mode,
-        hits: records,
+        matches: records,
     })
 }
 
 /// Search `/items`.
 pub fn items_response(
     collection: &Collection,
-    params: ItemsParams,
+    params: SearchParams,
 ) -> Result<FeatureCollectionResponse, ServerError> {
     if params.payload.is_some() {
         return Err(ServerError::InvalidPayload(
-            "payload is only supported on /hits".to_string(),
+            "payload is only supported on /search".to_string(),
+        ));
+    }
+    if params.level.is_some() {
+        return Err(ServerError::InvalidLevel(
+            "level is only supported on /search".to_string(),
         ));
     }
     if !matches!(
@@ -375,32 +401,24 @@ pub fn items_response(
         PayloadPlan::FeatureJson { .. }
     ) {
         return Err(ServerError::UnsupportedPayload(format!(
-            "collection `{}` cannot serve /items because its artifact payload is not FeatureJson; use /hits",
+            "collection `{}` cannot serve /items because its artifact payload is not feature_json; use /search",
             collection.id()
         )));
     }
-    let options = SearchOptions::from_parts(
-        params.bbox.as_deref(),
-        params.limit.as_deref(),
-        params.offset.as_deref(),
-        params.exact.as_deref(),
-    )?;
-    let SearchOutcome {
-        mut records,
-        exact_applied,
-    } = search_records(
+    let options = SearchOptions::from_params(&params)?;
+    let mut records = search_records(
         collection,
         &options.bbox,
-        options.exact,
+        options.predicate,
         PayloadMode::Full,
-        SearchGranularity::SourceFeatures,
+        ResultLevel::Feature,
     )?;
     let number_matched = records.len();
     let records = paginate(&mut records, options.offset, options.limit);
     let features = records
         .into_iter()
         .filter_map(|record| match record.payload {
-            Some(HitPayload::FeatureJson { feature }) => feature,
+            Some(MatchPayload::FeatureJson { feature }) => feature,
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -408,61 +426,68 @@ pub fn items_response(
         kind: "FeatureCollection",
         number_matched,
         number_returned: features.len(),
-        offset: options.offset,
-        limit: options.limit,
         query: QueryInfo {
             bbox: options.bbox,
-            exact: options.exact,
-            exact_applied,
+            predicate: options.predicate,
+            level: None,
+            payload: None,
+            limit: options.limit,
+            offset: options.offset,
         },
         features,
     })
-}
-
-struct SearchOutcome {
-    records: Vec<HitRecord>,
-    exact_applied: bool,
 }
 
 struct SearchOptions {
     bbox: Vec<f64>,
     limit: usize,
     offset: usize,
-    exact: bool,
+    predicate: QueryPredicate,
 }
 
 impl SearchOptions {
-    fn from_parts(
-        bbox: Option<&str>,
-        limit: Option<&str>,
-        offset: Option<&str>,
-        exact: Option<&str>,
-    ) -> Result<Self, ServerError> {
-        let bbox = parse_bbox(bbox)?;
-        let (limit, offset) = limit_offset(limit, offset)?;
-        let exact = parse_exact(exact)?;
+    fn from_params(params: &SearchParams) -> Result<Self, ServerError> {
+        let bbox = parse_bbox(params.bbox.as_deref())?;
+        let (limit, offset) = limit_offset(params.limit.as_deref(), params.offset.as_deref())?;
+        let predicate = parse_predicate(params.predicate.as_deref())?;
         Ok(Self {
             bbox,
             limit,
             offset,
-            exact,
+            predicate,
         })
     }
 }
 
-#[derive(Clone, Copy)]
-enum SearchGranularity {
-    IndexEntries,
-    SourceFeatures,
+fn resolve_level(
+    collection: &Collection,
+    requested: Option<ResultLevel>,
+) -> Result<ResultLevel, ServerError> {
+    let has_feature_refs = !matches!(collection.manifest().payload_plan, PayloadPlan::None);
+    match requested {
+        None => Ok(if has_feature_refs {
+            ResultLevel::Feature
+        } else {
+            ResultLevel::Entry
+        }),
+        Some(ResultLevel::Feature) if !has_feature_refs => {
+            Err(ServerError::UnsupportedLevel(format!(
+                "collection `{}` stores no feature references; use level=entry",
+                collection.id()
+            )))
+        }
+        Some(level) => Ok(level),
+    }
 }
 
 fn search_records(
     collection: &Collection,
     bbox: &[f64],
-    exact: bool,
+    predicate: QueryPredicate,
     payload_mode: PayloadMode,
-    granularity: SearchGranularity,
-) -> Result<SearchOutcome, ServerError> {
+    level: ResultLevel,
+) -> Result<Vec<MatchRecord>, ServerError> {
+    let exact = predicate == QueryPredicate::Intersects;
     let index = collection.open_local_index()?;
     match index {
         GeoArtifactIndex::D2(index) => {
@@ -476,52 +501,46 @@ fn search_records(
             let payload_plan = &collection.manifest().payload_plan;
             if matches!(payload_plan, PayloadPlan::None) {
                 if exact {
-                    return Err(ServerError::ExactFilterUnavailable(format!(
-                        "collection `{}` cannot exact-filter because its artifact has no geometry payload",
+                    return Err(ServerError::UnsupportedPredicate(format!(
+                        "collection `{}` cannot apply predicate=intersects because its artifact has no geometry payload",
                         collection.id()
                     )));
                 }
-                let mut items = index.search_items(query)?;
-                items.sort_unstable();
-                items.dedup();
-                return Ok(SearchOutcome {
-                    records: items
-                        .into_iter()
-                        .map(|item| HitRecord {
-                            entry_id: item,
-                            feature_ref: None,
-                            payload: hit_payload_none(payload_mode),
-                        })
-                        .collect(),
-                    exact_applied: false,
-                });
+                let mut ids = index.search_entry_ids(query)?;
+                ids.sort_unstable();
+                ids.dedup();
+                return Ok(ids
+                    .into_iter()
+                    .map(|id| MatchRecord {
+                        entry_id: id,
+                        feature_ref: None,
+                        payload: match_payload_none(payload_mode),
+                    })
+                    .collect());
             }
-            if exact && !collection.supports_exact_filter() {
-                return Err(ServerError::ExactFilterUnavailable(format!(
-                    "collection `{}` cannot exact-filter from its artifact payload",
+            if exact && !collection.supports_intersects_predicate() {
+                return Err(ServerError::UnsupportedPredicate(format!(
+                    "collection `{}` cannot apply predicate=intersects from its artifact payload",
                     collection.id()
                 )));
             }
-            let mut hits = index.search_hits(query)?;
+            let mut matches = index.search_matches(query)?;
             if exact {
-                hits = index.filter_hits(
-                    hits,
+                matches = index.filter_matches(
+                    matches,
                     GeoQuery2D::box2d(query),
                     SpatialPredicate::Intersects,
                     NonPlanarExactPolicy::Reject,
                 )?;
             }
-            sort_hits(&mut hits);
-            if matches!(granularity, SearchGranularity::SourceFeatures) {
-                dedupe_feature_hits(&mut hits);
+            sort_matches(&mut matches);
+            if matches!(level, ResultLevel::Feature) {
+                dedupe_feature_matches(&mut matches);
             }
-            Ok(SearchOutcome {
-                records: hits
-                    .into_iter()
-                    .map(|hit| hit_record(hit.item, Some(hit.feature), hit.payload, payload_mode))
-                    .collect(),
-                exact_applied: exact,
-            })
+            Ok(matches
+                .into_iter()
+                .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
+                .collect())
         }
         GeoArtifactIndex::D3(index) => {
             if bbox.len() != 6 {
@@ -531,64 +550,67 @@ fn search_records(
                 )));
             }
             if exact {
-                return Err(ServerError::ExactFilterUnavailable(format!(
-                    "collection `{}` is 3D; exact filtering is only supported for 2D artifacts in this server",
+                return Err(ServerError::UnsupportedPredicate(format!(
+                    "collection `{}` is 3D; predicate=intersects is only supported for 2D artifacts in this server",
                     collection.id()
                 )));
             }
             let query = Box3D::new(bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5]);
             if matches!(collection.manifest().payload_plan, PayloadPlan::None) {
-                let mut items = index.search_items(query)?;
-                items.sort_unstable();
-                items.dedup();
-                return Ok(SearchOutcome {
-                    records: items
-                        .into_iter()
-                        .map(|item| HitRecord {
-                            entry_id: item,
-                            feature_ref: None,
-                            payload: hit_payload_none(payload_mode),
-                        })
-                        .collect(),
-                    exact_applied: false,
-                });
-            }
-            let mut hits = index.search_hits(query)?;
-            sort_hits(&mut hits);
-            if matches!(granularity, SearchGranularity::SourceFeatures) {
-                dedupe_feature_hits(&mut hits);
-            }
-            Ok(SearchOutcome {
-                records: hits
+                let mut ids = index.search_entry_ids(query)?;
+                ids.sort_unstable();
+                ids.dedup();
+                return Ok(ids
                     .into_iter()
-                    .map(|hit| hit_record(hit.item, Some(hit.feature), hit.payload, payload_mode))
-                    .collect(),
-                exact_applied: false,
-            })
+                    .map(|id| MatchRecord {
+                        entry_id: id,
+                        feature_ref: None,
+                        payload: match_payload_none(payload_mode),
+                    })
+                    .collect());
+            }
+            let mut matches = index.search_matches(query)?;
+            sort_matches(&mut matches);
+            if matches!(level, ResultLevel::Feature) {
+                dedupe_feature_matches(&mut matches);
+            }
+            Ok(matches
+                .into_iter()
+                .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
+                .collect())
         }
     }
 }
 
-fn hit_record(
-    item: usize,
+fn match_record(
+    entry_id: usize,
     feature_ref: Option<FeatureRef>,
     payload: GeoPayload,
     payload_mode: PayloadMode,
-) -> HitRecord {
+    level: ResultLevel,
+) -> MatchRecord {
     let payload = match (payload_mode, payload) {
         (PayloadMode::None, _) => None,
-        (_, GeoPayload::RowRef) => Some(HitPayload::RowRef),
-        (mode, GeoPayload::RowWkb(wkb)) => Some(HitPayload::RowWkb {
+        (_, GeoPayload::RowRef) => Some(MatchPayload::RowRef),
+        (mode, GeoPayload::RowWkb(wkb)) => Some(MatchPayload::RowWkb {
             byte_length: wkb.len(),
             wkb_base64: (mode == PayloadMode::Full).then(|| STANDARD.encode(wkb)),
         }),
-        (mode, GeoPayload::FeatureJson(feature)) => Some(HitPayload::FeatureJson {
+        (mode, GeoPayload::FeatureJson(feature)) => Some(MatchPayload::FeatureJson {
             feature: (mode == PayloadMode::Full).then(|| public_feature_json(feature)),
         }),
     };
-    HitRecord {
-        entry_id: item,
-        feature_ref: feature_ref.map(Into::into),
+    let feature_ref = feature_ref.map(|mut feature| {
+        // A representative part number is meaningless once split entries
+        // collapse into one feature-level record.
+        if matches!(level, ResultLevel::Feature) {
+            feature.part = None;
+        }
+        FeatureRefRecord::from(feature)
+    });
+    MatchRecord {
+        entry_id,
+        feature_ref,
         payload,
     }
 }
@@ -600,8 +622,8 @@ fn public_feature_json(mut feature: serde_json::Value) -> serde_json::Value {
     feature
 }
 
-fn hit_payload_none(payload_mode: PayloadMode) -> Option<HitPayload> {
-    (payload_mode != PayloadMode::None).then_some(HitPayload::None)
+fn match_payload_none(payload_mode: PayloadMode) -> Option<MatchPayload> {
+    (payload_mode != PayloadMode::None).then_some(MatchPayload::None)
 }
 
 fn parse_bbox(raw: Option<&str>) -> Result<Vec<f64>, ServerError> {
@@ -660,13 +682,23 @@ fn limit_offset(limit: Option<&str>, offset: Option<&str>) -> Result<(usize, usi
     Ok((limit, offset))
 }
 
-fn parse_exact(raw: Option<&str>) -> Result<bool, ServerError> {
+fn parse_predicate(raw: Option<&str>) -> Result<QueryPredicate, ServerError> {
     match raw {
-        None => Ok(false),
-        Some("true") => Ok(true),
-        Some("false") => Ok(false),
-        Some(_) => Err(ServerError::InvalidExact(
-            "exact must be true or false".to_string(),
+        None | Some("") | Some("bbox") => Ok(QueryPredicate::Bbox),
+        Some("intersects") => Ok(QueryPredicate::Intersects),
+        Some(_) => Err(ServerError::InvalidPredicate(
+            "predicate must be bbox or intersects".to_string(),
+        )),
+    }
+}
+
+fn parse_level(raw: Option<&str>) -> Result<Option<ResultLevel>, ServerError> {
+    match raw {
+        None | Some("") => Ok(None),
+        Some("feature") => Ok(Some(ResultLevel::Feature)),
+        Some("entry") => Ok(Some(ResultLevel::Entry)),
+        Some(_) => Err(ServerError::InvalidLevel(
+            "level must be feature or entry".to_string(),
         )),
     }
 }
@@ -682,7 +714,7 @@ fn parse_payload_mode(raw: Option<&str>) -> Result<PayloadMode, ServerError> {
     }
 }
 
-fn paginate(records: &mut Vec<HitRecord>, offset: usize, limit: usize) -> Vec<HitRecord> {
+fn paginate(records: &mut Vec<MatchRecord>, offset: usize, limit: usize) -> Vec<MatchRecord> {
     if offset >= records.len() {
         return Vec::new();
     }
@@ -690,17 +722,17 @@ fn paginate(records: &mut Vec<HitRecord>, offset: usize, limit: usize) -> Vec<Hi
     records.drain(offset..end).collect()
 }
 
-fn sort_hits(hits: &mut [packed_spatial_index_geo::GeoHit]) {
-    hits.sort_by(|a, b| {
+fn sort_matches(matches: &mut [packed_spatial_index_geo::GeoMatch]) {
+    matches.sort_by(|a, b| {
         feature_sort_key(&a.feature)
             .cmp(&feature_sort_key(&b.feature))
-            .then_with(|| a.item.cmp(&b.item))
+            .then_with(|| a.entry_id.cmp(&b.entry_id))
     });
 }
 
-fn dedupe_feature_hits(hits: &mut Vec<packed_spatial_index_geo::GeoHit>) {
+fn dedupe_feature_matches(matches: &mut Vec<packed_spatial_index_geo::GeoMatch>) {
     let mut seen = HashSet::new();
-    hits.retain(|hit| seen.insert(feature_identity(&hit.feature)));
+    matches.retain(|m| seen.insert(feature_identity(&m.feature)));
 }
 
 fn feature_identity(feature: &FeatureRef) -> (u64, Option<u32>, Option<u32>, Option<String>) {
@@ -751,5 +783,25 @@ mod tests {
         assert_eq!(parse_payload_mode(None).unwrap(), PayloadMode::Summary);
         assert_eq!(parse_payload_mode(Some("none")).unwrap(), PayloadMode::None);
         assert!(parse_payload_mode(Some("yes")).is_err());
+    }
+
+    #[test]
+    fn predicate_defaults_to_bbox() {
+        assert_eq!(parse_predicate(None).unwrap(), QueryPredicate::Bbox);
+        assert_eq!(
+            parse_predicate(Some("intersects")).unwrap(),
+            QueryPredicate::Intersects
+        );
+        assert!(parse_predicate(Some("exact")).is_err());
+    }
+
+    #[test]
+    fn level_is_optional_until_resolved() {
+        assert_eq!(parse_level(None).unwrap(), None);
+        assert_eq!(
+            parse_level(Some("entry")).unwrap(),
+            Some(ResultLevel::Entry)
+        );
+        assert!(parse_level(Some("item")).is_err());
     }
 }

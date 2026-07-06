@@ -26,18 +26,24 @@ pub enum ServerError {
     /// The client supplied an invalid offset.
     #[error("invalid offset: {0}")]
     InvalidOffset(String),
-    /// The client supplied an invalid exact-filter flag.
-    #[error("invalid exact flag: {0}")]
-    InvalidExact(String),
+    /// The client supplied an invalid spatial predicate.
+    #[error("invalid predicate: {0}")]
+    InvalidPredicate(String),
+    /// The client supplied an invalid result level.
+    #[error("invalid level: {0}")]
+    InvalidLevel(String),
     /// The client supplied an invalid payload mode.
     #[error("invalid payload mode: {0}")]
     InvalidPayload(String),
     /// The artifact payload cannot support the requested operation.
     #[error("unsupported payload: {0}")]
     UnsupportedPayload(String),
-    /// Exact filtering cannot run for this collection/request.
-    #[error("exact filter unavailable: {0}")]
-    ExactFilterUnavailable(String),
+    /// The requested spatial predicate cannot run for this collection.
+    #[error("unsupported predicate: {0}")]
+    UnsupportedPredicate(String),
+    /// The requested result level cannot run for this collection.
+    #[error("unsupported level: {0}")]
+    UnsupportedLevel(String),
     /// File I/O failed.
     #[error("I/O error for {path}: {source}")]
     Io {
@@ -68,13 +74,14 @@ impl ServerError {
             ServerError::InvalidBbox(_)
             | ServerError::InvalidLimit(_)
             | ServerError::InvalidOffset(_)
-            | ServerError::InvalidExact(_)
+            | ServerError::InvalidPredicate(_)
+            | ServerError::InvalidLevel(_)
             | ServerError::InvalidPayload(_)
             | ServerError::Toml(_) => StatusCode::BAD_REQUEST,
             ServerError::CollectionNotFound(_) => StatusCode::NOT_FOUND,
-            ServerError::UnsupportedPayload(_) | ServerError::ExactFilterUnavailable(_) => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            ServerError::UnsupportedPayload(_)
+            | ServerError::UnsupportedPredicate(_)
+            | ServerError::UnsupportedLevel(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ServerError::Config(_) | ServerError::Io { .. } | ServerError::Geo(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -86,12 +93,14 @@ impl ServerError {
             ServerError::InvalidBbox(_) => "invalid_bbox",
             ServerError::InvalidLimit(_) => "invalid_limit",
             ServerError::InvalidOffset(_) => "invalid_offset",
-            ServerError::InvalidExact(_) => "invalid_exact",
+            ServerError::InvalidPredicate(_) => "invalid_predicate",
+            ServerError::InvalidLevel(_) => "invalid_level",
             ServerError::InvalidPayload(_) => "invalid_payload",
             ServerError::Toml(_) => "bad_request",
             ServerError::CollectionNotFound(_) => "collection_not_found",
             ServerError::UnsupportedPayload(_) => "unsupported_payload",
-            ServerError::ExactFilterUnavailable(_) => "exact_filter_unavailable",
+            ServerError::UnsupportedPredicate(_) => "unsupported_predicate",
+            ServerError::UnsupportedLevel(_) => "unsupported_level",
             ServerError::Config(_) => "configuration",
             ServerError::Io { .. } => "io",
             ServerError::Geo(_) => "artifact_error",

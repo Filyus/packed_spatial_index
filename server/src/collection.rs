@@ -117,7 +117,7 @@ impl Collection {
 
     /// Number of indexed entries.
     pub fn entry_count(&self) -> usize {
-        self.directory.num_items()
+        self.directory.num_entries()
     }
 
     /// Packed node size in the artifact.
@@ -130,8 +130,8 @@ impl Collection {
         self.directory.has_payload()
     }
 
-    /// Whether exact filtering can run from artifact payloads alone.
-    pub fn supports_exact_filter(&self) -> bool {
+    /// Whether `predicate=intersects` can run from artifact payloads alone.
+    pub fn supports_intersects_predicate(&self) -> bool {
         matches!(
             self.manifest().dims,
             CoordinateDims::Xy | CoordinateDims::Xym
@@ -269,10 +269,10 @@ mod tests {
         let GeoArtifactIndex::D2(index) = index else {
             panic!("expected 2D artifact");
         };
-        let hits = index
-            .search_features(Box2D::new(0.0, 0.0, 2.0, 2.0))
+        let refs = index
+            .search_feature_refs(Box2D::new(0.0, 0.0, 2.0, 2.0))
             .unwrap();
-        assert_eq!(hits.len(), 1);
+        assert_eq!(refs.len(), 1);
         assert!(reads.load(Ordering::SeqCst) > 0);
     }
 

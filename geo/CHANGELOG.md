@@ -4,6 +4,20 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.21.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.21.1...psi-geo-v0.21.2) - 2026-07-07
+
+### API
+
+- Re-exported `StreamLimits` from `packed_spatial_index_geo`, so callers using
+  `open_geo_index_with_limits` or `from_directory_with_limits` can stay on the
+  geo crate API surface.
+
+### Documentation
+
+- Added compile-checked rustdoc examples for artifact directory reattach,
+  entry/feature/match searches, async artifact searches, paged match-header
+  fetches, f32 in-memory queries, and one-shot streaming GeoJSON helpers.
+
 ## [0.21.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.21.0...psi-geo-v0.21.1) - 2026-07-06
 
 ### Documentation

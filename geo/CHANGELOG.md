@@ -4,8 +4,29 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.20.0...psi-geo-v0.21.0) - 2026-07-06
+
 ### API
 
+- Breaking: unified query-result naming so method names state what they
+  return — `*_items` for index-entry ids, `*_feature_refs` for `FeatureRef`
+  values, `*_matches` for payload-carrying records. Renamed `GeoHit` to
+  `GeoMatch`; `search_hits` / `search_hits_async` to `search_matches` /
+  `search_matches_async`; `filter_hits` to `filter_matches`;
+  `FeatureReadRequest::from_hits` to `from_matches` and `from_features` to
+  `from_feature_refs`; `FeatureFilterRequest::intersects_from_hits` to
+  `intersects_from_matches`; `search_features` / `search_features_async` to
+  `search_feature_refs` / `search_feature_refs_async`; `nearest_features`
+  (and `_haversine`) to `nearest_feature_refs`; `raycast_features` to
+  `raycast_feature_refs`; `raycast_closest_feature` to
+  `raycast_closest_feature_ref`. The `feature refs` names make explicit that
+  results are entry-level: a split source feature can contribute several
+  entries, distinguished by `FeatureRef::part`. The entry side follows the
+  same rule: `search_items` / `search_items_async` are now `search_entry_ids`
+  / `search_entry_ids_async`, `GeoMatch::item` is `GeoMatch::entry_id`, and
+  `GeoArtifactDirectory::num_items` is `num_entries` — "item" remains the
+  core crate's word for the same ids. `gp2psindex --order` now accepts
+  `match` alongside the older `hit` value.
 - Added `count_entries` on the 2D/3D artifact indexes: counts matching index
   entries through the streaming visitor without materializing ids or
   payloads. Multi-candidate-box queries (for example antimeridian-crossing
@@ -34,26 +55,6 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   `FeatureRef::part` was always `None` for split (for example antimeridian)
   entries. Duplicated payloads are now re-stamped with their part number for
   `RowRef`, `RowWkb`, and `FeatureJson` plans.
-
-- Breaking: unified query-result naming so method names state what they
-  return — `*_items` for index-entry ids, `*_feature_refs` for `FeatureRef`
-  values, `*_matches` for payload-carrying records. Renamed `GeoHit` to
-  `GeoMatch`; `search_hits` / `search_hits_async` to `search_matches` /
-  `search_matches_async`; `filter_hits` to `filter_matches`;
-  `FeatureReadRequest::from_hits` to `from_matches` and `from_features` to
-  `from_feature_refs`; `FeatureFilterRequest::intersects_from_hits` to
-  `intersects_from_matches`; `search_features` / `search_features_async` to
-  `search_feature_refs` / `search_feature_refs_async`; `nearest_features`
-  (and `_haversine`) to `nearest_feature_refs`; `raycast_features` to
-  `raycast_feature_refs`; `raycast_closest_feature` to
-  `raycast_closest_feature_ref`. The `feature refs` names make explicit that
-  results are entry-level: a split source feature can contribute several
-  entries, distinguished by `FeatureRef::part`. The entry side follows the
-  same rule: `search_items` / `search_items_async` are now `search_entry_ids`
-  / `search_entry_ids_async`, `GeoMatch::item` is `GeoMatch::entry_id`, and
-  `GeoArtifactDirectory::num_items` is `num_entries` — "item" remains the
-  core crate's word for the same ids. `gp2psindex --order` now accepts
-  `match` alongside the older `hit` value.
 
 ## [0.20.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.19.2...psi-geo-v0.20.0) - 2026-07-05
 

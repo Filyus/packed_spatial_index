@@ -437,6 +437,45 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             .collect())
     }
 
+    /// Search and return one deduplicated [`FeatureRef`] per matched source
+    /// feature.
+    ///
+    /// Unlike [`search_feature_refs`](Self::search_feature_refs), which is
+    /// entry-level (a split feature yields one ref per index entry), this
+    /// collapses split entries: results are feature-level, `part` is `None`,
+    /// order is deterministic. Requires a feature-ref-bearing payload plan
+    /// (`RowRef`, `RowWkb`, or `FeatureJson`); [`PayloadPlan::None`] artifacts
+    /// return an error (the artifact stores no payload section).
+    pub fn search_features<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        Ok(self
+            .search_feature_matches(query)?
+            .into_iter()
+            .map(|m| m.feature)
+            .collect())
+    }
+
+    /// Search and return one [`GeoMatch`] per matched source feature.
+    ///
+    /// Feature-level counterpart of [`search_matches`](Self::search_matches):
+    /// split index entries collapse into one match per source feature via
+    /// [`GeoMatch::dedupe_by_feature`] — the lowest-part entry is kept as the
+    /// representative (its `entry_id` and payload), `feature.part` is `None`.
+    /// To combine deduplication with your own filtering (for example
+    /// [`filter_matches`](Self::filter_matches) between search and dedupe),
+    /// use [`search_matches`](Self::search_matches) plus
+    /// [`GeoMatch::dedupe_by_feature`] directly.
+    pub fn search_feature_matches<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<GeoMatch>, GeoError> {
+        let mut matches = self.search_matches(query)?;
+        GeoMatch::dedupe_by_feature(&mut matches);
+        Ok(matches)
+    }
+
     /// Search and return decoded geo matches.
     ///
     /// Each match includes the index entry id, the source [`FeatureRef`], and
@@ -545,6 +584,37 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
             .into_iter()
             .map(|m| m.feature)
             .collect())
+    }
+
+    /// Search over async range I/O and return one deduplicated [`FeatureRef`]
+    /// per matched source feature.
+    ///
+    /// Async counterpart of [`search_features`](Self::search_features): split
+    /// index entries collapse, `part` is `None`, order is deterministic.
+    pub async fn search_features_async<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        Ok(self
+            .search_feature_matches_async(query)
+            .await?
+            .into_iter()
+            .map(|m| m.feature)
+            .collect())
+    }
+
+    /// Search over async range I/O and return one [`GeoMatch`] per matched
+    /// source feature.
+    ///
+    /// Async counterpart of
+    /// [`search_feature_matches`](Self::search_feature_matches).
+    pub async fn search_feature_matches_async<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<GeoMatch>, GeoError> {
+        let mut matches = self.search_matches_async(query).await?;
+        GeoMatch::dedupe_by_feature(&mut matches);
+        Ok(matches)
     }
 
     /// Search over async range I/O and return decoded geo matches.
@@ -745,6 +815,37 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
             .collect())
     }
 
+    /// Search and return one deduplicated [`FeatureRef`] per matched source
+    /// feature.
+    ///
+    /// Unlike [`search_feature_refs`](Self::search_feature_refs), which is
+    /// entry-level, this collapses split index entries: `part` is `None`,
+    /// order is deterministic. [`PayloadPlan::None`] artifacts return an
+    /// error (the artifact stores no payload section).
+    pub fn search_features<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        Ok(self
+            .search_feature_matches(query)?
+            .into_iter()
+            .map(|m| m.feature)
+            .collect())
+    }
+
+    /// Search and return one [`GeoMatch`] per matched source feature.
+    ///
+    /// Feature-level counterpart of [`search_matches`](Self::search_matches);
+    /// see [`GeoMatch::dedupe_by_feature`] for the collapse rules.
+    pub fn search_feature_matches<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<GeoMatch>, GeoError> {
+        let mut matches = self.search_matches(query)?;
+        GeoMatch::dedupe_by_feature(&mut matches);
+        Ok(matches)
+    }
+
     /// Search and return decoded geo matches.
     ///
     /// Each match includes the index entry id, the source [`FeatureRef`], and
@@ -823,6 +924,31 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
             .collect())
     }
 
+    /// Search over async range I/O and return one deduplicated [`FeatureRef`]
+    /// per matched source feature.
+    pub async fn search_features_async<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<FeatureRef>, GeoError> {
+        Ok(self
+            .search_feature_matches_async(query)
+            .await?
+            .into_iter()
+            .map(|m| m.feature)
+            .collect())
+    }
+
+    /// Search over async range I/O and return one [`GeoMatch`] per matched
+    /// source feature.
+    pub async fn search_feature_matches_async<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<GeoMatch>, GeoError> {
+        let mut matches = self.search_matches_async(query).await?;
+        GeoMatch::dedupe_by_feature(&mut matches);
+        Ok(matches)
+    }
+
     /// Search over async range I/O and return decoded geo matches.
     pub async fn search_matches_async<Q: Into<GeoQuery3D>>(
         &self,
@@ -861,6 +987,35 @@ pub struct GeoMatch {
     pub feature: FeatureRef,
     /// Decoded payload for the match.
     pub payload: GeoPayload,
+}
+
+impl GeoMatch {
+    /// Sort by feature identity, then `part`, then `entry_id` — the canonical
+    /// deterministic entry-level order.
+    pub fn sort_by_entry(matches: &mut [GeoMatch]) {
+        matches.sort_by(|a, b| {
+            a.feature
+                .cmp_entry(&b.feature)
+                .then_with(|| a.entry_id.cmp(&b.entry_id))
+        });
+    }
+
+    /// Sort, then collapse split index entries to one match per source
+    /// feature.
+    ///
+    /// The lowest-part entry survives as the representative (its `entry_id`
+    /// and payload are kept) and its `feature.part` is set to `None`, since a
+    /// part number is meaningless once split entries collapse. Standalone on
+    /// purpose: run it after any per-entry filtering (for example
+    /// [`GeoArtifactIndex2D::filter_matches`]) — a split part can satisfy a
+    /// geometry predicate while another part of the same feature does not.
+    pub fn dedupe_by_feature(matches: &mut Vec<GeoMatch>) {
+        Self::sort_by_entry(matches);
+        matches.dedup_by(|b, a| a.feature.same_feature(&b.feature));
+        for m in matches {
+            m.feature.part = None;
+        }
+    }
 }
 
 /// Decoded artifact payload.

@@ -6,6 +6,23 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- Added feature-level query results to the artifact indexes:
+  `search_features` / `search_feature_matches` (+ `_async`) return one record
+  per source feature, collapsing split index entries — the lowest-part entry
+  survives as the representative and its `part` becomes `None`. Added
+  `GeoMatch::sort_by_entry` / `GeoMatch::dedupe_by_feature` and
+  `FeatureRef::same_feature` / `cmp_feature` / `cmp_entry` so callers can
+  compose the same sort/dedupe with their own filtering (for example an exact
+  geometry filter between search and dedupe).
+
+### Persistence
+
+- Fixed split part numbers missing from artifact payloads: scan encoded each
+  payload before envelope splitting duplicated entries, so decoded
+  `FeatureRef::part` was always `None` for split (for example antimeridian)
+  entries. Duplicated payloads are now re-stamped with their part number for
+  `RowRef`, `RowWkb`, and `FeatureJson` plans.
+
 - Breaking: unified query-result naming so method names state what they
   return — `*_items` for index-entry ids, `*_feature_refs` for `FeatureRef`
   values, `*_matches` for payload-carrying records. Renamed `GeoHit` to

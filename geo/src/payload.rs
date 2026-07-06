@@ -52,6 +52,50 @@ pub(crate) fn encode_feature_wkb(feature: &FeatureRef, wkb: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Stamp a split part number into an already-encoded payload.
+///
+/// Scan encodes payloads once per source feature, before envelope splitting
+/// duplicates entries; each duplicated payload must be re-stamped so the
+/// decoded [`FeatureRef::part`] matches the entry it describes. Empty
+/// payloads are left untouched, mirroring the scan path's tolerance for
+/// missing payload bytes.
+#[cfg(feature = "_source")]
+pub(crate) fn stamp_payload_part(
+    plan: &PayloadPlan,
+    payload: &mut Vec<u8>,
+    part: u16,
+) -> Result<(), GeoError> {
+    if payload.is_empty() {
+        return Ok(());
+    }
+    match plan {
+        PayloadPlan::None => Ok(()),
+        PayloadPlan::RowRef | PayloadPlan::RowWkb => {
+            if payload.len() < FEATURE_REF_RECORD_LEN {
+                return Err(GeoError::PayloadDecode(format!(
+                    "payload of {} bytes is too short for a feature-ref record",
+                    payload.len()
+                )));
+            }
+            payload[16..18].copy_from_slice(&part.to_le_bytes());
+            Ok(())
+        }
+        PayloadPlan::FeatureJson { .. } => {
+            let mut value: serde_json::Value = serde_json::from_slice(payload)
+                .map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
+            let Some(feature_ref) = value.get_mut("feature_ref") else {
+                return Err(GeoError::PayloadDecode(
+                    "FeatureJson payload is missing the feature_ref member".to_string(),
+                ));
+            };
+            feature_ref["part"] = serde_json::Value::from(part);
+            *payload =
+                serde_json::to_vec(&value).map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
+            Ok(())
+        }
+    }
+}
+
 /// Serialize a GeoJSON `Feature` payload from already-materialized geometry
 /// and properties JSON. Format-specific callers supply the geometry however
 /// they hold it — decoded from WKB (Parquet) or taken straight from the
@@ -235,6 +279,31 @@ impl FeatureRef {
             part: None,
             feature_id: None,
         }
+    }
+
+    /// Whether both refs point at the same source feature.
+    ///
+    /// `part` is ignored: split index entries (for example antimeridian
+    /// parts) of one feature compare equal.
+    pub fn same_feature(&self, other: &FeatureRef) -> bool {
+        self.cmp_feature(other) == std::cmp::Ordering::Equal
+    }
+
+    /// Order by source feature identity: `row_number`, `row_group`,
+    /// `row_in_group`, `feature_id`. `part` is ignored.
+    pub fn cmp_feature(&self, other: &FeatureRef) -> std::cmp::Ordering {
+        self.row_number
+            .cmp(&other.row_number)
+            .then_with(|| self.row_group.cmp(&other.row_group))
+            .then_with(|| self.row_in_group.cmp(&other.row_in_group))
+            .then_with(|| self.feature_id.as_deref().cmp(&other.feature_id.as_deref()))
+    }
+
+    /// [`cmp_feature`](Self::cmp_feature), then `part` — the deterministic
+    /// entry-level order.
+    pub fn cmp_entry(&self, other: &FeatureRef) -> std::cmp::Ordering {
+        self.cmp_feature(other)
+            .then_with(|| self.part.cmp(&other.part))
     }
 }
 

@@ -1,9 +1,7 @@
-use std::collections::HashSet;
-
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use packed_spatial_index_geo::{
-    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex, GeoPayload,
-    GeoQuery2D, GeometryEncoding, NonPlanarExactPolicy, PayloadPlan, SpatialPredicate,
+    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex, GeoMatch,
+    GeoPayload, GeoQuery2D, GeometryEncoding, NonPlanarExactPolicy, PayloadPlan, SpatialPredicate,
     StoragePrecision,
 };
 use serde::{Deserialize, Serialize};
@@ -533,9 +531,9 @@ fn search_records(
                     NonPlanarExactPolicy::Reject,
                 )?;
             }
-            sort_matches(&mut matches);
+            GeoMatch::sort_by_entry(&mut matches);
             if matches!(level, ResultLevel::Feature) {
-                dedupe_feature_matches(&mut matches);
+                GeoMatch::dedupe_by_feature(&mut matches);
             }
             Ok(matches
                 .into_iter()
@@ -570,9 +568,9 @@ fn search_records(
                     .collect());
             }
             let mut matches = index.search_matches(query)?;
-            sort_matches(&mut matches);
+            GeoMatch::sort_by_entry(&mut matches);
             if matches!(level, ResultLevel::Feature) {
-                dedupe_feature_matches(&mut matches);
+                GeoMatch::dedupe_by_feature(&mut matches);
             }
             Ok(matches
                 .into_iter()
@@ -720,40 +718,6 @@ fn paginate(records: &mut Vec<MatchRecord>, offset: usize, limit: usize) -> Vec<
     }
     let end = records.len().min(offset.saturating_add(limit));
     records.drain(offset..end).collect()
-}
-
-fn sort_matches(matches: &mut [packed_spatial_index_geo::GeoMatch]) {
-    matches.sort_by(|a, b| {
-        feature_sort_key(&a.feature)
-            .cmp(&feature_sort_key(&b.feature))
-            .then_with(|| a.entry_id.cmp(&b.entry_id))
-    });
-}
-
-fn dedupe_feature_matches(matches: &mut Vec<packed_spatial_index_geo::GeoMatch>) {
-    let mut seen = HashSet::new();
-    matches.retain(|m| seen.insert(feature_identity(&m.feature)));
-}
-
-fn feature_identity(feature: &FeatureRef) -> (u64, Option<u32>, Option<u32>, Option<String>) {
-    (
-        feature.row_number,
-        feature.row_group,
-        feature.row_in_group,
-        feature.feature_id.clone(),
-    )
-}
-
-fn feature_sort_key(
-    feature: &FeatureRef,
-) -> (u64, Option<u32>, Option<u32>, Option<u16>, Option<String>) {
-    (
-        feature.row_number,
-        feature.row_group,
-        feature.row_in_group,
-        feature.part,
-        feature.feature_id.clone(),
-    )
 }
 
 #[cfg(test)]

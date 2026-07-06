@@ -433,11 +433,18 @@ pub(crate) fn assemble_scan(
                     boxes.push(bbox);
                     features.push(feature);
                     if let Some(payloads) = payloads.as_mut() {
-                        let payload = if last_part {
+                        let mut payload = if last_part {
                             payload.take().unwrap_or_default()
                         } else {
                             payload.as_ref().cloned().unwrap_or_default()
                         };
+                        if has_parts {
+                            crate::payload::stamp_payload_part(
+                                &req.payload,
+                                &mut payload,
+                                part_index as u16,
+                            )?;
+                        }
                         payloads.push(payload);
                     }
                 }
@@ -482,11 +489,18 @@ pub(crate) fn assemble_scan(
                     boxes.push(bbox);
                     features.push(feature);
                     if let Some(payloads) = payloads.as_mut() {
-                        let payload = if last_part {
+                        let mut payload = if last_part {
                             payload.take().unwrap_or_default()
                         } else {
                             payload.as_ref().cloned().unwrap_or_default()
                         };
+                        if has_parts {
+                            crate::payload::stamp_payload_part(
+                                &req.payload,
+                                &mut payload,
+                                part_index as u16,
+                            )?;
+                        }
                         payloads.push(payload);
                     }
                 }

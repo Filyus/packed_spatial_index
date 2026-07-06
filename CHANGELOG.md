@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.23.0...psi-v0.24.0) - 2026-07-06
+
 ### Search
 
 - Added payload-header streaming to the sync streaming indexes:

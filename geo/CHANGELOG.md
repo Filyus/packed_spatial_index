@@ -4,6 +4,13 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.21.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.21.0...psi-geo-v0.21.1) - 2026-07-06
+
+### Documentation
+
+- Added compile-checked rustdoc examples for counting artifact entries and
+  paging match-header reads before fetching payload bodies.
+
 ## [0.21.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.20.0...psi-geo-v0.21.0) - 2026-07-06
 
 ### API

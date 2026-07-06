@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "packed_spatial_index_geo"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "base64",
  "geo",

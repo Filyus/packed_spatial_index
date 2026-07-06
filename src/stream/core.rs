@@ -820,9 +820,8 @@ impl PrefixSpan {
     }
 }
 
-/// One matching leaf seen by
-/// [`visit_payload_prefixes`](StreamCore::visit_payload_prefixes): identity
-/// plus payload size, with only the leading payload bytes fetched.
+/// One matching leaf seen by payload-prefix visits: identity plus payload size,
+/// with only the leading payload bytes fetched.
 #[derive(Debug)]
 pub struct PayloadPrefix<'a> {
     /// Item insertion id.

@@ -264,6 +264,37 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// [`visit_payloads_at_ranks`](Self::visit_payloads_at_ranks) to fetch full
     /// payloads later. Returns [`StreamError::NoPayload`] if the index has no
     /// payload section.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder, SliceReader, StreamIndex2D};
+    ///
+    /// let mut builder = Index2DBuilder::new(2);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// let index = builder.finish()?;
+    /// let bytes = index.to_bytes_with_payloads(&[
+    ///     b"first payload".as_slice(),
+    ///     b"second payload".as_slice(),
+    /// ])?;
+    ///
+    /// let stream = StreamIndex2D::open(SliceReader::new(bytes))?;
+    /// let mut headers = Vec::new();
+    /// stream.visit_payload_prefixes(Box2D::new(-1.0, -1.0, 7.0, 7.0), 5, |p| {
+    ///     headers.push((p.id, p.leaf_rank, p.payload_len, p.prefix.to_vec()));
+    /// })?;
+    /// assert_eq!(headers.len(), 2);
+    ///
+    /// let page_ranks = [headers[0].1];
+    /// let mut page = Vec::new();
+    /// stream.visit_payloads_at_ranks(&page_ranks, |rank, blob| {
+    ///     page.push((rank, blob.to_vec()));
+    /// })?;
+    /// assert_eq!(page[0].0, headers[0].1);
+    /// assert_eq!(page[0].1.len(), headers[0].2);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box2D,

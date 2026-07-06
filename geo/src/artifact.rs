@@ -448,6 +448,20 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// match more than one candidate box and must be counted once. There is
     /// no async variant — the async layer exposes no visitor; use
     /// `search_entry_ids_async().await?.len()` there.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("places.psindex")?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    /// let count = index.count_entries(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+    /// println!("{count} matching index entries");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn count_entries<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<usize, GeoError> {
         let query = query.into();
         let mut count = 0usize;
@@ -586,6 +600,45 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// body and [`PayloadPlan::None`] stores nothing, so both return
     /// [`GeoError::UnsupportedArtifact`] — use
     /// [`search_matches`](Self::search_matches) there.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index_geo::{
+    ///     open_geo_index, open_geojson_slice, Box2D, ConvertRequest, GeoArtifactIndex,
+    ///     GeoMatchHeader, SliceReader,
+    /// };
+    ///
+    /// let geojson = br#"{
+    ///   "type": "FeatureCollection",
+    ///   "features": [
+    ///     {
+    ///       "type": "Feature",
+    ///       "geometry": {"type": "Point", "coordinates": [1.0, 2.0]},
+    ///       "properties": {"name": "one"}
+    ///     },
+    ///     {
+    ///       "type": "Feature",
+    ///       "geometry": {"type": "Point", "coordinates": [5.0, 6.0]},
+    ///       "properties": {"name": "two"}
+    ///     }
+    ///   ]
+    /// }"#;
+    ///
+    /// let mut source = open_geojson_slice(geojson)?;
+    /// let bytes = source.convert(ConvertRequest::default())?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    ///
+    /// let mut headers = index.search_match_headers(Box2D::new(0.0, 0.0, 10.0, 10.0))?;
+    /// GeoMatchHeader::dedupe_by_feature(&mut headers);
+    ///
+    /// let page = &headers[..headers.len().min(1)];
+    /// let matches = index.fetch_matches(page)?;
+    /// assert_eq!(matches.len(), page.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_match_headers<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,

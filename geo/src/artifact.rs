@@ -437,6 +437,42 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             .collect())
     }
 
+    /// Count matching index entries without materializing ids or payloads.
+    ///
+    /// Works for every payload plan, including [`PayloadPlan::None`]. Counts
+    /// index entries, not source features — a split feature counts once per
+    /// part. Single-box and polygon queries stream the count through the core
+    /// visitor; a query that expands to several candidate boxes (for example
+    /// an antimeridian-crossing box) falls back to
+    /// [`search_entry_ids`](Self::search_entry_ids), since the same entry can
+    /// match more than one candidate box and must be counted once. There is
+    /// no async variant — the async layer exposes no visitor; use
+    /// `search_entry_ids_async().await?.len()` there.
+    pub fn count_entries<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<usize, GeoError> {
+        let query = query.into();
+        let mut count = 0usize;
+        if let GeoQuery2D::Polygon(multi_polygon) = &query {
+            ensure_polygon_query_not_empty(multi_polygon)?;
+            let region = PolygonRegion(multi_polygon);
+            match &self.index {
+                GeoStreamIndex2D::F64(index) => index.visit_region(&region, |_| count += 1)?,
+                GeoStreamIndex2D::F32(index) => index.visit_region(&region, |_| count += 1)?,
+            }
+            return Ok(count);
+        }
+        let boxes = query.candidate_boxes_2d()?;
+        if boxes.len() > 1 {
+            return Ok(self.search_entry_ids(query)?.len());
+        }
+        for bbox in boxes {
+            match &self.index {
+                GeoStreamIndex2D::F64(index) => index.visit(bbox, |_| count += 1)?,
+                GeoStreamIndex2D::F32(index) => index.visit(bbox, |_| count += 1)?,
+            }
+        }
+        Ok(count)
+    }
+
     /// Search and return one deduplicated [`FeatureRef`] per matched source
     /// feature.
     ///
@@ -905,6 +941,23 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
             .into_iter()
             .map(|m| m.feature)
             .collect())
+    }
+
+    /// Count matching index entries without materializing ids or payloads;
+    /// the 3D counterpart of [`GeoArtifactIndex2D::count_entries`].
+    pub fn count_entries<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<usize, GeoError> {
+        let mut count = 0usize;
+        match query.into() {
+            GeoQuery3D::Box3D(bbox) => match &self.index {
+                GeoStreamIndex3D::F64(index) => index.visit(bbox, |_| count += 1)?,
+                GeoStreamIndex3D::F32(index) => index.visit(bbox, |_| count += 1)?,
+            },
+            GeoQuery3D::Frustum3D(frustum) => match &self.index {
+                GeoStreamIndex3D::F64(index) => index.visit_region(&frustum, |_| count += 1)?,
+                GeoStreamIndex3D::F32(index) => index.visit_region(&frustum, |_| count += 1)?,
+            },
+        }
+        Ok(count)
     }
 
     /// Search and return one deduplicated [`FeatureRef`] per matched source

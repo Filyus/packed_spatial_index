@@ -6,6 +6,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- Added `count_entries` on the 2D/3D artifact indexes: counts matching index
+  entries through the streaming visitor without materializing ids or
+  payloads. Multi-candidate-box queries (for example antimeridian-crossing
+  boxes) fall back to deduplicated id search; there is no async variant.
 - Added paged match access for `RowRef` / `RowWkb` artifacts:
   `search_match_headers` returns per-entry identity and payload size without
   reading payload bodies, and `fetch_matches` materializes full `GeoMatch`

@@ -482,6 +482,11 @@ fn resolve_level(
 
 /// Matched-and-paged search result: the pre-pagination match count plus the
 /// records of the requested page only.
+///
+/// `numberMatched` still comes from the materialized header/id list because
+/// every record needs its identity anyway. A future count-only query
+/// parameter (for example `count=only`) would skip that list entirely via
+/// geo's `count_entries`.
 struct SearchOutcome {
     number_matched: usize,
     records: Vec<MatchRecord>,

@@ -4,6 +4,13 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.24.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.24.0...psi-v0.24.1) - 2026-07-06
+
+### Documentation
+
+- Added a compile-checked rustdoc example for paging payload reads with
+  `visit_payload_prefixes` and `visit_payloads_at_ranks`.
+
 ## [0.24.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.23.0...psi-v0.24.0) - 2026-07-06
 
 ### Search

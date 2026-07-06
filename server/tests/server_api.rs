@@ -499,6 +499,54 @@ async fn search_can_omit_payload_objects() {
 }
 
 #[tokio::test]
+async fn row_wkb_pages_at_both_levels() {
+    let app = router(state_with_payload(PayloadPlan::RowWkb));
+
+    // Summary page at entry level: byteLength without payload bodies.
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-10,0,30,5&limit=1&offset=1&level=entry",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["numberMatched"], 2);
+    assert_eq!(json["numberReturned"], 1);
+    assert_eq!(json["matches"][0]["entryId"], 1);
+    assert_eq!(json["matches"][0]["featureRef"]["rowNumber"], 1);
+    assert_eq!(json["matches"][0]["payload"]["kind"], "row_wkb");
+    let summary_len = json["matches"][0]["payload"]["byteLength"]
+        .as_u64()
+        .unwrap();
+    assert!(summary_len > 8);
+    assert!(json["matches"][0]["payload"].get("wkbBase64").is_none());
+
+    // Full page at feature level: body fetched for the page only; byteLength
+    // must agree with the summary derived from the header.
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,30,5&limit=1&offset=1&payload=full",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["query"]["level"], "feature");
+    assert_eq!(json["numberMatched"], 2);
+    assert_eq!(json["numberReturned"], 1);
+    assert_eq!(
+        json["matches"][0]["payload"]["byteLength"]
+            .as_u64()
+            .unwrap(),
+        summary_len
+    );
+    assert!(
+        json["matches"][0]["payload"]["wkbBase64"]
+            .as_str()
+            .unwrap()
+            .len()
+            > 8
+    );
+}
+
+#[tokio::test]
 async fn route_errors_are_json() {
     let app = router(state_with_payload(PayloadPlan::RowRef));
     let (status, json) = get_json(app.clone(), "/collections/missing").await;

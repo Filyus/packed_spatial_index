@@ -5,14 +5,14 @@ use geozero::geojson::GeoJson;
 #[cfg(feature = "async")]
 use packed_spatial_index::AsyncRangeReader;
 use packed_spatial_index::{
-    Box2D, Overlaps2D, RangeReader, StreamDirectory, StreamError, StreamIndex2D, StreamIndex2DF32,
-    StreamIndex3D, StreamIndex3DF32, StreamLimits,
+    Box2D, Overlaps2D, PayloadPrefix, RangeReader, StreamDirectory, StreamError, StreamIndex2D,
+    StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, StreamLimits,
 };
 
 use crate::{
-    FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy,
-    PayloadPlan, SpatialPredicate, StoragePrecision, decode_feature_ref_payload,
-    decode_feature_wkb_payload,
+    FEATURE_REF_RECORD_LEN, FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D,
+    NonPlanarExactPolicy, PayloadPlan, SpatialPredicate, StoragePrecision,
+    decode_feature_ref_payload, decode_feature_wkb_payload,
     filter::{
         decode_geo_geometry, exact_predicate_matches, exact_wkb_predicate_matches,
         prepare_filter_query,
@@ -538,6 +538,98 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
         }
         Ok(decoded)
     }
+
+    /// Search and return lightweight [`GeoMatchHeader`] records — identity and
+    /// payload size per matched index entry, without reading payload bodies.
+    ///
+    /// Headers carry everything sorting, deduplication, and pagination need;
+    /// feed a page of them to [`fetch_matches`](Self::fetch_matches) to
+    /// materialize full [`GeoMatch`] values for just that page. Supported for
+    /// `RowRef` and `RowWkb` plans, whose payloads start with the fixed
+    /// feature-ref record. `FeatureJson` stores identity only inside the JSON
+    /// body and [`PayloadPlan::None`] stores nothing, so both return
+    /// [`GeoError::UnsupportedArtifact`] — use
+    /// [`search_matches`](Self::search_matches) there.
+    pub fn search_match_headers<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<GeoMatchHeader>, GeoError> {
+        ensure_header_capable_plan(&self.manifest.payload_plan)?;
+        let query = query.into();
+        let mut headers = Vec::new();
+        let mut short_payload = false;
+        if let GeoQuery2D::Polygon(multi_polygon) = &query {
+            ensure_polygon_query_not_empty(multi_polygon)?;
+            let region = PolygonRegion(multi_polygon);
+            let collect =
+                |p: PayloadPrefix<'_>| collect_header(p, &mut headers, &mut short_payload);
+            match &self.index {
+                GeoStreamIndex2D::F64(index) => {
+                    index.visit_payload_prefixes_region(&region, FEATURE_REF_RECORD_LEN, collect)?
+                }
+                GeoStreamIndex2D::F32(index) => {
+                    index.visit_payload_prefixes_region(&region, FEATURE_REF_RECORD_LEN, collect)?
+                }
+            }
+            return finish_headers(headers, short_payload);
+        }
+
+        let boxes = query.candidate_boxes_2d()?;
+        let dedup = boxes.len() > 1;
+        let mut seen = std::collections::HashSet::new();
+        for bbox in boxes {
+            let mut batch = Vec::new();
+            let collect = |p: PayloadPrefix<'_>| collect_header(p, &mut batch, &mut short_payload);
+            match &self.index {
+                GeoStreamIndex2D::F64(index) => {
+                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                }
+                GeoStreamIndex2D::F32(index) => {
+                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                }
+            }
+            for header in batch {
+                if !dedup || seen.insert(header.entry_id) {
+                    headers.push(header);
+                }
+            }
+        }
+        finish_headers(headers, short_payload)
+    }
+
+    /// Fetch and decode full [`GeoMatch`] values for the given headers
+    /// (typically one page), preserving the input header order.
+    ///
+    /// `RowRef` headers rebuild their matches with no I/O — the feature ref is
+    /// the whole payload. `RowWkb` headers fetch payload bodies for exactly
+    /// the given headers' leaf ranks, in coalesced reads.
+    pub fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError> {
+        match &self.manifest.payload_plan {
+            PayloadPlan::RowRef => Ok(headers
+                .iter()
+                .map(GeoMatchHeader::to_row_ref_match)
+                .collect()),
+            PayloadPlan::RowWkb => {
+                let ranks: Vec<usize> = headers.iter().map(|h| h.leaf_rank).collect();
+                let mut by_rank = std::collections::HashMap::new();
+                let collect = |rank: usize, blob: &[u8]| {
+                    by_rank.insert(rank, blob.to_vec());
+                };
+                match &self.index {
+                    GeoStreamIndex2D::F64(index) => {
+                        index.visit_payloads_at_ranks(&ranks, collect)?
+                    }
+                    GeoStreamIndex2D::F32(index) => {
+                        index.visit_payloads_at_ranks(&ranks, collect)?
+                    }
+                }
+                assemble_wkb_matches(headers, &by_rank)
+            }
+            plan => Err(GeoError::UnsupportedArtifact(format!(
+                "fetch_matches supports RowRef and RowWkb payload plans, not {plan:?}"
+            ))),
+        }
+    }
 }
 
 #[cfg(feature = "async")]
@@ -889,6 +981,139 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
             }
         }
     }
+
+    /// Search and return lightweight [`GeoMatchHeader`] records; the 3D
+    /// counterpart of [`GeoArtifactIndex2D::search_match_headers`].
+    pub fn search_match_headers<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<GeoMatchHeader>, GeoError> {
+        ensure_header_capable_plan(&self.manifest.payload_plan)?;
+        let mut headers = Vec::new();
+        let mut short_payload = false;
+        let collect = |p: PayloadPrefix<'_>| collect_header(p, &mut headers, &mut short_payload);
+        match query.into() {
+            GeoQuery3D::Box3D(bbox) => match &self.index {
+                GeoStreamIndex3D::F64(index) => {
+                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                }
+                GeoStreamIndex3D::F32(index) => {
+                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                }
+            },
+            GeoQuery3D::Frustum3D(frustum) => match &self.index {
+                GeoStreamIndex3D::F64(index) => index.visit_payload_prefixes_region(
+                    &frustum,
+                    FEATURE_REF_RECORD_LEN,
+                    collect,
+                )?,
+                GeoStreamIndex3D::F32(index) => index.visit_payload_prefixes_region(
+                    &frustum,
+                    FEATURE_REF_RECORD_LEN,
+                    collect,
+                )?,
+            },
+        }
+        finish_headers(headers, short_payload)
+    }
+
+    /// Fetch and decode full [`GeoMatch`] values for the given headers; the 3D
+    /// counterpart of [`GeoArtifactIndex2D::fetch_matches`].
+    pub fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError> {
+        match &self.manifest.payload_plan {
+            PayloadPlan::RowRef => Ok(headers
+                .iter()
+                .map(GeoMatchHeader::to_row_ref_match)
+                .collect()),
+            PayloadPlan::RowWkb => {
+                let ranks: Vec<usize> = headers.iter().map(|h| h.leaf_rank).collect();
+                let mut by_rank = std::collections::HashMap::new();
+                let collect = |rank: usize, blob: &[u8]| {
+                    by_rank.insert(rank, blob.to_vec());
+                };
+                match &self.index {
+                    GeoStreamIndex3D::F64(index) => {
+                        index.visit_payloads_at_ranks(&ranks, collect)?
+                    }
+                    GeoStreamIndex3D::F32(index) => {
+                        index.visit_payloads_at_ranks(&ranks, collect)?
+                    }
+                }
+                assemble_wkb_matches(headers, &by_rank)
+            }
+            plan => Err(GeoError::UnsupportedArtifact(format!(
+                "fetch_matches supports RowRef and RowWkb payload plans, not {plan:?}"
+            ))),
+        }
+    }
+}
+
+/// Reject payload plans whose entries cannot be described by a header.
+fn ensure_header_capable_plan(plan: &PayloadPlan) -> Result<(), GeoError> {
+    match plan {
+        PayloadPlan::RowRef | PayloadPlan::RowWkb => Ok(()),
+        PayloadPlan::None => Err(GeoError::UnsupportedArtifact(
+            "search_match_headers needs a feature-ref-bearing payload (RowRef or RowWkb); \
+             this artifact stores no payload"
+                .to_string(),
+        )),
+        PayloadPlan::FeatureJson { .. } => Err(GeoError::UnsupportedArtifact(
+            "search_match_headers does not support FeatureJson payloads, whose identity \
+             lives inside the JSON body; use search_matches"
+                .to_string(),
+        )),
+    }
+}
+
+/// Decode one payload prefix into a header, flagging too-short payloads.
+fn collect_header(p: PayloadPrefix<'_>, out: &mut Vec<GeoMatchHeader>, short: &mut bool) {
+    match decode_feature_ref_payload(p.prefix) {
+        Some(feature) => out.push(GeoMatchHeader {
+            entry_id: p.id,
+            feature,
+            payload_len: p.payload_len,
+            leaf_rank: p.leaf_rank,
+        }),
+        None => *short = true,
+    }
+}
+
+fn finish_headers(
+    headers: Vec<GeoMatchHeader>,
+    short_payload: bool,
+) -> Result<Vec<GeoMatchHeader>, GeoError> {
+    if short_payload {
+        return Err(GeoError::PayloadDecode(
+            "a matched payload is shorter than a feature-ref record".to_string(),
+        ));
+    }
+    Ok(headers)
+}
+
+/// Build full `RowWkb` matches for `headers` from blobs fetched by rank,
+/// preserving the input header order.
+fn assemble_wkb_matches(
+    headers: &[GeoMatchHeader],
+    by_rank: &std::collections::HashMap<usize, Vec<u8>>,
+) -> Result<Vec<GeoMatch>, GeoError> {
+    headers
+        .iter()
+        .map(|header| {
+            let payload = by_rank.get(&header.leaf_rank).ok_or_else(|| {
+                GeoError::PayloadDecode("missing payload for a header's leaf rank".to_string())
+            })?;
+            let (_, wkb) = decode_feature_wkb_payload(payload).ok_or_else(|| {
+                GeoError::PayloadDecode(
+                    "a matched payload is shorter than a feature-ref record".to_string(),
+                )
+            })?;
+            Ok(GeoMatch {
+                entry_id: header.entry_id,
+                feature: header.feature.clone(),
+                payload: GeoPayload::RowWkb(wkb.to_vec()),
+            })
+        })
+        .collect()
 }
 
 #[cfg(feature = "async")]
@@ -1014,6 +1239,61 @@ impl GeoMatch {
         matches.dedup_by(|b, a| a.feature.same_feature(&b.feature));
         for m in matches {
             m.feature.part = None;
+        }
+    }
+}
+
+/// Lightweight header for one matched index entry: identity and payload size
+/// without the payload body.
+///
+/// Produced by [`GeoArtifactIndex2D::search_match_headers`]; sort, dedupe, and
+/// page headers cheaply, then feed the page to
+/// [`GeoArtifactIndex2D::fetch_matches`] to materialize full [`GeoMatch`]
+/// values for just those entries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeoMatchHeader {
+    /// Index entry id, as in [`GeoMatch::entry_id`].
+    pub entry_id: usize,
+    /// Source feature reference decoded from the payload record prefix.
+    pub feature: FeatureRef,
+    /// Full payload byte length. For `RowWkb` the WKB geometry occupies
+    /// `payload_len - FEATURE_REF_RECORD_LEN` bytes.
+    pub payload_len: usize,
+    /// Position in the leaf-ordered payload section; build-local, used by
+    /// `fetch_matches` to read this entry's payload body.
+    leaf_rank: usize,
+}
+
+impl GeoMatchHeader {
+    /// Sort by feature identity, then `part`, then `entry_id` — the same
+    /// canonical order as [`GeoMatch::sort_by_entry`].
+    pub fn sort_by_entry(headers: &mut [GeoMatchHeader]) {
+        headers.sort_by(|a, b| {
+            a.feature
+                .cmp_entry(&b.feature)
+                .then_with(|| a.entry_id.cmp(&b.entry_id))
+        });
+    }
+
+    /// Sort, then collapse split index entries to one header per source
+    /// feature — the same collapse as [`GeoMatch::dedupe_by_feature`]: the
+    /// lowest-part representative survives and its `feature.part` becomes
+    /// `None`.
+    pub fn dedupe_by_feature(headers: &mut Vec<GeoMatchHeader>) {
+        Self::sort_by_entry(headers);
+        headers.dedup_by(|b, a| a.feature.same_feature(&b.feature));
+        for header in headers {
+            header.feature.part = None;
+        }
+    }
+
+    /// Rebuild the full match for a `RowRef` header — the feature ref is the
+    /// entire payload, so no I/O is needed.
+    fn to_row_ref_match(&self) -> GeoMatch {
+        GeoMatch {
+            entry_id: self.entry_id,
+            feature: self.feature.clone(),
+            payload: GeoPayload::RowRef,
         }
     }
 }

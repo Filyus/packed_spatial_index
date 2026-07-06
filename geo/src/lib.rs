@@ -31,7 +31,7 @@ mod wkb;
 
 pub use artifact::{
     GeoArtifactDirectory, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoMatch,
-    GeoPayload, open_geo_index, open_geo_index_with_limits,
+    GeoMatchHeader, GeoPayload, open_geo_index, open_geo_index_with_limits,
 };
 #[cfg(feature = "async")]
 pub use artifact::{open_geo_index_async, open_geo_index_with_limits_async};

@@ -36,6 +36,7 @@ mod readers;
 
 #[cfg(feature = "async")]
 pub use self::async_io::AsyncRangeReader;
+pub use self::core::PayloadPrefix;
 pub(crate) use self::core::{StreamCore, read_index};
 pub use self::directory::StreamDirectory;
 pub use self::error::StreamError;
@@ -252,6 +253,62 @@ impl<R: RangeReader> StreamIndex2D<R> {
         self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
+
+    /// Visit a [`PayloadPrefix`] for every item intersecting `query`: id, leaf
+    /// rank, full payload length, and the first `prefix_len` payload bytes.
+    ///
+    /// Payload bodies past the prefix are not read — lengths come from the
+    /// offset table (or the fixed stride) — so identity prefixes and size
+    /// summaries cost a fraction of [`visit_payloads`](Self::visit_payloads).
+    /// Capture `leaf_rank` values here and feed a page of them to
+    /// [`visit_payloads_at_ranks`](Self::visit_payloads_at_ranks) to fetch full
+    /// payloads later. Returns [`StreamError::NoPayload`] if the index has no
+    /// payload section.
+    pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: Box2D,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core.visit_payload_prefixes(
+            |record| parse_box2d(record).overlaps(query),
+            prefix_len,
+            visitor,
+        )
+    }
+
+    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes) for a custom
+    /// [`Overlaps2D`] region; node-box pruning fetches only the leaves the
+    /// region touches.
+    pub fn visit_payload_prefixes_region<Q, F>(
+        &self,
+        query: &Q,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        self.core.visit_payload_prefixes(
+            |record| query.overlaps_box(parse_box2d(record)),
+            prefix_len,
+            visitor,
+        )
+    }
+
+    /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks —
+    /// random-access payload reads for ranks captured by a prefix visit. Ranks
+    /// are sorted and deduplicated internally, read in coalesced ascending
+    /// runs, and emitted in ascending rank order. A rank at or past the item
+    /// count fails with [`StreamError::InvalidRank`].
+    pub fn visit_payloads_at_ranks<F: FnMut(usize, &[u8])>(
+        &self,
+        leaf_ranks: &[usize],
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core.visit_payloads_at_ranks(leaf_ranks, visitor)
+    }
 }
 
 /// Parse one 2D box record (`[min_x, min_y, max_x, max_y]` little-endian f64).
@@ -420,6 +477,50 @@ impl<R: RangeReader> StreamIndex3D<R> {
         let mut out = Vec::new();
         self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
+    }
+
+    /// Visit a [`PayloadPrefix`] for every item intersecting `query`; the 3D
+    /// counterpart of [`StreamIndex2D::visit_payload_prefixes`].
+    pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: Box3D,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core.visit_payload_prefixes(
+            |record| parse_box3d(record).overlaps(query),
+            prefix_len,
+            visitor,
+        )
+    }
+
+    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes) for a custom
+    /// [`Overlaps3D`] region.
+    pub fn visit_payload_prefixes_region<Q, F>(
+        &self,
+        query: &Q,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        self.core.visit_payload_prefixes(
+            |record| query.overlaps_box(parse_box3d(record)),
+            prefix_len,
+            visitor,
+        )
+    }
+
+    /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks; the
+    /// 3D counterpart of [`StreamIndex2D::visit_payloads_at_ranks`].
+    pub fn visit_payloads_at_ranks<F: FnMut(usize, &[u8])>(
+        &self,
+        leaf_ranks: &[usize],
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core.visit_payloads_at_ranks(leaf_ranks, visitor)
     }
 }
 
@@ -616,6 +717,51 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
         self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
+
+    /// Visit a [`PayloadPrefix`] for every item whose (rounded) box intersects
+    /// `query`; the `f32` counterpart of
+    /// [`StreamIndex2D::visit_payload_prefixes`].
+    pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: Box2D,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core.visit_payload_prefixes(
+            |record| parse_box2d_f32(record).overlaps(query),
+            prefix_len,
+            visitor,
+        )
+    }
+
+    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes) for a custom
+    /// [`Overlaps2D`] region.
+    pub fn visit_payload_prefixes_region<Q, F>(
+        &self,
+        query: &Q,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        self.core.visit_payload_prefixes(
+            |record| query.overlaps_box(parse_box2d_f32(record)),
+            prefix_len,
+            visitor,
+        )
+    }
+
+    /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks; the
+    /// `f32` counterpart of [`StreamIndex2D::visit_payloads_at_ranks`].
+    pub fn visit_payloads_at_ranks<F: FnMut(usize, &[u8])>(
+        &self,
+        leaf_ranks: &[usize],
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core.visit_payloads_at_ranks(leaf_ranks, visitor)
+    }
 }
 
 /// Streaming reader for a compact `f32` 3D index. The 3D counterpart of
@@ -768,6 +914,51 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
         let mut out = Vec::new();
         self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
+    }
+
+    /// Visit a [`PayloadPrefix`] for every item whose (rounded) box intersects
+    /// `query`; the `f32` 3D counterpart of
+    /// [`StreamIndex2D::visit_payload_prefixes`].
+    pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: Box3D,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core.visit_payload_prefixes(
+            |record| parse_box3d_f32(record).overlaps(query),
+            prefix_len,
+            visitor,
+        )
+    }
+
+    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes) for a custom
+    /// [`Overlaps3D`] region.
+    pub fn visit_payload_prefixes_region<Q, F>(
+        &self,
+        query: &Q,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        self.core.visit_payload_prefixes(
+            |record| query.overlaps_box(parse_box3d_f32(record)),
+            prefix_len,
+            visitor,
+        )
+    }
+
+    /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks; the
+    /// `f32` 3D counterpart of [`StreamIndex2D::visit_payloads_at_ranks`].
+    pub fn visit_payloads_at_ranks<F: FnMut(usize, &[u8])>(
+        &self,
+        leaf_ranks: &[usize],
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core.visit_payloads_at_ranks(leaf_ranks, visitor)
     }
 }
 

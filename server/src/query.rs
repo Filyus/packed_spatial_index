@@ -1,8 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use packed_spatial_index_geo::{
-    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex, GeoMatch,
-    GeoPayload, GeoQuery2D, GeometryEncoding, NonPlanarExactPolicy, PayloadPlan, SpatialPredicate,
-    StoragePrecision,
+    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FEATURE_REF_RECORD_LEN, FeatureRef,
+    GeoArtifactIndex, GeoMatch, GeoMatchHeader, GeoPayload, GeoQuery2D, GeometryEncoding,
+    NonPlanarExactPolicy, PayloadPlan, SpatialPredicate, StoragePrecision,
 };
 use serde::{Deserialize, Serialize};
 
@@ -353,15 +353,15 @@ pub fn search_response(
     let payload_mode = parse_payload_mode(params.payload.as_deref())?;
     let level = resolve_level(collection, parse_level(params.level.as_deref())?)?;
     let payload_kind = PayloadKind::from(&collection.manifest().payload_plan);
-    let mut records = search_records(
+    let outcome = search_records(
         collection,
         &options.bbox,
         options.predicate,
         payload_mode,
         level,
+        options.offset,
+        options.limit,
     )?;
-    let number_matched = records.len();
-    let records = paginate(&mut records, options.offset, options.limit);
     Ok(SearchResponse {
         collection_id: collection.id().to_owned(),
         query: QueryInfo {
@@ -373,9 +373,9 @@ pub fn search_response(
             offset: options.offset,
         },
         payload_kind,
-        number_matched,
-        number_returned: records.len(),
-        matches: records,
+        number_matched: outcome.number_matched,
+        number_returned: outcome.records.len(),
+        matches: outcome.records,
     })
 }
 
@@ -404,16 +404,18 @@ pub fn items_response(
         )));
     }
     let options = SearchOptions::from_params(&params)?;
-    let mut records = search_records(
+    let outcome = search_records(
         collection,
         &options.bbox,
         options.predicate,
         PayloadMode::Full,
         ResultLevel::Feature,
+        options.offset,
+        options.limit,
     )?;
-    let number_matched = records.len();
-    let records = paginate(&mut records, options.offset, options.limit);
-    let features = records
+    let number_matched = outcome.number_matched;
+    let features = outcome
+        .records
         .into_iter()
         .filter_map(|record| match record.payload {
             Some(MatchPayload::FeatureJson { feature }) => feature,
@@ -478,13 +480,23 @@ fn resolve_level(
     }
 }
 
+/// Matched-and-paged search result: the pre-pagination match count plus the
+/// records of the requested page only.
+struct SearchOutcome {
+    number_matched: usize,
+    records: Vec<MatchRecord>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn search_records(
     collection: &Collection,
     bbox: &[f64],
     predicate: QueryPredicate,
     payload_mode: PayloadMode,
     level: ResultLevel,
-) -> Result<Vec<MatchRecord>, ServerError> {
+    offset: usize,
+    limit: usize,
+) -> Result<SearchOutcome, ServerError> {
     let exact = predicate == QueryPredicate::Intersects;
     let index = collection.open_local_index()?;
     match index {
@@ -504,23 +516,36 @@ fn search_records(
                         collection.id()
                     )));
                 }
-                let mut ids = index.search_entry_ids(query)?;
-                ids.sort_unstable();
-                ids.dedup();
-                return Ok(ids
-                    .into_iter()
-                    .map(|id| MatchRecord {
-                        entry_id: id,
-                        feature_ref: None,
-                        payload: match_payload_none(payload_mode),
-                    })
-                    .collect());
+                return Ok(id_outcome(
+                    index.search_entry_ids(query)?,
+                    payload_mode,
+                    offset,
+                    limit,
+                ));
             }
             if exact && !collection.supports_intersects_predicate() {
                 return Err(ServerError::UnsupportedPredicate(format!(
                     "collection `{}` cannot apply predicate=intersects from its artifact payload",
                     collection.id()
                 )));
+            }
+            // Header path: RowRef/RowWkb identity lives in the fixed payload
+            // prefix, so a bbox search sorts, dedupes, and pages without
+            // reading payload bodies — bodies are fetched for the page only.
+            // predicate=intersects needs every match's geometry up front, and
+            // FeatureJson stores identity inside the JSON body; both keep the
+            // full-decode path (payload work is still page-only below).
+            if !exact && matches!(payload_plan, PayloadPlan::RowRef | PayloadPlan::RowWkb) {
+                let headers = index.search_match_headers(query)?;
+                return header_outcome(
+                    headers,
+                    payload_mode,
+                    level,
+                    offset,
+                    limit,
+                    payload_plan,
+                    |page| index.fetch_matches(page),
+                );
             }
             let mut matches = index.search_matches(query)?;
             if exact {
@@ -531,14 +556,7 @@ fn search_records(
                     NonPlanarExactPolicy::Reject,
                 )?;
             }
-            GeoMatch::sort_by_entry(&mut matches);
-            if matches!(level, ResultLevel::Feature) {
-                GeoMatch::dedupe_by_feature(&mut matches);
-            }
-            Ok(matches
-                .into_iter()
-                .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
-                .collect())
+            Ok(match_outcome(matches, payload_mode, level, offset, limit))
         }
         GeoArtifactIndex::D3(index) => {
             if bbox.len() != 6 {
@@ -554,29 +572,135 @@ fn search_records(
                 )));
             }
             let query = Box3D::new(bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5]);
-            if matches!(collection.manifest().payload_plan, PayloadPlan::None) {
-                let mut ids = index.search_entry_ids(query)?;
-                ids.sort_unstable();
-                ids.dedup();
-                return Ok(ids
-                    .into_iter()
-                    .map(|id| MatchRecord {
-                        entry_id: id,
-                        feature_ref: None,
-                        payload: match_payload_none(payload_mode),
-                    })
-                    .collect());
+            let payload_plan = &collection.manifest().payload_plan;
+            if matches!(payload_plan, PayloadPlan::None) {
+                return Ok(id_outcome(
+                    index.search_entry_ids(query)?,
+                    payload_mode,
+                    offset,
+                    limit,
+                ));
             }
-            let mut matches = index.search_matches(query)?;
-            GeoMatch::sort_by_entry(&mut matches);
-            if matches!(level, ResultLevel::Feature) {
-                GeoMatch::dedupe_by_feature(&mut matches);
+            if matches!(payload_plan, PayloadPlan::RowRef | PayloadPlan::RowWkb) {
+                let headers = index.search_match_headers(query)?;
+                return header_outcome(
+                    headers,
+                    payload_mode,
+                    level,
+                    offset,
+                    limit,
+                    payload_plan,
+                    |page| index.fetch_matches(page),
+                );
             }
-            Ok(matches
-                .into_iter()
-                .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
-                .collect())
+            let matches = index.search_matches(query)?;
+            Ok(match_outcome(matches, payload_mode, level, offset, limit))
         }
+    }
+}
+
+/// Page an id-only (payload-less) result set.
+fn id_outcome(
+    mut ids: Vec<usize>,
+    payload_mode: PayloadMode,
+    offset: usize,
+    limit: usize,
+) -> SearchOutcome {
+    ids.sort_unstable();
+    ids.dedup();
+    let number_matched = ids.len();
+    let records = paginate(&mut ids, offset, limit)
+        .into_iter()
+        .map(|id| MatchRecord {
+            entry_id: id,
+            feature_ref: None,
+            payload: match_payload_none(payload_mode),
+        })
+        .collect();
+    SearchOutcome {
+        number_matched,
+        records,
+    }
+}
+
+/// Sort, dedupe, and page fully-decoded matches; record mapping (base64/JSON
+/// serialization) runs for the page only.
+fn match_outcome(
+    mut matches: Vec<GeoMatch>,
+    payload_mode: PayloadMode,
+    level: ResultLevel,
+    offset: usize,
+    limit: usize,
+) -> SearchOutcome {
+    GeoMatch::sort_by_entry(&mut matches);
+    if matches!(level, ResultLevel::Feature) {
+        GeoMatch::dedupe_by_feature(&mut matches);
+    }
+    let number_matched = matches.len();
+    let records = paginate(&mut matches, offset, limit)
+        .into_iter()
+        .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
+        .collect();
+    SearchOutcome {
+        number_matched,
+        records,
+    }
+}
+
+/// Sort, dedupe, and page match headers; payload bodies are fetched only for
+/// the page, and only when `payload=full` needs them.
+fn header_outcome(
+    mut headers: Vec<GeoMatchHeader>,
+    payload_mode: PayloadMode,
+    level: ResultLevel,
+    offset: usize,
+    limit: usize,
+    plan: &PayloadPlan,
+    fetch: impl FnOnce(&[GeoMatchHeader]) -> Result<Vec<GeoMatch>, packed_spatial_index_geo::GeoError>,
+) -> Result<SearchOutcome, ServerError> {
+    GeoMatchHeader::sort_by_entry(&mut headers);
+    if matches!(level, ResultLevel::Feature) {
+        GeoMatchHeader::dedupe_by_feature(&mut headers);
+    }
+    let number_matched = headers.len();
+    let page = paginate(&mut headers, offset, limit);
+    let records = if payload_mode == PayloadMode::Full {
+        fetch(&page)?
+            .into_iter()
+            .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
+            .collect()
+    } else {
+        page.into_iter()
+            .map(|header| header_record(header, payload_mode, plan))
+            .collect()
+    };
+    Ok(SearchOutcome {
+        number_matched,
+        records,
+    })
+}
+
+/// Build a record straight from a header — no payload body was read, so
+/// summary mode derives `byteLength` from the header's payload length.
+fn header_record(
+    header: GeoMatchHeader,
+    payload_mode: PayloadMode,
+    plan: &PayloadPlan,
+) -> MatchRecord {
+    let payload = match (payload_mode, plan) {
+        (PayloadMode::None, _) => None,
+        (_, PayloadPlan::RowRef) => Some(MatchPayload::RowRef),
+        (_, PayloadPlan::RowWkb) => Some(MatchPayload::RowWkb {
+            byte_length: header.payload_len - FEATURE_REF_RECORD_LEN,
+            wkb_base64: None,
+        }),
+        // The header search rejects every other plan up front.
+        _ => None,
+    };
+    MatchRecord {
+        entry_id: header.entry_id,
+        feature_ref: Some(header.feature.into()),
+        payload,
     }
 }
 
@@ -712,7 +836,7 @@ fn parse_payload_mode(raw: Option<&str>) -> Result<PayloadMode, ServerError> {
     }
 }
 
-fn paginate(records: &mut Vec<MatchRecord>, offset: usize, limit: usize) -> Vec<MatchRecord> {
+fn paginate<T>(records: &mut Vec<T>, offset: usize, limit: usize) -> Vec<T> {
     if offset >= records.len() {
         return Vec::new();
     }

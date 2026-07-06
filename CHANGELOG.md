@@ -4,6 +4,17 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Search
+
+- Added payload-header streaming to the sync streaming indexes:
+  `visit_payload_prefixes` / `visit_payload_prefixes_region` yield each
+  match's insertion id, leaf rank, full payload length, and leading payload
+  bytes without reading payload bodies, and `visit_payloads_at_ranks` fetches
+  full payloads for an explicit rank set in coalesced ascending runs —
+  together enabling paged payload access. The new `PayloadPrefix` struct is
+  exported at the crate root. Breaking: `StreamError` gains an `InvalidRank`
+  variant.
+
 ## [0.23.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.22.0...psi-v0.23.0) - 2026-07-02
 
 ### Safety

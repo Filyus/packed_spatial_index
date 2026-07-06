@@ -811,6 +811,163 @@ fn random_with_payloads(n: usize, seed: u64) -> (crate::Index2D, Vec<Vec<u8>>, V
 }
 
 #[test]
+fn payload_prefixes_match_search_payloads() {
+    let (_, payloads, bytes) = random_with_payloads(20_000, 0xAB01);
+    let stream = open_slice(bytes);
+    let query = Box2D::new(400.0, 400.0, 460.0, 460.0);
+
+    let full = stream.search_payloads(query).unwrap();
+    let mut prefixes = Vec::new();
+    stream
+        .visit_payload_prefixes(query, 8, |p| {
+            prefixes.push((p.id, p.leaf_rank, p.prefix.to_vec(), p.payload_len));
+        })
+        .unwrap();
+
+    assert_eq!(prefixes.len(), full.len());
+    for ((id, blob), (pid, _rank, prefix, payload_len)) in full.iter().zip(&prefixes) {
+        assert_eq!(id, pid);
+        assert_eq!(*payload_len, blob.len());
+        assert_eq!(&blob[..prefix.len()], &prefix[..]);
+        assert_eq!(prefix.len(), blob.len().min(8));
+        assert_eq!(blob, &payloads[*id]);
+    }
+
+    // A prefix longer than any blob clamps to the whole blob.
+    let mut clamped = Vec::new();
+    stream
+        .visit_payload_prefixes(query, 10_000, |p| {
+            clamped.push((p.id, p.prefix.to_vec()));
+        })
+        .unwrap();
+    for ((id, blob), (pid, prefix)) in full.iter().zip(&clamped) {
+        assert_eq!(id, pid);
+        assert_eq!(blob, prefix);
+    }
+}
+
+#[test]
+fn payloads_at_ranks_round_trip() {
+    let (_, payloads, bytes) = random_with_payloads(5_000, 0xAB02);
+    let stream = open_slice(bytes);
+    let query = Box2D::new(100.0, 100.0, 500.0, 500.0);
+
+    let mut rank_to_id = Vec::new();
+    stream
+        .visit_payload_prefixes(query, 0, |p| rank_to_id.push((p.leaf_rank, p.id)))
+        .unwrap();
+    assert!(rank_to_id.len() > 20, "query should match a healthy sample");
+
+    // A scattered page, unsorted with duplicates: blobs come back deduplicated
+    // in ascending rank order and match the owning item's payload.
+    let mut page: Vec<usize> = rank_to_id.iter().map(|&(r, _)| r).step_by(3).collect();
+    page.reverse();
+    let dup = page[0];
+    page.push(dup);
+    let mut got = Vec::new();
+    stream
+        .visit_payloads_at_ranks(&page, |rank, blob| got.push((rank, blob.to_vec())))
+        .unwrap();
+
+    let mut want: Vec<usize> = page.clone();
+    want.sort_unstable();
+    want.dedup();
+    assert_eq!(got.iter().map(|(r, _)| *r).collect::<Vec<_>>(), want);
+    for (rank, blob) in &got {
+        let id = rank_to_id.iter().find(|(r, _)| r == rank).unwrap().1;
+        assert_eq!(blob, &payloads[id]);
+    }
+}
+
+#[test]
+fn payloads_at_ranks_rejects_out_of_range() {
+    let (_, _, bytes) = random_with_payloads(100, 0xAB03);
+    let stream = open_slice(bytes);
+    match stream.visit_payloads_at_ranks(&[0, 100], |_, _| {}) {
+        Err(StreamError::InvalidRank) => {}
+        other => panic!("expected InvalidRank, got {other:?}"),
+    }
+}
+
+#[test]
+fn payload_prefixes_stay_within_a_budget_full_blobs_exceed() {
+    use super::StreamLimits;
+
+    // Payloads much larger than the coalesce gap, so prefix reads cannot be
+    // merged across blob bodies — the byte saving is real, not coalesced away.
+    let (owned, _) = random_owned(300, 0xAB04);
+    let n = owned.num_items();
+    let payloads: Vec<Vec<u8>> = (0..n).map(|i| vec![i as u8; 8192]).collect();
+    let bytes = owned.to_bytes_with_payloads(&payloads).unwrap();
+    let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+
+    // Generous enough for the tree, offsets, and 24-byte prefixes of all 300
+    // items; nowhere near the ~2.4 MB of blob bodies.
+    let limits = StreamLimits {
+        max_read_bytes: Some(300_000),
+        ..StreamLimits::default()
+    };
+    let stream = StreamIndex2D::open_with_limits(SliceReader::new(bytes), limits).unwrap();
+
+    let mut seen = 0usize;
+    stream
+        .visit_payload_prefixes(query, 24, |p| {
+            assert_eq!(p.payload_len, 8192);
+            assert_eq!(p.prefix.len(), 24);
+            seen += 1;
+        })
+        .unwrap();
+    assert_eq!(seen, n);
+
+    match stream.search_payloads(query) {
+        Err(StreamError::LimitExceeded) => {}
+        other => panic!(
+            "full blobs should exceed the budget, got {:?}",
+            other.map(|v| v.len())
+        ),
+    }
+}
+
+#[test]
+fn fixed_width_payload_prefixes_and_ranks() {
+    const STRIDE: usize = 12;
+    let (owned, _) = random_owned(2_000, 0xAB05);
+    let n = owned.num_items();
+    let mut flat = vec![0u8; n * STRIDE];
+    for id in 0..n {
+        flat[id * STRIDE..id * STRIDE + 8].copy_from_slice(&(id as u64).to_le_bytes());
+    }
+    let bytes = owned.serialize().records(STRIDE, &flat).to_bytes().unwrap();
+    let stream = open_slice(bytes);
+    let query = Box2D::new(100.0, 100.0, 400.0, 400.0);
+
+    let mut ranks = Vec::new();
+    stream
+        .visit_payload_prefixes(query, 8, |p| {
+            assert_eq!(p.payload_len, STRIDE);
+            assert_eq!(
+                u64::from_le_bytes(p.prefix.try_into().unwrap()),
+                p.id as u64
+            );
+            ranks.push((p.leaf_rank, p.id));
+        })
+        .unwrap();
+    assert!(!ranks.is_empty());
+
+    let page: Vec<usize> = ranks.iter().map(|&(r, _)| r).collect();
+    let mut got = 0usize;
+    stream
+        .visit_payloads_at_ranks(&page, |rank, blob| {
+            assert_eq!(blob.len(), STRIDE);
+            let id = ranks.iter().find(|(r, _)| *r == rank).unwrap().1;
+            assert_eq!(u64::from_le_bytes(blob[..8].try_into().unwrap()), id as u64);
+            got += 1;
+        })
+        .unwrap();
+    assert_eq!(got, page.len());
+}
+
+#[test]
 fn streamed_payloads_round_trip_with_search() {
     // 20k items so leaves stream; payloads come back paired with ids.
     let (owned, payloads, bytes) = random_with_payloads(20_000, 0x9EED);

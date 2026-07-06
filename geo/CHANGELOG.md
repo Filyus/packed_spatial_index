@@ -6,6 +6,14 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- Added paged match access for `RowRef` / `RowWkb` artifacts:
+  `search_match_headers` returns per-entry identity and payload size without
+  reading payload bodies, and `fetch_matches` materializes full `GeoMatch`
+  values for a page of headers (`RowRef` pages rebuild with no I/O). The new
+  `GeoMatchHeader` type supports the same sort/dedupe as `GeoMatch`.
+  `FeatureJson` artifacts keep the full-decode path — their identity lives
+  inside the JSON body — and `PayloadPlan::None` artifacts have no headers;
+  both are rejected with `UnsupportedArtifact`.
 - Added feature-level query results to the artifact indexes:
   `search_features` / `search_feature_matches` (+ `_async`) return one record
   per source feature, collapsing split index entries — the lowest-part entry

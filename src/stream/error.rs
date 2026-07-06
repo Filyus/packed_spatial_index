@@ -12,6 +12,8 @@ pub enum StreamError {
     Format(LoadError),
     /// Payloads were requested but the index has no payload section.
     NoPayload,
+    /// A caller-supplied leaf rank is outside the index.
+    InvalidRank,
     /// The query exceeded a configured [`StreamLimits`](super::StreamLimits)
     /// budget and was aborted.
     LimitExceeded,
@@ -23,6 +25,7 @@ impl std::fmt::Display for StreamError {
             StreamError::Io(err) => write!(f, "streaming read failed: {err}"),
             StreamError::Format(err) => write!(f, "{err}"),
             StreamError::NoPayload => write!(f, "index has no payload section"),
+            StreamError::InvalidRank => write!(f, "leaf rank is outside the index"),
             StreamError::LimitExceeded => write!(f, "query exceeded its configured limits"),
         }
     }
@@ -33,7 +36,7 @@ impl std::error::Error for StreamError {
         match self {
             StreamError::Io(err) => Some(err),
             StreamError::Format(err) => Some(err),
-            StreamError::NoPayload | StreamError::LimitExceeded => None,
+            StreamError::NoPayload | StreamError::InvalidRank | StreamError::LimitExceeded => None,
         }
     }
 }

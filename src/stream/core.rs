@@ -614,6 +614,228 @@ impl<R: RangeReader> StreamCore<R> {
         }
         Ok(())
     }
+
+    /// Visit a [`PayloadPrefix`] for every leaf whose box satisfies `overlaps`:
+    /// the insertion id, its leaf rank, the payload's full byte length, and its
+    /// first `prefix_len` bytes — without reading payload bodies past the
+    /// prefix. Lengths come from the offset table (or the fixed stride), so a
+    /// variable-width payload's body bytes beyond the prefix are never fetched.
+    pub(crate) fn visit_payload_prefixes<O, F>(
+        &self,
+        overlaps: O,
+        prefix_len: usize,
+        mut emit: F,
+    ) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
+        let mut off_buf = Vec::new();
+        let mut spans: Vec<PrefixSpan> = Vec::new();
+        let mut read_buf = Vec::new();
+        self.traverse(overlaps, |survivors, indices, budget| {
+            // Resolve each survivor's blob start and full length first.
+            spans.clear();
+            if section.stride != 0 {
+                let stride = section.stride as usize;
+                for (i, &p) in survivors.iter().enumerate() {
+                    spans.push(PrefixSpan {
+                        run_index: i,
+                        leaf_rank: p,
+                        blob_start: (p * stride) as u64,
+                        payload_len: stride,
+                    });
+                }
+            } else {
+                let mut j = 0;
+                while j < survivors.len() {
+                    let k = payload_run_end(survivors, j, self.coalesce_gap());
+                    let lo = survivors[j];
+                    let hi = survivors[k];
+                    off_buf.clear();
+                    off_buf.resize((hi + 2 - lo) * 8, 0);
+                    budget.charge_read(off_buf.len())?;
+                    self.reader
+                        .read_exact_at(section.offsets_start + (lo * 8) as u64, &mut off_buf)?;
+                    for (offset, &p) in survivors[j..=k].iter().enumerate() {
+                        let o0 = read_u64_le_unchecked(&off_buf, (p - lo) * 8);
+                        let o1 = read_u64_le_unchecked(&off_buf, (p + 1 - lo) * 8);
+                        if o1 < o0 || o1 > section.blob_total {
+                            return Err(StreamError::Format(LoadError::InvalidTree));
+                        }
+                        spans.push(PrefixSpan {
+                            run_index: j + offset,
+                            leaf_rank: p,
+                            blob_start: o0,
+                            payload_len: (o1 - o0) as usize,
+                        });
+                    }
+                    j = k + 1;
+                }
+            }
+
+            // Coalesce the prefix byte spans into runs and emit each survivor.
+            let gap = self.coalesce_gap();
+            let mut j = 0;
+            while j < spans.len() {
+                let run_start = spans[j].blob_start;
+                let mut run_end = spans[j].prefix_end(prefix_len);
+                let mut k = j;
+                while k + 1 < spans.len() {
+                    let next = &spans[k + 1];
+                    if next.blob_start < run_start || next.blob_start.saturating_sub(run_end) > gap
+                    {
+                        break;
+                    }
+                    run_end = run_end.max(next.prefix_end(prefix_len));
+                    k += 1;
+                }
+                read_buf.clear();
+                read_buf.resize((run_end - run_start) as usize, 0);
+                if !read_buf.is_empty() {
+                    budget.charge_read(read_buf.len())?;
+                    self.reader
+                        .read_exact_at(section.blobs_start + run_start, &mut read_buf)?;
+                }
+                for span in &spans[j..=k] {
+                    let id = read_index(indices, span.run_index)?;
+                    if id >= self.num_items {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    budget.charge_item()?;
+                    let at = (span.blob_start - run_start) as usize;
+                    let take = span.payload_len.min(prefix_len);
+                    emit(PayloadPrefix {
+                        id,
+                        leaf_rank: span.leaf_rank,
+                        prefix: &read_buf[at..at + take],
+                        payload_len: span.payload_len,
+                    });
+                }
+                j = k + 1;
+            }
+            Ok(())
+        })
+    }
+
+    /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks —
+    /// random-access payload reads for ranks captured earlier by
+    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes). Input ranks
+    /// are sorted and deduplicated internally so the payload section is read
+    /// in coalesced ascending runs; blobs are emitted in ascending rank order.
+    /// A rank at or past the item count fails with [`StreamError::InvalidRank`].
+    pub(crate) fn visit_payloads_at_ranks<F>(
+        &self,
+        leaf_ranks: &[usize],
+        mut emit: F,
+    ) -> Result<(), StreamError>
+    where
+        F: FnMut(usize, &[u8]),
+    {
+        let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
+        let mut ranks = leaf_ranks.to_vec();
+        ranks.sort_unstable();
+        ranks.dedup();
+        if ranks.last().is_some_and(|&max| max >= self.num_items) {
+            return Err(StreamError::InvalidRank);
+        }
+        let mut budget = Budget::new(self.limits);
+        let mut off_buf = Vec::new();
+        let mut blob_buf = Vec::new();
+        if section.stride != 0 {
+            let stride = section.stride as usize;
+            let mut j = 0;
+            while j < ranks.len() {
+                let k = payload_run_end_fixed(&ranks, j, stride, self.coalesce_gap());
+                let lo = ranks[j];
+                let hi = ranks[k];
+                let span = (hi + 1 - lo) * stride;
+                blob_buf.clear();
+                blob_buf.resize(span, 0);
+                budget.charge_read(span)?;
+                self.reader
+                    .read_exact_at(section.blobs_start + (lo * stride) as u64, &mut blob_buf)?;
+                for &p in &ranks[j..=k] {
+                    budget.charge_item()?;
+                    let within = (p - lo) * stride;
+                    emit(p, &blob_buf[within..within + stride]);
+                }
+                j = k + 1;
+            }
+        } else {
+            let mut j = 0;
+            while j < ranks.len() {
+                let k = payload_run_end(&ranks, j, self.coalesce_gap());
+                let lo = ranks[j];
+                let hi = ranks[k];
+                off_buf.clear();
+                off_buf.resize((hi + 2 - lo) * 8, 0);
+                budget.charge_read(off_buf.len())?;
+                self.reader
+                    .read_exact_at(section.offsets_start + (lo * 8) as u64, &mut off_buf)?;
+                let (blob_lo, blob_hi) = payload_blob_span(&off_buf, lo, hi, section.blob_total)?;
+                blob_buf.clear();
+                blob_buf.resize((blob_hi - blob_lo) as usize, 0);
+                if !blob_buf.is_empty() {
+                    budget.charge_read(blob_buf.len())?;
+                    self.reader
+                        .read_exact_at(section.blobs_start + blob_lo, &mut blob_buf)?;
+                }
+                for &p in &ranks[j..=k] {
+                    let o0 = read_u64_le_unchecked(&off_buf, (p - lo) * 8);
+                    let o1 = read_u64_le_unchecked(&off_buf, (p + 1 - lo) * 8);
+                    if o0 < blob_lo || o1 < o0 || o1 > blob_hi {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    budget.charge_item()?;
+                    emit(
+                        p,
+                        &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
+                    );
+                }
+                j = k + 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One matching leaf's payload location resolved during a prefix visit.
+struct PrefixSpan {
+    /// Position within the leaf batch (indexes into the gathered id bytes).
+    run_index: usize,
+    /// Leaf rank — position in the leaf-ordered payload section.
+    leaf_rank: usize,
+    /// Blob start, relative to the blob region.
+    blob_start: u64,
+    /// Full payload byte length.
+    payload_len: usize,
+}
+
+impl PrefixSpan {
+    /// Exclusive end of the prefix read for this span.
+    fn prefix_end(&self, prefix_len: usize) -> u64 {
+        self.blob_start + self.payload_len.min(prefix_len) as u64
+    }
+}
+
+/// One matching leaf seen by
+/// [`visit_payload_prefixes`](StreamCore::visit_payload_prefixes): identity
+/// plus payload size, with only the leading payload bytes fetched.
+#[derive(Debug)]
+pub struct PayloadPrefix<'a> {
+    /// Item insertion id.
+    pub id: usize,
+    /// Leaf rank — the item's position in the leaf-ordered payload section.
+    /// Stable for one serialized index, not across rebuilds. Feed ranks to
+    /// [`StreamIndex2D::visit_payloads_at_ranks`](super::StreamIndex2D::visit_payloads_at_ranks)
+    /// to fetch full payloads later.
+    pub leaf_rank: usize,
+    /// The first `min(prefix_len, payload_len)` payload bytes.
+    pub prefix: &'a [u8],
+    /// Full payload byte length; the body past `prefix` was not read.
+    pub payload_len: usize,
 }
 
 /// Read index entry `i` (a little-endian `u64`) from gathered index bytes.

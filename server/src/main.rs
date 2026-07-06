@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
-use packed_spatial_index_server::{AppState, Catalog, serve};
+use packed_spatial_index_server::{Catalog, ServerState, serve};
 
 /// Run a local native PSINDEX artifact server.
 #[derive(Debug, Parser)]
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let catalog = Catalog::from_path(&args.catalog)?;
     let addr = args.addr.unwrap_or(catalog.server.addr);
-    let state = AppState::from_catalog(catalog)?;
+    let state = ServerState::from_catalog(catalog)?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "starting PSINDEX server");
     serve(listener, state).await?;

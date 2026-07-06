@@ -14,17 +14,17 @@ use crate::{Catalog, CollectionConfig, ServerError};
 
 /// Shared server state.
 #[derive(Clone)]
-pub struct AppState {
+pub struct ServerState {
     collections: Arc<HashMap<String, Arc<Collection>>>,
 }
 
-impl AppState {
+impl ServerState {
     /// Open all catalog artifacts and cache their artifact directories.
     pub fn from_catalog(catalog: Catalog) -> Result<Self, ServerError> {
         let mut collections = HashMap::with_capacity(catalog.collections.len());
         for config in catalog.collections {
             let collection = Arc::new(Collection::open(config)?);
-            collections.insert(collection.id.clone(), collection);
+            collections.insert(collection.id().to_owned(), collection);
         }
         Ok(Self {
             collections: Arc::new(collections),
@@ -39,21 +39,17 @@ impl AppState {
     /// Return all collections sorted by id.
     pub fn collections(&self) -> Vec<Arc<Collection>> {
         let mut collections = self.collections.values().cloned().collect::<Vec<_>>();
-        collections.sort_by(|a, b| a.id.cmp(&b.id));
+        collections.sort_by(|a, b| a.id().cmp(b.id()));
         collections
     }
 }
 
 /// One configured PSINDEX collection.
 pub struct Collection {
-    /// Collection id.
-    pub id: String,
-    /// Optional human-readable title.
-    pub title: Option<String>,
-    /// Optional human-readable description.
-    pub description: Option<String>,
-    /// Path to the local `.psindex` artifact.
-    pub artifact_path: PathBuf,
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+    artifact_path: PathBuf,
     directory: GeoArtifactDirectory,
 }
 
@@ -79,15 +75,38 @@ impl Collection {
         })
     }
 
-    /// Reattach a fresh local file reader to the cached artifact directory.
-    pub fn open_index(&self) -> Result<GeoArtifactIndex<FileReader>, ServerError> {
-        let reader = FileReader::open(&self.artifact_path)
-            .map_err(|e| ServerError::io(&self.artifact_path, e))?;
-        self.reattach(reader)
+    /// Collection id.
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
-    /// Reattach an arbitrary range reader to the cached artifact directory.
-    pub fn reattach<R: RangeReader>(&self, reader: R) -> Result<GeoArtifactIndex<R>, ServerError> {
+    /// Optional human-readable title.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// Optional human-readable description.
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    /// Path to the local `.psindex` artifact.
+    pub fn artifact_path(&self) -> &Path {
+        &self.artifact_path
+    }
+
+    /// Attach a fresh local file reader to the cached artifact directory.
+    pub fn open_local_index(&self) -> Result<GeoArtifactIndex<FileReader>, ServerError> {
+        let reader = FileReader::open(&self.artifact_path)
+            .map_err(|e| ServerError::io(&self.artifact_path, e))?;
+        self.attach_reader(reader)
+    }
+
+    /// Attach an arbitrary range reader to the cached artifact directory.
+    pub fn attach_reader<R: RangeReader>(
+        &self,
+        reader: R,
+    ) -> Result<GeoArtifactIndex<R>, ServerError> {
         Ok(GeoArtifactIndex::from_directory(&self.directory, reader)?)
     }
 
@@ -97,7 +116,7 @@ impl Collection {
     }
 
     /// Number of indexed entries.
-    pub fn num_items(&self) -> usize {
+    pub fn entry_count(&self) -> usize {
         self.directory.num_items()
     }
 
@@ -190,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn app_state_rejects_missing_artifact() {
+    fn server_state_rejects_missing_artifact() {
         let dir = tempdir().unwrap();
         let catalog = Catalog {
             server: Default::default(),
@@ -201,7 +220,7 @@ mod tests {
                 artifact: dir.path().join("missing.psindex"),
             }],
         };
-        let err = match AppState::from_catalog(catalog) {
+        let err = match ServerState::from_catalog(catalog) {
             Ok(_) => panic!("missing artifact should be rejected"),
             Err(err) => err,
         };
@@ -209,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn app_state_rejects_invalid_artifact() {
+    fn server_state_rejects_invalid_artifact() {
         let dir = tempdir().unwrap();
         let artifact = dir.path().join("bad.psindex");
         fs::write(&artifact, b"not a psindex").unwrap();
@@ -222,11 +241,11 @@ mod tests {
                 artifact,
             }],
         };
-        assert!(AppState::from_catalog(catalog).is_err());
+        assert!(ServerState::from_catalog(catalog).is_err());
     }
 
     #[test]
-    fn reattach_performs_no_reads_until_query() {
+    fn attach_reader_performs_no_reads_until_query() {
         let dir = tempdir().unwrap();
         let artifact = dir.path().join("places.psindex");
         let bytes = write_artifact(&artifact);
@@ -239,12 +258,12 @@ mod tests {
                 artifact,
             }],
         };
-        let state = AppState::from_catalog(catalog).unwrap();
+        let state = ServerState::from_catalog(catalog).unwrap();
         let collection = state.collection("places").unwrap();
 
         let reads = Arc::new(AtomicUsize::new(0));
         let reader = CountingReader::new(bytes, Arc::clone(&reads));
-        let index = collection.reattach(reader).unwrap();
+        let index = collection.attach_reader(reader).unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 0);
 
         let GeoArtifactIndex::D2(index) = index else {

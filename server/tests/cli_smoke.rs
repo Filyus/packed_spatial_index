@@ -167,11 +167,11 @@ fn binary_serves_generated_local_artifacts() {
 
     let (status, body) = get(
         port,
-        "/collections/places_wkb/hits?bbox=-10,0,0,2&include_payload=true",
+        "/collections/places_wkb/hits?bbox=-10,0,0,2&payload=full",
     );
     assert_eq!(status, 200);
     assert!(body.contains("\"kind\":\"row_wkb\""));
-    assert!(body.contains("\"wkb_base64\""));
+    assert!(body.contains("\"wkbBase64\""));
 
     let (status, _) = get(port, "/collections/places_wkb/items?bbox=-10,0,0,2");
     assert_eq!(status, 422);

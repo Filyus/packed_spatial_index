@@ -2,7 +2,7 @@
 //!
 //! The server is artifact-first: it opens `.psindex` files at startup, caches
 //! their [`packed_spatial_index_geo::GeoArtifactDirectory`] values, and
-//! reattaches fresh local file readers per request.
+//! attaches fresh local file readers per request.
 
 #![warn(missing_docs)]
 
@@ -14,6 +14,6 @@ mod http;
 mod query;
 
 pub use catalog::{Catalog, CollectionConfig, ServerConfig};
-pub use collection::{AppState, Collection};
+pub use collection::{Collection, ServerState};
 pub use error::{ErrorBody, ServerError};
 pub use http::{router, serve};

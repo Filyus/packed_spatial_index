@@ -6,12 +6,14 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
-    AppState, ServerError,
-    query::{CollectionDetail, CollectionSummary, SearchParams, hits_response, items_response},
+    ServerError, ServerState,
+    query::{
+        CollectionDetail, CollectionSummary, HitsParams, ItemsParams, hits_response, items_response,
+    },
 };
 
 /// Build the HTTP router.
-pub fn router(state: AppState) -> Router {
+pub fn router(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/collections", get(collections))
@@ -24,7 +26,7 @@ pub fn router(state: AppState) -> Router {
 /// Serve the router on an already-bound listener.
 pub async fn serve(
     listener: tokio::net::TcpListener,
-    state: AppState,
+    state: ServerState,
 ) -> Result<(), std::io::Error> {
     axum::serve(listener, router(state)).await
 }
@@ -38,7 +40,7 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-async fn collections(State(state): State<AppState>) -> Json<Vec<CollectionSummary>> {
+async fn collections(State(state): State<ServerState>) -> Json<Vec<CollectionSummary>> {
     let summaries = state
         .collections()
         .into_iter()
@@ -48,33 +50,33 @@ async fn collections(State(state): State<AppState>) -> Json<Vec<CollectionSummar
 }
 
 async fn collection(
-    State(state): State<AppState>,
+    State(state): State<ServerState>,
     Path(id): Path<String>,
 ) -> Result<Json<CollectionDetail>, ServerError> {
     let collection = state
         .collection(&id)
-        .ok_or_else(|| ServerError::NotFound(id.clone()))?;
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
     Ok(Json(CollectionDetail::new(&collection)))
 }
 
 async fn items(
-    State(state): State<AppState>,
+    State(state): State<ServerState>,
     Path(id): Path<String>,
-    Query(params): Query<SearchParams>,
+    Query(params): Query<ItemsParams>,
 ) -> Result<Json<crate::query::FeatureCollectionResponse>, ServerError> {
     let collection = state
         .collection(&id)
-        .ok_or_else(|| ServerError::NotFound(id.clone()))?;
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
     Ok(Json(items_response(&collection, params)?))
 }
 
 async fn hits(
-    State(state): State<AppState>,
+    State(state): State<ServerState>,
     Path(id): Path<String>,
-    Query(params): Query<SearchParams>,
+    Query(params): Query<HitsParams>,
 ) -> Result<Json<crate::query::HitsResponse>, ServerError> {
     let collection = state
         .collection(&id)
-        .ok_or_else(|| ServerError::NotFound(id.clone()))?;
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
     Ok(Json(hits_response(&collection, params)?))
 }

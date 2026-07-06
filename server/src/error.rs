@@ -16,13 +16,28 @@ pub enum ServerError {
     Config(String),
     /// A collection id was not found.
     #[error("collection `{0}` was not found")]
-    NotFound(String),
-    /// The client supplied an invalid request.
-    #[error("bad request: {0}")]
-    BadRequest(String),
-    /// The artifact cannot support the requested operation.
-    #[error("unsupported operation: {0}")]
-    Unsupported(String),
+    CollectionNotFound(String),
+    /// The client supplied an invalid bbox.
+    #[error("invalid bbox: {0}")]
+    InvalidBbox(String),
+    /// The client supplied an invalid limit.
+    #[error("invalid limit: {0}")]
+    InvalidLimit(String),
+    /// The client supplied an invalid offset.
+    #[error("invalid offset: {0}")]
+    InvalidOffset(String),
+    /// The client supplied an invalid exact-filter flag.
+    #[error("invalid exact flag: {0}")]
+    InvalidExact(String),
+    /// The client supplied an invalid payload mode.
+    #[error("invalid payload mode: {0}")]
+    InvalidPayload(String),
+    /// The artifact payload cannot support the requested operation.
+    #[error("unsupported payload: {0}")]
+    UnsupportedPayload(String),
+    /// Exact filtering cannot run for this collection/request.
+    #[error("exact filter unavailable: {0}")]
+    ExactFilterUnavailable(String),
     /// File I/O failed.
     #[error("I/O error for {path}: {source}")]
     Io {
@@ -50,9 +65,16 @@ impl ServerError {
 
     fn status_code(&self) -> StatusCode {
         match self {
-            ServerError::BadRequest(_) | ServerError::Toml(_) => StatusCode::BAD_REQUEST,
-            ServerError::NotFound(_) => StatusCode::NOT_FOUND,
-            ServerError::Unsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ServerError::InvalidBbox(_)
+            | ServerError::InvalidLimit(_)
+            | ServerError::InvalidOffset(_)
+            | ServerError::InvalidExact(_)
+            | ServerError::InvalidPayload(_)
+            | ServerError::Toml(_) => StatusCode::BAD_REQUEST,
+            ServerError::CollectionNotFound(_) => StatusCode::NOT_FOUND,
+            ServerError::UnsupportedPayload(_) | ServerError::ExactFilterUnavailable(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             ServerError::Config(_) | ServerError::Io { .. } | ServerError::Geo(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -61,12 +83,18 @@ impl ServerError {
 
     fn code(&self) -> &'static str {
         match self {
-            ServerError::BadRequest(_) | ServerError::Toml(_) => "bad_request",
-            ServerError::NotFound(_) => "not_found",
-            ServerError::Unsupported(_) => "unsupported",
+            ServerError::InvalidBbox(_) => "invalid_bbox",
+            ServerError::InvalidLimit(_) => "invalid_limit",
+            ServerError::InvalidOffset(_) => "invalid_offset",
+            ServerError::InvalidExact(_) => "invalid_exact",
+            ServerError::InvalidPayload(_) => "invalid_payload",
+            ServerError::Toml(_) => "bad_request",
+            ServerError::CollectionNotFound(_) => "collection_not_found",
+            ServerError::UnsupportedPayload(_) => "unsupported_payload",
+            ServerError::ExactFilterUnavailable(_) => "exact_filter_unavailable",
             ServerError::Config(_) => "configuration",
             ServerError::Io { .. } => "io",
-            ServerError::Geo(_) => "geo",
+            ServerError::Geo(_) => "artifact_error",
         }
     }
 }

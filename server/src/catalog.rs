@@ -66,7 +66,7 @@ impl Catalog {
     ///
     /// Relative artifact paths are resolved against the catalog file's parent
     /// directory. Artifact files themselves are opened later by
-    /// [`crate::AppState::from_catalog`].
+    /// [`crate::ServerState::from_catalog`].
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ServerError> {
         let path = path.as_ref();
         let text = fs::read_to_string(path).map_err(|e| ServerError::io(path, e))?;

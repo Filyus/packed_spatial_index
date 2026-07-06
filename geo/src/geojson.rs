@@ -56,6 +56,22 @@ pub fn open_geojson<R: Read>(mut reader: R) -> Result<GeoJsonDataset, GeoError> 
 /// This one-shot path accepts `FeatureCollection` documents only. Use
 /// [`open_geojson`] for repeatable in-memory access or for single Feature /
 /// bare geometry inputs.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index_geo::{ConvertRequest, convert_geojson_stream};
+///
+/// let doc = br#"{"type":"FeatureCollection","features":[
+///     {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{}}
+/// ]}"#;
+///
+/// let mut bytes = Vec::new();
+/// let artifact = convert_geojson_stream(&doc[..], ConvertRequest::default(), &mut bytes)?;
+/// assert_eq!(artifact.manifest.index_entry_count, 1);
+/// assert!(!bytes.is_empty());
+/// # Ok::<(), packed_spatial_index_geo::GeoError>(())
+/// ```
 pub fn convert_geojson_stream<R: Read>(
     reader: R,
     req: ConvertRequest,
@@ -81,6 +97,23 @@ pub fn convert_geojson_stream<R: Read>(
 /// This one-shot path accepts `FeatureCollection` documents only. Use
 /// [`open_geojson`] for repeatable in-memory access or for single Feature /
 /// bare geometry inputs.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index_geo::{Box2D, GeoIndex, build_geojson_stream};
+///
+/// let doc = br#"{"type":"FeatureCollection","features":[
+///     {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{}}
+/// ]}"#;
+///
+/// let GeoIndex::D2(index) = build_geojson_stream(&doc[..], Default::default())? else {
+///     panic!("expected a 2D index");
+/// };
+/// let refs = index.search_feature_refs(Box2D::new(0.0, 0.0, 3.0, 3.0))?;
+/// assert_eq!(refs.len(), 1);
+/// # Ok::<(), packed_spatial_index_geo::GeoError>(())
+/// ```
 pub fn build_geojson_stream<R: Read>(reader: R, req: BuildRequest) -> Result<GeoIndex, GeoError> {
     let (scan, _) = scan_geojson_stream(
         reader,

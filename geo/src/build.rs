@@ -506,6 +506,21 @@ pub struct GeoIndex2D {
 
 impl GeoIndex2D {
     /// Search and return source feature references.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{Box2D, GeoIndex, open_geoparquet};
+    ///
+    /// let mut dataset = open_geoparquet(File::open("places.parquet")?)?;
+    /// let GeoIndex::D2(index) = dataset.build(Default::default())? else {
+    ///     panic!("expected a 2D index");
+    /// };
+    /// let refs = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+    /// println!("{} candidate feature refs", refs.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_feature_refs<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -721,6 +736,28 @@ impl GeoIndex2DF32 {
     ///
     /// Only [`GeoQuery2D::Box2D`] is supported; any other query variant
     /// returns [`GeoError::UnsupportedArtifact`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use packed_spatial_index_geo::{
+    /// #     Box2D, BuildRequest, GeoIndex, IndexBuildOptions, StoragePrecision, open_geoparquet,
+    /// # };
+    /// # let mut dataset = open_geoparquet(File::open("places.parquet")?)?;
+    /// # let GeoIndex::D2F32(index) = dataset.build(BuildRequest {
+    /// #     build: IndexBuildOptions {
+    /// #         precision: StoragePrecision::F32,
+    /// #         ..IndexBuildOptions::default()
+    /// #     },
+    /// #     ..BuildRequest::default()
+    /// # })? else {
+    /// #     panic!("expected an f32 2D index");
+    /// # };
+    /// let refs = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+    /// println!("{} candidate feature refs", refs.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_feature_refs<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -749,6 +786,29 @@ impl GeoIndex2DF32 {
     /// `f32`-precision storage the same way it does on `f64`. There is no
     /// haversine variant here: the core custom-metric kNN entry point
     /// (`neighbors_metric`) is not implemented for `f32`-precision indexes.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use packed_spatial_index_geo::{
+    /// #     BuildRequest, GeoIndex, IndexBuildOptions, Point2D, StoragePrecision, open_geoparquet,
+    /// # };
+    /// # let mut dataset = open_geoparquet(File::open("places.parquet")?)?;
+    /// # let GeoIndex::D2F32(index) = dataset.build(BuildRequest {
+    /// #     build: IndexBuildOptions {
+    /// #         precision: StoragePrecision::F32,
+    /// #         ..IndexBuildOptions::default()
+    /// #     },
+    /// #     ..BuildRequest::default()
+    /// # })? else {
+    /// #     panic!("expected an f32 2D index");
+    /// # };
+    /// for (feature, dist_sq) in index.nearest_feature_refs(Point2D::new(13.4, 52.5), 5) {
+    ///     println!("row {}: squared distance {dist_sq}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn nearest_feature_refs(
         &self,
         point: Point2D,
@@ -766,6 +826,30 @@ impl GeoIndex2DF32 {
     /// There is no `raycast_closest_feature_ref` on this type: the core
     /// `f32`-precision index does not implement closest-hit raycast, only
     /// all-hits.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use packed_spatial_index_geo::{
+    /// #     BuildRequest, GeoIndex, IndexBuildOptions, Point2D, Ray2D, StoragePrecision, open_geoparquet,
+    /// # };
+    /// # let mut dataset = open_geoparquet(File::open("places.parquet")?)?;
+    /// # let GeoIndex::D2F32(index) = dataset.build(BuildRequest {
+    /// #     build: IndexBuildOptions {
+    /// #         precision: StoragePrecision::F32,
+    /// #         ..IndexBuildOptions::default()
+    /// #     },
+    /// #     ..BuildRequest::default()
+    /// # })? else {
+    /// #     panic!("expected an f32 2D index");
+    /// # };
+    /// let ray = Ray2D::new(Point2D::new(-20.0, 45.0), 1.0, 0.0, 40.0);
+    /// for feature in index.raycast_feature_refs(ray) {
+    ///     println!("row {}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn raycast_feature_refs(&self, ray: Ray2D) -> Vec<FeatureRef> {
         self.index
             .raycast(ray)
@@ -905,6 +989,29 @@ impl GeoIndex3D {
     /// The closest feature this ray segment's box hits, paired with the
     /// entry parameter `t` (in units of the ray's direction length), or
     /// `None` if the ray misses every feature's box.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::fs::File;
+    /// use packed_spatial_index_geo::{
+    ///     open_geoparquet, BuildRequest, GeoIndex, IndexDimsRequest, Point3D, Ray3D,
+    /// };
+    ///
+    /// let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
+    /// let GeoIndex::D3(index) = dataset.build(BuildRequest {
+    ///     dims: IndexDimsRequest::D3,
+    ///     ..BuildRequest::default()
+    /// })?
+    /// else {
+    ///     panic!("expected a 3D index");
+    /// };
+    /// let ray = Ray3D::new(Point3D::new(0.0, 0.0, 100.0), 0.0, 0.0, -1.0, 200.0);
+    /// if let Some((feature, t)) = index.raycast_closest_feature_ref(ray) {
+    ///     println!("row {} at t={t}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn raycast_closest_feature_ref(&self, ray: Ray3D) -> Option<(FeatureRef, f64)> {
         let (id, t) = self.index.raycast_closest(ray)?;
         self.features.get(id).cloned().map(|f| (f, t))
@@ -963,6 +1070,31 @@ impl GeoIndex3DF32 {
     ///
     /// Only [`GeoQuery3D::Box3D`] is supported; a [`GeoQuery3D::Frustum3D`]
     /// query returns [`GeoError::UnsupportedArtifact`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use packed_spatial_index_geo::{
+    /// #     Box3D, BuildRequest, GeoIndex, IndexBuildOptions, IndexDimsRequest, StoragePrecision, open_geoparquet,
+    /// # };
+    /// # let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
+    /// # let GeoIndex::D3F32(index) = dataset.build(BuildRequest {
+    /// #     dims: IndexDimsRequest::D3,
+    /// #     build: IndexBuildOptions {
+    /// #         precision: StoragePrecision::F32,
+    /// #         ..IndexBuildOptions::default()
+    /// #     },
+    /// #     ..BuildRequest::default()
+    /// # })? else {
+    /// #     panic!("expected an f32 3D index");
+    /// # };
+    /// let refs = index.search_feature_refs(Box3D::new(
+    ///     -10.0, 35.0, 0.0, 20.0, 60.0, 100.0,
+    /// ))?;
+    /// println!("{} candidate feature refs", refs.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_feature_refs<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -990,6 +1122,30 @@ impl GeoIndex3DF32 {
     /// restricted to a query shape. There is no haversine variant: the core
     /// custom-metric kNN entry point is not implemented for `f32`-precision
     /// indexes.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use packed_spatial_index_geo::{
+    /// #     BuildRequest, GeoIndex, IndexBuildOptions, IndexDimsRequest, Point3D, StoragePrecision, open_geoparquet,
+    /// # };
+    /// # let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
+    /// # let GeoIndex::D3F32(index) = dataset.build(BuildRequest {
+    /// #     dims: IndexDimsRequest::D3,
+    /// #     build: IndexBuildOptions {
+    /// #         precision: StoragePrecision::F32,
+    /// #         ..IndexBuildOptions::default()
+    /// #     },
+    /// #     ..BuildRequest::default()
+    /// # })? else {
+    /// #     panic!("expected an f32 3D index");
+    /// # };
+    /// for (feature, dist_sq) in index.nearest_feature_refs(Point3D::new(13.4, 52.5, 34.0), 5) {
+    ///     println!("row {}: squared distance {dist_sq}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn nearest_feature_refs(
         &self,
         point: Point3D,
@@ -1007,6 +1163,31 @@ impl GeoIndex3DF32 {
     /// There is no `raycast_closest_feature_ref` on this type: the core
     /// `f32`-precision index does not implement closest-hit raycast, only
     /// all-hits.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use packed_spatial_index_geo::{
+    /// #     BuildRequest, GeoIndex, IndexBuildOptions, IndexDimsRequest, Point3D, Ray3D, StoragePrecision, open_geoparquet,
+    /// # };
+    /// # let mut dataset = open_geoparquet(File::open("elevations.parquet")?)?;
+    /// # let GeoIndex::D3F32(index) = dataset.build(BuildRequest {
+    /// #     dims: IndexDimsRequest::D3,
+    /// #     build: IndexBuildOptions {
+    /// #         precision: StoragePrecision::F32,
+    /// #         ..IndexBuildOptions::default()
+    /// #     },
+    /// #     ..BuildRequest::default()
+    /// # })? else {
+    /// #     panic!("expected an f32 3D index");
+    /// # };
+    /// let ray = Ray3D::new(Point3D::new(0.0, 0.0, 100.0), 0.0, 0.0, -1.0, 200.0);
+    /// for feature in index.raycast_feature_refs(ray) {
+    ///     println!("row {}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn raycast_feature_refs(&self, ray: Ray3D) -> Vec<FeatureRef> {
         self.index
             .raycast(ray)

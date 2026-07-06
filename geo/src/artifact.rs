@@ -195,6 +195,23 @@ impl<R> GeoArtifactIndex<R> {
     /// Cache the directory and rebuild a fresh artifact index per request with
     /// [`from_directory`](Self::from_directory) to skip the container directory,
     /// `geoM` manifest, and inner stream-directory reads on warm requests.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("places.psindex")?;
+    /// let artifact = open_geo_index(SliceReader::new(bytes.clone()))?;
+    /// let (directory, _reader) = artifact.into_directory();
+    ///
+    /// let warm = GeoArtifactIndex::from_directory(&directory, SliceReader::new(bytes))?;
+    /// if let GeoArtifactIndex::D2(index) = warm {
+    ///     let ids = index.search_entry_ids(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+    ///     println!("{} matching entries", ids.len());
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn into_directory(self) -> (GeoArtifactDirectory, R) {
         match self {
             GeoArtifactIndex::D2(index) => index.into_directory(),
@@ -205,11 +222,43 @@ impl<R> GeoArtifactIndex<R> {
     /// Rebuild an artifact index from a cached [`GeoArtifactDirectory`] and a
     /// fresh reader. No I/O: the manifest and stream directory were parsed when
     /// the artifact was first opened.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{GeoArtifactIndex, SliceReader, open_geo_index};
+    /// # let bytes = std::fs::read("places.psindex")?;
+    /// # let artifact = open_geo_index(SliceReader::new(bytes.clone()))?;
+    /// # let (directory, _reader) = artifact.into_directory();
+    /// let warm = GeoArtifactIndex::from_directory(&directory, SliceReader::new(bytes))?;
+    /// println!("artifact has {} index entries", warm.manifest().index_entry_count);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn from_directory(dir: &GeoArtifactDirectory, reader: R) -> Result<Self, GeoError> {
         Self::from_directory_with_limits(dir, reader, StreamLimits::default())
     }
 
     /// [`from_directory`](Self::from_directory) with per-query [`StreamLimits`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{GeoArtifactIndex, SliceReader, StreamLimits, open_geo_index};
+    /// # let bytes = std::fs::read("places.psindex")?;
+    /// # let artifact = open_geo_index(SliceReader::new(bytes.clone()))?;
+    /// # let (directory, _reader) = artifact.into_directory();
+    /// let limits = StreamLimits {
+    ///     max_read_bytes: Some(8 * 1024 * 1024),
+    ///     ..StreamLimits::default()
+    /// };
+    /// let warm = GeoArtifactIndex::from_directory_with_limits(
+    ///     &directory,
+    ///     SliceReader::new(bytes),
+    ///     limits,
+    /// )?;
+    /// println!("artifact has {} index entries", warm.manifest().index_entry_count);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn from_directory_with_limits(
         dir: &GeoArtifactDirectory,
         reader: R,
@@ -396,6 +445,20 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     ///
     /// This does not decode geo payloads and therefore also works for
     /// [`PayloadPlan::None`] artifacts.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("places.psindex")?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    /// let entry_ids = index.search_entry_ids(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+    /// println!("{} matching index entries", entry_ids.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_entry_ids<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<Vec<usize>, GeoError> {
         let query = query.into();
         if let GeoQuery2D::Polygon(multi_polygon) = &query {
@@ -426,6 +489,21 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     ///
     /// This requires an artifact payload plan that stores feature refs
     /// (`RowRef`, `RowWkb`, or `FeatureJson`).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("places.psindex")?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    /// for feature in index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    ///     println!("row {} part {:?}", feature.row_number, feature.part);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_feature_refs<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -496,6 +574,22 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// order is deterministic. Requires a feature-ref-bearing payload plan
     /// (`RowRef`, `RowWkb`, or `FeatureJson`); [`PayloadPlan::None`] artifacts
     /// return an error (the artifact stores no payload section).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("places.psindex")?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    /// for feature in index.search_features(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    ///     assert!(feature.part.is_none());
+    ///     println!("row {}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_features<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -517,6 +611,24 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// [`filter_matches`](Self::filter_matches) between search and dedupe),
     /// use [`search_matches`](Self::search_matches) plus
     /// [`GeoMatch::dedupe_by_feature`] directly.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, GeoPayload, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("places.psindex")?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    /// for m in index.search_feature_matches(Box2D::new(-10.0, 35.0, 20.0, 60.0))? {
+    ///     assert!(m.feature.part.is_none());
+    ///     if let GeoPayload::RowWkb(wkb) = &m.payload {
+    ///         println!("row {}: {} WKB bytes", m.feature.row_number, wkb.len());
+    ///     }
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_feature_matches<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -692,6 +804,21 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// `RowRef` headers rebuild their matches with no I/O — the feature ref is
     /// the whole payload. `RowWkb` headers fetch payload bodies for exactly
     /// the given headers' leaf ranks, in coalesced reads.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, SliceReader, open_geo_index};
+    /// # let bytes = std::fs::read("places.psindex")?;
+    /// # let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    /// #     panic!("expected a 2D artifact");
+    /// # };
+    /// let headers = index.search_match_headers(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+    /// let page = &headers[..headers.len().min(100)];
+    /// let matches = index.fetch_matches(page)?;
+    /// assert_eq!(matches.len(), page.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError> {
         match &self.manifest.payload_plan {
             PayloadPlan::RowRef => Ok(headers
@@ -725,6 +852,24 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
 impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
     /// Search the underlying core index over async range I/O and return compact
     /// index entry ids.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box2D, GeoArtifactIndex, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D2(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 2D artifact");
+    /// # };
+    /// let entry_ids = index
+    ///     .search_entry_ids_async(Box2D::new(-10.0, 35.0, 20.0, 60.0))
+    ///     .await?;
+    /// println!("{} matching index entries", entry_ids.len());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_entry_ids_async<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -755,6 +900,24 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
     }
 
     /// Search over async range I/O and return source feature references.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box2D, GeoArtifactIndex, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D2(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 2D artifact");
+    /// # };
+    /// let features = index
+    ///     .search_feature_refs_async(Box2D::new(-10.0, 35.0, 20.0, 60.0))
+    ///     .await?;
+    /// println!("{} matching feature refs", features.len());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_feature_refs_async<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -772,6 +935,26 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
     ///
     /// Async counterpart of [`search_features`](Self::search_features): split
     /// index entries collapse, `part` is `None`, order is deterministic.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box2D, GeoArtifactIndex, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D2(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 2D artifact");
+    /// # };
+    /// for feature in index
+    ///     .search_features_async(Box2D::new(-10.0, 35.0, 20.0, 60.0))
+    ///     .await?
+    /// {
+    ///     assert!(feature.part.is_none());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_features_async<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -789,6 +972,29 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
     ///
     /// Async counterpart of
     /// [`search_feature_matches`](Self::search_feature_matches).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box2D, GeoArtifactIndex, GeoPayload, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D2(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 2D artifact");
+    /// # };
+    /// for m in index
+    ///     .search_feature_matches_async(Box2D::new(-10.0, 35.0, 20.0, 60.0))
+    ///     .await?
+    /// {
+    ///     assert!(m.feature.part.is_none());
+    ///     if let GeoPayload::RowWkb(wkb) = &m.payload {
+    ///         println!("row {}: {} WKB bytes", m.feature.row_number, wkb.len());
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_feature_matches_async<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -799,6 +1005,30 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
     }
 
     /// Search over async range I/O and return decoded geo matches.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box2D, GeoArtifactIndex, GeoPayload, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D2(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 2D artifact");
+    /// # };
+    /// for m in index
+    ///     .search_matches_async(Box2D::new(-10.0, 35.0, 20.0, 60.0))
+    ///     .await?
+    /// {
+    ///     match &m.payload {
+    ///         GeoPayload::RowWkb(wkb) => println!("{} WKB bytes", wkb.len()),
+    ///         GeoPayload::FeatureJson(feature) => println!("{feature}"),
+    ///         GeoPayload::RowRef => println!("row {}", m.feature.row_number),
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_matches_async<Q: Into<GeoQuery2D>>(
         &self,
         query: Q,
@@ -968,6 +1198,22 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     /// A [`GeoQuery3D::Frustum3D`] query prunes subtrees that fall outside
     /// the frustum during the streamed descent, for both `f64`- and
     /// `f32`-precision artifacts.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box3D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("elevations.psindex")?;
+    /// let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 3D artifact");
+    /// };
+    /// let entry_ids = index.search_entry_ids(Box3D::new(
+    ///     -10.0, 35.0, 0.0, 20.0, 60.0, 100.0,
+    /// ))?;
+    /// println!("{} matching index entries", entry_ids.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_entry_ids<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<Vec<usize>, GeoError> {
         match query.into() {
             GeoQuery3D::Box3D(bbox) => match &self.index {
@@ -985,6 +1231,23 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     ///
     /// This requires an artifact payload plan that stores feature refs
     /// (`RowRef`, `RowWkb`, or `FeatureJson`).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box3D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("elevations.psindex")?;
+    /// let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 3D artifact");
+    /// };
+    /// for feature in index.search_feature_refs(Box3D::new(
+    ///     -10.0, 35.0, 0.0, 20.0, 60.0, 100.0,
+    /// ))? {
+    ///     println!("row {} part {:?}", feature.row_number, feature.part);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_feature_refs<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -998,6 +1261,22 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
 
     /// Count matching index entries without materializing ids or payloads;
     /// the 3D counterpart of [`GeoArtifactIndex2D::count_entries`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box3D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("elevations.psindex")?;
+    /// let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 3D artifact");
+    /// };
+    /// let count = index.count_entries(Box3D::new(
+    ///     -10.0, 35.0, 0.0, 20.0, 60.0, 100.0,
+    /// ))?;
+    /// println!("{count} matching index entries");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn count_entries<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<usize, GeoError> {
         let mut count = 0usize;
         match query.into() {
@@ -1020,6 +1299,24 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     /// entry-level, this collapses split index entries: `part` is `None`,
     /// order is deterministic. [`PayloadPlan::None`] artifacts return an
     /// error (the artifact stores no payload section).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box3D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("elevations.psindex")?;
+    /// let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 3D artifact");
+    /// };
+    /// for feature in index.search_features(Box3D::new(
+    ///     -10.0, 35.0, 0.0, 20.0, 60.0, 100.0,
+    /// ))? {
+    ///     assert!(feature.part.is_none());
+    ///     println!("row {}", feature.row_number);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_features<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -1035,6 +1332,26 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     ///
     /// Feature-level counterpart of [`search_matches`](Self::search_matches);
     /// see [`GeoMatch::dedupe_by_feature`] for the collapse rules.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box3D, GeoArtifactIndex, GeoPayload, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("elevations.psindex")?;
+    /// let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 3D artifact");
+    /// };
+    /// for m in index.search_feature_matches(Box3D::new(
+    ///     -10.0, 35.0, 0.0, 20.0, 60.0, 100.0,
+    /// ))? {
+    ///     assert!(m.feature.part.is_none());
+    ///     if let GeoPayload::RowWkb(wkb) = &m.payload {
+    ///         println!("row {}: {} WKB bytes", m.feature.row_number, wkb.len());
+    ///     }
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_feature_matches<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -1090,6 +1407,28 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
 
     /// Search and return lightweight [`GeoMatchHeader`] records; the 3D
     /// counterpart of [`GeoArtifactIndex2D::search_match_headers`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{
+    ///     Box3D, GeoArtifactIndex, GeoMatchHeader, SliceReader, open_geo_index,
+    /// };
+    ///
+    /// let bytes = std::fs::read("elevations.psindex")?;
+    /// let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 3D artifact");
+    /// };
+    /// let mut headers = index.search_match_headers(Box3D::new(
+    ///     -10.0, 35.0, 0.0, 20.0, 60.0, 100.0,
+    /// ))?;
+    /// GeoMatchHeader::dedupe_by_feature(&mut headers);
+    ///
+    /// let page = &headers[..headers.len().min(100)];
+    /// let matches = index.fetch_matches(page)?;
+    /// assert_eq!(matches.len(), page.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn search_match_headers<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -1125,6 +1464,23 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
 
     /// Fetch and decode full [`GeoMatch`] values for the given headers; the 3D
     /// counterpart of [`GeoArtifactIndex2D::fetch_matches`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{Box3D, GeoArtifactIndex, SliceReader, open_geo_index};
+    /// # let bytes = std::fs::read("elevations.psindex")?;
+    /// # let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    /// #     panic!("expected a 3D artifact");
+    /// # };
+    /// let headers = index.search_match_headers(Box3D::new(
+    ///     -10.0, 35.0, 0.0, 20.0, 60.0, 100.0,
+    /// ))?;
+    /// let page = &headers[..headers.len().min(100)];
+    /// let matches = index.fetch_matches(page)?;
+    /// assert_eq!(matches.len(), page.len());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError> {
         match &self.manifest.payload_plan {
             PayloadPlan::RowRef => Ok(headers
@@ -1226,6 +1582,24 @@ fn assemble_wkb_matches(
 impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
     /// Search the underlying core index over async range I/O and return compact
     /// index entry ids.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box3D, GeoArtifactIndex, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D3(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 3D artifact");
+    /// # };
+    /// let entry_ids = index
+    ///     .search_entry_ids_async(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))
+    ///     .await?;
+    /// println!("{} matching index entries", entry_ids.len());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_entry_ids_async<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -1243,6 +1617,24 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
     }
 
     /// Search over async range I/O and return source feature references.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box3D, GeoArtifactIndex, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D3(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 3D artifact");
+    /// # };
+    /// let features = index
+    ///     .search_feature_refs_async(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))
+    ///     .await?;
+    /// println!("{} matching feature refs", features.len());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_feature_refs_async<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -1257,6 +1649,26 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
 
     /// Search over async range I/O and return one deduplicated [`FeatureRef`]
     /// per matched source feature.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box3D, GeoArtifactIndex, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D3(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 3D artifact");
+    /// # };
+    /// for feature in index
+    ///     .search_features_async(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))
+    ///     .await?
+    /// {
+    ///     assert!(feature.part.is_none());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_features_async<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -1271,6 +1683,29 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
 
     /// Search over async range I/O and return one [`GeoMatch`] per matched
     /// source feature.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box3D, GeoArtifactIndex, GeoPayload, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D3(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 3D artifact");
+    /// # };
+    /// for m in index
+    ///     .search_feature_matches_async(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))
+    ///     .await?
+    /// {
+    ///     assert!(m.feature.part.is_none());
+    ///     if let GeoPayload::RowWkb(wkb) = &m.payload {
+    ///         println!("row {}: {} WKB bytes", m.feature.row_number, wkb.len());
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_feature_matches_async<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,
@@ -1281,6 +1716,30 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
     }
 
     /// Search over async range I/O and return decoded geo matches.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{
+    /// #     AsyncRangeReader, Box3D, GeoArtifactIndex, GeoPayload, open_geo_index_async,
+    /// # };
+    /// # async fn query<R: AsyncRangeReader>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+    /// # let GeoArtifactIndex::D3(index) = open_geo_index_async(reader).await? else {
+    /// #     panic!("expected a 3D artifact");
+    /// # };
+    /// for m in index
+    ///     .search_matches_async(Box3D::new(-10.0, 35.0, 0.0, 20.0, 60.0, 100.0))
+    ///     .await?
+    /// {
+    ///     match &m.payload {
+    ///         GeoPayload::RowWkb(wkb) => println!("{} WKB bytes", wkb.len()),
+    ///         GeoPayload::FeatureJson(feature) => println!("{feature}"),
+    ///         GeoPayload::RowRef => println!("row {}", m.feature.row_number),
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn search_matches_async<Q: Into<GeoQuery3D>>(
         &self,
         query: Q,

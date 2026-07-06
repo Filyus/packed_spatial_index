@@ -12,7 +12,7 @@ only the artifact ranges touched by the query.
 | `GeoDataset::build` | `GeoIndex` in the current process | Index size, mostly feature count and precision | You want immediate repeated queries and don't need a `.psindex` file |
 | `GeoDataset::convert` / `convert_into` | `.psindex` bytes | Index size plus selected payload and output bytes | You want a reusable artifact for later queries |
 | `open_geo_index` / `open_geo_index_async` | Reader over an existing `.psindex` | Only the ranges touched by each query; `GeoArtifactDirectory` can cache open metadata across readers | You already have a `.psindex` and want the low-memory query path |
-| `read_features` | Source rows | Requested rows and requested geometry output | You already have hits and need properties or geometry from the source |
+| `read_features` | Source rows | Requested rows and requested geometry output | You already have matches and need properties or geometry from the source |
 
 The short version: **`build` keeps the index in RAM**, **`convert` writes the
 index as `.psindex` bytes**, and **`open_geo_index` queries an existing
@@ -41,7 +41,7 @@ Payload choice often dominates artifact size and build memory.
 
 | Payload plan | What it stores | Memory impact | Use when |
 | --- | --- | --- | --- |
-| `PayloadPlan::None` | No per-hit payload | Smallest | You only need spatial matches |
+| `PayloadPlan::None` | No per-match payload | Smallest | You only need spatial matches |
 | `PayloadPlan::RowRef` | Source row identity | Small | You can read rows from the source later |
 | `PayloadPlan::RowWkb` | Source row identity plus WKB geometry | Tracks geometry size | You want exact filtering from the artifact |
 | `PayloadPlan::FeatureJson` | GeoJSON Feature bytes with selected properties | Usually largest | You want query results that are already feature JSON |

@@ -8,25 +8,26 @@
 
 Build a [`packed_spatial_index`](https://crates.io/crates/packed_spatial_index)
 spatial index for **GeoParquet**, native Apache Parquet `GEOMETRY` /
-`GEOGRAPHY` columns, **FlatGeobuf**, and **GeoJSON**. These formats store
-geometry plus, in some cases, optional bbox/statistics metadata — but they do
-not provide a portable per-row `PSINDEX` sidecar that pinpoints individual
-features and can be streamed from object storage. This crate fills the gap:
+`GEOGRAPHY` columns, **FlatGeobuf**, and **GeoJSON**. Those formats store
+geometry (sometimes with bbox/statistics metadata), but no portable per-row
+sidecar that pinpoints individual features and streams from object storage.
+This crate fills the gap in three roles:
 
-- **accelerator** — build an in-memory index over the features; a query returns
+- **accelerator** — build an in-memory index over the features; queries return
   `FeatureRef` values that preserve source row numbers even when rows are
   skipped or split
-- **converter** — build the index and attach a leaf-ordered payload (by default,
-  `FeatureRef` + WKB geometry), serialized to a self-describing,
-  **streamable `PSINDEX`** that answers window, polygon, and 3D frustum
-  candidate queries straight from object storage in a handful of range reads,
-  with no Parquet re-read. kNN and raycast queries use the in-memory
-  accelerator path.
+- **converter** — attach a leaf-ordered payload (by default `FeatureRef` + WKB
+  geometry) and serialize everything into a self-describing, **streamable
+  `PSINDEX`** that answers window, polygon, and 3D frustum candidate queries
+  straight from object storage in a handful of range reads — no Parquet
+  re-read
 - **discovery / inspection** — open a `GeoDataset`, list usable geometry
   candidates before selecting one, then inspect the selected column's typed
   metadata (dims, encoding, CRS, edges, extent, row count)
-- 2D and 3D, optional **`f32`** storage for half-size files, and **`skip_null`** to
-  drop empty geometry
+
+Both index roles support 2D and 3D, optional **`f32`** storage for half-size
+files, and **`skip_null`** to drop empty geometry. kNN and raycast run on the
+in-memory path; window, polygon, and frustum queries run on both.
 
 The source-side dependencies sit behind format features. Defaults enable
 `parquet`, `flatgeobuf`, and `geojson`, so the CLI can build from all supported
@@ -42,7 +43,7 @@ use packed_spatial_index_geo::{open_geoparquet, BuildRequest, Box2D, GeoIndex};
 let mut dataset = open_geoparquet(File::open("cities.parquet")?)?;
 let index = dataset.build(BuildRequest::default())?;
 let GeoIndex::D2(index) = index else { panic!("expected 2D geometry") };
-let features = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
+let refs = index.search_feature_refs(Box2D::new(-10.0, 35.0, 20.0, 60.0))?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -79,70 +80,103 @@ packed_spatial_index_geo = { version = "0.20", default-features = false, feature
 ```
 
 That leaves the crate query-only — [`open_geo_index`][open_geo_index] /
-`open_geo_index_async`, `search_entry_ids` / `search_matches`,
+[`open_geo_index_async`][open_geo_index_async],
+[`search_entry_ids`][artifact_search_entry_ids] /
+[`search_matches`][search_matches],
 [`GeoArtifactIndex2D::filter_matches`][filter_matches] (exact intersection over the
 payload geometry), and payload decoding — compiling to `wasm32`. Only reading a
 source file needs a format feature.
 
-## API at a glance
+## API Map
 
-Open the Parquet source once with [`open_geoparquet`][open_geoparquet], inspect the metadata-only
-[`GeoDiscovery`][GeoDiscovery], then run the operation you need through the
-[`GeoDataset`][GeoDataset] session. Geometry selection is explicit where it
-matters: use [`GeometrySelector::Name`][GeometrySelector] for a named column, or
-the default policy for GeoParquet primary / single native Parquet geospatial
-files.
+The public API is split into three layers:
 
-| Task | Start here |
+| Layer | Primary types | Scope |
+| --- | --- | --- |
+| Source session | [`GeoDataset`][GeoDataset], [`GeoDiscovery`][GeoDiscovery] | Format-aware open, discovery, scan, build, convert, filter, and row read-back |
+| In-memory index | [`GeoIndex`][GeoIndex], [`GeoIndex2D`][GeoIndex2D], [`GeoIndex3D`][GeoIndex3D] | Repeated local range, nearest-neighbor, and raycast queries |
+| Streamable artifact | [`GeoArtifactIndex`][GeoArtifactIndex], [`GeoArtifactDirectory`][GeoArtifactDirectory] | Query-only access to converted `PSINDEX` files over range reads |
+
+### Source Sessions
+
+A source session owns the format reader state. It is the API surface for
+GeoParquet, native Parquet geospatial columns, FlatGeobuf, and GeoJSON before
+or while they are converted into indexes or artifacts.
+
+| Operation | API |
 | --- | --- |
-| Open GeoParquet | [`open_geoparquet`][open_geoparquet] |
-| Open GeoJSON | [`open_geojson`][open_geojson], [`open_geojson_slice`][open_geojson_slice] |
-| Stream GeoJSON build / convert | [`build_geojson_stream`][build_geojson_stream], [`convert_geojson_stream`][convert_geojson_stream] |
-| Open FlatGeobuf | [`open_flatgeobuf`][open_flatgeobuf] |
-| Discover columns | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery] |
-| Select a column | [`GeoDataset::select`][select], [`GeometrySelector`][GeometrySelector] |
-| Inspect metadata | [`GeoDataset::inspect`][inspect], [`InspectRequest`][InspectRequest] |
-| Validate input | [`GeoDataset::validate`][validate] |
-| Scan boxes / payloads | [`GeoDataset::scan`][scan], [`ScanRequest`][ScanRequest] |
-| Build an index | [`GeoDataset::build`][build], [`GeoIndex`][GeoIndex] |
-| Build a half-size (`f32`) index | [`IndexBuildOptions::precision`][IndexBuildOptions], [`StoragePrecision`][StoragePrecision] |
-| Build an index and a `PSINDEX` in one scan | [`GeoIndex::from_scan`][from_scan], [`GeoArtifact::from_scan`][artifact_from_scan] |
-| Query the index | [`GeoIndex2D::search_feature_refs`][search_feature_refs_2d], [`GeoIndex3D::search_feature_refs`][search_feature_refs_3d] |
-| Nearest features (kNN) | [`GeoIndex2D::nearest_feature_refs`][nearest_feature_refs], `nearest_feature_refs_haversine` |
-| Raycast features | [`GeoIndex3D::raycast_feature_refs`][raycast_feature_refs], `raycast_closest_feature_ref` |
-| Convert to `PSINDEX` | [`GeoDataset::convert`][convert] |
-| Open a `PSINDEX` | [`open_geo_index`][open_geo_index] |
-| Open a `PSINDEX` over async range I/O | [`open_geo_index_async`][open_geo_index_async] (`async` feature) |
-| Reuse parsed `PSINDEX` open metadata | [`GeoArtifactDirectory`][GeoArtifactDirectory], [`into_directory`][into_directory] / [`from_directory`][from_directory] |
-| Query a `PSINDEX` | [`GeoArtifactIndex2D::search_matches`][search_matches], [`GeoMatch`][GeoMatch] |
-| Choose a query shape | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius), [`GeoQuery3D`][GeoQuery3D] (box / frustum) |
-| Exact-filter source features | [`GeoDataset::filter_features`][filter_features], [`FeatureFilterRequest`][FeatureFilterRequest] |
-| Exact-filter `PSINDEX` matches | [`GeoArtifactIndex2D::filter_matches`][filter_matches] |
-| Read Parquet source rows | [`GeoDataset::read_features`][read_features], [`FeatureReadRequest`][FeatureReadRequest] |
-| Read GeoJSON / FlatGeobuf source rows | `read_features`, [`FeatureRecord`][FeatureRecord] |
-| Tune requests | [`IndexDimsRequest`][IndexDimsRequest], [`NullPolicy`][NullPolicy] |
-| Pick payloads | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
-| Use the CLI | See [CLI](#cli) |
+| Open source files | [`open_geoparquet`][open_geoparquet], [`open_geojson`][open_geojson], [`open_geojson_slice`][open_geojson_slice], [`open_flatgeobuf`][open_flatgeobuf] |
+| Stream one-shot GeoJSON build / convert | [`build_geojson_stream`][build_geojson_stream], [`convert_geojson_stream`][convert_geojson_stream] |
+| Discover and select geometry | [`GeoDataset::discovery`][discovery], [`GeoDiscovery`][GeoDiscovery], [`GeoDataset::select`][select], [`GeometrySelector`][GeometrySelector] |
+| Inspect or validate metadata | [`GeoDataset::inspect`][inspect], [`InspectRequest`][InspectRequest], [`GeoDataset::validate`][validate] |
+| Scan envelopes and payloads | [`GeoDataset::scan`][scan], [`ScanRequest`][ScanRequest] |
+| Build an in-memory index | [`GeoDataset::build`][build], [`GeoIndex`][GeoIndex], [`IndexBuildOptions::precision`][IndexBuildOptions] |
+| Convert to `PSINDEX` | [`GeoDataset::convert`][convert], [`GeoIndex::from_scan`][from_scan], [`GeoArtifact::from_scan`][artifact_from_scan] |
+| Exact-filter source rows | [`GeoDataset::filter_features`][filter_features], [`FeatureFilterRequest`][FeatureFilterRequest] |
+| Read source rows back | [`GeoDataset::read_features`][read_features], [`FeatureReadRequest`][FeatureReadRequest], [`FeatureRecord`][FeatureRecord] |
 
-Query results use one vocabulary across the crate: `*_entry_ids` methods
-return index-entry ids (the core crate calls these compact item ids),
-`*_feature_refs` methods return [`FeatureRef`][FeatureRef] values, and
-`*_matches` methods return [`GeoMatch`][GeoMatch] records pairing each entry
-with its decoded payload.
-All three are entry-level: the same source feature can appear more than once
-when it was split into multiple index entries, for example after antimeridian
-splitting — `part` tells the entries apart. A feature ref always carries the
-source `row_number`; scans and converted artifacts also fill `row_group` /
-`row_in_group` so source rows can be read back efficiently.
+### In-Memory Indexes
 
-Enable the `async` feature to open the same streamable artifacts through an
-`AsyncRangeReader`. The async artifact methods mirror window, polygon, and 3D
-frustum candidate queries, including payload-returning `search_matches_async`.
-When each request needs a fresh range reader, split an opened artifact with
-`GeoArtifactIndex::into_directory` and cache the returned
-[`GeoArtifactDirectory`][GeoArtifactDirectory]. Later requests can call
-`GeoArtifactIndex::from_directory` to reattach a new reader without repeating
-the container, `geoM` manifest, or stream-directory reads.
+An in-memory index keeps the built tree and feature references in process.
+This layer covers low-latency repeated queries and algorithms that need local
+tree traversal, such as kNN and raycast.
+
+| Operation | API |
+| --- | --- |
+| Range candidates | [`GeoIndex2D::search_feature_refs`][search_feature_refs_2d], [`GeoIndex3D::search_feature_refs`][search_feature_refs_3d] |
+| Planar nearest-neighbor | [`GeoIndex2D::nearest_feature_refs`][nearest_feature_refs] |
+| Lon/lat nearest-neighbor | [`GeoIndex2D::nearest_feature_refs_haversine`][nearest_feature_refs_haversine] |
+| Raycast candidates | [`GeoIndex3D::raycast_feature_refs`][raycast_feature_refs] |
+| Closest raycast hit | [`GeoIndex3D::raycast_closest_feature_ref`][raycast_closest_feature_ref] |
+
+### Streamable Artifacts
+
+A `PSINDEX` artifact is opened independently of the original source file.
+`GeoArtifactDirectory` caches parsed open metadata so request handlers can
+reattach fresh range readers without rereading the container directory or
+`geoM` manifest.
+
+| Operation | API |
+| --- | --- |
+| Open artifact | [`open_geo_index`][open_geo_index], [`open_geo_index_async`][open_geo_index_async] (`async` feature) |
+| Cache and reattach metadata | [`GeoArtifactDirectory`][GeoArtifactDirectory], [`into_directory`][into_directory] / [`from_directory`][from_directory] |
+| Entry-id search | [`search_entry_ids`][artifact_search_entry_ids] |
+| Count matches without materializing | [`count_entries`][artifact_count_entries] |
+| Payload search | [`GeoArtifactIndex2D::search_matches`][search_matches], [`GeoMatch`][GeoMatch] |
+| Feature-level payload search | [`GeoArtifactIndex2D::search_features`][artifact_search_features], [`GeoArtifactIndex2D::search_feature_matches`][artifact_search_feature_matches] |
+| Paged payload reads | [`search_match_headers`][search_match_headers], [`fetch_matches`][fetch_matches] |
+| Exact-filter payload matches | [`GeoArtifactIndex2D::filter_matches`][filter_matches] |
+| Query shapes | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius), [`GeoQuery3D`][GeoQuery3D] (box / frustum) |
+| Payload plans | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
+
+Enable the `async` feature to open the same artifacts through an
+`AsyncRangeReader`; the async methods mirror window, polygon, and 3D frustum
+candidate queries, including payload-returning `search_matches_async`. When
+each request needs a fresh range reader — a server or worker — split an opened
+artifact with `into_directory`, cache the returned
+[`GeoArtifactDirectory`][GeoArtifactDirectory], and let later requests
+reattach through `from_directory` without repeating the container, `geoM`
+manifest, or stream-directory reads.
+
+### Result Vocabulary
+
+One naming rule across the crate: the method name states what a query returns.
+
+| Method shape | Returns | Granularity |
+| --- | --- | --- |
+| `*_entry_ids`, `count_entries` | index-entry ids, or just their count | entry-level |
+| `*_feature_refs` | [`FeatureRef`][FeatureRef] values | entry-level |
+| `*_matches` | [`GeoMatch`][GeoMatch] — ref plus decoded payload | entry-level |
+| `*_match_headers` | [`GeoMatchHeader`][GeoMatchHeader] — ref plus payload size, no body | entry-level |
+| `*_features`, `*_feature_matches` | deduplicated [`FeatureRef`][FeatureRef] / [`GeoMatch`][GeoMatch] | feature-level |
+
+Entry-level results can repeat a source feature: splitting (for example at the
+antimeridian) turns one feature into several index entries, told apart by
+`FeatureRef::part`. Feature-level methods collapse those parts into one record
+per source feature. A feature ref always carries the source `row_number`;
+scans and converted artifacts also fill `row_group` / `row_in_group` so source
+rows can be read back efficiently. The core crate calls entry ids "compact
+item ids" — same values, lower-layer vocabulary.
 
 ## Examples
 
@@ -156,6 +190,11 @@ cargo run --example build_index
 cargo run --example convert_and_query
 cargo run --example feature_json_payload
 ```
+
+For the streaming story, `r2_polygon_pruning` counts the range reads and bytes
+a polygon query fetches from a simulated remote store, and
+`embedded_in_parquet` queries a `PSINDEX` appended to a Parquet file without
+reading the Parquet payload.
 
 ## Documentation
 
@@ -274,23 +313,40 @@ gp2psindex query input.parquet output.psi \
 
 ## Scope
 
-- Inputs may be GeoParquet files with `geo` metadata or native Apache Parquet
-  `GEOMETRY` / `GEOGRAPHY` logical-type columns, FlatGeobuf files, or GeoJSON
-  documents. When both GeoParquet metadata and native Parquet geometry columns
-  are present, GeoParquet `primary_column` is the default; use
+### Inputs
+
+- GeoParquet files with `geo` metadata or native Apache Parquet `GEOMETRY` /
+  `GEOGRAPHY` logical-type columns, FlatGeobuf files, or GeoJSON documents.
+  When both GeoParquet metadata and native Parquet geometry columns are
+  present, GeoParquet `primary_column` is the default; use
   `GeometrySelector::Name` or the CLI's `--geometry-column` option to select
   explicitly.
 - FlatGeobuf and GeoJSON sources expose a single geometry named `geometry`.
-  GeoJSON input accepts `FeatureCollection`, single `Feature`, and bare geometry
-  documents through eager `open_geojson`. The streaming GeoJSON APIs accept
-  `FeatureCollection` only.
-- Use `open_geoparquet(...).discovery()` when a file may contain several geometry
-  candidates and you want metadata-only selection status before reading rows.
-- Boxes come from the **bbox covering** column when present, otherwise from each
-  geometry's **WKB** or **GeoArrow** envelope.
-- Native Parquet `GEOMETRY` / `GEOGRAPHY` columns are WKB by definition, so they
-  work for envelope scans and `RowWkb` payloads even without GeoParquet `geo`
-  metadata.
+  GeoJSON input accepts `FeatureCollection`, single `Feature`, and bare
+  geometry documents through eager `open_geojson`. The streaming GeoJSON APIs
+  accept `FeatureCollection` only.
+- Use `open_geoparquet(...).discovery()` when a file may contain several
+  geometry candidates and you want metadata-only selection status before
+  reading rows.
+
+### Envelopes and encodings
+
+- Boxes come from the **bbox covering** column when present, otherwise from
+  each geometry's **WKB** or **GeoArrow** envelope.
+- Native Parquet `GEOMETRY` / `GEOGRAPHY` columns are WKB by definition, so
+  they work for envelope scans and `RowWkb` payloads even without GeoParquet
+  `geo` metadata.
+- GeoParquet GeoArrow encodings `point`, `linestring`, `polygon`,
+  `multipoint`, `multilinestring`, and `multipolygon` can be scanned without a
+  covering column and can be emitted as ISO WKB payloads.
+- Geometry columns may be `Binary`, `LargeBinary`, or `BinaryView`; dimensions
+  may be 2D or 3D (`XYZ` / `XYZM`).
+- Null / empty geometry: `BuildRequest` defaults to `NullPolicy::Error`;
+  `ConvertRequest` defaults to `NullPolicy::Skip`. `FeatureRef::row_number`
+  preserves the original source row number.
+
+### Exactness limits
+
 - `GEOGRAPHY` is indexed as a coordinate-axis-aligned bounding box over the
   stored WKB coordinates. This is a candidate index, not exact spherical or
   ellipsoidal predicate evaluation.
@@ -300,14 +356,6 @@ gp2psindex query input.parquet output.psi \
 - Box exact filtering is XY planar. `GEOGRAPHY` and non-planar edge models
   reject by default; opt in only when treating stored coordinates as planar is
   acceptable for the query.
-- GeoParquet GeoArrow encodings `point`, `linestring`, `polygon`, `multipoint`,
-  `multilinestring`, and `multipolygon` can be scanned without a covering column
-  and can be emitted as ISO WKB payloads.
-- Geometry columns may be `Binary`, `LargeBinary`, or `BinaryView`.
-- 2D and 3D (`XYZ` / `XYZM`).
-- Null / empty geometry: `BuildRequest` defaults to `NullPolicy::Error`;
-  `ConvertRequest` defaults to `NullPolicy::Skip`. `FeatureRef::row_number`
-  preserves the original source row number.
 
 ## License
 
@@ -345,6 +393,8 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [GeometryScan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeometryScan.html
 [BuildRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.BuildRequest.html
 [GeoIndex]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoIndex.html
+[GeoIndex2D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html
+[GeoIndex3D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html
 [search_feature_refs_2d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.search_feature_refs
 [search_feature_refs_3d]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.search_feature_refs
 [ConvertRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.ConvertRequest.html
@@ -355,7 +405,14 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [GeoArtifactDirectory]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactDirectory.html
 [into_directory]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoArtifactIndex.html#method.into_directory
 [from_directory]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoArtifactIndex.html#method.from_directory
+[artifact_search_entry_ids]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_entry_ids
+[artifact_count_entries]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.count_entries
+[GeoMatchHeader]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoMatchHeader.html
 [GeoMatch]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoMatch.html
+[artifact_search_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_features
+[artifact_search_feature_matches]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_feature_matches
+[search_match_headers]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_match_headers
+[fetch_matches]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.fetch_matches
 [GeoQuery2D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery2D.html
 [GeoQuery3D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery3D.html
 [GeoPayload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoPayload.html
@@ -363,7 +420,9 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [from_scan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoIndex.html#method.from_scan
 [artifact_from_scan]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifact.html#method.from_scan
 [nearest_feature_refs]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.nearest_feature_refs
+[nearest_feature_refs_haversine]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex2D.html#method.nearest_feature_refs_haversine
 [raycast_feature_refs]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.raycast_feature_refs
+[raycast_closest_feature_ref]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoIndex3D.html#method.raycast_closest_feature_ref
 [IndexDimsRequest]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.IndexDimsRequest.html
 [StoragePrecision]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.StoragePrecision.html
 [NullPolicy]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.NullPolicy.html

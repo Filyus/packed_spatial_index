@@ -23,6 +23,11 @@ Operational notes for an AI agent (Codex/Claude) working in this repo.
   muddy). Run `cargo fmt --check` + `cargo clippy` + `cargo test` for the
   touched crate(s) before committing; the `geo/` companion crate is formatted
   separately (`cargo fmt --all --manifest-path geo/Cargo.toml`).
+- Never bump the version or touch `Cargo.lock` outside a `release:` commit.
+  Feature/fix commits carry code only; a user-facing note may go under that
+  crate's `## [Unreleased]`. The version bump (and the semver decision: minor
+  for new public API, patch for a fix, major for a breaking change) happens in
+  the release commit alone — see [`RELEASING-AGENT.md`](RELEASING-AGENT.md).
 - Push only when the maintainer asks, or when preparing a release.
 
 ## Architecture discipline

@@ -616,7 +616,7 @@ fn id_outcome(
     ids.sort_unstable();
     ids.dedup();
     let number_matched = ids.len();
-    let records = paginate(&mut ids, offset, limit)
+    let records = paginate(&ids, offset, limit)
         .into_iter()
         .map(|id| MatchRecord {
             entry_id: id,
@@ -644,7 +644,7 @@ fn match_outcome(
         GeoMatch::dedupe_by_feature(&mut matches);
     }
     let number_matched = matches.len();
-    let records = paginate(&mut matches, offset, limit)
+    let records = paginate(&matches, offset, limit)
         .into_iter()
         .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
         .collect();
@@ -670,7 +670,7 @@ fn header_outcome(
         GeoMatchHeader::dedupe_by_feature(&mut headers);
     }
     let number_matched = headers.len();
-    let page = paginate(&mut headers, offset, limit);
+    let page = paginate(&headers, offset, limit);
     let records = if payload_mode == PayloadMode::Full {
         fetch(&page)?
             .into_iter()
@@ -843,12 +843,12 @@ fn parse_payload_mode(raw: Option<&str>) -> Result<PayloadMode, ServerError> {
     }
 }
 
-fn paginate<T>(records: &mut Vec<T>, offset: usize, limit: usize) -> Vec<T> {
+fn paginate<T: Clone>(records: &[T], offset: usize, limit: usize) -> Vec<T> {
     if offset >= records.len() {
         return Vec::new();
     }
     let end = records.len().min(offset.saturating_add(limit));
-    records.drain(offset..end).collect()
+    records[offset..end].to_vec()
 }
 
 #[cfg(test)]

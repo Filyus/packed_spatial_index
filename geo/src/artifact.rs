@@ -1863,6 +1863,17 @@ impl GeoMatchHeader {
         }
     }
 
+    /// Length of the payload body after the fixed feature-ref record.
+    ///
+    /// The whole payload is `payload_len` bytes; the leading
+    /// [`FEATURE_REF_RECORD_LEN`] hold the [`FeatureRef`], so a `RowWkb`
+    /// payload's WKB geometry occupies `payload_len - FEATURE_REF_RECORD_LEN`
+    /// bytes. Returns `None` when the stored payload is shorter than a
+    /// feature-ref record (a corrupt or truncated artifact).
+    pub fn body_byte_len(&self) -> Option<usize> {
+        self.payload_len.checked_sub(FEATURE_REF_RECORD_LEN)
+    }
+
     /// Rebuild the full match for a `RowRef` header — the feature ref is the
     /// entire payload, so no I/O is needed.
     fn to_row_ref_match(&self) -> GeoMatch {

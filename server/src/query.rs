@@ -1,8 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use packed_spatial_index_geo::{
-    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FEATURE_REF_RECORD_LEN, FeatureRef,
-    GeoArtifactIndex, GeoMatch, GeoMatchHeader, GeoPayload, GeoQuery2D, GeometryEncoding,
-    NonPlanarExactPolicy, PayloadPlan, SpatialPredicate, StoragePrecision,
+    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex, GeoMatch,
+    GeoMatchHeader, GeoPayload, GeoQuery2D, GeometryEncoding, NonPlanarExactPolicy, PayloadPlan,
+    SpatialPredicate, StoragePrecision,
 };
 use serde::{Deserialize, Serialize};
 
@@ -696,7 +696,7 @@ fn header_record(
         (PayloadMode::None, _) => None,
         (_, PayloadPlan::RowRef) => Some(MatchPayload::RowRef),
         (_, PayloadPlan::RowWkb) => Some(MatchPayload::RowWkb {
-            byte_length: header.payload_len - FEATURE_REF_RECORD_LEN,
+            byte_length: header.body_byte_len().unwrap_or(0),
             wkb_base64: None,
         }),
         // The header search rejects every other plan up front.

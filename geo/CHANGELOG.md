@@ -4,6 +4,12 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- Added `GeoMatchHeader::body_byte_len`, the length of a match header's payload
+  body after its fixed feature-ref record. Exposes the `RowWkb` WKB byte length
+  without callers re-deriving `payload_len - FEATURE_REF_RECORD_LEN`.
+
 ## [0.21.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.21.1...psi-geo-v0.21.2) - 2026-07-07
 
 ### API

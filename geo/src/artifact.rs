@@ -470,14 +470,20 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             };
         }
 
+        let boxes = query.candidate_boxes_2d()?;
+        // Duplicates only arise across multiple candidate boxes; a single box
+        // yields each entry once. Skip dedup bookkeeping in the common single-box
+        // case, and dedup by entry id in O(1) (not O(K^2) `iter().any`) otherwise.
+        let dedup = boxes.len() > 1;
         let mut items = Vec::new();
-        for bbox in query.candidate_boxes_2d()? {
+        let mut seen = std::collections::HashSet::new();
+        for bbox in boxes {
             let raw = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search(bbox)?,
                 GeoStreamIndex2D::F32(index) => index.search(bbox)?,
             };
             for item in raw {
-                if !items.contains(&item) {
+                if !dedup || seen.insert(item) {
                     items.push(item);
                 }
             }
@@ -884,14 +890,19 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
             };
         }
 
+        let boxes = query.candidate_boxes_2d()?;
+        // Same dedup rationale as the sync `search_entry_ids`: single-box queries
+        // need none; multi-box (for example antimeridian-split) dedup in O(1).
+        let dedup = boxes.len() > 1;
         let mut items = Vec::new();
-        for bbox in query.candidate_boxes_2d()? {
+        let mut seen = std::collections::HashSet::new();
+        for bbox in boxes {
             let raw = match &self.index {
                 GeoStreamIndex2D::F64(index) => index.search_async(bbox).await?,
                 GeoStreamIndex2D::F32(index) => index.search_async(bbox).await?,
             };
             for item in raw {
-                if !items.contains(&item) {
+                if !dedup || seen.insert(item) {
                     items.push(item);
                 }
             }

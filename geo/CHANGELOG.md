@@ -4,11 +4,23 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.21.2...psi-geo-v0.22.0) - 2026-07-07
+
 ### API
 
 - Added `GeoMatchHeader::body_byte_len`, the length of a match header's payload
   body after its fixed feature-ref record. Exposes the `RowWkb` WKB byte length
   without callers re-deriving `payload_len - FEATURE_REF_RECORD_LEN`.
+
+### Performance
+
+- Deduplicated multi-box `search_entry_ids` results with constant-time entry-id
+  lookup, avoiding quadratic scans for queries such as antimeridian-split boxes.
+
+### Documentation
+
+- Documented `read_geo_manifest` as a trusted-input helper and pointed
+  untrusted artifact readers at `open_geo_index_with_limits`.
 
 ## [0.21.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.21.1...psi-geo-v0.21.2) - 2026-07-07
 

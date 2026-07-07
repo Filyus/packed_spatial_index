@@ -5,7 +5,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use packed_spatial_index_geo::GeoError;
 use serde::Serialize;
 
 /// Error type used by the local PSINDEX server.
@@ -35,6 +34,11 @@ pub enum ServerError {
     /// The client supplied an invalid payload mode.
     #[error("invalid payload mode: {0}")]
     InvalidPayload(String),
+    /// The client supplied a query the artifact's edge/encoding model rejects.
+    /// 422, not 500: these describe a client request that cannot be satisfied
+    /// by this collection, not a server-side fault.
+    #[error("unsupported query: {0}")]
+    UnsupportedQuery(String),
     /// The artifact payload cannot support the requested operation.
     #[error("unsupported payload: {0}")]
     UnsupportedPayload(String),
@@ -58,7 +62,7 @@ pub enum ServerError {
     Toml(#[from] toml::de::Error),
     /// Geospatial artifact/query error.
     #[error("geo artifact error: {0}")]
-    Geo(#[from] GeoError),
+    Geo(#[from] packed_spatial_index_geo::GeoError),
 }
 
 impl ServerError {
@@ -66,6 +70,27 @@ impl ServerError {
         Self::Io {
             path: path.into(),
             source,
+        }
+    }
+
+    /// Classify a [`GeoError`](packed_spatial_index_geo::GeoError) returned by a
+    /// query as a client-side problem (422) when it describes an artifact/query
+    /// incompatibility, otherwise fall back to the generic 500 mapping.
+    ///
+    /// Used after `filter_matches` / exact-predicate evaluation: a spherical
+    /// column with `predicate=intersects`, or a payload the artifact cannot
+    /// decode, is a property of the request, not a server fault.
+    pub(crate) fn from_geo(err: packed_spatial_index_geo::GeoError) -> Self {
+        use packed_spatial_index_geo::GeoError as G;
+        match err {
+            G::NonPlanarExactPredicate { .. } | G::NonSphericalExactPredicate { .. } => {
+                Self::UnsupportedQuery(err.to_string())
+            }
+            G::InvalidSphericalQuery(_) | G::EmptyQueryPolygon => {
+                Self::InvalidBbox(err.to_string())
+            }
+            G::UnsupportedGeodeticGeometry(_) => Self::UnsupportedPredicate(err.to_string()),
+            other => Self::Geo(other),
         }
     }
 
@@ -79,7 +104,8 @@ impl ServerError {
             | ServerError::InvalidPayload(_)
             | ServerError::Toml(_) => StatusCode::BAD_REQUEST,
             ServerError::CollectionNotFound(_) => StatusCode::NOT_FOUND,
-            ServerError::UnsupportedPayload(_)
+            ServerError::UnsupportedQuery(_)
+            | ServerError::UnsupportedPayload(_)
             | ServerError::UnsupportedPredicate(_)
             | ServerError::UnsupportedLevel(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ServerError::Config(_) | ServerError::Io { .. } | ServerError::Geo(_) => {
@@ -98,6 +124,7 @@ impl ServerError {
             ServerError::InvalidPayload(_) => "invalid_payload",
             ServerError::Toml(_) => "bad_request",
             ServerError::CollectionNotFound(_) => "collection_not_found",
+            ServerError::UnsupportedQuery(_) => "unsupported_query",
             ServerError::UnsupportedPayload(_) => "unsupported_payload",
             ServerError::UnsupportedPredicate(_) => "unsupported_predicate",
             ServerError::UnsupportedLevel(_) => "unsupported_level",

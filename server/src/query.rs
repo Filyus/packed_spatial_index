@@ -385,12 +385,12 @@ pub fn items_response(
     params: SearchParams,
 ) -> Result<FeatureCollectionResponse, ServerError> {
     if params.payload.is_some() {
-        return Err(ServerError::InvalidPayload(
+        return Err(ServerError::UnsupportedQuery(
             "payload is only supported on /search".to_string(),
         ));
     }
     if params.level.is_some() {
-        return Err(ServerError::InvalidLevel(
+        return Err(ServerError::UnsupportedQuery(
             "level is only supported on /search".to_string(),
         ));
     }
@@ -554,12 +554,14 @@ fn search_records(
             }
             let mut matches = index.search_matches(query)?;
             if exact {
-                matches = index.filter_matches(
-                    matches,
-                    GeoQuery2D::box2d(query),
-                    SpatialPredicate::Intersects,
-                    NonPlanarExactPolicy::Reject,
-                )?;
+                matches = index
+                    .filter_matches(
+                        matches,
+                        GeoQuery2D::box2d(query),
+                        SpatialPredicate::Intersects,
+                        NonPlanarExactPolicy::Reject,
+                    )
+                    .map_err(ServerError::from_geo)?;
             }
             Ok(match_outcome(matches, payload_mode, level, offset, limit))
         }

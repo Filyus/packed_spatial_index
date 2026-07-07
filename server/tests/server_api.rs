@@ -586,16 +586,16 @@ async fn route_errors_are_json() {
         "/collections/places/items?bbox=-10,0,0,2&payload=full",
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(json["error"]["code"], "invalid_payload");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
 
     let (status, json) = get_json(
         app.clone(),
         "/collections/places/items?bbox=-10,0,0,2&level=entry",
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(json["error"]["code"], "invalid_level");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
 
     let (status, json) = get_json(
         app,

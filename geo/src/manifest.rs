@@ -96,6 +96,13 @@ struct ChunkRef {
 /// Returns `Ok(None)` when the container has no `geoM` chunk. Use
 /// [`open_geo_index`](crate::open_geo_index) when you want to query the artifact
 /// as a geospatial index instead of only reading metadata.
+///
+/// Unlike [`open_geo_index_with_limits`](crate::open_geo_index_with_limits), this
+/// parses the whole buffer in memory with no size caps, so it is meant for
+/// caller-trusted data (a file you read yourself, a fixture). For untrusted or
+/// externally hosted artifacts open them through
+/// [`open_geo_index_with_limits`](crate::open_geo_index_with_limits), which
+/// applies [`StreamLimits`](packed_spatial_index::StreamLimits).
 pub fn read_geo_manifest(bytes: &[u8]) -> Result<Option<GeoArtifactManifest>, GeoError> {
     let chunks = parse_chunks(bytes)?;
     let Some(chunk) = chunks.iter().find(|chunk| chunk.tag == TAG_GEO_MANIFEST) else {

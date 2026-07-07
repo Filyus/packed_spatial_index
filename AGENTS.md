@@ -13,6 +13,18 @@ Operational notes for an AI agent (Codex/Claude) working in this repo.
 - Measure before committing a perf change: A/B with `git stash` on a quiet
   machine, keep it only on a stable win, revert dead ends.
 
+## Workflow
+
+- Work directly on `main`. This is a single-maintainer repo; do not open a
+  feature branch unless a change is speculative or you were asked to.
+- Commit each task as soon as it is done — one task, one commit, with the
+  matching domain prefix. Do not batch unrelated changes across tasks and then
+  split them afterwards (that is double work, and the prefix grouping gets
+  muddy). Run `cargo fmt --check` + `cargo clippy` + `cargo test` for the
+  touched crate(s) before committing; the `geo/` companion crate is formatted
+  separately (`cargo fmt --all --manifest-path geo/Cargo.toml`).
+- Push only when the maintainer asks, or when preparing a release.
+
 ## Architecture discipline
 
 The crate shares internal kernels (`TreeAccess` + `range` / `raycast` /

@@ -1,0 +1,21 @@
+{
+  "name": "psi-geo-r2-demo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloudflare Worker + R2 GeoPSINDEX feature API demo",
+  "scripts": {
+    "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
+    "seed:geo": "cargo run --release --manifest-path ../geo-seed/Cargo.toml -- 100000 cities.parquet && cargo run --release --manifest-path ../../geo/Cargo.toml --bin gp2psindex -- build cities.parquet cities.psindex --payload feature-json --properties all",
+    "typecheck": "tsc --noEmit",
+    "bucket:create": "wrangler r2 bucket create psi-geo-demo",
+    "upload": "wrangler r2 object put psi-geo-demo/cities.psindex --file cities.psindex --remote",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "smoke:live": "node scripts/smoke-live.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260706.1",
+    "typescript": "^5.6.0",
+    "wrangler": "^4"
+  }
+}

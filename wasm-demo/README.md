@@ -6,6 +6,12 @@ TypeScript + WebGL2 canvas app.
 
 The demo is repository-only and excluded from the published crates.io package.
 
+For the object-storage serving story, see:
+
+- [`worker`](worker): low-level core `PSINDEX` range-read Worker demo.
+- [`geo-worker`](geo-worker): GeoParquet -> `gp2psindex` -> R2 -> HTTP
+  feature/search API demo.
+
 The wrapper exposes the core 2D API used by the demo:
 
 - 2D and 3D range search with `search`, `any`, and `first`;

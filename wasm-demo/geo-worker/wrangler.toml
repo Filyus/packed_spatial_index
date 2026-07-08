@@ -1,0 +1,10 @@
+name = "psi-geo-r2-demo"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# Module workers import `.wasm` as a compiled WebAssembly.Module automatically.
+# Build it first with `npm run build:wasm`.
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "psi-geo-demo"

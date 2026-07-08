@@ -1,0 +1,29 @@
+# WASM module for the geo-first Cloudflare Worker + R2 demo.
+#
+# The TypeScript Worker owns the R2 binding and passes a JS
+# `read_range(offset, length) -> Promise<Uint8Array>` callback into this module.
+# Rust wraps it as an AsyncRangeReader, opens/caches the geospatial artifact
+# directory, and answers API-shaped feature/search requests from the embedded
+# FeatureJson payload.
+[package]
+name = "psi_geo_worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2.122"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3.99"
+serde_json = "1"
+packed_spatial_index_geo = { path = "../../geo", default-features = false, features = ["async"] }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[profile.release]
+opt-level = "s"
+lto = true

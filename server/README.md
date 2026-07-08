@@ -40,7 +40,8 @@ cargo run --manifest-path server/Cargo.toml -- --catalog psindex-server.toml
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
 a `matches` array. `/items` is the GeoJSON view: it returns a
 `FeatureCollection` and requires a `feature_json` payload; other artifacts get
-a 422 pointing at `/search`.
+a 422 pointing at `/search`. `/items` also rejects `/search`-only options
+(`level`, `payload`) with `unsupported_query`.
 
 Query parameters:
 
@@ -48,7 +49,9 @@ Query parameters:
 - `predicate=bbox|intersects` — `bbox` (default) intersects stored envelopes
   only; `intersects` refines candidates with exact geometry intersection from
   artifact payloads. Unsupported combinations (3D, payload without geometry)
-  return `unsupported_predicate`.
+  return `unsupported_predicate`; edge-model/query mismatches that are only
+  discovered while filtering, such as non-planar exact predicates, return
+  `unsupported_query`.
 - `level=feature|entry` — `/search` only. `feature` (default when the artifact
   stores feature refs) returns one match per source feature, deduplicating
   split index entries such as antimeridian parts; `entry` returns raw index

@@ -6,6 +6,7 @@ if (!base) {
 }
 
 const bbox = "64,23,71,29";
+const collectionId = "synthetic-points";
 
 async function get(path) {
   const res = await fetch(`${base}${path}`);
@@ -32,16 +33,16 @@ if (health.body.status !== "ok") {
 }
 
 const collections = await get("/collections");
-if (!Array.isArray(collections.body) || !collections.body.some((c) => c.id === "cities")) {
-  throw new Error(`/collections did not list cities: ${JSON.stringify(collections.body)}`);
+if (!Array.isArray(collections.body) || !collections.body.some((c) => c.id === collectionId)) {
+  throw new Error(`/collections did not list ${collectionId}: ${JSON.stringify(collections.body)}`);
 }
 
-const search = await get(`/collections/cities/search?bbox=${bbox}&limit=3&payload=summary`);
+const search = await get(`/collections/${collectionId}/search?bbox=${bbox}&limit=3&payload=summary`);
 if (!search.body.numberReturned || !search.body.reads || !search.body.bytes || !search.reads || !search.bytes) {
   throw new Error(`/search response missed matches or counters: ${JSON.stringify(search.body)}`);
 }
 
-const items = await get(`/collections/cities/items?bbox=${bbox}&limit=3`);
+const items = await get(`/collections/${collectionId}/items?bbox=${bbox}&limit=3`);
 if (items.body.type !== "FeatureCollection" || !items.body.features?.length || !items.reads || !items.bytes) {
   throw new Error(`/items did not return a FeatureCollection: ${JSON.stringify(items.body)}`);
 }

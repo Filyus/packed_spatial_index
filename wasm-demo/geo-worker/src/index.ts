@@ -13,8 +13,8 @@ export interface Env {
   BUCKET: R2Bucket;
 }
 
-const COLLECTION_ID = "cities";
-const OBJECT_KEY = "cities.psindex";
+const COLLECTION_ID = "synthetic-points";
+const OBJECT_KEY = "synthetic-points.psindex";
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 1000;
 

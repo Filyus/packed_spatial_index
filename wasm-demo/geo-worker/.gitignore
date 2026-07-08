@@ -4,3 +4,5 @@ target/
 .wrangler/
 cities.parquet
 cities.psindex
+synthetic-points.parquet
+synthetic-points.psindex

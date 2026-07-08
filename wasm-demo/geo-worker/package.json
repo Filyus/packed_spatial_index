@@ -5,10 +5,10 @@
   "description": "Cloudflare Worker + R2 GeoPSINDEX feature API demo",
   "scripts": {
     "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
-    "seed:geo": "cargo run --release --manifest-path ../geo-seed/Cargo.toml -- 100000 cities.parquet && cargo run --release --manifest-path ../../geo/Cargo.toml --bin gp2psindex -- build cities.parquet cities.psindex --payload feature-json --properties all",
+    "seed:geo": "cargo run --release --manifest-path ../geo-seed/Cargo.toml -- 100000 synthetic-points.parquet && cargo run --release --manifest-path ../../geo/Cargo.toml --bin gp2psindex -- build synthetic-points.parquet synthetic-points.psindex --payload feature-json --properties all",
     "typecheck": "tsc --noEmit",
     "bucket:create": "wrangler r2 bucket create psi-geo-demo",
-    "upload": "wrangler r2 object put psi-geo-demo/cities.psindex --file cities.psindex --remote",
+    "upload": "wrangler r2 object put psi-geo-demo/synthetic-points.psindex --file synthetic-points.psindex --remote",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "smoke:live": "node scripts/smoke-live.mjs"

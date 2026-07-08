@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# Generates a realistic GeoParquet (clustered WKB points + a bbox covering column
-# + geo metadata) to feed the gp2psindex -> PSINDEX -> R2 demo pipeline.
+# Generates a synthetic GeoParquet (clustered WKB points + a bbox covering
+# column + geo metadata) to feed the gp2psindex -> PSINDEX -> R2 demo pipeline.
 
 [dependencies]
 arrow = "58"

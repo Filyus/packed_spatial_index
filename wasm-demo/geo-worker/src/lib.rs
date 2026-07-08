@@ -19,10 +19,10 @@ use serde_json::{Map, Value, json};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-const COLLECTION_ID: &str = "cities";
-const COLLECTION_TITLE: &str = "Cities";
+const COLLECTION_ID: &str = "synthetic-points";
+const COLLECTION_TITLE: &str = "Synthetic clustered points";
 const COLLECTION_DESCRIPTION: &str =
-    "Deterministic GeoParquet seed served directly from a GeoPSINDEX object in R2";
+    "Deterministic synthetic GeoParquet seed served directly from a GeoPSINDEX object in R2";
 
 thread_local! {
     static DIRECTORY: RefCell<Option<GeoArtifactDirectory>> = const { RefCell::new(None) };

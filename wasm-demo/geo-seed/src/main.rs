@@ -1,9 +1,9 @@
-//! Generate a realistic GeoParquet to seed the streaming demo.
+//! Generate a synthetic GeoParquet to seed the streaming demo.
 //!
-//! Writes `N` WKB Point features clustered around random "city" centres (so the
-//! point cloud looks like populated areas rather than uniform noise), with a
-//! `bbox` covering struct column and the GeoParquet 1.1 `geo` metadata. Convert
-//! the output with `gp2psindex`, then serve the `.psi` from R2.
+//! Writes `N` WKB Point features clustered around deterministic random centres
+//! (so the point cloud looks like populated areas rather than uniform noise),
+//! with a `bbox` covering struct column and the GeoParquet 1.1 `geo` metadata.
+//! Convert the output with `gp2psindex`, then serve the `.psindex` from R2.
 //!
 //! ```text
 //! cargo run --release -- [count] [out.parquet]
@@ -52,11 +52,13 @@ fn wkb_point(x: f64, y: f64) -> Vec<u8> {
 fn main() {
     let mut args = std::env::args().skip(1);
     let count: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(100_000);
-    let out = args.next().unwrap_or_else(|| "cities.parquet".to_string());
+    let out = args
+        .next()
+        .unwrap_or_else(|| "synthetic-points.parquet".to_string());
 
     let mut rng = Rng(0x5EED_1234_ABCD_0001);
 
-    // ~1 cluster per 300 points; centres over inhabited latitudes.
+    // ~1 cluster per 300 points; centres over mostly inhabited latitudes.
     let clusters = (count / 300).max(8);
     let centres: Vec<(f64, f64)> = (0..clusters)
         .map(|_| {
@@ -105,7 +107,10 @@ fn main() {
 
     let geo = r#"{"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"],"crs":{"id":{"authority":"OGC","code":"CRS84"}},"covering":{"bbox":{"xmin":["bbox","xmin"],"ymin":["bbox","ymin"],"xmax":["bbox","xmax"],"ymax":["bbox","ymax"]}}}}}"#;
     let props = WriterProperties::builder()
-        .set_key_value_metadata(Some(vec![KeyValue::new("geo".to_string(), geo.to_string())]))
+        .set_key_value_metadata(Some(vec![KeyValue::new(
+            "geo".to_string(),
+            geo.to_string(),
+        )]))
         .build();
 
     let file = std::fs::File::create(&out).unwrap();

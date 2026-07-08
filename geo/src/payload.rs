@@ -52,6 +52,13 @@ pub(crate) fn encode_feature_wkb(feature: &FeatureRef, wkb: &[u8]) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "_source")]
+fn encode_feature_json(feature: &FeatureRef, json: &[u8]) -> Vec<u8> {
+    let mut out = encode_feature_ref(feature);
+    out.extend_from_slice(json);
+    out
+}
+
 /// Stamp a split part number into an already-encoded payload.
 ///
 /// Scan encodes payloads once per source feature, before envelope splitting
@@ -81,16 +88,21 @@ pub(crate) fn stamp_payload_part(
             Ok(())
         }
         PayloadPlan::FeatureJson { .. } => {
-            let mut value: serde_json::Value = serde_json::from_slice(payload)
-                .map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
+            if payload.len() >= FEATURE_REF_RECORD_LEN && payload.first() != Some(&b'{') {
+                payload[16..18].copy_from_slice(&part.to_le_bytes());
+            }
+            let body = feature_json_body(payload);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(body).map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
             let Some(feature_ref) = value.get_mut("feature_ref") else {
                 return Err(GeoError::PayloadDecode(
                     "FeatureJson payload is missing the feature_ref member".to_string(),
                 ));
             };
             feature_ref["part"] = serde_json::Value::from(part);
-            *payload =
+            let json =
                 serde_json::to_vec(&value).map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
+            *payload = encode_feature_json_prefix_compatible(payload, &json);
             Ok(())
         }
     }
@@ -109,14 +121,15 @@ pub(crate) fn feature_json_from_parts(
 ) -> Result<Vec<u8>, GeoError> {
     let properties =
         properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-    let feature = serde_json::json!({
+    let value = serde_json::json!({
         "type": "Feature",
         "id": feature.feature_id.as_deref().unwrap_or(""),
         "feature_ref": feature,
         "geometry": geometry,
         "properties": properties,
     });
-    serde_json::to_vec(&feature).map_err(|e| GeoError::Wkb(e.to_string()))
+    let json = serde_json::to_vec(&value).map_err(|e| GeoError::Wkb(e.to_string()))?;
+    Ok(encode_feature_json(feature, &json))
 }
 
 /// Serialize a GeoJSON `Feature` payload while borrowing an already-valid raw
@@ -144,7 +157,30 @@ pub(crate) fn feature_json_from_raw_parts(
         geometry,
         properties: properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
     };
-    serde_json::to_vec(&payload).map_err(|e| GeoError::Wkb(e.to_string()))
+    let json = serde_json::to_vec(&payload).map_err(|e| GeoError::Wkb(e.to_string()))?;
+    Ok(encode_feature_json(feature, &json))
+}
+
+/// Return the JSON body of a FeatureJson payload. New artifacts prefix the
+/// JSON with a fixed-width FeatureRef record so header scans can page without
+/// reading bodies; older artifacts begin directly with `{` and remain readable.
+pub fn feature_json_body(payload: &[u8]) -> &[u8] {
+    if payload.first() == Some(&b'{') || payload.len() < FEATURE_REF_RECORD_LEN {
+        payload
+    } else {
+        &payload[FEATURE_REF_RECORD_LEN..]
+    }
+}
+
+#[cfg(feature = "_source")]
+fn encode_feature_json_prefix_compatible(old_payload: &[u8], json: &[u8]) -> Vec<u8> {
+    if old_payload.first() == Some(&b'{') || old_payload.len() < FEATURE_REF_RECORD_LEN {
+        json.to_vec()
+    } else {
+        let mut out = old_payload[..FEATURE_REF_RECORD_LEN].to_vec();
+        out.extend_from_slice(json);
+        out
+    }
 }
 
 /// Decode a fixed-width [`FeatureRef`] payload.
@@ -152,6 +188,9 @@ pub(crate) fn feature_json_from_raw_parts(
 /// Returns `None` if the payload is shorter than [`FEATURE_REF_RECORD_LEN`].
 pub fn decode_feature_ref_payload(payload: &[u8]) -> Option<FeatureRef> {
     if payload.len() < FEATURE_REF_RECORD_LEN {
+        return None;
+    }
+    if payload[18..FEATURE_REF_RECORD_LEN].iter().any(|&b| b != 0) {
         return None;
     }
     let row_number = u64::from_le_bytes(payload[0..8].try_into().ok()?);

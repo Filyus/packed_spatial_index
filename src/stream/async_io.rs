@@ -6,6 +6,7 @@ use crate::persistence::{
     CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PYLD_DESC_LEN,
     PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PYLD, TAG_TREE, TREE_DESC_LEN, derive_level_bounds,
     expected_tree_shape, parse_pyld_chunk, parse_tree_chunk, read_u32_at, read_u64_at,
+    read_u64_le_unchecked,
 };
 
 use super::core::{align8_u64, checked_directory_span};
@@ -17,8 +18,9 @@ use super::payload::{
 };
 use super::planner::{apply_gather_run, expand_frontier, plan_gather};
 use super::{
-    StreamCore, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32,
-    StreamLimits, parse_box2d, parse_box2d_f32, parse_box3d, parse_box3d_f32, read_index,
+    PayloadPrefix, StreamCore, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D,
+    StreamIndex3DF32, StreamLimits, parse_box2d, parse_box2d_f32, parse_box3d, parse_box3d_f32,
+    read_index,
 };
 
 // ---- Async streaming (behind the `async` feature) ----
@@ -417,6 +419,370 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         Ok(())
     }
 
+    async fn visit_payload_prefixes_async<O, F>(
+        &self,
+        overlaps: O,
+        prefix_len: usize,
+        mut emit: F,
+    ) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
+        if self.num_items == 0 {
+            return Ok(());
+        }
+
+        let mut budget = Budget::new(self.limits);
+        let mut frontier = vec![self.num_nodes - 1];
+        let mut level = self.level_count - 1;
+        let mut boxes = Vec::new();
+        let mut indices = Vec::new();
+        let mut survivors: Vec<usize> = Vec::new();
+
+        loop {
+            self.gather_async(
+                &frontier,
+                self.box0,
+                self.box_stride,
+                &self.dir_boxes,
+                &mut boxes,
+                &mut budget,
+            )
+            .await?;
+            survivors.clear();
+            indices.clear();
+            for (i, &pos) in frontier.iter().enumerate() {
+                let slot = i * self.box_stride;
+                if overlaps(&boxes[slot..slot + self.record]) {
+                    survivors.push(pos);
+                    if self.interleaved {
+                        indices
+                            .extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
+                    }
+                }
+            }
+            if survivors.is_empty() {
+                return Ok(());
+            }
+
+            if !self.interleaved {
+                self.gather_async(
+                    &survivors,
+                    self.idx0,
+                    8,
+                    &self.dir_indices,
+                    &mut indices,
+                    &mut budget,
+                )
+                .await?;
+            }
+
+            if level == 0 {
+                self.gather_payload_prefixes_async(
+                    section,
+                    &survivors,
+                    &indices,
+                    prefix_len,
+                    &mut budget,
+                    &mut emit,
+                )
+                .await?;
+                return Ok(());
+            }
+
+            frontier = expand_frontier(
+                &self.level_bounds,
+                self.node_size,
+                level,
+                survivors.len(),
+                &indices,
+            )?;
+            level -= 1;
+        }
+    }
+
+    async fn gather_payload_prefixes_async<F>(
+        &self,
+        section: &PayloadSection,
+        leaf_positions: &[usize],
+        indices: &[u8],
+        prefix_len: usize,
+        budget: &mut Budget,
+        emit: &mut F,
+    ) -> Result<(), StreamError>
+    where
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        let mut spans = Vec::with_capacity(leaf_positions.len());
+        if section.stride != 0 {
+            let stride = section.stride as usize;
+            for (i, &p) in leaf_positions.iter().enumerate() {
+                spans.push(AsyncPrefixSpan {
+                    run_index: i,
+                    leaf_rank: p,
+                    blob_start: (p * stride) as u64,
+                    payload_len: stride,
+                });
+            }
+        } else {
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            let mut j = 0;
+            while j < leaf_positions.len() {
+                let k = payload_run_end(leaf_positions, j, self.coalesce_gap());
+                runs.push((j, k));
+                j = k + 1;
+            }
+
+            let mut off_bufs: Vec<Vec<u8>> = runs
+                .iter()
+                .map(|&(j, k)| vec![0u8; (leaf_positions[k] + 2 - leaf_positions[j]) * 8])
+                .collect();
+            for buf in &off_bufs {
+                budget.charge_read(buf.len())?;
+            }
+            let off_reads = runs.iter().zip(off_bufs.iter_mut()).map(|(&(j, _), buf)| {
+                let lo = leaf_positions[j];
+                self.reader
+                    .read_exact_at(section.offsets_start + (lo * 8) as u64, buf.as_mut_slice())
+            });
+            futures_util::future::try_join_all(off_reads).await?;
+
+            for (&(j, k), off_buf) in runs.iter().zip(&off_bufs) {
+                let lo = leaf_positions[j];
+                for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
+                    let o0 = read_u64_le_unchecked(off_buf, (p - lo) * 8);
+                    let o1 = read_u64_le_unchecked(off_buf, (p + 1 - lo) * 8);
+                    if o1 < o0 || o1 > section.blob_total {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    spans.push(AsyncPrefixSpan {
+                        run_index: j + offset,
+                        leaf_rank: p,
+                        blob_start: o0,
+                        payload_len: (o1 - o0) as usize,
+                    });
+                }
+            }
+        }
+
+        if prefix_len == 0 {
+            for span in &spans {
+                let id = read_index(indices, span.run_index)?;
+                if id >= self.num_items {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                budget.charge_item()?;
+                emit(PayloadPrefix {
+                    id,
+                    leaf_rank: span.leaf_rank,
+                    prefix: &[],
+                    payload_len: span.payload_len,
+                });
+            }
+            return Ok(());
+        }
+
+        let mut prefix_runs: Vec<(usize, usize, u64, u64)> = Vec::new();
+        let gap = self.coalesce_gap().min(prefix_len as u64);
+        let mut j = 0;
+        while j < spans.len() {
+            let run_start = spans[j].blob_start;
+            let mut run_end = spans[j].prefix_end(prefix_len);
+            let mut k = j;
+            while k + 1 < spans.len() {
+                let next = &spans[k + 1];
+                if next.blob_start < run_start || next.blob_start.saturating_sub(run_end) > gap {
+                    break;
+                }
+                run_end = run_end.max(next.prefix_end(prefix_len));
+                k += 1;
+            }
+            prefix_runs.push((j, k, run_start, run_end));
+            j = k + 1;
+        }
+
+        let mut bufs: Vec<Vec<u8>> = prefix_runs
+            .iter()
+            .map(|&(_, _, start, end)| vec![0u8; (end - start) as usize])
+            .collect();
+        for buf in &bufs {
+            if !buf.is_empty() {
+                budget.charge_read(buf.len())?;
+            }
+        }
+        let reads = prefix_runs
+            .iter()
+            .zip(bufs.iter_mut())
+            .filter(|(_, buf)| !buf.is_empty())
+            .map(|(&(_, _, start, _), buf)| {
+                self.reader
+                    .read_exact_at(section.blobs_start + start, buf.as_mut_slice())
+            });
+        futures_util::future::try_join_all(reads).await?;
+
+        for (&(j, k, run_start, _), read_buf) in prefix_runs.iter().zip(&bufs) {
+            for span in &spans[j..=k] {
+                let id = read_index(indices, span.run_index)?;
+                if id >= self.num_items {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                budget.charge_item()?;
+                let at = (span.blob_start - run_start) as usize;
+                let take = span.payload_len.min(prefix_len);
+                emit(PayloadPrefix {
+                    id,
+                    leaf_rank: span.leaf_rank,
+                    prefix: &read_buf[at..at + take],
+                    payload_len: span.payload_len,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn visit_payloads_at_ranks_async<F>(
+        &self,
+        leaf_ranks: &[usize],
+        mut emit: F,
+    ) -> Result<(), StreamError>
+    where
+        F: FnMut(usize, &[u8]),
+    {
+        let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
+        let mut ranks = leaf_ranks.to_vec();
+        ranks.sort_unstable();
+        ranks.dedup();
+        if ranks.last().is_some_and(|&max| max >= self.num_items) {
+            return Err(StreamError::InvalidRank);
+        }
+        let mut budget = Budget::new(self.limits);
+
+        if section.stride != 0 {
+            let stride = section.stride as usize;
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            let mut j = 0;
+            while j < ranks.len() {
+                let k = payload_run_end_fixed(&ranks, j, stride, self.coalesce_gap());
+                runs.push((j, k));
+                j = k + 1;
+            }
+            let mut bufs: Vec<Vec<u8>> = runs
+                .iter()
+                .map(|&(j, k)| vec![0u8; (ranks[k] + 1 - ranks[j]) * stride])
+                .collect();
+            for buf in &bufs {
+                budget.charge_read(buf.len())?;
+            }
+            let reads = runs.iter().zip(bufs.iter_mut()).map(|(&(j, _), buf)| {
+                let lo = ranks[j];
+                self.reader.read_exact_at(
+                    section.blobs_start + (lo * stride) as u64,
+                    buf.as_mut_slice(),
+                )
+            });
+            futures_util::future::try_join_all(reads).await?;
+            for (&(j, k), buf) in runs.iter().zip(&bufs) {
+                let lo = ranks[j];
+                for &p in &ranks[j..=k] {
+                    budget.charge_item()?;
+                    let within = (p - lo) * stride;
+                    emit(p, &buf[within..within + stride]);
+                }
+            }
+            return Ok(());
+        }
+
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut j = 0;
+        while j < ranks.len() {
+            let k = payload_run_end(&ranks, j, self.coalesce_gap());
+            runs.push((j, k));
+            j = k + 1;
+        }
+
+        let mut off_bufs: Vec<Vec<u8>> = runs
+            .iter()
+            .map(|&(j, k)| vec![0u8; (ranks[k] + 2 - ranks[j]) * 8])
+            .collect();
+        for buf in &off_bufs {
+            budget.charge_read(buf.len())?;
+        }
+        let off_reads = runs.iter().zip(off_bufs.iter_mut()).map(|(&(j, _), buf)| {
+            let lo = ranks[j];
+            self.reader
+                .read_exact_at(section.offsets_start + (lo * 8) as u64, buf.as_mut_slice())
+        });
+        futures_util::future::try_join_all(off_reads).await?;
+
+        let mut blob_spans = Vec::with_capacity(ranks.len());
+        for (&(j, k), off_buf) in runs.iter().zip(&off_bufs) {
+            let lo = ranks[j];
+            for &rank in &ranks[j..=k] {
+                let o0 = read_u64_le_unchecked(off_buf, (rank - lo) * 8);
+                let o1 = read_u64_le_unchecked(off_buf, (rank + 1 - lo) * 8);
+                if o1 < o0 || o1 > section.blob_total {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                blob_spans.push(AsyncRankBlobSpan {
+                    rank,
+                    blob_start: o0,
+                    blob_end: o1,
+                });
+            }
+        }
+
+        let mut blob_runs: Vec<(usize, usize, u64, u64)> = Vec::new();
+        let gap = self.coalesce_gap();
+        let mut j = 0;
+        while j < blob_spans.len() {
+            let run_start = blob_spans[j].blob_start;
+            let mut run_end = blob_spans[j].blob_end;
+            let mut k = j;
+            while k + 1 < blob_spans.len() {
+                let next = &blob_spans[k + 1];
+                if next.blob_start < run_start || next.blob_start.saturating_sub(run_end) > gap {
+                    break;
+                }
+                run_end = run_end.max(next.blob_end);
+                k += 1;
+            }
+            blob_runs.push((j, k, run_start, run_end));
+            j = k + 1;
+        }
+
+        let mut blob_bufs: Vec<Vec<u8>> = blob_runs
+            .iter()
+            .map(|&(_, _, lo, hi)| vec![0u8; (hi - lo) as usize])
+            .collect();
+        for buf in &blob_bufs {
+            if !buf.is_empty() {
+                budget.charge_read(buf.len())?;
+            }
+        }
+        let blob_reads = blob_runs
+            .iter()
+            .zip(blob_bufs.iter_mut())
+            .map(|(&(_, _, lo, _), buf)| {
+                self.reader
+                    .read_exact_at(section.blobs_start + lo, buf.as_mut_slice())
+            });
+        futures_util::future::try_join_all(blob_reads).await?;
+
+        for (&(j, k, blob_lo, _blob_hi), blob_buf) in blob_runs.iter().zip(&blob_bufs) {
+            for span in &blob_spans[j..=k] {
+                budget.charge_item()?;
+                emit(
+                    span.rank,
+                    &blob_buf
+                        [(span.blob_start - blob_lo) as usize..(span.blob_end - blob_lo) as usize],
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Async mirror of the synchronous traversal, parameterized by `want` (ids or
     /// id+payload). `overlaps` and `sink` are synchronous; only reads are awaited.
     async fn traverse_async<O, F>(
@@ -533,6 +899,25 @@ impl<R: AsyncRangeReader> StreamCore<R> {
     }
 }
 
+struct AsyncPrefixSpan {
+    run_index: usize,
+    leaf_rank: usize,
+    blob_start: u64,
+    payload_len: usize,
+}
+
+struct AsyncRankBlobSpan {
+    rank: usize,
+    blob_start: u64,
+    blob_end: u64,
+}
+
+impl AsyncPrefixSpan {
+    fn prefix_end(&self, prefix_len: usize) -> u64 {
+        self.blob_start + self.payload_len.min(prefix_len) as u64
+    }
+}
+
 /// Streaming reader for a 2D `f64` index over async I/O. Mirrors
 /// [`StreamIndex2D`]; use it when reads return futures (e.g. browser / edge
 /// worker). Behind the `async` feature.
@@ -644,6 +1029,53 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
         self.visit_payloads_region_async(query, |id, blob| out.push((id, blob.to_vec())))
             .await?;
         Ok(out)
+    }
+
+    /// Async counterpart of [`StreamIndex2D::visit_payload_prefixes`].
+    pub async fn visit_payload_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: Box2D,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payload_prefixes_async(
+                |record| parse_box2d(record).overlaps(query),
+                prefix_len,
+                visitor,
+            )
+            .await
+    }
+
+    /// Async counterpart of [`StreamIndex2D::visit_payload_prefixes_region`].
+    pub async fn visit_payload_prefixes_region_async<Q, F>(
+        &self,
+        query: &Q,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        self.core
+            .visit_payload_prefixes_async(
+                |record| query.overlaps_box(parse_box2d(record)),
+                prefix_len,
+                visitor,
+            )
+            .await
+    }
+
+    /// Async counterpart of [`StreamIndex2D::visit_payloads_at_ranks`].
+    pub async fn visit_payloads_at_ranks_async<F: FnMut(usize, &[u8])>(
+        &self,
+        leaf_ranks: &[usize],
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payloads_at_ranks_async(leaf_ranks, visitor)
+            .await
     }
 
     /// Whether this index was written with a payload section.
@@ -763,6 +1195,53 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
         Ok(out)
     }
 
+    /// Async counterpart of [`StreamIndex3D::visit_payload_prefixes`].
+    pub async fn visit_payload_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: Box3D,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payload_prefixes_async(
+                |record| parse_box3d(record).overlaps(query),
+                prefix_len,
+                visitor,
+            )
+            .await
+    }
+
+    /// Async counterpart of [`StreamIndex3D::visit_payload_prefixes_region`].
+    pub async fn visit_payload_prefixes_region_async<Q, F>(
+        &self,
+        query: &Q,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        self.core
+            .visit_payload_prefixes_async(
+                |record| query.overlaps_box(parse_box3d(record)),
+                prefix_len,
+                visitor,
+            )
+            .await
+    }
+
+    /// Async counterpart of [`StreamIndex3D::visit_payloads_at_ranks`].
+    pub async fn visit_payloads_at_ranks_async<F: FnMut(usize, &[u8])>(
+        &self,
+        leaf_ranks: &[usize],
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payloads_at_ranks_async(leaf_ranks, visitor)
+            .await
+    }
+
     /// Whether this index was written with a payload section.
     pub fn has_payload_async(&self) -> bool {
         self.core.has_payload()
@@ -880,6 +1359,53 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
         Ok(out)
     }
 
+    /// Async counterpart of [`StreamIndex2DF32::visit_payload_prefixes`].
+    pub async fn visit_payload_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: Box2D,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payload_prefixes_async(
+                |record| parse_box2d_f32(record).overlaps(query),
+                prefix_len,
+                visitor,
+            )
+            .await
+    }
+
+    /// Async counterpart of [`StreamIndex2DF32::visit_payload_prefixes_region`].
+    pub async fn visit_payload_prefixes_region_async<Q, F>(
+        &self,
+        query: &Q,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps2D,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        self.core
+            .visit_payload_prefixes_async(
+                |record| query.overlaps_box(parse_box2d_f32(record)),
+                prefix_len,
+                visitor,
+            )
+            .await
+    }
+
+    /// Async counterpart of [`StreamIndex2DF32::visit_payloads_at_ranks`].
+    pub async fn visit_payloads_at_ranks_async<F: FnMut(usize, &[u8])>(
+        &self,
+        leaf_ranks: &[usize],
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payloads_at_ranks_async(leaf_ranks, visitor)
+            .await
+    }
+
     /// Whether this index was written with a payload section.
     pub fn has_payload_async(&self) -> bool {
         self.core.has_payload()
@@ -995,6 +1521,53 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
         self.visit_payloads_region_async(query, |id, blob| out.push((id, blob.to_vec())))
             .await?;
         Ok(out)
+    }
+
+    /// Async counterpart of [`StreamIndex3DF32::visit_payload_prefixes`].
+    pub async fn visit_payload_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: Box3D,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payload_prefixes_async(
+                |record| parse_box3d_f32(record).overlaps(query),
+                prefix_len,
+                visitor,
+            )
+            .await
+    }
+
+    /// Async counterpart of [`StreamIndex3DF32::visit_payload_prefixes_region`].
+    pub async fn visit_payload_prefixes_region_async<Q, F>(
+        &self,
+        query: &Q,
+        prefix_len: usize,
+        visitor: F,
+    ) -> Result<(), StreamError>
+    where
+        Q: Overlaps3D,
+        F: FnMut(PayloadPrefix<'_>),
+    {
+        self.core
+            .visit_payload_prefixes_async(
+                |record| query.overlaps_box(parse_box3d_f32(record)),
+                prefix_len,
+                visitor,
+            )
+            .await
+    }
+
+    /// Async counterpart of [`StreamIndex3DF32::visit_payloads_at_ranks`].
+    pub async fn visit_payloads_at_ranks_async<F: FnMut(usize, &[u8])>(
+        &self,
+        leaf_ranks: &[usize],
+        visitor: F,
+    ) -> Result<(), StreamError> {
+        self.core
+            .visit_payloads_at_ranks_async(leaf_ranks, visitor)
+            .await
     }
 
     /// Whether this index was written with a payload section.

@@ -23,8 +23,8 @@ use packed_spatial_index_geo::{
     GeometryEncoding, GeometryMetadataSource, GeometryReadMode, GeometryScan, GeometrySelector,
     IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
     PropertyProjection, RangeReader, SliceReader, StoragePrecision, StreamIndex2D,
-    decode_feature_ref_payload, decode_feature_wkb_payload, open_geo_index, open_geoparquet,
-    read_geo_manifest,
+    decode_feature_ref_payload, decode_feature_wkb_payload, feature_json_body, open_geo_index,
+    open_geoparquet, read_geo_manifest,
 };
 #[cfg(feature = "async")]
 use packed_spatial_index_geo::{AsyncRangeReader, open_geo_index_async};
@@ -1643,7 +1643,7 @@ fn feature_json_includes_projected_properties() {
     let hits = stream
         .search_payloads(Box2D::new(3.0, 4.0, 3.0, 4.0))
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&hits[0].1).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(feature_json_body(&hits[0].1)).unwrap();
     assert_eq!(json["type"], "Feature");
     assert_eq!(json["feature_ref"]["row_number"], 0);
     assert_eq!(json["properties"]["name"], "alpha");
@@ -2870,7 +2870,13 @@ fn payload_decoders_handle_short_and_arbitrary_bytes_without_panic() {
         });
     }
 
+    let invalid_payload = vec![0xCD; FEATURE_REF_RECORD_LEN + 5];
+    assert_no_panic("arbitrary invalid row-wkb payload", || {
+        assert!(decode_feature_wkb_payload(&invalid_payload).is_none());
+    });
+
     let mut payload = vec![0xCD; FEATURE_REF_RECORD_LEN + 5];
+    payload[18..FEATURE_REF_RECORD_LEN].fill(0);
     let (feature, wkb) = assert_no_panic("arbitrary full row-wkb payload", || {
         decode_feature_wkb_payload(&payload).unwrap()
     });

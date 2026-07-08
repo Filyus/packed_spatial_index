@@ -12,8 +12,8 @@ use std::io;
 use js_sys::{Function, Promise, Uint8Array};
 use packed_spatial_index_geo::{
     AsyncRangeReader, Box2D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
-    GeoArtifactIndex2D, GeoError, GeoMatch, GeoPayload, PayloadPlan, StreamLimits,
-    open_geo_index_with_limits_async,
+    GeoArtifactIndex2D, GeoError, GeoMatch, GeoMatchHeader, GeoPayload, GeoPayloadHeader,
+    PayloadPlan, StreamLimits, open_geo_index_with_limits_async,
 };
 use serde_json::{Map, Value, json};
 use wasm_bindgen::prelude::*;
@@ -119,51 +119,65 @@ pub async fn search(
     let payload_mode = parse_payload_mode(&payload)?;
     let result_level = parse_level(&level)?;
 
-    let body = if payload_mode == PayloadMode::None && result_level == ResultLevel::Entry {
-        let mut ids = index.search_entry_ids_async(bbox).await.map_err(geo_err)?;
-        ids.sort_unstable();
-        let number_matched = ids.len();
-        let matches: Vec<Value> = page(&ids, offset, limit)
-            .into_iter()
-            .map(|entry_id| json!({ "entryId": entry_id }))
-            .collect();
-        json!({
-            "collectionId": COLLECTION_ID,
-            "query": query_json([min_x, min_y, max_x, max_y], limit, offset, payload_mode, result_level),
-            "payloadKind": payload_kind(&index.manifest().payload_plan),
-            "numberMatched": number_matched,
-            "numberReturned": matches.len(),
-            "matches": matches,
-        })
-    } else {
-        let mut matches = match result_level {
-            ResultLevel::Feature => index
-                .search_feature_matches_async(bbox)
+    let records: Vec<Value>;
+    let number_matched;
+    if !index.manifest().entries_may_duplicate_rows {
+        let mut headers = index
+            .search_payload_headers_async(bbox)
+            .await
+            .map_err(geo_err)?;
+        GeoPayloadHeader::sort_by_entry(&mut headers);
+        number_matched = headers.len();
+        let page_headers = page(&headers, offset, limit);
+        records = if payload_mode == PayloadMode::Full {
+            index
+                .fetch_payload_header_matches_async(&page_headers)
                 .await
-                .map_err(geo_err)?,
-            ResultLevel::Entry => {
-                let mut matches = index.search_matches_async(bbox).await.map_err(geo_err)?;
-                GeoMatch::sort_by_entry(&mut matches);
-                matches
-            }
+                .map_err(geo_err)?
+                .into_iter()
+                .map(|m| match_record(m, payload_mode, result_level))
+                .collect()
+        } else {
+            page_headers
+                .into_iter()
+                .map(|h| payload_header_record(h, payload_mode, &index.manifest().payload_plan))
+                .collect()
         };
+    } else {
+        let mut headers = index
+            .search_match_headers_async(bbox)
+            .await
+            .map_err(geo_err)?;
+        GeoMatchHeader::sort_by_entry(&mut headers);
         if result_level == ResultLevel::Feature {
-            GeoMatch::sort_by_entry(&mut matches);
+            GeoMatchHeader::dedupe_by_feature(&mut headers);
         }
-        let number_matched = matches.len();
-        let records: Vec<Value> = page(&matches, offset, limit)
-            .into_iter()
-            .map(|m| match_record(m, payload_mode, result_level))
-            .collect();
-        json!({
-            "collectionId": COLLECTION_ID,
-            "query": query_json([min_x, min_y, max_x, max_y], limit, offset, payload_mode, result_level),
-            "payloadKind": payload_kind(&index.manifest().payload_plan),
-            "numberMatched": number_matched,
-            "numberReturned": records.len(),
-            "matches": records,
-        })
-    };
+        number_matched = headers.len();
+        let page_headers = page(&headers, offset, limit);
+        records = if payload_mode == PayloadMode::Full {
+            index
+                .fetch_matches_async(&page_headers)
+                .await
+                .map_err(geo_err)?
+                .into_iter()
+                .map(|m| match_record(m, payload_mode, result_level))
+                .collect()
+        } else {
+            page_headers
+                .into_iter()
+                .map(|h| header_record(h, payload_mode, &index.manifest().payload_plan))
+                .collect()
+        };
+    }
+
+    let body = json!({
+        "collectionId": COLLECTION_ID,
+        "query": query_json([min_x, min_y, max_x, max_y], limit, offset, payload_mode, result_level),
+        "payloadKind": payload_kind(&index.manifest().payload_plan),
+        "numberMatched": number_matched,
+        "numberReturned": records.len(),
+        "matches": records,
+    });
 
     Ok(body.to_string())
 }
@@ -194,12 +208,56 @@ pub async fn items(
     let bbox = Box2D::new(min_x, min_y, max_x, max_y);
     let limit = bounded_usize(limit, 100, 1_000);
     let offset = bounded_usize(offset, 0, usize::MAX);
-    let matches = index
-        .search_feature_matches_async(bbox)
+    if !index.manifest().entries_may_duplicate_rows {
+        let mut headers = index
+            .search_payload_headers_async(bbox)
+            .await
+            .map_err(geo_err)?;
+        GeoPayloadHeader::sort_by_entry(&mut headers);
+        let number_matched = headers.len();
+        let page_headers = page(&headers, offset, limit);
+        let matches = index
+            .fetch_payload_header_matches_async(&page_headers)
+            .await
+            .map_err(geo_err)?;
+        return items_response(
+            matches,
+            number_matched,
+            [min_x, min_y, max_x, max_y],
+            limit,
+            offset,
+        );
+    }
+
+    let mut headers = index
+        .search_match_headers_async(bbox)
         .await
         .map_err(geo_err)?;
-    let number_matched = matches.len();
-    let features: Vec<Value> = page(&matches, offset, limit)
+    GeoMatchHeader::sort_by_entry(&mut headers);
+    GeoMatchHeader::dedupe_by_feature(&mut headers);
+    let number_matched = headers.len();
+    let page_headers = page(&headers, offset, limit);
+    let matches = index
+        .fetch_matches_async(&page_headers)
+        .await
+        .map_err(geo_err)?;
+    items_response(
+        matches,
+        number_matched,
+        [min_x, min_y, max_x, max_y],
+        limit,
+        offset,
+    )
+}
+
+fn items_response(
+    matches: Vec<GeoMatch>,
+    number_matched: usize,
+    bbox: [f64; 4],
+    limit: usize,
+    offset: usize,
+) -> Result<String, JsValue> {
+    let features: Vec<Value> = matches
         .into_iter()
         .filter_map(|m| match m.payload {
             GeoPayload::FeatureJson(feature) => Some(public_feature_json(feature)),
@@ -213,7 +271,7 @@ pub async fn items(
         "numberMatched": number_matched,
         "numberReturned": features.len(),
         "query": {
-            "bbox": [min_x, min_y, max_x, max_y],
+            "bbox": bbox,
             "predicate": "bbox",
             "limit": limit,
             "offset": offset,
@@ -327,6 +385,52 @@ fn match_record(m: GeoMatch, payload_mode: PayloadMode, level: ResultLevel) -> V
     record.insert("featureRef".to_string(), feature_ref_json(feature_ref));
     if payload_mode != PayloadMode::None {
         record.insert("payload".to_string(), strip_null_object_fields(payload));
+    }
+    Value::Object(record)
+}
+
+fn header_record(header: GeoMatchHeader, payload_mode: PayloadMode, plan: &PayloadPlan) -> Value {
+    let body_byte_len = header.body_byte_len().unwrap_or(0);
+    let mut record = Map::new();
+    record.insert("entryId".to_string(), json!(header.entry_id));
+    record.insert("featureRef".to_string(), feature_ref_json(header.feature));
+    if payload_mode != PayloadMode::None {
+        record.insert(
+            "payload".to_string(),
+            match plan {
+                PayloadPlan::RowRef => json!({ "kind": "row_ref" }),
+                PayloadPlan::RowWkb => json!({
+                    "kind": "row_wkb",
+                    "byteLength": body_byte_len,
+                }),
+                PayloadPlan::FeatureJson { .. } => json!({ "kind": "feature_json" }),
+                PayloadPlan::None => json!({ "kind": "none" }),
+            },
+        );
+    }
+    Value::Object(record)
+}
+
+fn payload_header_record(
+    header: GeoPayloadHeader,
+    payload_mode: PayloadMode,
+    plan: &PayloadPlan,
+) -> Value {
+    let mut record = Map::new();
+    record.insert("entryId".to_string(), json!(header.entry_id));
+    if payload_mode != PayloadMode::None {
+        record.insert(
+            "payload".to_string(),
+            match plan {
+                PayloadPlan::RowRef => json!({ "kind": "row_ref" }),
+                PayloadPlan::RowWkb => json!({
+                    "kind": "row_wkb",
+                    "byteLength": header.body_byte_len().unwrap_or(0),
+                }),
+                PayloadPlan::FeatureJson { .. } => json!({ "kind": "feature_json" }),
+                PayloadPlan::None => json!({ "kind": "none" }),
+            },
+        );
     }
     Value::Object(record)
 }

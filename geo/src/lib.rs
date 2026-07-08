@@ -31,7 +31,7 @@ mod wkb;
 
 pub use artifact::{
     GeoArtifactDirectory, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D, GeoMatch,
-    GeoMatchHeader, GeoPayload, open_geo_index, open_geo_index_with_limits,
+    GeoMatchHeader, GeoPayload, GeoPayloadHeader, open_geo_index, open_geo_index_with_limits,
 };
 #[cfg(feature = "async")]
 pub use artifact::{open_geo_index_async, open_geo_index_with_limits_async};
@@ -70,7 +70,7 @@ pub use manifest::{GeoArtifactManifest, StoragePrecision, read_geo_manifest};
 pub use payload::{
     FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN,
     FEATURE_WKB_CONTENT_TYPE, FeatureRef, PayloadPlan, PropertyProjection,
-    decode_feature_ref_payload, decode_feature_wkb_payload,
+    decode_feature_ref_payload, decode_feature_wkb_payload, feature_json_body,
 };
 pub use query::{GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy, SpatialPredicate};
 #[cfg(feature = "_source")]

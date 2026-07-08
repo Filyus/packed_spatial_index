@@ -534,13 +534,16 @@ fn search_records(
                     collection.id()
                 )));
             }
-            // Header path: RowRef/RowWkb identity lives in the fixed payload
+            // Header path: feature identity lives in the fixed payload
             // prefix, so a bbox search sorts, dedupes, and pages without
             // reading payload bodies — bodies are fetched for the page only.
-            // predicate=intersects needs every match's geometry up front, and
-            // FeatureJson stores identity inside the JSON body; both keep the
-            // full-decode path (payload work is still page-only below).
-            if !exact && matches!(payload_plan, PayloadPlan::RowRef | PayloadPlan::RowWkb) {
+            // predicate=intersects needs every match's geometry up front.
+            if !exact
+                && matches!(
+                    payload_plan,
+                    PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
+                )
+            {
                 let headers = index.search_match_headers(query)?;
                 return header_outcome(
                     headers,
@@ -588,7 +591,10 @@ fn search_records(
                     limit,
                 ));
             }
-            if matches!(payload_plan, PayloadPlan::RowRef | PayloadPlan::RowWkb) {
+            if matches!(
+                payload_plan,
+                PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
+            ) {
                 let headers = index.search_match_headers(query)?;
                 return header_outcome(
                     headers,

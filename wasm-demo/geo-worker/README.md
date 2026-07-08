@@ -27,6 +27,9 @@ demo.
 `numberReturned`, `query`, `payloadKind`, and `matches`. `/items` returns a
 GeoJSON `FeatureCollection`. Search is bbox-only in this milestone; exact
 predicate/source read-back is deliberately left to the native server.
+For artifacts whose manifest says entries cannot duplicate rows, summary search
+uses an entry/rank header path and omits `featureRef`; request `payload=full` or
+use `/items` when the client needs the returned GeoJSON features.
 
 Every R2-backed response includes `X-PSI-Reads` and `X-PSI-Bytes`. Search and
 items responses also include `reads`, `bytes`, and `ms` in the JSON body.
@@ -99,21 +102,24 @@ Copied response from a deployed Worker:
   "matches": [
     {
       "entryId": 169,
-      "featureRef": {
-        "rowGroup": 0,
-        "rowInGroup": 169,
-        "rowNumber": 169
-      },
       "payload": {
         "kind": "feature_json"
       }
     }
   ],
-  "reads": 2,
-  "bytes": 311575,
-  "ms": 71
+  "reads": 1,
+  "bytes": 7360,
+  "ms": 122
 }
 ```
+
+The same deployed Worker also handles a world-sized bbox without reading all
+GeoJSON bodies:
+
+| query | matched | returned | reads | bytes | ms |
+|---|---:|---:|---:|---:|---:|
+| `/search?bbox=-180,-90,180,90&limit=3&payload=summary` | 100000 | 3 | 1 | 800008 | 36 |
+| `/items?bbox=-180,-90,180,90&limit=3` | 100000 | 3 | 6 | 972629 | 112 |
 
 The exact `reads`, `bytes`, and `ms` vary with cold/warm isolate state, but the
 important proof is stable: a public HTTP API can serve feature results from a

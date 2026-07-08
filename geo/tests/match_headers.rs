@@ -104,6 +104,36 @@ fn headers_agree_with_matches_for_row_ref() {
 }
 
 #[test]
+fn headers_agree_with_matches_for_feature_json() {
+    let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }) else {
+        panic!("expected 2D artifact");
+    };
+
+    let mut matches = index.search_matches(world()).unwrap();
+    let mut headers = index.search_match_headers(world()).unwrap();
+    assert_eq!(headers.len(), matches.len());
+
+    matches.sort_by_key(|m| m.entry_id);
+    headers.sort_by_key(|h| h.entry_id);
+    for (m, h) in matches.iter().zip(&headers) {
+        assert_eq!(m.entry_id, h.entry_id);
+        let mut expected = m.feature.clone();
+        expected.feature_id = None;
+        assert_eq!(expected, h.feature);
+        let GeoPayload::FeatureJson(feature) = &m.payload else {
+            panic!("expected FeatureJson payload");
+        };
+        assert_eq!(feature["type"], "Feature");
+        assert!(h.payload_len > FEATURE_REF_RECORD_LEN);
+    }
+
+    let fetched = index.fetch_matches(&headers).unwrap();
+    assert_eq!(fetched, matches);
+}
+
+#[test]
 fn header_dedupe_matches_feature_level_semantics() {
     let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::RowWkb) else {
         panic!("expected 2D artifact");
@@ -159,13 +189,4 @@ fn headers_reject_unsupported_plans() {
         Err(GeoError::UnsupportedArtifact(_))
     ));
 
-    let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::FeatureJson {
-        properties: PropertyProjection::AllNonGeometry,
-    }) else {
-        panic!("expected 2D artifact");
-    };
-    assert!(matches!(
-        index.search_match_headers(world()),
-        Err(GeoError::UnsupportedArtifact(_))
-    ));
 }

@@ -1666,6 +1666,43 @@ fn async_search_payloads_matches_sync() {
 
 #[cfg(feature = "async")]
 #[test]
+fn async_payload_prefixes_and_rank_fetch_match_sync() {
+    let (_, _, bytes) = random_with_payloads(20_000, 0xA6B);
+    let sync = open_slice(bytes.clone());
+    let astream = pollster::block_on(StreamIndex2D::open_async(AsyncSlice(bytes))).unwrap();
+
+    let q = Box2D::new(300.0, 300.0, 380.0, 380.0);
+    let mut sync_headers = Vec::new();
+    sync.visit_payload_prefixes(q, 24, |p| {
+        sync_headers.push((p.id, p.leaf_rank, p.payload_len, p.prefix.to_vec()));
+    })
+    .unwrap();
+
+    let mut async_headers = Vec::new();
+    pollster::block_on(astream.visit_payload_prefixes_async(q, 24, |p| {
+        async_headers.push((p.id, p.leaf_rank, p.payload_len, p.prefix.to_vec()));
+    }))
+    .unwrap();
+    assert_eq!(async_headers, sync_headers);
+
+    let page_ranks: Vec<usize> = async_headers.iter().take(5).map(|h| h.1).collect();
+    let mut sync_page = Vec::new();
+    sync.visit_payloads_at_ranks(&page_ranks, |rank, blob| {
+        sync_page.push((rank, blob.to_vec()));
+    })
+    .unwrap();
+    let mut async_page = Vec::new();
+    pollster::block_on(
+        astream.visit_payloads_at_ranks_async(&page_ranks, |rank, blob| {
+            async_page.push((rank, blob.to_vec()));
+        }),
+    )
+    .unwrap();
+    assert_eq!(async_page, sync_page);
+}
+
+#[cfg(feature = "async")]
+#[test]
 fn async_region_matches_sync_and_payloads() {
     use crate::ConvexPolygon2D;
 

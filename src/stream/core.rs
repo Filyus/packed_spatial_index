@@ -676,7 +676,7 @@ impl<R: RangeReader> StreamCore<R> {
             }
 
             // Coalesce the prefix byte spans into runs and emit each survivor.
-            let gap = self.coalesce_gap();
+            let gap = self.coalesce_gap().min(prefix_len as u64);
             let mut j = 0;
             while j < spans.len() {
                 let run_start = spans[j].blob_start;
@@ -774,25 +774,52 @@ impl<R: RangeReader> StreamCore<R> {
                 budget.charge_read(off_buf.len())?;
                 self.reader
                     .read_exact_at(section.offsets_start + (lo * 8) as u64, &mut off_buf)?;
-                let (blob_lo, blob_hi) = payload_blob_span(&off_buf, lo, hi, section.blob_total)?;
-                blob_buf.clear();
-                blob_buf.resize((blob_hi - blob_lo) as usize, 0);
-                if !blob_buf.is_empty() {
-                    budget.charge_read(blob_buf.len())?;
-                    self.reader
-                        .read_exact_at(section.blobs_start + blob_lo, &mut blob_buf)?;
-                }
+                let mut spans = Vec::with_capacity(k + 1 - j);
                 for &p in &ranks[j..=k] {
-                    let o0 = read_u64_le_unchecked(&off_buf, (p - lo) * 8);
-                    let o1 = read_u64_le_unchecked(&off_buf, (p + 1 - lo) * 8);
-                    if o0 < blob_lo || o1 < o0 || o1 > blob_hi {
+                    let blob_start = read_u64_le_unchecked(&off_buf, (p - lo) * 8);
+                    let blob_end = read_u64_le_unchecked(&off_buf, (p + 1 - lo) * 8);
+                    if blob_end < blob_start || blob_end > section.blob_total {
                         return Err(StreamError::Format(LoadError::InvalidTree));
                     }
-                    budget.charge_item()?;
-                    emit(
-                        p,
-                        &blob_buf[(o0 - blob_lo) as usize..(o1 - blob_lo) as usize],
-                    );
+                    spans.push(RankBlobSpan {
+                        rank: p,
+                        blob_start,
+                        blob_end,
+                    });
+                }
+
+                let gap = self.coalesce_gap();
+                let mut span_start = 0;
+                while span_start < spans.len() {
+                    let run_start = spans[span_start].blob_start;
+                    let mut run_end = spans[span_start].blob_end;
+                    let mut span_end = span_start;
+                    while span_end + 1 < spans.len() {
+                        let next = &spans[span_end + 1];
+                        if next.blob_start < run_start
+                            || next.blob_start.saturating_sub(run_end) > gap
+                        {
+                            break;
+                        }
+                        run_end = run_end.max(next.blob_end);
+                        span_end += 1;
+                    }
+                    blob_buf.clear();
+                    blob_buf.resize((run_end - run_start) as usize, 0);
+                    if !blob_buf.is_empty() {
+                        budget.charge_read(blob_buf.len())?;
+                        self.reader
+                            .read_exact_at(section.blobs_start + run_start, &mut blob_buf)?;
+                    }
+                    for span in &spans[span_start..=span_end] {
+                        budget.charge_item()?;
+                        emit(
+                            span.rank,
+                            &blob_buf[(span.blob_start - run_start) as usize
+                                ..(span.blob_end - run_start) as usize],
+                        );
+                    }
+                    span_start = span_end + 1;
                 }
                 j = k + 1;
             }
@@ -811,6 +838,12 @@ struct PrefixSpan {
     blob_start: u64,
     /// Full payload byte length.
     payload_len: usize,
+}
+
+struct RankBlobSpan {
+    rank: usize,
+    blob_start: u64,
+    blob_end: u64,
 }
 
 impl PrefixSpan {

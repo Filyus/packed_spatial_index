@@ -1109,7 +1109,8 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
                                 "missing payload for a header's leaf rank".to_string(),
                             )
                         })?;
-                        let (feature, payload) = decode_payload(&self.manifest.payload_plan, payload)?;
+                        let (feature, payload) =
+                            decode_payload(&self.manifest.payload_plan, payload)?;
                         Ok(GeoMatch {
                             entry_id: header.entry_id,
                             feature,

@@ -188,5 +188,4 @@ fn headers_reject_unsupported_plans() {
         index.search_match_headers(world()),
         Err(GeoError::UnsupportedArtifact(_))
     ));
-
 }

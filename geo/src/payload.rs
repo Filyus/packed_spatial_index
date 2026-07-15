@@ -10,12 +10,20 @@ use serde_json::value::RawValue;
 #[cfg(feature = "_source")]
 use crate::GeoError;
 
-/// Content type used for [`PayloadPlan::RowRef`] payload sections.
+/// Project-defined vendor media type used for [`PayloadPlan::RowRef`]
+/// payload sections. It is not currently registered with IANA.
 pub const FEATURE_REF_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-ref";
-/// Content type used for [`PayloadPlan::RowWkb`] payload sections.
+/// Project-defined vendor media type used for [`PayloadPlan::RowWkb`]
+/// payload sections. It is not currently registered with IANA.
 pub const FEATURE_WKB_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-wkb";
-/// Content type used for [`PayloadPlan::FeatureJson`] payload sections.
-pub const FEATURE_JSON_CONTENT_TYPE: &str = "application/geo+json";
+/// Project-defined, unregistered vendor media type used for feature-ref-prefixed
+/// [`PayloadPlan::FeatureJson`] payload sections.
+///
+/// This identifies the complete binary `FeatureRef` + GeoJSON record, not a
+/// `.psindex` file or a standalone JSON representation. [`feature_json_body`]
+/// returns the embedded GeoJSON bytes. It intentionally has no `+json` suffix,
+/// because a generic JSON parser cannot consume the binary prefix.
+pub const FEATURE_JSON_CONTENT_TYPE: &str = "application/vnd.packed-spatial-index.feature-json";
 /// Byte length of the fixed-width [`FeatureRef`] payload record.
 pub const FEATURE_REF_RECORD_LEN: usize = 24;
 
@@ -88,7 +96,7 @@ pub(crate) fn stamp_payload_part(
             Ok(())
         }
         PayloadPlan::FeatureJson { .. } => {
-            if payload.len() >= FEATURE_REF_RECORD_LEN && payload.first() != Some(&b'{') {
+            if has_feature_ref_prefix(payload) {
                 payload[16..18].copy_from_slice(&part.to_le_bytes());
             }
             let body = feature_json_body(payload);
@@ -163,29 +171,34 @@ pub(crate) fn feature_json_from_raw_parts(
 
 /// Return the JSON body of a FeatureJson payload. New artifacts prefix the
 /// JSON with a fixed-width FeatureRef record so header scans can page without
-/// reading bodies; older artifacts begin directly with `{` and remain readable.
+/// reading bodies; older artifacts contain only JSON and remain readable.
 pub fn feature_json_body(payload: &[u8]) -> &[u8] {
-    if payload.first() == Some(&b'{') || payload.len() < FEATURE_REF_RECORD_LEN {
-        payload
-    } else {
+    if has_feature_ref_prefix(payload) {
         &payload[FEATURE_REF_RECORD_LEN..]
+    } else {
+        payload
     }
 }
 
 #[cfg(feature = "_source")]
 fn encode_feature_json_prefix_compatible(old_payload: &[u8], json: &[u8]) -> Vec<u8> {
-    if old_payload.first() == Some(&b'{') || old_payload.len() < FEATURE_REF_RECORD_LEN {
-        json.to_vec()
-    } else {
+    if has_feature_ref_prefix(old_payload) {
         let mut out = old_payload[..FEATURE_REF_RECORD_LEN].to_vec();
         out.extend_from_slice(json);
         out
+    } else {
+        json.to_vec()
     }
+}
+
+fn has_feature_ref_prefix(payload: &[u8]) -> bool {
+    decode_feature_ref_payload(payload).is_some()
 }
 
 /// Decode a fixed-width [`FeatureRef`] payload.
 ///
-/// Returns `None` if the payload is shorter than [`FEATURE_REF_RECORD_LEN`].
+/// Returns `None` if the payload is shorter than [`FEATURE_REF_RECORD_LEN`] or
+/// the reserved bytes do not match the fixed-width record format.
 pub fn decode_feature_ref_payload(payload: &[u8]) -> Option<FeatureRef> {
     if payload.len() < FEATURE_REF_RECORD_LEN {
         return None;
@@ -226,6 +239,33 @@ fn decode_u16_option(bytes: [u8; 2]) -> Option<u16> {
     match u16::from_le_bytes(bytes) {
         u16::MAX => None,
         value => Some(value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_json_body_detects_prefix_structurally() {
+        let json = br#"{"type":"Feature"}"#;
+        assert_eq!(feature_json_body(json), json);
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&123u64.to_le_bytes());
+        payload.extend_from_slice(&u32::MAX.to_le_bytes());
+        payload.extend_from_slice(&u32::MAX.to_le_bytes());
+        payload.extend_from_slice(&u16::MAX.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(json);
+
+        assert_eq!(payload[0], b'{');
+        assert_eq!(
+            decode_feature_ref_payload(&payload).unwrap().row_number,
+            123
+        );
+        assert_eq!(feature_json_body(&payload), json);
     }
 }
 
@@ -373,7 +413,8 @@ pub enum PayloadPlan {
     RowRef,
     /// Emit fixed-width `FeatureRef` records followed by WKB bytes.
     RowWkb,
-    /// Emit GeoJSON Feature bytes with projected properties.
+    /// Emit a fixed-width [`FeatureRef`] followed by GeoJSON Feature bytes with
+    /// projected properties.
     FeatureJson {
         /// Property projection.
         properties: PropertyProjection,

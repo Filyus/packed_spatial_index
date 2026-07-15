@@ -713,11 +713,11 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// Headers carry everything sorting, deduplication, and pagination need;
     /// feed a page of them to [`fetch_matches`](Self::fetch_matches) to
     /// materialize full [`GeoMatch`] values for just that page. Supported for
-    /// `RowRef` and `RowWkb` plans, whose payloads start with the fixed
-    /// feature-ref record. `FeatureJson` stores identity only inside the JSON
-    /// body and [`PayloadPlan::None`] stores nothing, so both return
-    /// [`GeoError::UnsupportedArtifact`] — use
-    /// [`search_matches`](Self::search_matches) there.
+    /// `RowRef`, `RowWkb`, and current `FeatureJson` artifacts, whose payloads
+    /// start with the fixed feature-ref record. Legacy raw-JSON `FeatureJson`
+    /// artifacts remain readable through [`search_matches`](Self::search_matches)
+    /// but must be rebuilt for header-only search. [`PayloadPlan::None`]
+    /// artifacts return [`GeoError::UnsupportedArtifact`].
     ///
     /// # Example
     ///
@@ -2216,9 +2216,9 @@ impl GeoMatch {
 /// Lightweight header for one matched index entry: identity and payload size
 /// without the payload body.
 ///
-/// Produced by [`GeoArtifactIndex2D::search_match_headers`]; sort, dedupe, and
-/// page headers cheaply, then feed the page to
-/// [`GeoArtifactIndex2D::fetch_matches`] to materialize full [`GeoMatch`]
+/// Produced by 2D or 3D `search_match_headers` methods (and the async 2D
+/// counterpart); sort, dedupe, and page headers cheaply, then feed the page to
+/// the corresponding `fetch_matches` method to materialize full [`GeoMatch`]
 /// values for just those entries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeoMatchHeader {
@@ -2322,7 +2322,11 @@ impl GeoPayloadHeader {
         headers.sort_by(Self::entry_order);
     }
 
-    /// Length of the payload body after a fixed FeatureRef prefix.
+    /// Length after subtracting one fixed FeatureRef prefix.
+    ///
+    /// Use this only for payload layouts that the artifact metadata identifies
+    /// as feature-ref-prefixed. Legacy raw-JSON `FeatureJson` payloads do not
+    /// have that prefix; for them, `payload_len` is already the JSON length.
     pub fn body_byte_len(&self) -> Option<usize> {
         self.payload_len.checked_sub(FEATURE_REF_RECORD_LEN)
     }
@@ -2672,13 +2676,7 @@ fn decode_payload(
             Ok((feature, GeoPayload::RowWkb(wkb.to_vec())))
         }
         PayloadPlan::FeatureJson { .. } => {
-            let prefix_feature = if payload.first() == Some(&b'{') {
-                None
-            } else {
-                Some(decode_feature_ref_payload(payload).ok_or_else(|| {
-                    GeoError::PayloadDecode("feature_json payload prefix is truncated".to_string())
-                })?)
-            };
+            let prefix_feature = decode_feature_ref_payload(payload);
             let json: serde_json::Value = serde_json::from_slice(feature_json_body(payload))
                 .map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
             let feature = json

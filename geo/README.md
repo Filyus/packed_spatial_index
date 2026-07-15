@@ -174,6 +174,11 @@ pagination still requires the full match-header search followed by
 `GeoMatchHeader::dedupe_by_feature`, because choosing one representative per
 source feature needs global identity state.
 
+`GeoMatchHeader` searches over `FeatureJson` require the fixed feature-ref
+prefix written by the current converter. Older raw-JSON artifacts remain
+readable through full match or payload-header APIs, but should be rebuilt before
+using match-header pagination.
+
 ### Result Vocabulary
 
 One naming rule across the crate: the method name states what a query returns.

@@ -137,6 +137,46 @@ fn headers_agree_with_matches_for_feature_json() {
 }
 
 #[test]
+fn feature_json_prefix_handles_row_number_starting_with_json_brace() {
+    let features: Vec<_> = (0..=123)
+        .map(|row_number| {
+            serde_json::json!({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [row_number, 0]},
+                "properties": {"row_number": row_number},
+            })
+        })
+        .collect();
+    let geojson = serde_json::to_vec(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": features,
+    }))
+    .unwrap();
+    let mut source = open_geojson_slice(&geojson).unwrap();
+    let bytes = source
+        .convert(ConvertRequest {
+            payload: PayloadPlan::FeatureJson {
+                properties: PropertyProjection::AllNonGeometry,
+            },
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+
+    let bbox = Box2D::new(123.0, 0.0, 123.0, 0.0);
+    let matches = index.search_matches(bbox).unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].feature.row_number, 123);
+
+    let headers = index.search_match_headers(bbox).unwrap();
+    assert_eq!(headers.len(), 1);
+    assert_eq!(headers[0].feature.row_number, 123);
+    assert_eq!(index.fetch_matches(&headers).unwrap(), matches);
+}
+
+#[test]
 fn header_dedupe_matches_feature_level_semantics() {
     let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::RowWkb) else {
         panic!("expected 2D artifact");

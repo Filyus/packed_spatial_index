@@ -107,7 +107,9 @@ pub fn open_geo_index_with_limits<R: RangeReader>(
             )));
         }
     };
-    validate_opened_artifact(artifact, limits)
+    validate_manifest_entry_count(artifact.manifest(), artifact.num_entries())?;
+    validate_manifest_payload_presence(artifact.manifest(), artifact.has_payload())?;
+    Ok(artifact)
 }
 
 /// Open a converted geospatial `PSINDEX` artifact from async range I/O.
@@ -167,7 +169,9 @@ pub async fn open_geo_index_with_limits_async<R: AsyncRangeReader>(
             )));
         }
     };
-    validate_opened_artifact(artifact, limits)
+    validate_manifest_entry_count(artifact.manifest(), artifact.num_entries())?;
+    validate_manifest_payload_presence(artifact.manifest(), artifact.has_payload())?;
+    Ok(artifact)
 }
 
 fn validate_manifest(manifest: &GeoArtifactManifest) -> Result<(), GeoError> {
@@ -206,13 +210,18 @@ fn validate_manifest_entry_count(
     Ok(())
 }
 
-fn validate_opened_artifact<R>(
-    artifact: GeoArtifactIndex<R>,
-    limits: StreamLimits,
-) -> Result<GeoArtifactIndex<R>, GeoError> {
-    let (directory, reader) = artifact.into_directory();
-    validate_manifest_entry_count(directory.manifest(), directory.num_entries())?;
-    GeoArtifactIndex::from_directory_with_limits(&directory, reader, limits)
+fn validate_manifest_payload_presence(
+    manifest: &GeoArtifactManifest,
+    has_payload: bool,
+) -> Result<(), GeoError> {
+    let manifest_has_payload = !matches!(manifest.payload_plan, PayloadPlan::None);
+    if manifest_has_payload != has_payload {
+        return Err(GeoError::UnsupportedArtifact(format!(
+            "geoM payload plan {:?} disagrees with stream payload presence",
+            manifest.payload_plan
+        )));
+    }
+    Ok(())
 }
 
 /// A streamable geospatial index opened from a converted artifact.
@@ -232,6 +241,20 @@ impl<R> GeoArtifactIndex<R> {
         match self {
             GeoArtifactIndex::D2(index) => index.manifest(),
             GeoArtifactIndex::D3(index) => index.manifest(),
+        }
+    }
+
+    fn num_entries(&self) -> usize {
+        match self {
+            GeoArtifactIndex::D2(index) => index.num_entries(),
+            GeoArtifactIndex::D3(index) => index.num_entries(),
+        }
+    }
+
+    fn has_payload(&self) -> bool {
+        match self {
+            GeoArtifactIndex::D2(index) => index.has_payload(),
+            GeoArtifactIndex::D3(index) => index.has_payload(),
         }
     }
 
@@ -340,6 +363,20 @@ impl<R> GeoArtifactIndex2D<R> {
     /// Return the parsed `geoM` manifest.
     pub fn manifest(&self) -> &GeoArtifactManifest {
         &self.manifest
+    }
+
+    fn num_entries(&self) -> usize {
+        match &self.index {
+            GeoStreamIndex2D::F64(index) => index.num_items(),
+            GeoStreamIndex2D::F32(index) => index.num_items(),
+        }
+    }
+
+    fn has_payload(&self) -> bool {
+        match &self.index {
+            GeoStreamIndex2D::F64(index) => index.has_payload(),
+            GeoStreamIndex2D::F32(index) => index.has_payload(),
+        }
     }
 
     /// Split off the reader, keeping a reusable [`GeoArtifactDirectory`]. No I/O.
@@ -1542,6 +1579,20 @@ impl<R> GeoArtifactIndex3D<R> {
     /// Return the parsed `geoM` manifest.
     pub fn manifest(&self) -> &GeoArtifactManifest {
         &self.manifest
+    }
+
+    fn num_entries(&self) -> usize {
+        match &self.index {
+            GeoStreamIndex3D::F64(index) => index.num_items(),
+            GeoStreamIndex3D::F32(index) => index.num_items(),
+        }
+    }
+
+    fn has_payload(&self) -> bool {
+        match &self.index {
+            GeoStreamIndex3D::F64(index) => index.has_payload(),
+            GeoStreamIndex3D::F32(index) => index.has_payload(),
+        }
     }
 
     /// Split off the reader, keeping a reusable [`GeoArtifactDirectory`]. No I/O.

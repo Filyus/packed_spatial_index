@@ -117,6 +117,11 @@ impl<R> StreamIndex2D<R> {
     pub fn node_size(&self) -> usize {
         self.core.node_size
     }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.core.has_payload()
+    }
 }
 
 impl<R: RangeReader> StreamIndex2D<R> {
@@ -175,11 +180,6 @@ impl<R: RangeReader> StreamIndex2D<R> {
     pub fn search_into(&self, query: Box2D, out: &mut Vec<usize>) -> Result<(), StreamError> {
         out.clear();
         self.visit(query, |index| out.push(index))
-    }
-
-    /// Whether this index was written with a payload section.
-    pub fn has_payload(&self) -> bool {
-        self.core.has_payload()
     }
 
     /// Visit `(item index, payload blob)` for every item intersecting `query`.
@@ -398,6 +398,11 @@ impl<R> StreamIndex3D<R> {
     pub fn node_size(&self) -> usize {
         self.core.node_size
     }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.core.has_payload()
+    }
 }
 
 impl<R: RangeReader> StreamIndex3D<R> {
@@ -443,11 +448,6 @@ impl<R: RangeReader> StreamIndex3D<R> {
     pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) -> Result<(), StreamError> {
         out.clear();
         self.visit(query, |index| out.push(index))
-    }
-
-    /// Whether this index was written with a payload section.
-    pub fn has_payload(&self) -> bool {
-        self.core.has_payload()
     }
 
     /// Visit `(item index, payload blob)` for every item intersecting `query`.
@@ -638,6 +638,11 @@ impl<R> StreamIndex2DF32<R> {
     pub fn node_size(&self) -> usize {
         self.core.node_size
     }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.core.has_payload()
+    }
 }
 
 impl<R: RangeReader> StreamIndex2DF32<R> {
@@ -681,11 +686,6 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
     pub fn search_into(&self, query: Box2D, out: &mut Vec<usize>) -> Result<(), StreamError> {
         out.clear();
         self.visit(query, |index| out.push(index))
-    }
-
-    /// Whether this index was written with a payload section.
-    pub fn has_payload(&self) -> bool {
-        self.core.has_payload()
     }
 
     /// Visit `(item index, payload blob)` for every item intersecting `query`.
@@ -838,6 +838,11 @@ impl<R> StreamIndex3DF32<R> {
     pub fn node_size(&self) -> usize {
         self.core.node_size
     }
+
+    /// Whether this index was written with a payload section.
+    pub fn has_payload(&self) -> bool {
+        self.core.has_payload()
+    }
 }
 
 impl<R: RangeReader> StreamIndex3DF32<R> {
@@ -879,11 +884,6 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
     pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) -> Result<(), StreamError> {
         out.clear();
         self.visit(query, |index| out.push(index))
-    }
-
-    /// Whether this index was written with a payload section.
-    pub fn has_payload(&self) -> bool {
-        self.core.has_payload()
     }
 
     /// Visit `(item index, payload blob)` for every item intersecting `query`.

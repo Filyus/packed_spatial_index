@@ -2025,6 +2025,19 @@ fn replace_geo_manifest_text(bytes: &mut [u8], from: &[u8], to: &[u8]) {
     content[matches[0]..matches[0] + from.len()].copy_from_slice(to);
 }
 
+fn rewrite_geo_manifest(bytes: &mut [u8], edit: impl FnOnce(&mut serde_json::Value)) {
+    let base = geo_chunk_entry_base(bytes, b"geoM");
+    let offset = u64::from_le_bytes(bytes[base + 8..base + 16].try_into().unwrap()) as usize;
+    let len = u64::from_le_bytes(bytes[base + 16..base + 24].try_into().unwrap()) as usize;
+    let content = &mut bytes[offset..offset + len];
+    let mut manifest: serde_json::Value = serde_json::from_slice(content).unwrap();
+    edit(&mut manifest);
+    let encoded = serde_json::to_vec(&manifest).unwrap();
+    assert!(encoded.len() <= content.len());
+    content.fill(b' ');
+    content[..encoded.len()].copy_from_slice(&encoded);
+}
+
 #[test]
 fn geo_artifact_reader_rejects_manifest_count_mismatches() {
     let data = write_geoparquet(
@@ -2089,6 +2102,65 @@ fn geo_artifact_reader_rejects_manifest_count_mismatches() {
     assert!(matches!(
         err,
         GeoError::UnsupportedArtifact(message) if message.contains("rows do not duplicate")
+    ));
+}
+
+#[test]
+fn geo_artifact_reader_rejects_manifest_payload_presence_mismatch() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(6.0, 7.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
+    let mut bytes = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    rewrite_geo_manifest(&mut bytes, |manifest| {
+        manifest["payload_plan"] = serde_json::json!({"kind": "none"});
+    });
+
+    let err = match open_geo_index(SliceReader::new(bytes.clone())) {
+        Ok(_) => panic!("manifest/core payload mismatch must be rejected"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        err,
+        GeoError::UnsupportedArtifact(message) if message.contains("payload")
+    ));
+
+    #[cfg(feature = "async")]
+    {
+        let err = match pollster::block_on(open_geo_index_async(AsyncSlice(bytes))) {
+            Ok(_) => panic!("async manifest/core payload mismatch must be rejected"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            GeoError::UnsupportedArtifact(message) if message.contains("payload")
+        ));
+    }
+
+    let mut dataset = open_geoparquet(data).unwrap();
+    let mut bytes = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::None,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    rewrite_geo_manifest(&mut bytes, |manifest| {
+        manifest["source_format"] = serde_json::Value::String("geo".to_string());
+        manifest["payload_plan"] = serde_json::json!({"kind": "row_ref"});
+    });
+    let err = match open_geo_index(SliceReader::new(bytes)) {
+        Ok(_) => panic!("missing core payload must be rejected"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        err,
+        GeoError::UnsupportedArtifact(message) if message.contains("payload")
     ));
 }
 

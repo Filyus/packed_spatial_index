@@ -4,6 +4,22 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.25.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.24.1...psi-v0.25.0) - 2026-07-15
+
+### Search
+
+- Added async payload-prefix and sparse payload-body visitors to every streaming
+  index variant: `visit_payload_prefixes_async`,
+  `visit_payload_prefixes_region_async`, and
+  `visit_payloads_at_ranks_async`. They let async range readers paginate and
+  materialize only the selected payload bodies without a full payload scan.
+
+### Persistence
+
+- Made `StreamIndex*::has_payload()` available for every reader type, including
+  async range readers, because it reads cached stream metadata and performs no
+  I/O.
+
 ## [0.24.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.24.0...psi-v0.24.1) - 2026-07-06
 
 ### Documentation

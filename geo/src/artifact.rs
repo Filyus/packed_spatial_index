@@ -1324,11 +1324,8 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
                 headers
                     .iter()
                     .map(|header| {
-                        let payload = by_rank.get(&header.leaf_rank).ok_or_else(|| {
-                            GeoError::PayloadDecode(
-                                "missing payload for a header's leaf rank".to_string(),
-                            )
-                        })?;
+                        let payload =
+                            payload_at_rank(&by_rank, header.leaf_rank, header.payload_len)?;
                         let (feature, payload) =
                             decode_payload(&self.manifest.payload_plan, payload)?;
                         Ok(GeoMatch {
@@ -2015,10 +2012,10 @@ fn assemble_matches(
     headers
         .iter()
         .map(|header| {
-            let payload = by_rank.get(&header.leaf_rank).ok_or_else(|| {
-                GeoError::PayloadDecode("missing payload for a header's leaf rank".to_string())
-            })?;
-            let (feature, payload) = decode_payload(plan, payload)?;
+            let payload = payload_at_rank(by_rank, header.leaf_rank, header.payload_len)?;
+            let (mut feature, payload) = decode_payload(plan, payload)?;
+            ensure_header_feature_matches(&header.feature, &feature)?;
+            feature.part = header.feature.part;
             Ok(GeoMatch {
                 entry_id: header.entry_id,
                 feature,
@@ -2026,6 +2023,40 @@ fn assemble_matches(
             })
         })
         .collect()
+}
+
+fn payload_at_rank(
+    by_rank: &std::collections::HashMap<usize, Vec<u8>>,
+    leaf_rank: usize,
+    expected_len: usize,
+) -> Result<&[u8], GeoError> {
+    let payload = by_rank.get(&leaf_rank).ok_or_else(|| {
+        GeoError::PayloadDecode("missing payload for a header's leaf rank".to_string())
+    })?;
+    if payload.len() != expected_len {
+        return Err(GeoError::PayloadDecode(format!(
+            "payload length changed after header read: expected {expected_len}, got {}",
+            payload.len()
+        )));
+    }
+    Ok(payload)
+}
+
+fn ensure_header_feature_matches(
+    header: &FeatureRef,
+    payload: &FeatureRef,
+) -> Result<(), GeoError> {
+    // Headers cannot carry feature_id; part=None may also be the dedupe marker.
+    let same_fixed_identity = header.row_number == payload.row_number
+        && header.row_group == payload.row_group
+        && header.row_in_group == payload.row_in_group;
+    let same_part = header.part.is_none() || header.part == payload.part;
+    if !same_fixed_identity || !same_part {
+        return Err(GeoError::PayloadDecode(
+            "payload feature_ref disagrees with its match header".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "async")]
@@ -2724,22 +2755,42 @@ fn decode_payload(
             let prefix_feature = decode_feature_ref_payload(payload);
             let json: serde_json::Value = serde_json::from_slice(feature_json_body(payload))
                 .map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
-            let feature = json
+            let json_feature = json
                 .get("feature_ref")
                 .cloned()
                 .map(|value| {
                     serde_json::from_value(value)
                         .map_err(|e| GeoError::PayloadDecode(e.to_string()))
                 })
-                .transpose()?
-                .or(prefix_feature)
-                .ok_or_else(|| {
-                    GeoError::PayloadDecode("feature_json payload has no feature_ref".to_string())
-                })?;
+                .transpose()?;
+            let feature = match (prefix_feature, json_feature) {
+                (Some(prefix), Some(json_feature)) => {
+                    if !feature_ref_record_fields_match(&prefix, &json_feature) {
+                        return Err(GeoError::PayloadDecode(
+                            "feature_json prefix disagrees with its JSON feature_ref".to_string(),
+                        ));
+                    }
+                    json_feature
+                }
+                (Some(prefix), None) => prefix,
+                (None, Some(json_feature)) => json_feature,
+                (None, None) => {
+                    return Err(GeoError::PayloadDecode(
+                        "feature_json payload has no feature_ref".to_string(),
+                    ));
+                }
+            };
             Ok((feature, GeoPayload::FeatureJson(json)))
         }
         PayloadPlan::None => Err(GeoError::UnsupportedArtifact(
             "artifact payload does not contain feature refs".to_string(),
         )),
     }
+}
+
+fn feature_ref_record_fields_match(a: &FeatureRef, b: &FeatureRef) -> bool {
+    a.row_number == b.row_number
+        && a.row_group == b.row_group
+        && a.row_in_group == b.row_in_group
+        && a.part == b.part
 }

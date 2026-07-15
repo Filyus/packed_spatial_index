@@ -177,6 +177,37 @@ fn feature_json_prefix_handles_row_number_starting_with_json_brace() {
 }
 
 #[test]
+fn feature_json_rejects_prefix_body_identity_mismatch() {
+    let mut bytes = artifact_bytes(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    });
+    let from = br#""row_number":1"#;
+    let matches: Vec<_> = bytes
+        .windows(from.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == from).then_some(offset))
+        .collect();
+    assert_eq!(matches.len(), 1, "expected one row-one JSON feature ref");
+    bytes[matches[0] + from.len() - 1] = b'9';
+
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let err = index.search_matches(world()).unwrap_err();
+    assert!(matches!(
+        err,
+        GeoError::PayloadDecode(message) if message.contains("prefix") && message.contains("feature_ref")
+    ));
+
+    let headers = index.search_match_headers(world()).unwrap();
+    let err = index.fetch_matches(&headers).unwrap_err();
+    assert!(matches!(
+        err,
+        GeoError::PayloadDecode(message) if message.contains("prefix") && message.contains("feature_ref")
+    ));
+}
+
+#[test]
 fn header_dedupe_matches_feature_level_semantics() {
     let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::RowWkb) else {
         panic!("expected 2D artifact");
@@ -196,6 +227,40 @@ fn header_dedupe_matches_feature_level_semantics() {
             .collect::<Vec<_>>(),
         "header dedupe picks the same representatives"
     );
+
+    let fetched = index.fetch_matches(&headers).unwrap();
+    assert!(fetched.iter().all(|m| m.feature.part.is_none()));
+    assert_eq!(
+        fetched.iter().map(|m| m.entry_id).collect::<Vec<_>>(),
+        feature_matches
+            .iter()
+            .map(|m| m.entry_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn fetch_matches_rejects_stale_match_headers() {
+    let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::RowWkb) else {
+        panic!("expected 2D artifact");
+    };
+    let header = index.search_match_headers(world()).unwrap().remove(0);
+
+    let mut wrong_len = header.clone();
+    wrong_len.payload_len += 1;
+    let err = index.fetch_matches(&[wrong_len]).unwrap_err();
+    assert!(matches!(
+        err,
+        GeoError::PayloadDecode(message) if message.contains("payload length changed")
+    ));
+
+    let mut wrong_identity = header;
+    wrong_identity.feature.row_number += 1;
+    let err = index.fetch_matches(&[wrong_identity]).unwrap_err();
+    assert!(matches!(
+        err,
+        GeoError::PayloadDecode(message) if message.contains("match header")
+    ));
 }
 
 #[test]
@@ -290,6 +355,30 @@ fn async_payload_header_pages_match_full_search_order() {
             assert_eq!(page.headers, expected);
         }
     }
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_payload_fetch_rejects_stale_header_length() {
+    let bytes = artifact_bytes(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    });
+    let GeoArtifactIndex::D2(index) = pollster::block_on(
+        packed_spatial_index_geo::open_geo_index_async(AsyncSlice(bytes)),
+    )
+    .unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let mut header = pollster::block_on(index.search_payload_headers_async(world()))
+        .unwrap()
+        .remove(0);
+    header.payload_len += 1;
+
+    let err = pollster::block_on(index.fetch_payload_header_matches_async(&[header])).unwrap_err();
+    assert!(matches!(
+        err,
+        GeoError::PayloadDecode(message) if message.contains("payload length changed")
+    ));
 }
 
 #[cfg(feature = "async")]

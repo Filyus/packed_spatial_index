@@ -215,9 +215,24 @@ jobs:
             wasm-demo/r2-sim
             wasm-demo/geo-seed
             wasm-demo/worker
+            wasm-demo/geo-worker
       - name: Check r2-sim
         run: cargo check --manifest-path wasm-demo/r2-sim/Cargo.toml
       - name: Check geo-seed
         run: cargo check --manifest-path wasm-demo/geo-seed/Cargo.toml
       - name: Check worker (wasm)
         run: cargo check --manifest-path wasm-demo/worker/Cargo.toml --target wasm32-unknown-unknown
+      - name: Check geo worker (wasm)
+        run: cargo check --manifest-path wasm-demo/geo-worker/Cargo.toml --target wasm32-unknown-unknown
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: wasm-demo/geo-worker/package-lock.json
+      - name: Build geo worker
+        working-directory: wasm-demo/geo-worker
+        run: |
+          npm ci
+          npm run build:wasm
+          npm run typecheck

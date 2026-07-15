@@ -8,6 +8,7 @@ import initSync, {
   search as wasmSearch,
 } from "../pkg/psi_geo_worker.js";
 import wasmModule from "../pkg/psi_geo_worker_bg.wasm";
+import { HttpError, withArtifact, type Metrics } from "./artifact";
 
 export interface Env {
   BUCKET: R2Bucket;
@@ -17,34 +18,8 @@ const COLLECTION_ID = "synthetic-points";
 const OBJECT_KEY = "synthetic-points.psindex";
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 1000;
-const ARTIFACT_IO_MARKER = "PSI_ARTIFACT_IO:";
-const ARTIFACT_CHANGED_MARKER = "PSI_ARTIFACT_CHANGED:";
 
 let ready = false;
-
-type Metrics = {
-  reads: number;
-  bytes: number;
-  r2Operations: number;
-  ms: number;
-};
-
-type ArtifactContext = {
-  readRange: (offset: number, length: number) => Promise<Uint8Array>;
-  fileLen: number;
-  objectEtag: string;
-  metrics: Omit<Metrics, "ms">;
-};
-
-class HttpError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -89,31 +64,39 @@ async function route(req: Request, env: Env): Promise<Response> {
   }
 
   if (path === "/collections") {
-    const { body, metrics } = await withArtifact(env, async (artifact) => {
-      const json = await wasmCollection(
-        artifact.readRange,
-        artifact.fileLen,
-        artifact.objectEtag,
-        maxReads(url),
-        false,
-      );
-      return [JSON.parse(json)];
-    });
+    const { body, metrics } = await withArtifact(
+      env.BUCKET,
+      OBJECT_KEY,
+      async (artifact) => {
+        const json = await wasmCollection(
+          artifact.readRange,
+          artifact.fileLen,
+          artifact.objectEtag,
+          maxReads(url),
+          false,
+        );
+        return [JSON.parse(json)];
+      },
+    );
     return jsonResponse(body, { metrics });
   }
 
   const collectionPrefix = `/collections/${COLLECTION_ID}`;
   if (path === collectionPrefix) {
-    const { body, metrics } = await withArtifact(env, async (artifact) => {
-      const json = await wasmCollection(
-        artifact.readRange,
-        artifact.fileLen,
-        artifact.objectEtag,
-        maxReads(url),
-        true,
-      );
-      return JSON.parse(json);
-    });
+    const { body, metrics } = await withArtifact(
+      env.BUCKET,
+      OBJECT_KEY,
+      async (artifact) => {
+        const json = await wasmCollection(
+          artifact.readRange,
+          artifact.fileLen,
+          artifact.objectEtag,
+          maxReads(url),
+          true,
+        );
+        return JSON.parse(json);
+      },
+    );
     return jsonResponse(body, { metrics });
   }
 
@@ -129,23 +112,27 @@ async function route(req: Request, env: Env): Promise<Response> {
     const level = parseEnum(url, "level", "feature", ["entry", "feature"]);
     rejectUnsupportedSearchParams(url, ["bbox", "limit", "offset", "payload", "level", "maxReads"]);
 
-    const { body, metrics } = await withArtifact(env, async (artifact) => {
-      const json = await wasmSearch(
-        artifact.readRange,
-        artifact.fileLen,
-        artifact.objectEtag,
-        bbox[0],
-        bbox[1],
-        bbox[2],
-        bbox[3],
-        limit,
-        offset,
-        payload,
-        level,
-        maxReads(url),
-      );
-      return JSON.parse(json);
-    });
+    const { body, metrics } = await withArtifact(
+      env.BUCKET,
+      OBJECT_KEY,
+      async (artifact) => {
+        const json = await wasmSearch(
+          artifact.readRange,
+          artifact.fileLen,
+          artifact.objectEtag,
+          bbox[0],
+          bbox[1],
+          bbox[2],
+          bbox[3],
+          limit,
+          offset,
+          payload,
+          level,
+          maxReads(url),
+        );
+        return JSON.parse(json);
+      },
+    );
     return jsonResponse({ ...body, ...metrics }, { metrics });
   }
 
@@ -155,136 +142,29 @@ async function route(req: Request, env: Env): Promise<Response> {
     const offset = parseIntParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
     rejectUnsupportedSearchParams(url, ["bbox", "limit", "offset", "maxReads"]);
 
-    const { body, metrics } = await withArtifact(env, async (artifact) => {
-      const json = await wasmItems(
-        artifact.readRange,
-        artifact.fileLen,
-        artifact.objectEtag,
-        bbox[0],
-        bbox[1],
-        bbox[2],
-        bbox[3],
-        limit,
-        offset,
-        maxReads(url),
-      );
-      return JSON.parse(json);
-    });
+    const { body, metrics } = await withArtifact(
+      env.BUCKET,
+      OBJECT_KEY,
+      async (artifact) => {
+        const json = await wasmItems(
+          artifact.readRange,
+          artifact.fileLen,
+          artifact.objectEtag,
+          bbox[0],
+          bbox[1],
+          bbox[2],
+          bbox[3],
+          limit,
+          offset,
+          maxReads(url),
+        );
+        return JSON.parse(json);
+      },
+    );
     return jsonResponse({ ...body, ...metrics }, { metrics });
   }
 
   throw new HttpError(404, "not_found", "unknown endpoint");
-}
-
-async function withArtifact<T>(
-  env: Env,
-  run: (artifact: ArtifactContext) => Promise<T>,
-): Promise<{ body: T; metrics: Metrics }> {
-  const t0 = Date.now();
-  const counters = { reads: 0, bytes: 0, r2Operations: 1 };
-
-  let head: R2Object | null;
-  try {
-    head = await env.BUCKET.head(OBJECT_KEY);
-  } catch (error) {
-    throw new HttpError(
-      502,
-      "artifact_io_error",
-      `R2 HEAD failed: ${errorMessage(error)}`,
-    );
-  }
-  if (!head) {
-    throw new HttpError(
-      404,
-      "artifact_not_found",
-      `missing R2 object "${OBJECT_KEY}"; run npm run seed:geo && npm run upload`,
-    );
-  }
-
-  const readRange = async (
-    offset: number,
-    length: number,
-  ): Promise<Uint8Array> => {
-    counters.reads++;
-    counters.r2Operations++;
-
-    let obj: R2ObjectBody | R2Object | null;
-    try {
-      obj = await env.BUCKET.get(OBJECT_KEY, {
-        onlyIf: { etagMatches: head.etag },
-        range: { offset, length },
-      });
-    } catch (error) {
-      throw markedError(
-        ARTIFACT_IO_MARKER,
-        `R2 range GET failed: ${errorMessage(error)}`,
-      );
-    }
-    if (!obj) {
-      throw markedError(
-        ARTIFACT_CHANGED_MARKER,
-        "R2 object disappeared during the request",
-      );
-    }
-    if (!("body" in obj)) {
-      throw markedError(
-        ARTIFACT_CHANGED_MARKER,
-        "R2 object changed during the request",
-      );
-    }
-
-    let buffer: ArrayBuffer;
-    try {
-      buffer = await obj.arrayBuffer();
-    } catch (error) {
-      throw markedError(
-        ARTIFACT_IO_MARKER,
-        `R2 range body failed: ${errorMessage(error)}`,
-      );
-    }
-    if (buffer.byteLength !== length) {
-      throw markedError(
-        ARTIFACT_IO_MARKER,
-        `R2 range GET returned ${buffer.byteLength} bytes; expected ${length}`,
-      );
-    }
-    counters.bytes += buffer.byteLength;
-    return new Uint8Array(buffer);
-  };
-
-  try {
-    const body = await run({
-      readRange,
-      fileLen: head.size,
-      objectEtag: head.etag,
-      metrics: counters,
-    });
-    return { body, metrics: { ...counters, ms: Date.now() - t0 } };
-  } catch (error) {
-    const message = errorMessage(error);
-    const changed = markedMessage(message, ARTIFACT_CHANGED_MARKER);
-    if (changed !== null) {
-      throw new HttpError(409, "artifact_changed", changed);
-    }
-    const ioFailure = markedMessage(message, ARTIFACT_IO_MARKER);
-    if (ioFailure !== null) {
-      throw new HttpError(502, "artifact_io_error", ioFailure);
-    }
-    throw new HttpError(422, "query_error", message);
-  }
-}
-
-function markedError(marker: string, message: string): Error {
-  return new Error(`${marker}${message}`);
-}
-
-function markedMessage(message: string, marker: string): string | null {
-  const index = message.indexOf(marker);
-  return index === -1 ? null : message.slice(index + marker.length).trim();
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function parseBbox(url: URL): [number, number, number, number] {

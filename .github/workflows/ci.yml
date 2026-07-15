@@ -238,3 +238,4 @@ jobs:
           npm ci
           npm run build:wasm
           npm run typecheck
+          npm test

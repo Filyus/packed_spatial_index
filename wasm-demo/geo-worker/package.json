@@ -1,11 +1,13 @@
 {
   "name": "psi-geo-r2-demo",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "description": "Cloudflare Worker + R2 GeoPSINDEX feature API demo",
   "scripts": {
     "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
     "seed:geo": "cargo run --release --manifest-path ../geo-seed/Cargo.toml -- 100000 synthetic-points.parquet && cargo run --release --manifest-path ../../geo/Cargo.toml --bin gp2psindex -- build synthetic-points.parquet synthetic-points.psindex --payload feature-json --properties all",
+    "test": "node --test tests/artifact.test.mjs",
     "typecheck": "tsc --noEmit",
     "bucket:create": "wrangler r2 bucket create psi-geo-demo",
     "upload": "wrangler r2 object put psi-geo-demo/synthetic-points.psindex --file synthetic-points.psindex --remote",

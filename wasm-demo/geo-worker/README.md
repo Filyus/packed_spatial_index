@@ -67,7 +67,11 @@ npm install
 npm run build:wasm
 npm run seed:geo
 npm run typecheck
+npm test
 ```
+
+The Node tests mock R2 to cover ETag replacement, missing objects, transport
+and body failures, short ranges, query errors, and read/byte operation counters.
 
 `seed:geo` writes:
 

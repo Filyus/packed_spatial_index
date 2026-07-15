@@ -612,10 +612,12 @@ fn io_err(msg: &str) -> io::Error {
 }
 
 fn js_io(v: JsValue) -> io::Error {
-    io::Error::other(
-        v.as_string()
-            .unwrap_or_else(|| "js error in read_range".to_string()),
-    )
+    let message = v
+        .dyn_ref::<js_sys::Error>()
+        .map(|error| error.message().into())
+        .or_else(|| v.as_string())
+        .unwrap_or_else(|| "js error in read_range".to_string());
+    io::Error::other(message)
 }
 
 fn geo_err(e: GeoError) -> JsValue {

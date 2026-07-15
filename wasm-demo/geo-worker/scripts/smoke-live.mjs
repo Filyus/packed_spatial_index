@@ -24,6 +24,7 @@ async function get(path) {
     body,
     reads: res.headers.get("x-psi-reads"),
     bytes: res.headers.get("x-psi-bytes"),
+    r2Operations: res.headers.get("x-psi-r2-operations"),
   };
 }
 
@@ -38,12 +39,27 @@ if (!Array.isArray(collections.body) || !collections.body.some((c) => c.id === c
 }
 
 const search = await get(`/collections/${collectionId}/search?bbox=${bbox}&limit=3&payload=summary`);
-if (!search.body.numberReturned || !search.body.reads || !search.body.bytes || !search.reads || !search.bytes) {
+if (
+  !search.body.numberReturned ||
+  !search.body.reads ||
+  !search.body.bytes ||
+  search.body.r2Operations !== search.body.reads + 1 ||
+  Number(search.r2Operations) !== search.body.r2Operations ||
+  !search.reads ||
+  !search.bytes
+) {
   throw new Error(`/search response missed matches or counters: ${JSON.stringify(search.body)}`);
 }
 
 const items = await get(`/collections/${collectionId}/items?bbox=${bbox}&limit=3`);
-if (items.body.type !== "FeatureCollection" || !items.body.features?.length || !items.reads || !items.bytes) {
+if (
+  items.body.type !== "FeatureCollection" ||
+  !items.body.features?.length ||
+  items.body.r2Operations !== items.body.reads + 1 ||
+  Number(items.r2Operations) !== items.body.r2Operations ||
+  !items.reads ||
+  !items.bytes
+) {
   throw new Error(`/items did not return a FeatureCollection: ${JSON.stringify(items.body)}`);
 }
 

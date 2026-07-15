@@ -17,12 +17,15 @@ const COLLECTION_ID = "synthetic-points";
 const OBJECT_KEY = "synthetic-points.psindex";
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 1000;
+const ARTIFACT_IO_MARKER = "PSI_ARTIFACT_IO:";
+const ARTIFACT_CHANGED_MARKER = "PSI_ARTIFACT_CHANGED:";
 
 let ready = false;
 
 type Metrics = {
   reads: number;
   bytes: number;
+  r2Operations: number;
   ms: number;
 };
 
@@ -177,7 +180,19 @@ async function withArtifact<T>(
   env: Env,
   run: (artifact: ArtifactContext) => Promise<T>,
 ): Promise<{ body: T; metrics: Metrics }> {
-  const head = await env.BUCKET.head(OBJECT_KEY);
+  const t0 = Date.now();
+  const counters = { reads: 0, bytes: 0, r2Operations: 1 };
+
+  let head: R2Object | null;
+  try {
+    head = await env.BUCKET.head(OBJECT_KEY);
+  } catch (error) {
+    throw new HttpError(
+      502,
+      "artifact_io_error",
+      `R2 HEAD failed: ${errorMessage(error)}`,
+    );
+  }
   if (!head) {
     throw new HttpError(
       404,
@@ -186,25 +201,57 @@ async function withArtifact<T>(
     );
   }
 
-  const counters = { reads: 0, bytes: 0 };
   const readRange = async (
     offset: number,
     length: number,
   ): Promise<Uint8Array> => {
     counters.reads++;
-    counters.bytes += length;
-    const obj = await env.BUCKET.get(OBJECT_KEY, {
-      onlyIf: { etagMatches: head.etag },
-      range: { offset, length },
-    });
-    if (!obj) throw new Error("R2 range get returned null");
-    if (!("body" in obj)) {
-      throw new Error("R2 object changed during the request");
+    counters.r2Operations++;
+
+    let obj: R2ObjectBody | R2Object | null;
+    try {
+      obj = await env.BUCKET.get(OBJECT_KEY, {
+        onlyIf: { etagMatches: head.etag },
+        range: { offset, length },
+      });
+    } catch (error) {
+      throw markedError(
+        ARTIFACT_IO_MARKER,
+        `R2 range GET failed: ${errorMessage(error)}`,
+      );
     }
-    return new Uint8Array(await obj.arrayBuffer());
+    if (!obj) {
+      throw markedError(
+        ARTIFACT_CHANGED_MARKER,
+        "R2 object disappeared during the request",
+      );
+    }
+    if (!("body" in obj)) {
+      throw markedError(
+        ARTIFACT_CHANGED_MARKER,
+        "R2 object changed during the request",
+      );
+    }
+
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await obj.arrayBuffer();
+    } catch (error) {
+      throw markedError(
+        ARTIFACT_IO_MARKER,
+        `R2 range body failed: ${errorMessage(error)}`,
+      );
+    }
+    if (buffer.byteLength !== length) {
+      throw markedError(
+        ARTIFACT_IO_MARKER,
+        `R2 range GET returned ${buffer.byteLength} bytes; expected ${length}`,
+      );
+    }
+    counters.bytes += buffer.byteLength;
+    return new Uint8Array(buffer);
   };
 
-  const t0 = Date.now();
   try {
     const body = await run({
       readRange,
@@ -214,9 +261,30 @@ async function withArtifact<T>(
     });
     return { body, metrics: { ...counters, ms: Date.now() - t0 } };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
+    const changed = markedMessage(message, ARTIFACT_CHANGED_MARKER);
+    if (changed !== null) {
+      throw new HttpError(409, "artifact_changed", changed);
+    }
+    const ioFailure = markedMessage(message, ARTIFACT_IO_MARKER);
+    if (ioFailure !== null) {
+      throw new HttpError(502, "artifact_io_error", ioFailure);
+    }
     throw new HttpError(422, "query_error", message);
   }
+}
+
+function markedError(marker: string, message: string): Error {
+  return new Error(`${marker}${message}`);
+}
+
+function markedMessage(message: string, marker: string): string | null {
+  const index = message.indexOf(marker);
+  return index === -1 ? null : message.slice(index + marker.length).trim();
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function parseBbox(url: URL): [number, number, number, number] {
@@ -291,6 +359,7 @@ function jsonResponse(
   if (init.metrics) {
     headers.set("X-PSI-Reads", String(init.metrics.reads));
     headers.set("X-PSI-Bytes", String(init.metrics.bytes));
+    headers.set("X-PSI-R2-Operations", String(init.metrics.r2Operations));
   }
   return new Response(JSON.stringify(body, null, 2), {
     ...init,
@@ -303,6 +372,7 @@ function corsHeaders(): Headers {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Expose-Headers": "X-PSI-Reads, X-PSI-Bytes",
+    "Access-Control-Expose-Headers":
+      "X-PSI-Reads, X-PSI-Bytes, X-PSI-R2-Operations",
   });
 }

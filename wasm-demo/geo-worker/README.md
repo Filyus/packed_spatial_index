@@ -40,8 +40,19 @@ For artifacts whose manifest says entries cannot duplicate rows, summary search
 uses an entry/rank header path and omits `featureRef`; request `payload=full` or
 use `/items` when the client needs the returned GeoJSON features.
 
-Every R2-backed response includes `X-PSI-Reads` and `X-PSI-Bytes`. Search and
-items responses also include `reads`, `bytes`, and `ms` in the JSON body.
+Every R2-backed response includes `X-PSI-Reads`, `X-PSI-Bytes`, and
+`X-PSI-R2-Operations`. Search and items responses expose the same counters in
+the JSON body together with `ms`:
+
+- `reads` counts range GETs issued for artifact bytes.
+- `bytes` counts the range response body bytes received by the Worker.
+- `r2Operations` counts the initial HEAD plus all range GETs.
+- `ms` covers the full R2-backed request, starting before HEAD.
+
+If the object changes between HEAD and a conditional range GET, the Worker
+returns `409 artifact_changed`; R2 transport failures return
+`502 artifact_io_error`. Artifact/query validation failures remain
+`422 query_error`.
 
 ## Local build
 
@@ -92,7 +103,9 @@ a deterministic bbox around one synthetic seed-data cluster:
 bbox=64,23,71,29
 ```
 
-Copied response from a deployed Worker:
+Representative response using the counters measured on a deployed Worker (the
+`r2Operations` field is derived as HEAD plus range reads because it was added
+after that deployment):
 
 ```json
 {
@@ -118,6 +131,7 @@ Copied response from a deployed Worker:
   ],
   "reads": 1,
   "bytes": 7360,
+  "r2Operations": 2,
   "ms": 57
 }
 ```
@@ -125,11 +139,13 @@ Copied response from a deployed Worker:
 The same deployed Worker also handles a world-sized bbox without reading all
 GeoJSON bodies:
 
-| query | matched | returned | reads | bytes | ms |
-|---|---:|---:|---:|---:|---:|
-| `/search?bbox=-180,-90,180,90&limit=3&payload=summary&level=entry` | 100000 | 3 | 1 | 800008 | 72 |
-| `/items?bbox=-180,-90,180,90&limit=3` | 100000 | 3 | 6 | 972629 | 220 |
+| query | matched | returned | range reads | R2 ops | bytes | ms |
+|---|---:|---:|---:|---:|---:|---:|
+| `/search?bbox=-180,-90,180,90&limit=3&payload=summary&level=entry` | 100000 | 3 | 1 | 2 | 800008 | 72 |
+| `/items?bbox=-180,-90,180,90&limit=3` | 100000 | 3 | 6 | 7 | 972629 | 220 |
 
-The exact `reads`, `bytes`, and `ms` vary with cold/warm isolate state, but the
-important proof is stable: a public HTTP API can serve feature results from a
-single immutable R2 object with bounded range reads and no database.
+The copied timings predate the explicit `r2Operations` field; its values above
+are the corresponding HEAD plus range-read counts. Exact counters and timings
+vary with the query and cold/warm isolate state, but the important proof is
+stable: a public HTTP API can serve feature results from a single immutable R2
+object with bounded range reads and no database.

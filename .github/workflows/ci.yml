@@ -143,12 +143,14 @@ jobs:
         run: cargo fmt --all --check --manifest-path geo/Cargo.toml
       - name: Lint
         run: cargo clippy --manifest-path geo/Cargo.toml --all-targets --all-features -- -D warnings
-      - name: Check query-only feature gate
-        run: cargo check --manifest-path geo/Cargo.toml --no-default-features
-      - name: Check FlatGeobuf without Parquet
-        run: cargo check --manifest-path geo/Cargo.toml --no-default-features --features flatgeobuf
-      - name: Check GeoJSON without Parquet
-        run: cargo check --manifest-path geo/Cargo.toml --no-default-features --features geojson
+      - name: Lint query-only targets
+        run: cargo clippy --manifest-path geo/Cargo.toml --no-default-features --all-targets -- -D warnings
+      - name: Lint async query-only targets
+        run: cargo clippy --manifest-path geo/Cargo.toml --no-default-features --features async --all-targets -- -D warnings
+      - name: Lint FlatGeobuf without Parquet
+        run: cargo clippy --manifest-path geo/Cargo.toml --no-default-features --features flatgeobuf --all-targets -- -D warnings
+      - name: Lint GeoJSON without Parquet
+        run: cargo clippy --manifest-path geo/Cargo.toml --no-default-features --features geojson --all-targets -- -D warnings
       - name: Test
         run: cargo test --manifest-path geo/Cargo.toml --all-features
 

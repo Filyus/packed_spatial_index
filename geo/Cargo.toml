@@ -20,6 +20,34 @@ all-features = true
 name = "gp2psindex"
 required-features = ["parquet"]
 
+[[example]]
+name = "build_index"
+required-features = ["parquet"]
+
+[[example]]
+name = "convert_and_query"
+required-features = ["parquet"]
+
+[[example]]
+name = "discover"
+required-features = ["parquet"]
+
+[[example]]
+name = "embedded_in_parquet"
+required-features = ["parquet"]
+
+[[example]]
+name = "end_to_end_box_vs_polygon"
+required-features = ["parquet"]
+
+[[example]]
+name = "feature_json_payload"
+required-features = ["parquet"]
+
+[[example]]
+name = "r2_polygon_pruning"
+required-features = ["parquet"]
+
 [features]
 default = ["parquet", "flatgeobuf", "geojson"]
 # The Parquet source side: read Parquet / GeoParquet files — discovery,

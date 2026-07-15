@@ -875,7 +875,7 @@ impl GeoJsonDataset {
         let source = self
             .features
             .get(row)
-            .ok_or_else(|| GeoError::FeatureRowOutOfBounds {
+            .ok_or(GeoError::FeatureRowOutOfBounds {
                 row_number: feature_ref.row_number,
                 num_rows: self.features.len() as u64,
             })?;

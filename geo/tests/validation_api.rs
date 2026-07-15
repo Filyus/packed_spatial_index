@@ -1,3 +1,5 @@
+#![cfg(feature = "parquet")]
+
 use std::process::Command;
 use std::sync::Arc;
 

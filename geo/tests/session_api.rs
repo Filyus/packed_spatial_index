@@ -1,3 +1,5 @@
+#![cfg(feature = "parquet")]
+
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;

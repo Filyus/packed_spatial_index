@@ -391,7 +391,10 @@ pub struct GeometryTypeSet {
     pub types: Vec<String>,
 }
 
-#[cfg(any(feature = "parquet", feature = "flatgeobuf"))]
+#[cfg(all(
+    feature = "_source",
+    any(feature = "parquet", feature = "flatgeobuf", test)
+))]
 impl GeometryTypeSet {
     pub(crate) fn unknown() -> Self {
         Self { types: Vec::new() }

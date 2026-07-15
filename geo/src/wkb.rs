@@ -8,7 +8,7 @@ use geozero::wkb::{FromWkb, WkbDialect};
 #[cfg(feature = "_source")]
 use crate::CoordinateDims;
 use crate::GeoError;
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 use crate::GeometryKind;
 
 #[cfg(feature = "_source")]
@@ -924,7 +924,7 @@ fn read_f64_endian(bytes: &[u8], little: bool) -> f64 {
     f64::from_bits(bits)
 }
 
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 pub(crate) fn write_geometry(
     kind: GeometryKind,
     dims: CoordinateDims,
@@ -935,7 +935,7 @@ pub(crate) fn write_geometry(
     out
 }
 
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 fn write_geometry_into(
     out: &mut Vec<u8>,
     kind: GeometryKind,
@@ -989,7 +989,7 @@ fn write_geometry_into(
     }
 }
 
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 #[derive(Debug, Clone)]
 pub(crate) enum GeometryParts {
     Point(Coord),
@@ -999,7 +999,7 @@ pub(crate) enum GeometryParts {
     GeometryCollection(Vec<(GeometryKind, GeometryParts)>),
 }
 
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 fn write_line_string(out: &mut Vec<u8>, line: &[Coord], dims: CoordinateDims) {
     write_header(out, 2, dims);
     write_u32(out, line.len());
@@ -1008,7 +1008,7 @@ fn write_line_string(out: &mut Vec<u8>, line: &[Coord], dims: CoordinateDims) {
     }
 }
 
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 fn write_polygon(out: &mut Vec<u8>, rings: &[Vec<Coord>], dims: CoordinateDims) {
     write_header(out, 3, dims);
     write_u32(out, rings.len());
@@ -1020,7 +1020,7 @@ fn write_polygon(out: &mut Vec<u8>, rings: &[Vec<Coord>], dims: CoordinateDims) 
     }
 }
 
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 fn write_header(out: &mut Vec<u8>, base_type: u32, dims: CoordinateDims) {
     out.push(1);
     let code = match dims {
@@ -1032,12 +1032,12 @@ fn write_header(out: &mut Vec<u8>, base_type: u32, dims: CoordinateDims) {
     out.extend_from_slice(&code.to_le_bytes());
 }
 
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 fn write_u32(out: &mut Vec<u8>, value: usize) {
     out.extend_from_slice(&(value as u32).to_le_bytes());
 }
 
-#[cfg(feature = "_source")]
+#[cfg(any(feature = "parquet", feature = "geojson"))]
 fn write_coord(out: &mut Vec<u8>, coord: &Coord, dims: CoordinateDims) {
     out.extend_from_slice(&coord.x.to_le_bytes());
     out.extend_from_slice(&coord.y.to_le_bytes());

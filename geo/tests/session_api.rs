@@ -2010,6 +2010,88 @@ fn geo_chunk_entry_base(bytes: &[u8], tag: &[u8; 4]) -> usize {
     panic!("chunk {:?} not found", std::str::from_utf8(tag).unwrap());
 }
 
+fn replace_geo_manifest_text(bytes: &mut [u8], from: &[u8], to: &[u8]) {
+    assert_eq!(from.len(), to.len());
+    let base = geo_chunk_entry_base(bytes, b"geoM");
+    let offset = u64::from_le_bytes(bytes[base + 8..base + 16].try_into().unwrap()) as usize;
+    let len = u64::from_le_bytes(bytes[base + 16..base + 24].try_into().unwrap()) as usize;
+    let content = &mut bytes[offset..offset + len];
+    let matches: Vec<_> = content
+        .windows(from.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == from).then_some(index))
+        .collect();
+    assert_eq!(matches.len(), 1, "manifest field must occur exactly once");
+    content[matches[0]..matches[0] + from.len()].copy_from_slice(to);
+}
+
+#[test]
+fn geo_artifact_reader_rejects_manifest_count_mismatches() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(6.0, 7.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    let bytes = dataset.convert(ConvertRequest::default()).unwrap();
+
+    let mut wrong_index_count = bytes.clone();
+    replace_geo_manifest_text(
+        &mut wrong_index_count,
+        br#""index_entry_count":1"#,
+        br#""index_entry_count":2"#,
+    );
+    let err = match open_geo_index(SliceReader::new(wrong_index_count.clone())) {
+        Ok(_) => panic!("manifest/index entry-count mismatch must be rejected"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        err,
+        GeoError::UnsupportedArtifact(message) if message.contains("index_entry_count")
+    ));
+
+    #[cfg(feature = "async")]
+    {
+        let err = match pollster::block_on(open_geo_index_async(AsyncSlice(wrong_index_count))) {
+            Ok(_) => panic!("async manifest/index entry-count mismatch must be rejected"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            GeoError::UnsupportedArtifact(message) if message.contains("index_entry_count")
+        ));
+    }
+
+    let mut impossible_feature_count = bytes.clone();
+    replace_geo_manifest_text(
+        &mut impossible_feature_count,
+        br#""feature_count":1"#,
+        br#""feature_count":2"#,
+    );
+    let err = match open_geo_index(SliceReader::new(impossible_feature_count)) {
+        Ok(_) => panic!("feature_count above index_entry_count must be rejected"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        err,
+        GeoError::UnsupportedArtifact(message) if message.contains("feature_count")
+    ));
+
+    let mut inconsistent_unique_count = bytes;
+    replace_geo_manifest_text(
+        &mut inconsistent_unique_count,
+        br#""feature_count":1"#,
+        br#""feature_count":0"#,
+    );
+    let err = match open_geo_index(SliceReader::new(inconsistent_unique_count)) {
+        Ok(_) => panic!("unique entry/feature-count mismatch must be rejected"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        err,
+        GeoError::UnsupportedArtifact(message) if message.contains("rows do not duplicate")
+    ));
+}
+
 #[test]
 fn geo_artifact_reader_caps_unknown_length_directory_and_manifest() {
     struct NoLenReader(SliceReader<Vec<u8>>);

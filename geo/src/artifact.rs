@@ -78,31 +78,36 @@ pub fn open_geo_index_with_limits<R: RangeReader>(
 ) -> Result<GeoArtifactIndex<R>, GeoError> {
     let manifest = read_manifest_from_reader(&reader)?;
     validate_manifest(&manifest)?;
-    match (manifest.dims.index_dims(), manifest.storage_precision) {
-        (Some(2), StoragePrecision::F64) => Ok(GeoArtifactIndex::D2(GeoArtifactIndex2D {
+    let artifact = match (manifest.dims.index_dims(), manifest.storage_precision) {
+        (Some(2), StoragePrecision::F64) => GeoArtifactIndex::D2(GeoArtifactIndex2D {
             index: GeoStreamIndex2D::F64(StreamIndex2D::open_with_limits(reader, limits)?),
             manifest,
-        })),
-        (Some(2), StoragePrecision::F32) => Ok(GeoArtifactIndex::D2(GeoArtifactIndex2D {
+        }),
+        (Some(2), StoragePrecision::F32) => GeoArtifactIndex::D2(GeoArtifactIndex2D {
             index: GeoStreamIndex2D::F32(StreamIndex2DF32::open_with_limits(reader, limits)?),
             manifest,
-        })),
-        (Some(3), StoragePrecision::F64) => Ok(GeoArtifactIndex::D3(GeoArtifactIndex3D {
+        }),
+        (Some(3), StoragePrecision::F64) => GeoArtifactIndex::D3(GeoArtifactIndex3D {
             index: GeoStreamIndex3D::F64(StreamIndex3D::open_with_limits(reader, limits)?),
             manifest,
-        })),
-        (Some(3), StoragePrecision::F32) => Ok(GeoArtifactIndex::D3(GeoArtifactIndex3D {
+        }),
+        (Some(3), StoragePrecision::F32) => GeoArtifactIndex::D3(GeoArtifactIndex3D {
             index: GeoStreamIndex3D::F32(StreamIndex3DF32::open_with_limits(reader, limits)?),
             manifest,
-        })),
-        (None, _) => Err(GeoError::UnsupportedArtifact(format!(
-            "artifact has unknown coordinate dimensions {:?}",
-            manifest.dims
-        ))),
-        (Some(other), _) => Err(GeoError::UnsupportedArtifact(format!(
-            "artifact has unsupported coordinate dimension count {other}"
-        ))),
-    }
+        }),
+        (None, _) => {
+            return Err(GeoError::UnsupportedArtifact(format!(
+                "artifact has unknown coordinate dimensions {:?}",
+                manifest.dims
+            )));
+        }
+        (Some(other), _) => {
+            return Err(GeoError::UnsupportedArtifact(format!(
+                "artifact has unsupported coordinate dimension count {other}"
+            )));
+        }
+    };
+    validate_opened_artifact(artifact, limits)
 }
 
 /// Open a converted geospatial `PSINDEX` artifact from async range I/O.
@@ -125,39 +130,44 @@ pub async fn open_geo_index_with_limits_async<R: AsyncRangeReader>(
 ) -> Result<GeoArtifactIndex<R>, GeoError> {
     let manifest = read_manifest_from_reader_async(&reader).await?;
     validate_manifest(&manifest)?;
-    match (manifest.dims.index_dims(), manifest.storage_precision) {
-        (Some(2), StoragePrecision::F64) => Ok(GeoArtifactIndex::D2(GeoArtifactIndex2D {
+    let artifact = match (manifest.dims.index_dims(), manifest.storage_precision) {
+        (Some(2), StoragePrecision::F64) => GeoArtifactIndex::D2(GeoArtifactIndex2D {
             index: GeoStreamIndex2D::F64(
                 StreamIndex2D::open_with_limits_async(reader, limits).await?,
             ),
             manifest,
-        })),
-        (Some(2), StoragePrecision::F32) => Ok(GeoArtifactIndex::D2(GeoArtifactIndex2D {
+        }),
+        (Some(2), StoragePrecision::F32) => GeoArtifactIndex::D2(GeoArtifactIndex2D {
             index: GeoStreamIndex2D::F32(
                 StreamIndex2DF32::open_with_limits_async(reader, limits).await?,
             ),
             manifest,
-        })),
-        (Some(3), StoragePrecision::F64) => Ok(GeoArtifactIndex::D3(GeoArtifactIndex3D {
+        }),
+        (Some(3), StoragePrecision::F64) => GeoArtifactIndex::D3(GeoArtifactIndex3D {
             index: GeoStreamIndex3D::F64(
                 StreamIndex3D::open_with_limits_async(reader, limits).await?,
             ),
             manifest,
-        })),
-        (Some(3), StoragePrecision::F32) => Ok(GeoArtifactIndex::D3(GeoArtifactIndex3D {
+        }),
+        (Some(3), StoragePrecision::F32) => GeoArtifactIndex::D3(GeoArtifactIndex3D {
             index: GeoStreamIndex3D::F32(
                 StreamIndex3DF32::open_with_limits_async(reader, limits).await?,
             ),
             manifest,
-        })),
-        (None, _) => Err(GeoError::UnsupportedArtifact(format!(
-            "artifact has unknown coordinate dimensions {:?}",
-            manifest.dims
-        ))),
-        (Some(other), _) => Err(GeoError::UnsupportedArtifact(format!(
-            "artifact has unsupported coordinate dimension count {other}"
-        ))),
-    }
+        }),
+        (None, _) => {
+            return Err(GeoError::UnsupportedArtifact(format!(
+                "artifact has unknown coordinate dimensions {:?}",
+                manifest.dims
+            )));
+        }
+        (Some(other), _) => {
+            return Err(GeoError::UnsupportedArtifact(format!(
+                "artifact has unsupported coordinate dimension count {other}"
+            )));
+        }
+    };
+    validate_opened_artifact(artifact, limits)
 }
 
 fn validate_manifest(manifest: &GeoArtifactManifest) -> Result<(), GeoError> {
@@ -167,7 +177,42 @@ fn validate_manifest(manifest: &GeoArtifactManifest) -> Result<(), GeoError> {
             manifest.schema_version
         )));
     }
+    if manifest.feature_count > manifest.index_entry_count {
+        return Err(GeoError::UnsupportedArtifact(format!(
+            "geoM feature_count {} exceeds index_entry_count {}",
+            manifest.feature_count, manifest.index_entry_count
+        )));
+    }
+    if !manifest.entries_may_duplicate_rows && manifest.feature_count != manifest.index_entry_count
+    {
+        return Err(GeoError::UnsupportedArtifact(format!(
+            "geoM says rows do not duplicate, but feature_count {} differs from index_entry_count {}",
+            manifest.feature_count, manifest.index_entry_count
+        )));
+    }
     Ok(())
+}
+
+fn validate_manifest_entry_count(
+    manifest: &GeoArtifactManifest,
+    actual: usize,
+) -> Result<(), GeoError> {
+    if manifest.index_entry_count != actual {
+        return Err(GeoError::UnsupportedArtifact(format!(
+            "geoM index_entry_count {} differs from stream entry count {actual}",
+            manifest.index_entry_count
+        )));
+    }
+    Ok(())
+}
+
+fn validate_opened_artifact<R>(
+    artifact: GeoArtifactIndex<R>,
+    limits: StreamLimits,
+) -> Result<GeoArtifactIndex<R>, GeoError> {
+    let (directory, reader) = artifact.into_directory();
+    validate_manifest_entry_count(directory.manifest(), directory.num_entries())?;
+    GeoArtifactIndex::from_directory_with_limits(&directory, reader, limits)
 }
 
 /// A streamable geospatial index opened from a converted artifact.

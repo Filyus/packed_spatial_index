@@ -102,6 +102,21 @@ impl<R> StreamIndex2D<R> {
             core: dir.reattach(reader, limits, 2 * 2 * 8)?,
         })
     }
+
+    /// Number of indexed items.
+    pub fn num_items(&self) -> usize {
+        self.core.num_items
+    }
+
+    /// Whether the index has no items.
+    pub fn is_empty(&self) -> bool {
+        self.core.num_items == 0
+    }
+
+    /// Packed node size of the index.
+    pub fn node_size(&self) -> usize {
+        self.core.node_size
+    }
 }
 
 impl<R: RangeReader> StreamIndex2D<R> {
@@ -122,21 +137,6 @@ impl<R: RangeReader> StreamIndex2D<R> {
         Ok(Self {
             core: StreamCore::open(reader, 2, 8, limits)?,
         })
-    }
-
-    /// Number of indexed items.
-    pub fn num_items(&self) -> usize {
-        self.core.num_items
-    }
-
-    /// Whether the index has no items.
-    pub fn is_empty(&self) -> bool {
-        self.core.num_items == 0
-    }
-
-    /// Packed node size of the index.
-    pub fn node_size(&self) -> usize {
-        self.core.node_size
     }
 
     /// Total extent of all indexed items, or [`None`] for an empty index.
@@ -383,21 +383,6 @@ impl<R> StreamIndex3D<R> {
             core: dir.reattach(reader, limits, 3 * 2 * 8)?,
         })
     }
-}
-
-impl<R: RangeReader> StreamIndex3D<R> {
-    /// Open and validate a 3D `f64` index from `reader`.
-    pub fn open(reader: R) -> Result<Self, StreamError> {
-        Self::open_with_limits(reader, StreamLimits::default())
-    }
-
-    /// Open with per-query cost [`StreamLimits`]. See
-    /// [`StreamIndex2D::open_with_limits`].
-    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
-        Ok(Self {
-            core: StreamCore::open(reader, 3, 8, limits)?,
-        })
-    }
 
     /// Number of indexed items.
     pub fn num_items(&self) -> usize {
@@ -412,6 +397,21 @@ impl<R: RangeReader> StreamIndex3D<R> {
     /// Packed node size of the index.
     pub fn node_size(&self) -> usize {
         self.core.node_size
+    }
+}
+
+impl<R: RangeReader> StreamIndex3D<R> {
+    /// Open and validate a 3D `f64` index from `reader`.
+    pub fn open(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits(reader, StreamLimits::default())
+    }
+
+    /// Open with per-query cost [`StreamLimits`]. See
+    /// [`StreamIndex2D::open_with_limits`].
+    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open(reader, 3, 8, limits)?,
+        })
     }
 
     /// Total extent of all indexed items, or [`None`] for an empty index.
@@ -623,21 +623,6 @@ impl<R> StreamIndex2DF32<R> {
             core: dir.reattach(reader, limits, 2 * 2 * 4)?,
         })
     }
-}
-
-impl<R: RangeReader> StreamIndex2DF32<R> {
-    /// Open and validate a 2D `f32` index from `reader`.
-    pub fn open(reader: R) -> Result<Self, StreamError> {
-        Self::open_with_limits(reader, StreamLimits::default())
-    }
-
-    /// Open with per-query cost [`StreamLimits`]. See
-    /// [`StreamIndex2D::open_with_limits`].
-    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
-        Ok(Self {
-            core: StreamCore::open(reader, 2, 4, limits)?,
-        })
-    }
 
     /// Number of indexed items.
     pub fn num_items(&self) -> usize {
@@ -652,6 +637,21 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
     /// Packed node size of the index.
     pub fn node_size(&self) -> usize {
         self.core.node_size
+    }
+}
+
+impl<R: RangeReader> StreamIndex2DF32<R> {
+    /// Open and validate a 2D `f32` index from `reader`.
+    pub fn open(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits(reader, StreamLimits::default())
+    }
+
+    /// Open with per-query cost [`StreamLimits`]. See
+    /// [`StreamIndex2D::open_with_limits`].
+    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open(reader, 2, 4, limits)?,
+        })
     }
 
     /// Total extent of all indexed items (widened f32 root box), or `None` when
@@ -823,20 +823,6 @@ impl<R> StreamIndex3DF32<R> {
             core: dir.reattach(reader, limits, 3 * 2 * 4)?,
         })
     }
-}
-
-impl<R: RangeReader> StreamIndex3DF32<R> {
-    /// Open and validate a 3D `f32` index from `reader`.
-    pub fn open(reader: R) -> Result<Self, StreamError> {
-        Self::open_with_limits(reader, StreamLimits::default())
-    }
-
-    /// Open with per-query cost [`StreamLimits`].
-    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
-        Ok(Self {
-            core: StreamCore::open(reader, 3, 4, limits)?,
-        })
-    }
 
     /// Number of indexed items.
     pub fn num_items(&self) -> usize {
@@ -851,6 +837,20 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
     /// Packed node size of the index.
     pub fn node_size(&self) -> usize {
         self.core.node_size
+    }
+}
+
+impl<R: RangeReader> StreamIndex3DF32<R> {
+    /// Open and validate a 3D `f32` index from `reader`.
+    pub fn open(reader: R) -> Result<Self, StreamError> {
+        Self::open_with_limits(reader, StreamLimits::default())
+    }
+
+    /// Open with per-query cost [`StreamLimits`].
+    pub fn open_with_limits(reader: R, limits: StreamLimits) -> Result<Self, StreamError> {
+        Ok(Self {
+            core: StreamCore::open(reader, 3, 4, limits)?,
+        })
     }
 
     /// Total extent (widened f32 root box), or `None` when empty. Costs no I/O.

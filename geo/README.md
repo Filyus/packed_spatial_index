@@ -144,7 +144,7 @@ reattach fresh range readers without rereading the container directory or
 | Count matches without materializing | [`count_entries`][artifact_count_entries] |
 | Payload search | [`GeoArtifactIndex2D::search_matches`][search_matches], [`GeoMatch`][GeoMatch] |
 | Feature-level payload search | [`GeoArtifactIndex2D::search_features`][artifact_search_features], [`GeoArtifactIndex2D::search_feature_matches`][artifact_search_feature_matches] |
-| Paged payload reads | [`search_match_headers`][search_match_headers], [`fetch_matches`][fetch_matches] |
+| Paged payload reads | [`search_match_headers`][search_match_headers], [`search_payload_headers_page_async`][search_payload_headers_page_async], [`fetch_matches`][fetch_matches] |
 | Exact-filter payload matches | [`GeoArtifactIndex2D::filter_matches`][filter_matches] |
 | Query shapes | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius), [`GeoQuery3D`][GeoQuery3D] (box / frustum) |
 | Payload plans | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
@@ -158,6 +158,14 @@ artifact with `into_directory`, cache the returned
 reattach through `from_directory` without repeating the container, `geoM`
 manifest, or stream-directory reads.
 
+For deterministic object-storage pagination, artifacts whose manifest says
+entries do not duplicate source rows can use
+[`search_payload_headers_page_async`][search_payload_headers_page_async]. It
+returns a [`GeoPayloadHeaderPage`][GeoPayloadHeaderPage] with the exact match
+count while retaining only the requested entry-id prefix for single-box and
+polygon queries; fetch payload bodies for just `page.headers` with
+`fetch_payload_header_matches_async`.
+
 ### Result Vocabulary
 
 One naming rule across the crate: the method name states what a query returns.
@@ -168,6 +176,7 @@ One naming rule across the crate: the method name states what a query returns.
 | `*_feature_refs` | [`FeatureRef`][FeatureRef] values | entry-level |
 | `*_matches` | [`GeoMatch`][GeoMatch] — ref plus decoded payload | entry-level |
 | `*_match_headers` | [`GeoMatchHeader`][GeoMatchHeader] — ref plus payload size, no body | entry-level |
+| `*_payload_headers_page` | [`GeoPayloadHeaderPage`][GeoPayloadHeaderPage] — exact count plus one bounded page | entry-level |
 | `*_features`, `*_feature_matches` | deduplicated [`FeatureRef`][FeatureRef] / [`GeoMatch`][GeoMatch] | feature-level |
 
 Entry-level results can repeat a source feature: splitting (for example at the
@@ -412,7 +421,9 @@ Licensed under the [Apache License 2.0](https://github.com/Filyus/packed_spatial
 [artifact_search_features]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_features
 [artifact_search_feature_matches]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_feature_matches
 [search_match_headers]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_match_headers
+[search_payload_headers_page_async]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.search_payload_headers_page_async
 [fetch_matches]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoArtifactIndex2D.html#method.fetch_matches
+[GeoPayloadHeaderPage]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/struct.GeoPayloadHeaderPage.html
 [GeoQuery2D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery2D.html
 [GeoQuery3D]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoQuery3D.html
 [GeoPayload]: https://docs.rs/packed_spatial_index_geo/latest/packed_spatial_index_geo/enum.GeoPayload.html

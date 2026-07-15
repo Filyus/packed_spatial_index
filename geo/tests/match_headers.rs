@@ -32,9 +32,9 @@ fn sample_geojson() -> &'static [u8] {
     }"#
 }
 
-fn artifact(payload: PayloadPlan) -> GeoArtifactIndex<SliceReader<Vec<u8>>> {
+fn artifact_bytes(payload: PayloadPlan) -> Vec<u8> {
     let mut source = open_geojson_slice(sample_geojson()).unwrap();
-    let bytes = source
+    source
         .convert(ConvertRequest {
             envelope: EnvelopePolicy::Geographic {
                 antimeridian: AntimeridianPolicy::Split,
@@ -42,8 +42,11 @@ fn artifact(payload: PayloadPlan) -> GeoArtifactIndex<SliceReader<Vec<u8>>> {
             payload,
             ..ConvertRequest::default()
         })
-        .unwrap();
-    open_geo_index(SliceReader::new(bytes)).unwrap()
+        .unwrap()
+}
+
+fn artifact(payload: PayloadPlan) -> GeoArtifactIndex<SliceReader<Vec<u8>>> {
+    open_geo_index(SliceReader::new(artifact_bytes(payload))).unwrap()
 }
 
 fn world() -> Box2D {
@@ -188,4 +191,63 @@ fn headers_reject_unsupported_plans() {
         index.search_match_headers(world()),
         Err(GeoError::UnsupportedArtifact(_))
     ));
+}
+
+#[cfg(feature = "async")]
+struct AsyncSlice(Vec<u8>);
+
+#[cfg(feature = "async")]
+impl packed_spatial_index_geo::AsyncRangeReader for AsyncSlice {
+    async fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        let start = usize::try_from(offset).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "offset out of range")
+        })?;
+        let end = start.checked_add(buf.len()).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "range overflow")
+        })?;
+        let source = self.0.get(start..end).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "range outside buffer")
+        })?;
+        buf.copy_from_slice(source);
+        Ok(())
+    }
+
+    fn len(&self) -> Option<u64> {
+        Some(self.0.len() as u64)
+    }
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_payload_header_pages_match_full_search_order() {
+    let bytes = artifact_bytes(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    });
+    let GeoArtifactIndex::D2(index) = pollster::block_on(
+        packed_spatial_index_geo::open_geo_index_async(AsyncSlice(bytes)),
+    )
+    .unwrap() else {
+        panic!("expected 2D artifact");
+    };
+
+    for query in [
+        GeoQuery2D::from(world()),
+        GeoQuery2D::spherical_radius(179.0, 0.0, 2_000_000.0),
+    ] {
+        let mut all =
+            pollster::block_on(index.search_payload_headers_async(query.clone())).unwrap();
+        packed_spatial_index_geo::GeoPayloadHeader::sort_by_entry(&mut all);
+
+        for (offset, limit) in [(0, 0), (0, 2), (1, 2), (3, 10), (10, 2)] {
+            let page = pollster::block_on(index.search_payload_headers_page_async(
+                query.clone(),
+                offset,
+                limit,
+            ))
+            .unwrap();
+            let expected: Vec<_> = all.iter().skip(offset).take(limit).cloned().collect();
+            assert_eq!(page.number_matched, all.len());
+            assert_eq!(page.headers, expected);
+        }
+    }
 }

@@ -39,6 +39,10 @@ predicate/source read-back is deliberately left to the native server.
 For artifacts whose manifest says entries cannot duplicate rows, summary search
 uses an entry/rank header path and omits `featureRef`; request `payload=full` or
 use `/items` when the client needs the returned GeoJSON features.
+That path uses `search_payload_headers_page_async`, so a broad bbox counts every
+match but retains only `offset + limit` headers before fetching the requested
+payload bodies. Artifacts with split/duplicate source rows keep the full-header
+fallback because exact feature-level deduplication needs global identity state.
 
 Every R2-backed response includes `X-PSI-Reads`, `X-PSI-Bytes`, and
 `X-PSI-R2-Operations`. Search and items responses expose the same counters in

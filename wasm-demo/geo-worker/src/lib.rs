@@ -136,13 +136,12 @@ pub async fn search(
     let records: Vec<Value>;
     let number_matched;
     if !index.manifest().entries_may_duplicate_rows {
-        let mut headers = index
-            .search_payload_headers_async(bbox)
+        let page = index
+            .search_payload_headers_page_async(bbox, offset, limit)
             .await
             .map_err(geo_err)?;
-        GeoPayloadHeader::sort_by_entry(&mut headers);
-        number_matched = headers.len();
-        let page_headers = page(&headers, offset, limit);
+        number_matched = page.number_matched;
+        let page_headers = page.headers;
         records = if payload_mode == PayloadMode::Full {
             index
                 .fetch_payload_header_matches_async(&page_headers)
@@ -224,13 +223,12 @@ pub async fn items(
     let limit = bounded_usize(limit, 100, 1_000);
     let offset = bounded_usize(offset, 0, usize::MAX);
     if !index.manifest().entries_may_duplicate_rows {
-        let mut headers = index
-            .search_payload_headers_async(bbox)
+        let page = index
+            .search_payload_headers_page_async(bbox, offset, limit)
             .await
             .map_err(geo_err)?;
-        GeoPayloadHeader::sort_by_entry(&mut headers);
-        let number_matched = headers.len();
-        let page_headers = page(&headers, offset, limit);
+        let number_matched = page.number_matched;
+        let page_headers = page.headers;
         let matches = index
             .fetch_payload_header_matches_async(&page_headers)
             .await

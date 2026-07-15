@@ -1030,11 +1030,7 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
             ensure_polygon_query_not_empty(multi_polygon)?;
             let region = PolygonRegion(multi_polygon);
             let collect = |p: PayloadPrefix<'_>| {
-                headers.push(GeoPayloadHeader {
-                    entry_id: p.id,
-                    payload_len: p.payload_len,
-                    leaf_rank: p.leaf_rank,
-                });
+                headers.push(GeoPayloadHeader::from_prefix(p));
             };
             match &self.index {
                 GeoStreamIndex2D::F64(index) => {
@@ -1057,11 +1053,7 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
         for bbox in boxes {
             let mut batch = Vec::new();
             let collect = |p: PayloadPrefix<'_>| {
-                batch.push(GeoPayloadHeader {
-                    entry_id: p.id,
-                    payload_len: p.payload_len,
-                    leaf_rank: p.leaf_rank,
-                });
+                batch.push(GeoPayloadHeader::from_prefix(p));
             };
             match &self.index {
                 GeoStreamIndex2D::F64(index) => {
@@ -1078,6 +1070,91 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
             }
         }
         Ok(headers)
+    }
+
+    /// Search and return one deterministic page of payload headers together
+    /// with the total number of matching entries.
+    ///
+    /// Headers are ordered by `entry_id`. For a single candidate box or a
+    /// polygon query, the search retains at most `offset + limit` headers while
+    /// counting all matches, instead of collecting every matching header before
+    /// pagination. Queries split into multiple candidate boxes additionally
+    /// retain matched entry ids to remove cross-box duplicates.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{AsyncRangeReader, Box2D, GeoArtifactIndex2D};
+    /// # async fn query<R: AsyncRangeReader>(
+    /// #     index: &GeoArtifactIndex2D<R>,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let page = index
+    ///     .search_payload_headers_page_async(
+    ///         Box2D::new(-10.0, 35.0, 20.0, 60.0),
+    ///         0,
+    ///         100,
+    ///     )
+    ///     .await?;
+    /// let matches = index
+    ///     .fetch_payload_header_matches_async(&page.headers)
+    ///     .await?;
+    /// assert_eq!(matches.len(), page.headers.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn search_payload_headers_page_async<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+        offset: usize,
+        limit: usize,
+    ) -> Result<GeoPayloadHeaderPage, GeoError> {
+        if matches!(self.manifest.payload_plan, PayloadPlan::None) {
+            return Err(GeoError::UnsupportedArtifact(
+                "search_payload_headers_page_async needs an artifact with payloads".to_string(),
+            ));
+        }
+        let query = query.into();
+        let mut page = PayloadHeaderPageCollector::new(offset, limit);
+
+        if let GeoQuery2D::Polygon(multi_polygon) = &query {
+            ensure_polygon_query_not_empty(multi_polygon)?;
+            let region = PolygonRegion(multi_polygon);
+            let collect = |p: PayloadPrefix<'_>| page.push(GeoPayloadHeader::from_prefix(p));
+            match &self.index {
+                GeoStreamIndex2D::F64(index) => {
+                    index
+                        .visit_payload_prefixes_region_async(&region, 0, collect)
+                        .await?
+                }
+                GeoStreamIndex2D::F32(index) => {
+                    index
+                        .visit_payload_prefixes_region_async(&region, 0, collect)
+                        .await?
+                }
+            }
+            return Ok(page.finish());
+        }
+
+        let boxes = query.candidate_boxes_2d()?;
+        let dedup = boxes.len() > 1;
+        let mut seen = std::collections::HashSet::new();
+        for bbox in boxes {
+            let collect = |p: PayloadPrefix<'_>| {
+                let header = GeoPayloadHeader::from_prefix(p);
+                if !dedup || seen.insert(header.entry_id) {
+                    page.push(header);
+                }
+            };
+            match &self.index {
+                GeoStreamIndex2D::F64(index) => {
+                    index.visit_payload_prefixes_async(bbox, 0, collect).await?
+                }
+                GeoStreamIndex2D::F32(index) => {
+                    index.visit_payload_prefixes_async(bbox, 0, collect).await?
+                }
+            }
+        }
+        Ok(page.finish())
     }
 
     /// Fetch full matches for payload headers returned by
@@ -2117,6 +2194,109 @@ impl GeoPayloadHeader {
     /// Length of the payload body after a fixed FeatureRef prefix.
     pub fn body_byte_len(&self) -> Option<usize> {
         self.payload_len.checked_sub(FEATURE_REF_RECORD_LEN)
+    }
+
+    #[cfg(feature = "async")]
+    fn from_prefix(prefix: PayloadPrefix<'_>) -> Self {
+        Self {
+            entry_id: prefix.id,
+            payload_len: prefix.payload_len,
+            leaf_rank: prefix.leaf_rank,
+        }
+    }
+}
+
+/// One deterministic page from an async payload-header search.
+#[cfg(feature = "async")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeoPayloadHeaderPage {
+    /// Total number of matching entries before pagination.
+    pub number_matched: usize,
+    /// Requested page, ordered by entry id.
+    pub headers: Vec<GeoPayloadHeader>,
+}
+
+#[cfg(feature = "async")]
+struct PayloadHeaderPageCollector {
+    number_matched: usize,
+    offset: usize,
+    keep: usize,
+    headers: std::collections::BinaryHeap<PayloadHeaderByEntry>,
+}
+
+#[cfg(feature = "async")]
+impl PayloadHeaderPageCollector {
+    fn new(offset: usize, limit: usize) -> Self {
+        Self {
+            number_matched: 0,
+            offset,
+            keep: if limit == 0 {
+                0
+            } else {
+                offset.saturating_add(limit)
+            },
+            headers: std::collections::BinaryHeap::new(),
+        }
+    }
+
+    fn push(&mut self, header: GeoPayloadHeader) {
+        self.number_matched += 1;
+        if self.keep == 0 {
+            return;
+        }
+        if self.headers.len() < self.keep {
+            self.headers.push(PayloadHeaderByEntry(header));
+            return;
+        }
+        if self
+            .headers
+            .peek()
+            .is_some_and(|last| header.entry_id < last.0.entry_id)
+        {
+            self.headers.pop();
+            self.headers.push(PayloadHeaderByEntry(header));
+        }
+    }
+
+    fn finish(self) -> GeoPayloadHeaderPage {
+        let mut headers: Vec<_> = self.headers.into_iter().map(|item| item.0).collect();
+        GeoPayloadHeader::sort_by_entry(&mut headers);
+        let headers = headers.into_iter().skip(self.offset).collect();
+        GeoPayloadHeaderPage {
+            number_matched: self.number_matched,
+            headers,
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+struct PayloadHeaderByEntry(GeoPayloadHeader);
+
+#[cfg(feature = "async")]
+impl PartialEq for PayloadHeaderByEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+#[cfg(feature = "async")]
+impl Eq for PayloadHeaderByEntry {}
+
+#[cfg(feature = "async")]
+impl PartialOrd for PayloadHeaderByEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[cfg(feature = "async")]
+impl Ord for PayloadHeaderByEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0
+            .entry_id
+            .cmp(&other.0.entry_id)
+            .then_with(|| self.0.leaf_rank.cmp(&other.0.leaf_rank))
+            .then_with(|| self.0.payload_len.cmp(&other.0.payload_len))
     }
 }
 

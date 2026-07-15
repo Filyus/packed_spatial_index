@@ -11,6 +11,10 @@ It streams byte ranges from one `synthetic-points.psindex` R2 object, caches the
 parsed GeoPSINDEX directory in the warm isolate, and serves GeoJSON features
 directly from the artifact's embedded `feature-json` payload.
 
+The directory cache is tied to the object's R2 ETag and byte length. Range reads
+also carry an ETag precondition, so replacing the fixed demo key cannot mix a
+cached directory from one artifact with bytes from another artifact.
+
 The seed dataset is deliberately synthetic: deterministic clustered WKB points
 with a `bbox` covering column and GeoParquet metadata. It is shaped to exercise
 realistic spatial access patterns, but it is not a city database and contains no

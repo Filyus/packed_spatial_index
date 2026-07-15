@@ -29,6 +29,7 @@ type Metrics = {
 type ArtifactContext = {
   readRange: (offset: number, length: number) => Promise<Uint8Array>;
   fileLen: number;
+  objectEtag: string;
   metrics: Omit<Metrics, "ms">;
 };
 
@@ -89,6 +90,7 @@ async function route(req: Request, env: Env): Promise<Response> {
       const json = await wasmCollection(
         artifact.readRange,
         artifact.fileLen,
+        artifact.objectEtag,
         maxReads(url),
         false,
       );
@@ -103,6 +105,7 @@ async function route(req: Request, env: Env): Promise<Response> {
       const json = await wasmCollection(
         artifact.readRange,
         artifact.fileLen,
+        artifact.objectEtag,
         maxReads(url),
         true,
       );
@@ -127,6 +130,7 @@ async function route(req: Request, env: Env): Promise<Response> {
       const json = await wasmSearch(
         artifact.readRange,
         artifact.fileLen,
+        artifact.objectEtag,
         bbox[0],
         bbox[1],
         bbox[2],
@@ -152,6 +156,7 @@ async function route(req: Request, env: Env): Promise<Response> {
       const json = await wasmItems(
         artifact.readRange,
         artifact.fileLen,
+        artifact.objectEtag,
         bbox[0],
         bbox[1],
         bbox[2],
@@ -188,14 +193,25 @@ async function withArtifact<T>(
   ): Promise<Uint8Array> => {
     counters.reads++;
     counters.bytes += length;
-    const obj = await env.BUCKET.get(OBJECT_KEY, { range: { offset, length } });
+    const obj = await env.BUCKET.get(OBJECT_KEY, {
+      onlyIf: { etagMatches: head.etag },
+      range: { offset, length },
+    });
     if (!obj) throw new Error("R2 range get returned null");
+    if (!("body" in obj)) {
+      throw new Error("R2 object changed during the request");
+    }
     return new Uint8Array(await obj.arrayBuffer());
   };
 
   const t0 = Date.now();
   try {
-    const body = await run({ readRange, fileLen: head.size, metrics: counters });
+    const body = await run({
+      readRange,
+      fileLen: head.size,
+      objectEtag: head.etag,
+      metrics: counters,
+    });
     return { body, metrics: { ...counters, ms: Date.now() - t0 } };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

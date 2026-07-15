@@ -25,7 +25,19 @@ const COLLECTION_DESCRIPTION: &str =
     "Deterministic synthetic GeoParquet seed served directly from a GeoPSINDEX object in R2";
 
 thread_local! {
-    static DIRECTORY: RefCell<Option<GeoArtifactDirectory>> = const { RefCell::new(None) };
+    static DIRECTORY: RefCell<Option<CachedDirectory>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ObjectIdentity {
+    etag: String,
+    file_len: u64,
+}
+
+#[derive(Clone)]
+struct CachedDirectory {
+    identity: ObjectIdentity,
+    directory: GeoArtifactDirectory,
 }
 
 struct R2Reader {
@@ -69,10 +81,11 @@ impl AsyncRangeReader for R2Reader {
 pub async fn collection(
     read_range: Function,
     file_len: f64,
+    object_etag: String,
     max_reads: f64,
     detail: bool,
 ) -> Result<String, JsValue> {
-    let index = open_2d(read_range, file_len, max_reads).await?;
+    let index = open_2d(read_range, file_len, object_etag, max_reads).await?;
     let (dir, _reader) = index.into_directory();
     let manifest = dir.manifest();
     let mut out = collection_summary(manifest, dir.num_entries(), dir.node_size());
@@ -102,6 +115,7 @@ pub async fn collection(
 pub async fn search(
     read_range: Function,
     file_len: f64,
+    object_etag: String,
     min_x: f64,
     min_y: f64,
     max_x: f64,
@@ -112,7 +126,7 @@ pub async fn search(
     level: String,
     max_reads: f64,
 ) -> Result<String, JsValue> {
-    let index = open_2d(read_range, file_len, max_reads).await?;
+    let index = open_2d(read_range, file_len, object_etag, max_reads).await?;
     let bbox = Box2D::new(min_x, min_y, max_x, max_y);
     let limit = bounded_usize(limit, 100, 1_000);
     let offset = bounded_usize(offset, 0, usize::MAX);
@@ -187,6 +201,7 @@ pub async fn search(
 pub async fn items(
     read_range: Function,
     file_len: f64,
+    object_etag: String,
     min_x: f64,
     min_y: f64,
     max_x: f64,
@@ -195,7 +210,7 @@ pub async fn items(
     offset: f64,
     max_reads: f64,
 ) -> Result<String, JsValue> {
-    let index = open_2d(read_range, file_len, max_reads).await?;
+    let index = open_2d(read_range, file_len, object_etag, max_reads).await?;
     if !matches!(
         index.manifest().payload_plan,
         PayloadPlan::FeatureJson { .. }
@@ -283,11 +298,13 @@ fn items_response(
 async fn open_2d(
     read_range: Function,
     file_len: f64,
+    object_etag: String,
     max_reads: f64,
 ) -> Result<GeoArtifactIndex2D<R2Reader>, JsValue> {
+    let identity = object_identity(file_len, object_etag).map_err(JsValue::from_str)?;
     let reader = R2Reader {
         read_range,
-        len: (file_len > 0.0).then_some(file_len as u64),
+        len: Some(identity.file_len),
     };
     let limits = StreamLimits {
         max_reads: (max_reads > 0.0).then_some(max_reads as usize),
@@ -297,7 +314,12 @@ async fn open_2d(
         coalesce_gap_bytes: Some(256 * 1024),
     };
 
-    let cached = DIRECTORY.with(|d| d.borrow().clone());
+    let cached = DIRECTORY.with(|d| {
+        d.borrow()
+            .as_ref()
+            .filter(|cached| cached.identity == identity)
+            .map(|cached| cached.directory.clone())
+    });
     let index = match cached {
         Some(dir) => {
             GeoArtifactIndex::from_directory_with_limits(&dir, reader, limits).map_err(geo_err)?
@@ -307,7 +329,12 @@ async fn open_2d(
                 .await
                 .map_err(geo_err)?;
             let (dir, reader) = opened.into_directory();
-            DIRECTORY.with(|d| *d.borrow_mut() = Some(dir.clone()));
+            DIRECTORY.with(|d| {
+                *d.borrow_mut() = Some(CachedDirectory {
+                    identity,
+                    directory: dir.clone(),
+                });
+            });
             GeoArtifactIndex::from_directory_with_limits(&dir, reader, limits).map_err(geo_err)?
         }
     };
@@ -318,6 +345,23 @@ async fn open_2d(
             "this demo Worker serves 2D bbox artifacts only",
         )),
     }
+}
+
+fn object_identity(file_len: f64, etag: String) -> Result<ObjectIdentity, &'static str> {
+    if !file_len.is_finite()
+        || file_len <= 0.0
+        || file_len.fract() != 0.0
+        || file_len > u64::MAX as f64
+    {
+        return Err("R2 object length must be a positive integer");
+    }
+    if etag.is_empty() {
+        return Err("R2 object ETag is missing");
+    }
+    Ok(ObjectIdentity {
+        etag,
+        file_len: file_len as u64,
+    })
 }
 
 fn collection_summary(
@@ -576,4 +620,26 @@ fn js_io(v: JsValue) -> io::Error {
 
 fn geo_err(e: GeoError) -> JsValue {
     JsValue::from_str(&e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::object_identity;
+
+    #[test]
+    fn object_identity_changes_with_etag_or_length() {
+        let original = object_identity(1024.0, "etag-a".to_string()).unwrap();
+        let replaced = object_identity(1024.0, "etag-b".to_string()).unwrap();
+        let resized = object_identity(2048.0, "etag-a".to_string()).unwrap();
+
+        assert_ne!(original, replaced);
+        assert_ne!(original, resized);
+    }
+
+    #[test]
+    fn object_identity_rejects_missing_or_invalid_metadata() {
+        assert!(object_identity(0.0, "etag".to_string()).is_err());
+        assert!(object_identity(1.5, "etag".to_string()).is_err());
+        assert!(object_identity(1.0, String::new()).is_err());
+    }
 }

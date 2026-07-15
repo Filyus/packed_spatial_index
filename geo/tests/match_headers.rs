@@ -251,3 +251,44 @@ fn async_payload_header_pages_match_full_search_order() {
         }
     }
 }
+
+#[cfg(feature = "async")]
+#[test]
+fn async_match_header_pages_match_full_search_order() {
+    let bytes = artifact_bytes(PayloadPlan::RowWkb);
+    let GeoArtifactIndex::D2(index) = pollster::block_on(
+        packed_spatial_index_geo::open_geo_index_async(AsyncSlice(bytes)),
+    )
+    .unwrap() else {
+        panic!("expected 2D artifact");
+    };
+
+    for query in [
+        GeoQuery2D::from(world()),
+        GeoQuery2D::spherical_radius(179.0, 0.0, 2_000_000.0),
+    ] {
+        let mut all = pollster::block_on(index.search_match_headers_async(query.clone())).unwrap();
+        GeoMatchHeader::sort_by_entry(&mut all);
+
+        for (offset, limit) in [(0, 0), (0, 2), (1, 2), (3, 10), (10, 2)] {
+            let page = pollster::block_on(index.search_match_headers_page_async(
+                query.clone(),
+                offset,
+                limit,
+            ))
+            .unwrap();
+            let expected: Vec<_> = all.iter().skip(offset).take(limit).cloned().collect();
+            assert_eq!(page.number_matched, all.len());
+            assert_eq!(page.headers, expected);
+
+            let matches = pollster::block_on(index.fetch_matches_async(&page.headers)).unwrap();
+            assert_eq!(matches.len(), expected.len());
+            assert!(
+                matches
+                    .iter()
+                    .zip(&expected)
+                    .all(|(matched, header)| matched.entry_id == header.entry_id)
+            );
+        }
+    }
+}

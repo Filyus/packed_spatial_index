@@ -157,16 +157,21 @@ pub async fn search(
                 .collect()
         };
     } else {
-        let mut headers = index
-            .search_match_headers_async(bbox)
-            .await
-            .map_err(geo_err)?;
-        GeoMatchHeader::sort_by_entry(&mut headers);
-        if result_level == ResultLevel::Feature {
+        let (matched, page_headers) = if result_level == ResultLevel::Entry {
+            let page = index
+                .search_match_headers_page_async(bbox, offset, limit)
+                .await
+                .map_err(geo_err)?;
+            (page.number_matched, page.headers)
+        } else {
+            let mut headers = index
+                .search_match_headers_async(bbox)
+                .await
+                .map_err(geo_err)?;
             GeoMatchHeader::dedupe_by_feature(&mut headers);
-        }
-        number_matched = headers.len();
-        let page_headers = page(&headers, offset, limit);
+            (headers.len(), page(&headers, offset, limit))
+        };
+        number_matched = matched;
         records = if payload_mode == PayloadMode::Full {
             index
                 .fetch_matches_async(&page_headers)
@@ -246,7 +251,6 @@ pub async fn items(
         .search_match_headers_async(bbox)
         .await
         .map_err(geo_err)?;
-    GeoMatchHeader::sort_by_entry(&mut headers);
     GeoMatchHeader::dedupe_by_feature(&mut headers);
     let number_matched = headers.len();
     let page_headers = page(&headers, offset, limit);

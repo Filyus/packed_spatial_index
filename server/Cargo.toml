@@ -19,7 +19,7 @@ axum = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 packed_spatial_index = { path = "..", version = "0.25.0", default-features = false, features = ["stream"] }
-packed_spatial_index_geo = { path = "../geo", version = "0.22.0", default-features = false }
+packed_spatial_index_geo = { path = "../geo", version = "0.23.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -29,6 +29,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-packed_spatial_index_geo = { path = "../geo", version = "0.22.0", default-features = false, features = ["geojson"] }
+packed_spatial_index_geo = { path = "../geo", version = "0.23.0", default-features = false, features = ["geojson"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

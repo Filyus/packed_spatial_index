@@ -4,6 +4,52 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.23.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.22.0...psi-geo-v0.23.0) - 2026-07-15
+
+### API
+
+- Added async header-only searches and selected-body fetches to
+  `GeoArtifactIndex2D`. `search_match_headers_async` / `fetch_matches_async`
+  work with decoded feature refs; `search_payload_headers_async` /
+  `fetch_payload_header_matches_async` use the lighter new `GeoPayloadHeader`
+  when source rows are not duplicated. `GeoPayloadHeader` exposes entry id,
+  payload length, deterministic entry sorting, and body length.
+- Added bounded, deterministic entry pagination:
+  `search_match_headers_page_async` returns `GeoMatchHeaderPage` and
+  `search_payload_headers_page_async` returns `GeoPayloadHeaderPage`. Both
+  report the exact pre-pagination match count while retaining at most
+  `offset + limit` headers for single-box and polygon queries.
+- `FeatureJson` artifacts now support synchronous 2D/3D header searches and
+  selected-body fetches, plus the new async 2D path. Added `feature_json_body`
+  for callers that need the embedded GeoJSON bytes from a FeatureRef-prefixed
+  payload while retaining compatibility with legacy raw-JSON payloads.
+
+### Safety
+
+- Hardened untrusted artifact opening and header reads. The reader now rejects
+  manifest count or payload-presence mismatches, malformed or mislabeled row
+  payloads, and payload identities that do not agree with their index entries.
+  `decode_feature_ref_payload` now rejects non-zero reserved bytes, and
+  `FeatureJson` payload prefixes are detected structurally rather than by a
+  leading byte alone.
+
+### Persistence
+
+- Newly built `FeatureJson` payloads now store a fixed 24-byte `FeatureRef`
+  prefix before the GeoJSON body, enabling header-only searches without reading
+  every body. Legacy raw-JSON artifacts remain readable through
+  `feature_json_body`. `FEATURE_JSON_CONTENT_TYPE` now identifies the complete
+  binary record as
+  `application/vnd.packed-spatial-index.feature-json` instead of advertising it
+  as standalone `application/geo+json`.
+
+### Performance
+
+- Reduced object-storage work for paginated payload queries. Async header pages
+  keep only `offset + limit` headers for single-box and polygon searches, while
+  selected-body fetches read payload bodies by leaf rank instead of scanning
+  every matching body.
+
 ## [0.22.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.21.2...psi-geo-v0.22.0) - 2026-07-07
 
 ### API

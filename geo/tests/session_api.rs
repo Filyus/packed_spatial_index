@@ -2165,6 +2165,54 @@ fn geo_artifact_reader_rejects_manifest_payload_presence_mismatch() {
 }
 
 #[test]
+fn geo_artifact_reader_rejects_mislabeled_row_payloads_when_decoding() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(6.0, 7.0))]))],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
+    let mut bytes = dataset.convert(ConvertRequest::default()).unwrap();
+    replace_geo_manifest_text(&mut bytes, br#""kind":"row_wkb"#, br#""kind":"row_ref"#);
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let err = index
+        .search_matches(Box2D::new(6.0, 7.0, 6.0, 7.0))
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        GeoError::PayloadDecode(message) if message.contains("row-ref") && message.contains("24")
+    ));
+    let headers = index
+        .search_match_headers(Box2D::new(6.0, 7.0, 6.0, 7.0))
+        .unwrap();
+    let err = index.fetch_matches(&headers).unwrap_err();
+    assert!(matches!(
+        err,
+        GeoError::PayloadDecode(message) if message.contains("row-ref") && message.contains("24")
+    ));
+
+    let mut dataset = open_geoparquet(data).unwrap();
+    let mut bytes = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    replace_geo_manifest_text(&mut bytes, br#""kind":"row_ref"#, br#""kind":"row_wkb"#);
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let err = index
+        .search_matches(Box2D::new(6.0, 7.0, 6.0, 7.0))
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        GeoError::PayloadDecode(message) if message.contains("row-wkb") && message.contains("body")
+    ));
+}
+
+#[test]
 fn geo_artifact_reader_caps_unknown_length_directory_and_manifest() {
     struct NoLenReader(SliceReader<Vec<u8>>);
 

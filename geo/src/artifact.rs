@@ -909,10 +909,10 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// ```
     pub fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError> {
         match &self.manifest.payload_plan {
-            PayloadPlan::RowRef => Ok(headers
+            PayloadPlan::RowRef => headers
                 .iter()
                 .map(GeoMatchHeader::to_row_ref_match)
-                .collect()),
+                .collect(),
             PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. } => {
                 let ranks: Vec<usize> = headers.iter().map(|h| h.leaf_rank).collect();
                 let mut by_rank = std::collections::HashMap::new();
@@ -1166,10 +1166,10 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
         headers: &[GeoMatchHeader],
     ) -> Result<Vec<GeoMatch>, GeoError> {
         match &self.manifest.payload_plan {
-            PayloadPlan::RowRef => Ok(headers
+            PayloadPlan::RowRef => headers
                 .iter()
                 .map(GeoMatchHeader::to_row_ref_match)
-                .collect()),
+                .collect(),
             PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. } => {
                 let ranks: Vec<usize> = headers.iter().map(|h| h.leaf_rank).collect();
                 let mut by_rank = std::collections::HashMap::new();
@@ -1977,10 +1977,10 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     /// ```
     pub fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError> {
         match &self.manifest.payload_plan {
-            PayloadPlan::RowRef => Ok(headers
+            PayloadPlan::RowRef => headers
                 .iter()
                 .map(GeoMatchHeader::to_row_ref_match)
-                .collect()),
+                .collect(),
             PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. } => {
                 let ranks: Vec<usize> = headers.iter().map(|h| h.leaf_rank).collect();
                 let mut by_rank = std::collections::HashMap::new();
@@ -2408,12 +2408,13 @@ impl GeoMatchHeader {
 
     /// Rebuild the full match for a `RowRef` header — the feature ref is the
     /// entire payload, so no I/O is needed.
-    fn to_row_ref_match(&self) -> GeoMatch {
-        GeoMatch {
+    fn to_row_ref_match(&self) -> Result<GeoMatch, GeoError> {
+        ensure_row_ref_payload_len(self.payload_len)?;
+        Ok(GeoMatch {
             entry_id: self.entry_id,
             feature: self.feature.clone(),
             payload: GeoPayload::RowRef,
-        }
+        })
     }
 }
 
@@ -2791,6 +2792,7 @@ fn decode_payload(
 ) -> Result<(FeatureRef, GeoPayload), GeoError> {
     match plan {
         PayloadPlan::RowRef => {
+            ensure_row_ref_payload_len(payload.len())?;
             let feature = decode_feature_ref_payload(payload).ok_or_else(|| {
                 GeoError::PayloadDecode("row-ref payload is truncated".to_string())
             })?;
@@ -2800,6 +2802,11 @@ fn decode_payload(
             let (feature, wkb) = decode_feature_wkb_payload(payload).ok_or_else(|| {
                 GeoError::PayloadDecode("row-wkb payload is truncated".to_string())
             })?;
+            if wkb.is_empty() {
+                return Err(GeoError::PayloadDecode(
+                    "row-wkb payload has no WKB body".to_string(),
+                ));
+            }
             Ok((feature, GeoPayload::RowWkb(wkb.to_vec())))
         }
         PayloadPlan::FeatureJson { .. } => {
@@ -2837,6 +2844,15 @@ fn decode_payload(
             "artifact payload does not contain feature refs".to_string(),
         )),
     }
+}
+
+fn ensure_row_ref_payload_len(len: usize) -> Result<(), GeoError> {
+    if len != FEATURE_REF_RECORD_LEN {
+        return Err(GeoError::PayloadDecode(format!(
+            "row-ref payload must be exactly {FEATURE_REF_RECORD_LEN} bytes, got {len}"
+        )));
+    }
+    Ok(())
 }
 
 fn feature_ref_record_fields_match(a: &FeatureRef, b: &FeatureRef) -> bool {

@@ -120,10 +120,7 @@ async function route(req: Request, env: Env): Promise<Response> {
           artifact.readRange,
           artifact.fileLen,
           artifact.objectEtag,
-          bbox[0],
-          bbox[1],
-          bbox[2],
-          bbox[3],
+          Float64Array.from(bbox),
           limit,
           offset,
           payload,
@@ -150,10 +147,7 @@ async function route(req: Request, env: Env): Promise<Response> {
           artifact.readRange,
           artifact.fileLen,
           artifact.objectEtag,
-          bbox[0],
-          bbox[1],
-          bbox[2],
-          bbox[3],
+          Float64Array.from(bbox),
           limit,
           offset,
           maxReads(url),
@@ -167,24 +161,33 @@ async function route(req: Request, env: Env): Promise<Response> {
   throw new HttpError(404, "not_found", "unknown endpoint");
 }
 
-function parseBbox(url: URL): [number, number, number, number] {
+// Either arity is accepted here and the artifact decides which one is right:
+// the Worker cannot know whether the object is 2D or 3D until it is open, so
+// a 4-number bbox against a 3D artifact comes back from wasm as a 422 naming
+// the length that artifact wants.
+export function parseBbox(url: URL): number[] {
   const raw = url.searchParams.get("bbox");
   if (!raw) {
     throw new HttpError(400, "invalid_bbox", "bbox is required");
   }
   const values = raw.split(",").map((part) => Number(part.trim()));
-  if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) {
+  if (
+    (values.length !== 4 && values.length !== 6) ||
+    values.some((value) => !Number.isFinite(value))
+  ) {
     throw new HttpError(
       400,
       "invalid_bbox",
-      "bbox must be four comma-separated numbers",
+      "bbox must contain either 4 numbers (2D) or 6 numbers (3D)",
     );
   }
-  const [minX, minY, maxX, maxY] = values;
-  if (minX > maxX || minY > maxY) {
-    throw new HttpError(400, "invalid_bbox", "bbox min values must be <= max values");
+  const axes = values.length / 2;
+  for (let axis = 0; axis < axes; axis += 1) {
+    if (values[axis] > values[axis + axes]) {
+      throw new HttpError(400, "invalid_bbox", "bbox min values must be <= max values");
+    }
   }
-  return [minX, minY, maxX, maxY];
+  return values;
 }
 
 function parseIntParam(

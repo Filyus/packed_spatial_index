@@ -11,8 +11,9 @@ use std::io;
 
 use js_sys::{Function, Promise, Uint8Array};
 use packed_spatial_index_geo::{
-    AsyncRangeReader, Box2D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
-    GeoArtifactIndex2D, GeoError, GeoMatch, GeoMatchHeader, GeoPayload, GeoPayloadHeader,
+    AsyncRangeReader, Box2D, Box3D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
+    GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoError, GeoMatch,
+    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoPayloadHeader, GeoPayloadHeaderPage,
     PayloadPlan, StreamLimits, open_geo_index_with_limits_async,
 };
 use serde_json::{Map, Value, json};
@@ -85,7 +86,7 @@ pub async fn collection(
     max_reads: f64,
     detail: bool,
 ) -> Result<String, JsValue> {
-    let index = open_2d(read_range, file_len, object_etag, max_reads).await?;
+    let index = open_index(read_range, file_len, object_etag, max_reads).await?;
     let (dir, _reader) = index.into_directory();
     let manifest = dir.manifest();
     let mut out = collection_summary(manifest, dir.num_entries(), dir.node_size());
@@ -116,35 +117,69 @@ pub async fn search(
     read_range: Function,
     file_len: f64,
     object_etag: String,
-    min_x: f64,
-    min_y: f64,
-    max_x: f64,
-    max_y: f64,
+    bbox: Vec<f64>,
     limit: f64,
     offset: f64,
     payload: String,
     level: String,
     max_reads: f64,
 ) -> Result<String, JsValue> {
-    let index = open_2d(read_range, file_len, object_etag, max_reads).await?;
-    let bbox = Box2D::new(min_x, min_y, max_x, max_y);
+    let index = open_index(read_range, file_len, object_etag, max_reads).await?;
     let limit = bounded_usize(limit, 100, 1_000);
     let offset = bounded_usize(offset, 0, usize::MAX);
     let payload_mode = parse_payload_mode(&payload)?;
     let result_level = parse_level(&level)?;
 
+    match (index, bbox.len()) {
+        (GeoArtifactIndex::D2(index), 4) => {
+            search_impl(
+                index,
+                box_2d(&bbox),
+                &bbox,
+                limit,
+                offset,
+                payload_mode,
+                result_level,
+            )
+            .await
+        }
+        (GeoArtifactIndex::D3(index), 6) => {
+            search_impl(
+                index,
+                box_3d(&bbox),
+                &bbox,
+                limit,
+                offset,
+                payload_mode,
+                result_level,
+            )
+            .await
+        }
+        (index, len) => Err(bbox_arity_error(artifact_dims(&index), len)),
+    }
+}
+
+async fn search_impl<I: AsyncGeoIndex>(
+    index: I,
+    query: I::Query,
+    bbox: &[f64],
+    limit: usize,
+    offset: usize,
+    payload_mode: PayloadMode,
+    result_level: ResultLevel,
+) -> Result<String, JsValue> {
     let records: Vec<Value>;
     let number_matched;
     if !index.manifest().entries_may_duplicate_rows {
         let page = index
-            .search_payload_headers_page_async(bbox, offset, limit)
+            .search_payload_headers_page(query, offset, limit)
             .await
             .map_err(geo_err)?;
         number_matched = page.number_matched;
         let page_headers = page.headers;
         records = if payload_mode == PayloadMode::Full {
             index
-                .fetch_payload_header_matches_async(&page_headers)
+                .fetch_payload_header_matches(&page_headers)
                 .await
                 .map_err(geo_err)?
                 .into_iter()
@@ -159,22 +194,19 @@ pub async fn search(
     } else {
         let (matched, page_headers) = if result_level == ResultLevel::Entry {
             let page = index
-                .search_match_headers_page_async(bbox, offset, limit)
+                .search_match_headers_page(query, offset, limit)
                 .await
                 .map_err(geo_err)?;
             (page.number_matched, page.headers)
         } else {
-            let mut headers = index
-                .search_match_headers_async(bbox)
-                .await
-                .map_err(geo_err)?;
+            let mut headers = index.search_match_headers(query).await.map_err(geo_err)?;
             GeoMatchHeader::dedupe_by_feature(&mut headers);
             (headers.len(), page(&headers, offset, limit))
         };
         number_matched = matched;
         records = if payload_mode == PayloadMode::Full {
             index
-                .fetch_matches_async(&page_headers)
+                .fetch_matches(&page_headers)
                 .await
                 .map_err(geo_err)?
                 .into_iter()
@@ -190,7 +222,7 @@ pub async fn search(
 
     let body = json!({
         "collectionId": COLLECTION_ID,
-        "query": query_json([min_x, min_y, max_x, max_y], limit, offset, payload_mode, result_level),
+        "query": query_json(bbox, limit, offset, payload_mode, result_level),
         "payloadKind": payload_kind(&index.manifest().payload_plan),
         "numberMatched": number_matched,
         "numberReturned": records.len(),
@@ -201,20 +233,16 @@ pub async fn search(
 }
 
 #[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
 pub async fn items(
     read_range: Function,
     file_len: f64,
     object_etag: String,
-    min_x: f64,
-    min_y: f64,
-    max_x: f64,
-    max_y: f64,
+    bbox: Vec<f64>,
     limit: f64,
     offset: f64,
     max_reads: f64,
 ) -> Result<String, JsValue> {
-    let index = open_2d(read_range, file_len, object_etag, max_reads).await?;
+    let index = open_index(read_range, file_len, object_etag, max_reads).await?;
     if !matches!(
         index.manifest().payload_plan,
         PayloadPlan::FeatureJson { .. }
@@ -224,53 +252,53 @@ pub async fn items(
         ));
     }
 
-    let bbox = Box2D::new(min_x, min_y, max_x, max_y);
     let limit = bounded_usize(limit, 100, 1_000);
     let offset = bounded_usize(offset, 0, usize::MAX);
+
+    match (index, bbox.len()) {
+        (GeoArtifactIndex::D2(index), 4) => {
+            items_impl(index, box_2d(&bbox), &bbox, limit, offset).await
+        }
+        (GeoArtifactIndex::D3(index), 6) => {
+            items_impl(index, box_3d(&bbox), &bbox, limit, offset).await
+        }
+        (index, len) => Err(bbox_arity_error(artifact_dims(&index), len)),
+    }
+}
+
+async fn items_impl<I: AsyncGeoIndex>(
+    index: I,
+    query: I::Query,
+    bbox: &[f64],
+    limit: usize,
+    offset: usize,
+) -> Result<String, JsValue> {
     if !index.manifest().entries_may_duplicate_rows {
         let page = index
-            .search_payload_headers_page_async(bbox, offset, limit)
+            .search_payload_headers_page(query, offset, limit)
             .await
             .map_err(geo_err)?;
         let number_matched = page.number_matched;
         let page_headers = page.headers;
         let matches = index
-            .fetch_payload_header_matches_async(&page_headers)
+            .fetch_payload_header_matches(&page_headers)
             .await
             .map_err(geo_err)?;
-        return items_response(
-            matches,
-            number_matched,
-            [min_x, min_y, max_x, max_y],
-            limit,
-            offset,
-        );
+        return items_response(matches, number_matched, bbox, limit, offset);
     }
 
-    let mut headers = index
-        .search_match_headers_async(bbox)
-        .await
-        .map_err(geo_err)?;
+    let mut headers = index.search_match_headers(query).await.map_err(geo_err)?;
     GeoMatchHeader::dedupe_by_feature(&mut headers);
     let number_matched = headers.len();
     let page_headers = page(&headers, offset, limit);
-    let matches = index
-        .fetch_matches_async(&page_headers)
-        .await
-        .map_err(geo_err)?;
-    items_response(
-        matches,
-        number_matched,
-        [min_x, min_y, max_x, max_y],
-        limit,
-        offset,
-    )
+    let matches = index.fetch_matches(&page_headers).await.map_err(geo_err)?;
+    items_response(matches, number_matched, bbox, limit, offset)
 }
 
 fn items_response(
     matches: Vec<GeoMatch>,
     number_matched: usize,
-    bbox: [f64; 4],
+    bbox: &[f64],
     limit: usize,
     offset: usize,
 ) -> Result<String, JsValue> {
@@ -297,12 +325,140 @@ fn items_response(
     .to_string())
 }
 
-async fn open_2d(
+/// The async artifact methods this Worker needs, in a shape that is the same
+/// for both dimensions.
+///
+/// The two query bodies differ only in the type of the region they search, so
+/// they are written once against this trait rather than duplicated per
+/// dimension. It stays private and is only ever used through the generic
+/// `search_impl`/`items_impl`, so `async fn` in a trait costs nothing here.
+trait AsyncGeoIndex {
+    type Query;
+
+    fn manifest(&self) -> &GeoArtifactManifest;
+
+    async fn search_payload_headers_page(
+        &self,
+        query: Self::Query,
+        offset: usize,
+        limit: usize,
+    ) -> Result<GeoPayloadHeaderPage, GeoError>;
+
+    async fn fetch_payload_header_matches(
+        &self,
+        headers: &[GeoPayloadHeader],
+    ) -> Result<Vec<GeoMatch>, GeoError>;
+
+    async fn search_match_headers_page(
+        &self,
+        query: Self::Query,
+        offset: usize,
+        limit: usize,
+    ) -> Result<GeoMatchHeaderPage, GeoError>;
+
+    async fn search_match_headers(
+        &self,
+        query: Self::Query,
+    ) -> Result<Vec<GeoMatchHeader>, GeoError>;
+
+    async fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError>;
+}
+
+macro_rules! impl_async_geo_index {
+    ($index:ty, $query:ty) => {
+        impl AsyncGeoIndex for $index {
+            type Query = $query;
+
+            fn manifest(&self) -> &GeoArtifactManifest {
+                <$index>::manifest(self)
+            }
+
+            async fn search_payload_headers_page(
+                &self,
+                query: Self::Query,
+                offset: usize,
+                limit: usize,
+            ) -> Result<GeoPayloadHeaderPage, GeoError> {
+                self.search_payload_headers_page_async(query, offset, limit)
+                    .await
+            }
+
+            async fn fetch_payload_header_matches(
+                &self,
+                headers: &[GeoPayloadHeader],
+            ) -> Result<Vec<GeoMatch>, GeoError> {
+                self.fetch_payload_header_matches_async(headers).await
+            }
+
+            async fn search_match_headers_page(
+                &self,
+                query: Self::Query,
+                offset: usize,
+                limit: usize,
+            ) -> Result<GeoMatchHeaderPage, GeoError> {
+                self.search_match_headers_page_async(query, offset, limit)
+                    .await
+            }
+
+            async fn search_match_headers(
+                &self,
+                query: Self::Query,
+            ) -> Result<Vec<GeoMatchHeader>, GeoError> {
+                self.search_match_headers_async(query).await
+            }
+
+            async fn fetch_matches(
+                &self,
+                headers: &[GeoMatchHeader],
+            ) -> Result<Vec<GeoMatch>, GeoError> {
+                self.fetch_matches_async(headers).await
+            }
+        }
+    };
+}
+
+impl_async_geo_index!(GeoArtifactIndex2D<R2Reader>, Box2D);
+impl_async_geo_index!(GeoArtifactIndex3D<R2Reader>, Box3D);
+
+fn box_2d(bbox: &[f64]) -> Box2D {
+    Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3])
+}
+
+fn box_3d(bbox: &[f64]) -> Box3D {
+    Box3D::new(bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5])
+}
+
+/// Index dimensions of an opened artifact.
+///
+/// The manifest carries the *source* coordinate dimensions, which are not the
+/// same question -- an `xym` column builds a 2D index -- and the mapping
+/// between them is private to the geo crate. The opened variant answers it
+/// directly.
+fn artifact_dims<R>(index: &GeoArtifactIndex<R>) -> u8 {
+    match index {
+        GeoArtifactIndex::D2(_) => 2,
+        GeoArtifactIndex::D3(_) => 3,
+    }
+}
+
+/// Report a bbox whose length does not match the artifact.
+///
+/// The Worker cannot know the dimensions until the object is open, so the
+/// arity check lives here rather than in the request parser, and the message
+/// names what the artifact actually is.
+fn bbox_arity_error(dims: u8, len: usize) -> JsValue {
+    JsValue::from_str(&format!(
+        "this artifact is {dims}D, so bbox must contain {} numbers, not {len}",
+        u32::from(dims) * 2
+    ))
+}
+
+async fn open_index(
     read_range: Function,
     file_len: f64,
     object_etag: String,
     max_reads: f64,
-) -> Result<GeoArtifactIndex2D<R2Reader>, JsValue> {
+) -> Result<GeoArtifactIndex<R2Reader>, JsValue> {
     let identity = object_identity(file_len, object_etag).map_err(JsValue::from_str)?;
     let reader = R2Reader {
         read_range,
@@ -341,12 +497,7 @@ async fn open_2d(
         }
     };
 
-    match index {
-        GeoArtifactIndex::D2(index) => Ok(index),
-        GeoArtifactIndex::D3(_) => Err(JsValue::from_str(
-            "this demo Worker serves 2D bbox artifacts only",
-        )),
-    }
+    Ok(index)
 }
 
 fn object_identity(file_len: f64, etag: String) -> Result<ObjectIdentity, &'static str> {
@@ -367,7 +518,7 @@ fn object_identity(file_len: f64, etag: String) -> Result<ObjectIdentity, &'stat
 }
 
 fn collection_summary(
-    manifest: &packed_spatial_index_geo::GeoArtifactManifest,
+    manifest: &GeoArtifactManifest,
     entry_count: usize,
     node_size: usize,
 ) -> Value {
@@ -392,7 +543,7 @@ fn collection_summary(
 }
 
 fn query_json(
-    bbox: [f64; 4],
+    bbox: &[f64],
     limit: usize,
     offset: usize,
     payload: PayloadMode,

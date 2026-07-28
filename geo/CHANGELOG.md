@@ -50,6 +50,11 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### Geometry
 
+- A spherical-radius filter now wraps longitudes outside `[-180, 180]` instead
+  of dropping the point. A dataset stored in `[0, 360)` silently matched
+  nothing east of the antimeridian, even though the query side already wrapped
+  its own longitude. Wrapping is also arithmetic rather than stepping by 360,
+  so an out-of-range source coordinate can no longer hang the wrap.
 - `NonPlanarExactPolicy::TreatAsPlanar` now also applies to spherical-radius
   exact filtering, which previously required `edges: spherical` with no way to
   opt out. GeoJSON and GeoParquet without an `edges` member declare planar edges

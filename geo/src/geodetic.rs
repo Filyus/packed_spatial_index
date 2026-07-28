@@ -102,7 +102,13 @@ impl SphericalRadius {
         if !lon.is_finite() || !lat.is_finite() {
             return false;
         }
-        if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
+        // Longitude is periodic, so one outside the principal range names a
+        // real place — a dataset stored in [0, 360) is the usual reason. Wrap
+        // it rather than dropping the point, matching what `candidate_boxes`
+        // already does to the query. Latitude has no such reading: beyond the
+        // poles is nowhere.
+        let lon = normalize_lon(lon);
+        if !(-90.0..=90.0).contains(&lat) {
             return false;
         }
         haversine_metres(self.lon, self.lat, lon, lat) <= self.radius_metres
@@ -113,14 +119,18 @@ fn world_box() -> Box2D {
     Box2D::new(-180.0, -90.0, 180.0, 90.0)
 }
 
-fn normalize_lon(mut lon: f64) -> f64 {
-    while lon < -180.0 {
-        lon += 360.0;
+/// Wrap a longitude into `[-180, 180]`.
+///
+/// Values already in range are returned untouched, which keeps `180.0` as
+/// `180.0` rather than folding it onto `-180.0`. Everything else is wrapped
+/// arithmetically: stepping by 360 in a loop is fine for a query longitude
+/// plus a bounded delta, but source coordinates are arbitrary finite floats
+/// and a value like `1e30` would take on the order of `1e27` steps.
+fn normalize_lon(lon: f64) -> f64 {
+    if (-180.0..=180.0).contains(&lon) {
+        return lon;
     }
-    while lon > 180.0 {
-        lon -= 360.0;
-    }
-    lon
+    (lon + 180.0).rem_euclid(360.0) - 180.0
 }
 
 fn haversine_metres(a_lon: f64, a_lat: f64, b_lon: f64, b_lat: f64) -> f64 {
@@ -130,4 +140,63 @@ fn haversine_metres(a_lon: f64, a_lat: f64, b_lon: f64, b_lat: f64) -> f64 {
     let dlon = (b_lon - a_lon).to_radians();
     let inner = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
     EARTH_RADIUS_METRES * 2.0 * inner.sqrt().min(1.0).asin()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contains_point_accepts_longitudes_outside_the_principal_range() {
+        let query = SphericalRadius::new(-170.0, 0.0, 200_000.0).unwrap();
+        assert!(query.contains_point(-169.0, 0.0));
+        // The same meridian written as degrees east of Greenwich, which is how
+        // a dataset stored in [0, 360) expresses it.
+        assert!(query.contains_point(191.0, 0.0));
+        assert!(!query.contains_point(0.0, 0.0));
+    }
+
+    #[test]
+    fn contains_point_still_rejects_impossible_latitudes() {
+        let query = SphericalRadius::new(0.0, 0.0, 200_000.0).unwrap();
+        assert!(!query.contains_point(0.0, 91.0));
+        assert!(!query.contains_point(f64::NAN, 0.0));
+        assert!(!query.contains_point(0.0, f64::INFINITY));
+    }
+
+    #[test]
+    fn normalize_lon_terminates_for_far_out_of_range_values() {
+        // Reaching the principal range by repeated addition would take on the
+        // order of 1e27 steps; completing this test at all is the assertion.
+        assert!(normalize_lon(1.0e30).is_finite());
+        assert!(normalize_lon(-1.0e30).is_finite());
+    }
+
+    #[test]
+    fn normalize_lon_leaves_the_principal_range_alone() {
+        for lon in [-180.0, -0.5, 0.0, 179.999, 180.0] {
+            assert_eq!(normalize_lon(lon), lon);
+        }
+        assert_eq!(normalize_lon(181.0), -179.0);
+        assert_eq!(normalize_lon(-181.0), 179.0);
+        // Both ends name the antimeridian; an out-of-range value lands on the
+        // negative one, an in-range one is left as written.
+        assert_eq!(normalize_lon(540.0), -180.0);
+        // The reachable inputs from `candidate_boxes` are a query longitude
+        // plus a bounded delta, so the wrap must agree with stepping by 360
+        // across that whole span.
+        for lon in [-360.0, -270.0, 0.0, 270.0, 360.0] {
+            assert_eq!(normalize_lon(lon), step_by_360(lon));
+        }
+    }
+
+    fn step_by_360(mut lon: f64) -> f64 {
+        while lon < -180.0 {
+            lon += 360.0;
+        }
+        while lon > 180.0 {
+            lon -= 360.0;
+        }
+        lon
+    }
 }

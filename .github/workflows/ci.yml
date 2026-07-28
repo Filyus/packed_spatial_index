@@ -153,6 +153,15 @@ jobs:
         run: cargo clippy --manifest-path geo/Cargo.toml --no-default-features --features geojson --all-targets -- -D warnings
       - name: Test
         run: cargo test --manifest-path geo/Cargo.toml --all-features
+      # The query-only configuration -- what a wasm or edge consumer compiles --
+      # was lint-checked but never run. `--tests` is required, not tidiness:
+      # doc examples reach for `open_geoparquet`, which is not in this build.
+      - name: Test GeoJSON without Parquet
+        run: cargo test --manifest-path geo/Cargo.toml --no-default-features --features geojson --tests
+      - name: Check docs
+        run: cargo doc --no-deps --manifest-path geo/Cargo.toml --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # The geo crate's MSRV is pinned by its heavy deps (and the core path-dep) to
   # 1.89; verify it stays buildable there, like the core msrv job.

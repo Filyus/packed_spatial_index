@@ -107,7 +107,16 @@ pub(crate) fn stamp_payload_part(
                     "FeatureJson payload is missing the feature_ref member".to_string(),
                 ));
             };
-            feature_ref["part"] = serde_json::Value::from(part);
+            // Indexing a `Value` by name panics unless it is an object or
+            // null. Every producer in this crate writes an object, but this is
+            // the one place a malformed payload would abort the process rather
+            // than report.
+            let Some(fields) = feature_ref.as_object_mut() else {
+                return Err(GeoError::PayloadDecode(format!(
+                    "FeatureJson payload has a non-object feature_ref member: {feature_ref}"
+                )));
+            };
+            fields.insert("part".to_string(), serde_json::Value::from(part));
             let json =
                 serde_json::to_vec(&value).map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
             *payload = encode_feature_json_prefix_compatible(payload, &json);
@@ -266,6 +275,35 @@ mod tests {
             123
         );
         assert_eq!(feature_json_body(&payload), json);
+    }
+
+    /// No producer in this crate writes a non-object `feature_ref`, but
+    /// indexing a `Value` by name panics on one, and aborting the process is
+    /// not how this crate reports a malformed payload.
+    #[cfg(feature = "_source")]
+    #[test]
+    fn stamping_a_part_rejects_a_non_object_feature_ref() {
+        let plan = PayloadPlan::FeatureJson {
+            properties: PropertyProjection::None,
+        };
+        for body in [
+            br#"{"type":"Feature","feature_ref":7}"#.as_slice(),
+            br#"{"type":"Feature","feature_ref":"row-7"}"#.as_slice(),
+            br#"{"type":"Feature","feature_ref":[]}"#.as_slice(),
+        ] {
+            let mut payload = body.to_vec();
+            let err = stamp_payload_part(&plan, &mut payload, 1).unwrap_err();
+            assert!(
+                matches!(&err, GeoError::PayloadDecode(message) if message.contains("feature_ref")),
+                "{err}"
+            );
+        }
+
+        // `null` is the one non-object serde_json would have accepted, by
+        // promoting it to an object. A payload whose feature ref is null is
+        // just as malformed as the others, so it is refused too.
+        let mut payload = br#"{"type":"Feature","feature_ref":null}"#.to_vec();
+        assert!(stamp_payload_part(&plan, &mut payload, 1).is_err());
     }
 }
 

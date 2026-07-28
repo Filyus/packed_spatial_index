@@ -3260,6 +3260,89 @@ fn cli_query_spherical_radius_filters_geography_points() {
     );
 }
 
+/// GeoJSON and GeoParquet without an `edges` member declare planar edges while
+/// storing lon/lat degrees. `--treat-nonplanar-as-planar` is how a caller
+/// vouches for those coordinates, and the CLI used to refuse to pass it along.
+#[test]
+fn cli_query_radius_accepts_the_planar_opt_in() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(2.0, 49.0)),
+                    Some(wkb_point_2d(20.0, 49.0)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["near", "far"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
+    let psindex = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+
+    let dir = env::temp_dir().join(format!(
+        "psi_geo_query_planar_radius_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.parquet");
+    let index_path = dir.join("source.psi");
+    fs::write(&source_path, &data).unwrap();
+    fs::write(&index_path, &psindex).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--radius")
+        .arg("2,49,1000")
+        .arg("--treat-nonplanar-as-planar")
+        .arg("--properties")
+        .arg("include:name")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let names = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["properties"]["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["near".to_string()]);
+
+    // Without the opt-in the declared edge model still decides.
+    let rejected = Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .arg("query")
+        .arg(&source_path)
+        .arg(&index_path)
+        .arg("--radius")
+        .arg("2,49,1000")
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("spherical"),
+        "stderr: {}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+}
+
 #[test]
 fn cli_query_accepts_3d_bbox_and_rejects_2d_only_flags() {
     let data = write_geoparquet(

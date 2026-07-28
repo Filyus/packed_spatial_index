@@ -62,7 +62,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   `filter_matches` / `filter_features` then always refused to narrow. A
   spherical-radius filter against a known-projected CRS is still rejected: no
   policy makes a metre radius meaningful there, matching the guard the scan side
-  already applies to geographic envelopes.
+  already applies to geographic envelopes. `gp2psindex query` accepts
+  `--treat-nonplanar-as-planar` alongside `--radius` to reach it; the two used
+  to be mutually exclusive, which left the CLI unable to filter exactly against
+  any planar-declaring lon/lat source.
 - A GeoParquet bbox covering without `zmin`/`zmax` now builds a 2D index even
   when the column declares `Point Z` or similar. Previously the declared
   geometry types decided the index dimensions while the covering supplied the

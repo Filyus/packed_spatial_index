@@ -57,6 +57,8 @@ usage:
       [--exact]
       [--predicate intersects]
       [--treat-nonplanar-as-planar]
+        (vouches for the stored coordinates against the column's declared
+         edge model: planar XY for --bbox, lon/lat degrees for --radius)
       [--geometry none|wkb]
       [--properties none|all|include:a,b|exclude:a,b]
       [--order source|match]
@@ -578,9 +580,6 @@ fn query_cmd_2d<R: RangeReader>(
     let treat_nonplanar = parsed.flag("--treat-nonplanar-as-planar");
     if !exact && (predicate.is_some() || treat_nonplanar) {
         return Err("--predicate and --treat-nonplanar-as-planar require --exact".into());
-    }
-    if radius_query && treat_nonplanar {
-        return Err("--treat-nonplanar-as-planar cannot be used with --radius".into());
     }
 
     let manifest = index.manifest().clone();

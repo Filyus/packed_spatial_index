@@ -379,6 +379,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
         let query = filter::prepare_filter_query(
             &state.info.encoding,
             state.info.edges,
+            &state.info.crs,
             &state.info.name,
             req.query,
             req.non_planar,

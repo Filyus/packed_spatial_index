@@ -354,7 +354,6 @@ pub enum CrsInfo {
 }
 
 impl CrsInfo {
-    #[cfg(feature = "_source")]
     pub(crate) fn as_index_crs(&self) -> Option<String> {
         match self {
             CrsInfo::Present { value } => Some(value.to_string()),
@@ -365,7 +364,6 @@ impl CrsInfo {
         }
     }
 
-    #[cfg(any(feature = "parquet", feature = "flatgeobuf"))]
     pub(crate) fn is_known_projected(&self) -> bool {
         let Some(value) = self.as_index_crs() else {
             return false;

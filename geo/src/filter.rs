@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::geodetic::SphericalRadius;
 use crate::{
-    EdgeAlgorithm, EdgeModel, FeatureRef, GeoError, GeoQuery2D, GeometryEncoding, GeometrySelector,
-    NonPlanarExactPolicy, SpatialPredicate, wkb,
+    CrsInfo, EdgeAlgorithm, EdgeModel, FeatureRef, GeoError, GeoQuery2D, GeometryEncoding,
+    GeometrySelector, NonPlanarExactPolicy, SpatialPredicate, wkb,
 };
 
 fn reject_non_planar_exact(
@@ -45,6 +45,7 @@ pub(crate) enum PreparedFilterQuery {
 pub(crate) fn prepare_filter_query(
     encoding: &GeometryEncoding,
     edges: EdgeModel,
+    crs: &CrsInfo,
     column: &str,
     query: GeoQuery2D,
     non_planar: NonPlanarExactPolicy,
@@ -63,6 +64,14 @@ pub(crate) fn prepare_filter_query(
             lat,
             radius_metres,
         } => {
+            // A metre radius is meaningless against projected coordinates, and
+            // no policy can make it meaningful -- the scan side already guards
+            // geographic envelope handling the same way.
+            if crs.is_known_projected() {
+                return Err(GeoError::UnsupportedGeodeticGeometry(format!(
+                    "column `{column}` has a projected CRS; a spherical-radius predicate needs lon/lat coordinates"
+                )));
+            }
             let compatible_native = !matches!(encoding, GeometryEncoding::ParquetGeography { .. })
                 || matches!(
                     encoding,
@@ -70,7 +79,13 @@ pub(crate) fn prepare_filter_query(
                         algorithm: EdgeAlgorithm::Spherical
                     }
                 );
-            if !matches!(edges, EdgeModel::Spherical) || !compatible_native {
+            // `TreatAsPlanar` is the caller's opt-in to evaluate despite the
+            // declared edge model. Without it a spherical-radius filter could
+            // never run against GeoJSON or plain GeoParquet, which declare
+            // planar edges while storing lon/lat degrees, so `search_matches`
+            // would return candidates that nothing was allowed to narrow.
+            let trusted = matches!(non_planar, NonPlanarExactPolicy::TreatAsPlanar);
+            if !trusted && (!matches!(edges, EdgeModel::Spherical) || !compatible_native) {
                 return Err(GeoError::NonSphericalExactPredicate {
                     column: column.to_string(),
                     edges,

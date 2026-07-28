@@ -487,6 +487,7 @@ impl<R> GeoArtifactIndex2D<R> {
         let prepared = prepare_filter_query(
             &self.manifest.encoding,
             self.manifest.edges,
+            &self.manifest.crs,
             &self.manifest.selected_column,
             query.into(),
             non_planar,

@@ -15,6 +15,14 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### Geometry
 
+- `NonPlanarExactPolicy::TreatAsPlanar` now also applies to spherical-radius
+  exact filtering, which previously required `edges: spherical` with no way to
+  opt out. GeoJSON and GeoParquet without an `edges` member declare planar edges
+  while storing lon/lat degrees, so such a search returned bbox candidates that
+  `filter_matches` / `filter_features` then always refused to narrow. A
+  spherical-radius filter against a known-projected CRS is still rejected: no
+  policy makes a metre radius meaningful there, matching the guard the scan side
+  already applies to geographic envelopes.
 - A GeoParquet bbox covering without `zmin`/`zmax` now builds a 2D index even
   when the column declares `Point Z` or similar. Previously the declared
   geometry types decided the index dimensions while the covering supplied the

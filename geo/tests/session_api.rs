@@ -1220,6 +1220,55 @@ fn filter_features_spherical_radius_rejects_wrong_edges_and_unsupported_geometry
     ));
 }
 
+/// GeoJSON and plain GeoParquet declare planar edges while storing lon/lat
+/// degrees, so without an opt-in a spherical-radius search could produce
+/// candidates that nothing was allowed to narrow.
+#[test]
+fn filter_features_spherical_radius_accepts_planar_edges_when_trusted() {
+    let planar = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                Some(wkb_point_2d(2.0, 49.0)),
+                Some(wkb_point_2d(20.0, 49.0)),
+            ]),
+        )],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut source = open_geoparquet(planar).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
+    let kept = source
+        .filter_features(FeatureFilterRequest {
+            non_planar: NonPlanarExactPolicy::TreatAsPlanar,
+            ..FeatureFilterRequest::intersects(
+                vec![FeatureRef::row_number(0), FeatureRef::row_number(1)],
+                query,
+            )
+        })
+        .unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].row_number, 0);
+}
+
+/// A metre radius against projected coordinates has no meaning, and unlike the
+/// edge model no policy can vouch for it.
+#[test]
+fn filter_features_spherical_radius_rejects_projected_crs() {
+    let projected = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_2d(2.0, 49.0))]))],
+        r#"{"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"],"edges":"spherical","crs":"EPSG:3857"}}}"#.to_string(),
+    );
+    let mut source = open_geoparquet(projected).unwrap();
+    let query = packed_spatial_index_geo::GeoQuery2D::spherical_radius(2.0, 49.0, 1_000.0);
+    assert!(matches!(
+        source.filter_features(FeatureFilterRequest {
+            non_planar: NonPlanarExactPolicy::TreatAsPlanar,
+            ..FeatureFilterRequest::intersects(vec![FeatureRef::row_number(0)], query)
+        }),
+        Err(GeoError::UnsupportedGeodeticGeometry(_))
+    ));
+}
+
 #[test]
 fn filter_features_spherical_radius_handles_empty_malformed_and_candidate_boxes() {
     let empty = write_geoparquet(

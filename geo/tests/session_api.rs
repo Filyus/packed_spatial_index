@@ -67,6 +67,19 @@ fn wkb_point_3d(x: f64, y: f64, z: f64) -> Vec<u8> {
     v
 }
 
+fn wkb_line_3d(coords: &[(f64, f64, f64)]) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.push(1);
+    v.extend_from_slice(&1002u32.to_le_bytes());
+    v.extend_from_slice(&(coords.len() as u32).to_le_bytes());
+    for (x, y, z) in coords {
+        v.extend_from_slice(&x.to_le_bytes());
+        v.extend_from_slice(&y.to_le_bytes());
+        v.extend_from_slice(&z.to_le_bytes());
+    }
+    v
+}
+
 fn wkb_point_m(x: f64, y: f64, m: f64) -> Vec<u8> {
     let mut v = Vec::with_capacity(29);
     v.push(1);
@@ -2025,6 +2038,77 @@ fn async_geo_artifact_frustum_query_prunes_over_bounding_box() {
             "{precision:?}: bbox query still covers all points"
         );
     }
+}
+
+/// The 3D feature-level and counting queries had no test call sites at all,
+/// only their 2D twins did. A split feature is the case that separates
+/// entry-level from feature-level answers, so the fixture builds one.
+#[test]
+fn three_dimensional_feature_level_queries_group_split_entries() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                // One line crossing the antimeridian: split into two entries.
+                Some(wkb_line_3d(&[(170.0, 0.0, 1.0), (-170.0, 1.0, 2.0)])),
+                Some(wkb_point_3d(5.0, 5.0, 5.0)),
+            ]),
+        )],
+        geo_meta_wkb(&["LineString Z", "Point Z"]),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            dims: IndexDimsRequest::D3,
+            payload: PayloadPlan::RowWkb,
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("expected 3D artifact");
+    };
+
+    let world = Box3D::new(-180.0, -90.0, -10.0, 180.0, 90.0, 10.0);
+
+    // Entry level counts split parts; feature level collapses them.
+    assert_eq!(index.count_entries(world).unwrap(), 3);
+    assert_eq!(index.search_entry_ids(world).unwrap().len(), 3);
+    assert_eq!(index.search_feature_refs(world).unwrap().len(), 3);
+
+    let features = index.search_features(world).unwrap();
+    assert_eq!(features.len(), 2);
+    assert!(
+        features.iter().all(|feature| feature.part.is_none()),
+        "a representative part number means nothing once entries collapse"
+    );
+
+    let matches = index.search_feature_matches(world).unwrap();
+    assert_eq!(matches.len(), 2);
+    assert_eq!(
+        matches
+            .iter()
+            .map(|m| m.feature.row_number)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+
+    // Headers and body fetches agree with the same query answered in full.
+    let headers = index.search_match_headers(world).unwrap();
+    assert_eq!(headers.len(), 3);
+    let fetched = index.fetch_matches(&headers).unwrap();
+    let mut searched = index.search_matches(world).unwrap();
+    GeoMatch::sort_by_entry(&mut searched);
+    let mut fetched_sorted = fetched;
+    GeoMatch::sort_by_entry(&mut fetched_sorted);
+    assert_eq!(fetched_sorted, searched);
+
+    // An empty region still answers, and answers zero.
+    let empty = Box3D::new(-1.0, -1.0, 100.0, 1.0, 1.0, 200.0);
+    assert_eq!(index.count_entries(empty).unwrap(), 0);
+    assert!(index.search_features(empty).unwrap().is_empty());
 }
 
 /// The async 3D surface had five methods where 2D had twelve. These are the

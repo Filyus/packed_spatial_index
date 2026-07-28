@@ -370,6 +370,10 @@ impl FeatureRef {
 
     /// Order by source feature identity: `row_number`, `row_group`,
     /// `row_in_group`, `feature_id`. `part` is ignored.
+    ///
+    /// `feature_id` participates, so refs decoded from payload bodies and refs
+    /// decoded from fixed payload prefixes — which carry no id — sort together
+    /// only because `row_number` already identifies a source feature.
     pub fn cmp_feature(&self, other: &FeatureRef) -> std::cmp::Ordering {
         self.row_number
             .cmp(&other.row_number)

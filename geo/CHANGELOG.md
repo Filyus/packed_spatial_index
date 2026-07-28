@@ -37,6 +37,17 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   scanned envelopes decide dimensionality, since a bbox covering without z
   bounds is the usual reason a `Point Z` source scans as 2D.
 
+### Documentation
+
+- Documented that `GeoMatchHeader` carries partial identity: its `FeatureRef`
+  comes from the fixed payload prefix, which has no room for a source
+  `feature_id`, so a header reports `None` where a `GeoMatch` for the same
+  entry may report `Some(..)`. The previous wording claimed headers carry
+  everything sorting, deduplication, and pagination need, which is true only
+  because `row_number` already identifies a source feature — `cmp_feature`
+  includes `feature_id` in its key, and that unstated dependency is now
+  recorded on both types.
+
 ### Geometry
 
 - `NonPlanarExactPolicy::TreatAsPlanar` now also applies to spherical-radius

@@ -800,9 +800,14 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// Search and return lightweight [`GeoMatchHeader`] records — identity and
     /// payload size per matched index entry, without reading payload bodies.
     ///
-    /// Headers carry everything sorting, deduplication, and pagination need;
-    /// feed a page of them to [`fetch_matches`](Self::fetch_matches) to
-    /// materialize full [`GeoMatch`] values for just that page. Supported for
+    /// Headers carry everything sorting, deduplication, and pagination need,
+    /// but not everything a [`GeoMatch`] has: a header's [`FeatureRef`] comes
+    /// from the fixed payload prefix, which has no room for a source
+    /// `feature_id`. That value lives in the payload body, so a header always
+    /// reports `feature_id: None` where [`search_matches`](Self::search_matches)
+    /// on the same artifact may report `Some(..)`. Feed a page of headers to
+    /// [`fetch_matches`](Self::fetch_matches) to materialize full [`GeoMatch`]
+    /// values — including the id — for just that page. Supported for
     /// `RowRef`, `RowWkb`, and current `FeatureJson` artifacts, whose payloads
     /// start with the fixed feature-ref record. Legacy raw-JSON `FeatureJson`
     /// artifacts remain readable through [`search_matches`](Self::search_matches)
@@ -2728,10 +2733,24 @@ impl GeoMatch {
 /// Lightweight header for one matched index entry: identity and payload size
 /// without the payload body.
 ///
-/// Produced by 2D or 3D `search_match_headers` methods (and the async 2D
-/// counterpart); sort, dedupe, and page headers cheaply, then feed the page to
-/// the corresponding `fetch_matches` method to materialize full [`GeoMatch`]
-/// values for just those entries.
+/// Produced by the 2D and 3D `search_match_headers` methods and their async
+/// and paged counterparts; sort, dedupe, and page headers cheaply, then feed
+/// the page to the corresponding `fetch_matches` method to materialize full
+/// [`GeoMatch`] values for just those entries.
+///
+/// # Identity is partial
+///
+/// [`feature`](Self::feature) is decoded from the fixed payload prefix, which
+/// stores `row_number`, `row_group`, `row_in_group`, and `part` — but not a
+/// source `feature_id`, which lives in the payload body. A header therefore
+/// always reports `feature_id: None`, while a [`GeoMatch`] for the same entry
+/// may report `Some(..)`. Fetching the page materializes the id.
+///
+/// This is also why header ordering and match ordering agree today only by
+/// construction: [`FeatureRef::cmp_feature`] includes `feature_id` in its key,
+/// so the two orders coincide because `row_number` already identifies a source
+/// feature uniquely. Code that pages headers and re-sorts the fetched matches
+/// depends on that.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeoMatchHeader {
     /// Index entry id, as in [`GeoMatch::entry_id`].

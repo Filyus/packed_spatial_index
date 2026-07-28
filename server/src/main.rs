@@ -25,6 +25,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let catalog = Catalog::from_path(&args.catalog)?;
     let addr = args.addr.unwrap_or(catalog.server.addr);
     let state = ServerState::from_catalog(catalog)?;
+    if !addr.ip().is_loopback() {
+        // A legitimate thing to want for a LAN demo, so this warns rather than
+        // refusing -- but the server has no authentication, and every
+        // configured artifact is readable by anyone who can reach the port.
+        tracing::warn!(
+            %addr,
+            "binding a non-loopback address; this server has no authentication"
+        );
+    }
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "starting PSINDEX server");
     serve(listener, state).await?;

@@ -466,6 +466,7 @@ pub fn items_response(
         options.limit,
     )?;
     let number_matched = outcome.number_matched;
+    let page_len = outcome.records.len();
     let features = outcome
         .records
         .into_iter()
@@ -474,6 +475,16 @@ pub fn items_response(
             _ => None,
         })
         .collect::<Vec<_>>();
+    // Nothing here can be dropped today: the payload plan is checked to be
+    // `FeatureJson` above, `PayloadMode::Full` is passed unconditionally, and
+    // that combination always decodes a body. Those three facts now sit three
+    // layers apart, so pin the consequence rather than trusting the reader to
+    // re-derive it.
+    debug_assert_eq!(
+        features.len(),
+        page_len,
+        "an /items page silently lost a feature"
+    );
     Ok(FeatureCollectionResponse {
         kind: "FeatureCollection",
         number_matched,

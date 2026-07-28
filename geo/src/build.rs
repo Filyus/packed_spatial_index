@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 use crate::manifest;
 use crate::payload;
 use crate::{
-    AntimeridianPolicy, EnvelopePolicy, FEATURE_JSON_CONTENT_TYPE, FEATURE_REF_CONTENT_TYPE,
-    FEATURE_WKB_CONTENT_TYPE, FeatureRef, GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D,
-    GeometryMetadataSource, GeometryProfile, GeometryScan, GeometrySelector, IndexDimsRequest,
-    NullPolicy, PayloadPlan, ScanRequest, StoragePrecision,
+    AntimeridianPolicy, CoordinateDims, EnvelopePolicy, FEATURE_JSON_CONTENT_TYPE,
+    FEATURE_REF_CONTENT_TYPE, FEATURE_WKB_CONTENT_TYPE, FeatureRef, GeoArtifactManifest, GeoError,
+    GeoQuery2D, GeoQuery3D, GeometryMetadataSource, GeometryProfile, GeometryScan,
+    GeometrySelector, IndexDimsRequest, NullPolicy, PayloadPlan, ScanRequest, StoragePrecision,
 };
 
 /// A geospatial source that can be scanned, built, and converted into a
@@ -185,10 +185,11 @@ fn check_scan_payload(scanned: &PayloadPlan, requested: &PayloadPlan) -> Result<
 
 /// Build the `geoM` manifest. `precision`/`interleaved` are serialization
 /// choices taken from the [`ConvertRequest`], but the data-describing fields
-/// (`payload`, `nulls`, `envelope`) come from the [`GeometryScan`]'s recorded
-/// provenance, not the request — so the manifest always matches the payload
-/// bytes actually written, even when a caller passes a `ConvertRequest` whose
-/// payload plan differs from the one the scan was built with.
+/// (`payload`, `nulls`, `envelope`, `index_dims`) come from the
+/// [`GeometryScan`]'s recorded provenance, not the request — so the manifest
+/// always matches the bytes actually written, even when a caller passes a
+/// `ConvertRequest` whose payload plan differs from the one the scan was built
+/// with.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn artifact_manifest(
     profile: &GeometryProfile,
@@ -196,6 +197,7 @@ pub(crate) fn artifact_manifest(
     payload: &PayloadPlan,
     nulls: NullPolicy,
     envelope: EnvelopePolicy,
+    index_dims: u8,
     feature_count: usize,
     index_entry_count: usize,
     entries_may_duplicate_rows: bool,
@@ -214,7 +216,7 @@ pub(crate) fn artifact_manifest(
         crs: profile.crs.clone(),
         edges: profile.edges,
         encoding: profile.encoding.clone(),
-        dims: profile.coordinate_dims,
+        dims: manifest_dims(profile.coordinate_dims, index_dims),
         storage_precision: precision,
         null_policy: nulls,
         antimeridian_policy: match envelope {
@@ -225,6 +227,22 @@ pub(crate) fn artifact_manifest(
         feature_count,
         index_entry_count,
         entries_may_duplicate_rows,
+    }
+}
+
+/// Reconcile the profile's declared coordinate dimensions with the dimensions
+/// the index was actually built in.
+///
+/// The profile describes the source; the index describes what was written.
+/// They usually agree, but a scan that detected nothing — an empty source, or
+/// one whose every geometry was skipped — leaves the profile at `Unknown`, and
+/// a manifest that inherits it cannot be reopened at all. When they disagree,
+/// the bytes win.
+fn manifest_dims(declared: CoordinateDims, index_dims: u8) -> CoordinateDims {
+    match declared.index_dims() {
+        Some(dims) if dims == index_dims => declared,
+        _ if index_dims == 3 => CoordinateDims::Xyz,
+        _ => CoordinateDims::Xy,
     }
 }
 
@@ -1264,6 +1282,7 @@ impl GeoArtifact {
                     &scan.payload,
                     scan.nulls,
                     scan.envelope,
+                    2,
                     payload::unique_feature_count(&scan.features),
                     scan.boxes.len(),
                     payload::entries_may_duplicate_rows(&scan.features),
@@ -1292,6 +1311,7 @@ impl GeoArtifact {
                     &scan.payload,
                     scan.nulls,
                     scan.envelope,
+                    3,
                     payload::unique_feature_count(&scan.features),
                     scan.boxes.len(),
                     payload::entries_may_duplicate_rows(&scan.features),

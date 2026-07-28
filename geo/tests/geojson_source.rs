@@ -288,6 +288,47 @@ fn geojson_direct_walker_handles_empty_and_invalid_coordinates() {
     assert!(err.to_string().contains("coordinate x is not a number"));
 }
 
+/// An artifact this crate writes must be one this crate can open. A scan with
+/// no surviving geometry never detects coordinate dimensions, and the manifest
+/// used to inherit that `Unknown` and lock the artifact shut.
+#[test]
+fn empty_scans_write_reopenable_artifacts() {
+    for doc in [
+        br#"{"type":"FeatureCollection","features":[]}"#.as_slice(),
+        // Every geometry skipped is the same situation arrived at differently.
+        br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":null,"properties":{}}
+        ]}"#
+        .as_slice(),
+    ] {
+        let mut bytes = Vec::new();
+        convert_geojson_stream(
+            Cursor::new(doc),
+            ConvertRequest {
+                nulls: NullPolicy::Skip,
+                ..ConvertRequest::default()
+            },
+            &mut bytes,
+        )
+        .unwrap();
+
+        let manifest = read_geo_manifest(&bytes)
+            .unwrap()
+            .expect("artifact carries a geo manifest");
+        assert_eq!(manifest.index_entry_count, 0);
+        let index = open_geo_index(SliceReader::new(bytes)).unwrap();
+        let GeoArtifactIndex::D2(index) = index else {
+            panic!("an empty scan builds a 2D index");
+        };
+        assert!(
+            index
+                .search_entry_ids(packed_spatial_index_geo::Box2D::new(-1.0, -1.0, 1.0, 1.0))
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
 #[test]
 fn geojson_stream_convert_and_build_match_eager_source_identity() {
     let eager = open_geojson_slice(sample_geojson()).unwrap();

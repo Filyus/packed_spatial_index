@@ -4,6 +4,14 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Persistence
+
+- The `geoM` manifest now records the dimensions the index was actually built
+  in rather than the ones the source profile declared. A scan whose geometries
+  were all skipped, or an empty source, left the profile at `Unknown` and wrote
+  an artifact that `open_geo_index` then rejected as having unknown coordinate
+  dimensions. Such artifacts now open as empty 2D indexes.
+
 ## [0.23.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.22.0...psi-geo-v0.23.0) - 2026-07-15
 
 ### API

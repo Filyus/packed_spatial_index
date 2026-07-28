@@ -117,7 +117,14 @@ pub enum GeoError {
     #[error("unsupported geometry for spherical exact filtering: {0}")]
     UnsupportedGeodeticGeometry(String),
     /// Geometry dimensionality does not match the requested index dimensions.
-    #[error("geometry is {found}D but {expected}D was requested")]
+    ///
+    /// Scanned envelopes, not declared geometry types, decide this: a bbox
+    /// covering with no z bounds yields 2D envelopes even for a `Point Z`
+    /// column. Request a payload plan that reads geometry (`RowWkb` or
+    /// `FeatureJson`) to index the real z extents.
+    #[error(
+        "geometry is {found}D but {expected}D was requested (scanned envelopes decide this; a bbox covering without z bounds yields 2D envelopes)"
+    )]
     DimMismatch {
         /// Requested dimension count.
         expected: u8,

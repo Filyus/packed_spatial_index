@@ -4,6 +4,19 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Geometry
+
+- A GeoParquet bbox covering without `zmin`/`zmax` now builds a 2D index even
+  when the column declares `Point Z` or similar. Previously the declared
+  geometry types decided the index dimensions while the covering supplied the
+  envelopes, so every entry was placed at z == 0 and any z-restricted query
+  silently matched nothing. Scanning with a payload plan that reads geometry
+  (`RowWkb` / `FeatureJson`) still indexes real z extents, and `validate`
+  reports a warning when a covering cannot describe the declared z.
+- Documented that the payload plan selects the envelope source (bbox covering
+  versus decoded WKB), including that `BuildRequest` always scans with
+  `PayloadPlan::None` while `ConvertRequest::default()` uses `RowWkb`.
+
 ### Persistence
 
 - The `geoM` manifest now records the dimensions the index was actually built

@@ -255,6 +255,12 @@ fn geo_meta_wkb_with_covering() -> String {
     r#"{"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"],"edges":"spherical","covering":{"bbox":{"xmin":["xmin"],"ymin":["ymin"],"xmax":["xmax"],"ymax":["ymax"]}}}}}"#.to_string()
 }
 
+/// A `Point Z` column with the ordinary GeoParquet 1.1 covering, which carries
+/// no z bounds.
+fn geo_meta_wkb_z_with_2d_covering() -> String {
+    r#"{"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point Z"],"covering":{"bbox":{"xmin":["xmin"],"ymin":["ymin"],"xmax":["xmax"],"ymax":["ymax"]}}}}}"#.to_string()
+}
+
 fn geo_meta_arrow(encoding: &str, geometry_type: &str) -> String {
     format!(
         r#"{{"version":"1.1.0","primary_column":"geometry","columns":{{"geometry":{{"encoding":"{encoding}","geometry_types":["{geometry_type}"]}}}}}}"#
@@ -2367,6 +2373,88 @@ fn covering_interval_does_not_wrap_when_min_is_before_max() {
     };
     assert_eq!(scan.boxes, vec![Box2D::new(-170.0, -5.0, 170.0, 5.0)]);
     assert_eq!(scan.features[0].part, None);
+}
+
+/// A 2D bbox covering cannot describe a z extent. When it is the envelope
+/// source, the index it produces is 2D no matter what the geometry types say --
+/// building 3D from it would place every entry at z == 0 and silently drop
+/// every z-restricted query.
+#[test]
+fn covering_without_z_builds_a_two_dimensional_index() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_3d(1.0, 1.0, 5.0)),
+                    Some(wkb_point_3d(2.0, 2.0, 9.0)),
+                ]),
+            ),
+            (
+                "xmin",
+                Arc::new(Float64Array::from(vec![1.0, 2.0])) as ArrayRef,
+            ),
+            (
+                "ymin",
+                Arc::new(Float64Array::from(vec![1.0, 2.0])) as ArrayRef,
+            ),
+            (
+                "xmax",
+                Arc::new(Float64Array::from(vec![1.0, 2.0])) as ArrayRef,
+            ),
+            (
+                "ymax",
+                Arc::new(Float64Array::from(vec![1.0, 2.0])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb_z_with_2d_covering(),
+    );
+
+    // `BuildRequest` has no payload plan, so envelopes come from the covering.
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
+    let scan = dataset
+        .scan(packed_spatial_index_geo::ScanRequest::default())
+        .unwrap();
+    let GeometryScan::D2(scan) = scan else {
+        panic!("a 2D covering describes 2D envelopes");
+    };
+    assert_eq!(scan.boxes.len(), 2);
+    assert_eq!(scan.profile.coordinate_dims, CoordinateDims::Xy);
+
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
+    let mut bytes = Vec::new();
+    dataset
+        .convert_into(
+            ConvertRequest {
+                payload: PayloadPlan::None,
+                ..ConvertRequest::default()
+            },
+            &mut bytes,
+        )
+        .unwrap();
+    let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes)).unwrap() else {
+        panic!("a 2D covering builds a 2D artifact");
+    };
+    assert_eq!(
+        index
+            .search_entry_ids(Box2D::new(0.0, 0.0, 3.0, 3.0))
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // Reading the geometry gives real z extents, so that path still builds 3D.
+    let mut dataset = open_geoparquet(data).unwrap();
+    let scan = dataset
+        .scan(packed_spatial_index_geo::ScanRequest {
+            payload: PayloadPlan::RowWkb,
+            ..Default::default()
+        })
+        .unwrap();
+    let GeometryScan::D3(scan) = scan else {
+        panic!("scanned geometry is 3D");
+    };
+    assert_eq!(scan.boxes[0].min_z, 5.0);
 }
 
 #[test]

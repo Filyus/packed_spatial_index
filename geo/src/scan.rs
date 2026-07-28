@@ -49,7 +49,7 @@ pub(crate) fn scan_selected<R: ChunkReader + 'static>(
         .build()
         .map_err(GeoError::from)?;
     let mut entries = scan_core::vec_with_u64_capacity_hint(dataset.discovery().num_rows);
-    let mut detected_dims = state.info.coordinate_dims;
+    let mut detected_dims = seed_dims(state, need_geometry_payload);
     let collect_lons = matches!(req.envelope, EnvelopePolicy::Geographic { .. });
     let mut row_base = 0u64;
     let mut row_group_cursor = 0usize;
@@ -361,6 +361,35 @@ fn scan_one_row(
         return Ok(None);
     };
     Ok(Some((row.bounds, need_geometry_payload.then_some(row.wkb))))
+}
+
+/// Starting point for the dimensions a scan detects.
+///
+/// The declared geometry types describe the source rows, but the index is built
+/// from whatever produced the envelopes. When that is a bbox covering without
+/// `zmin`/`zmax` -- the ordinary GeoParquet 1.1 shape, even for `Point Z`
+/// columns -- no z extent exists to index, and inheriting `Xyz` here would
+/// build a 3D index whose every entry sits at z == 0, silently answering
+/// nothing for any query that excludes it. Drop only the z flag, so an `M`
+/// coordinate the source declares still reaches the manifest.
+///
+/// Callers that need real z extents from such a source can request a payload
+/// plan that reads geometry (`RowWkb` or `FeatureJson`), which switches the
+/// envelope source to the WKB itself.
+fn seed_dims(state: &ColumnState, need_geometry_payload: bool) -> CoordinateDims {
+    let declared = state.info.coordinate_dims;
+    let covering_lacks_z = state
+        .covering
+        .as_ref()
+        .is_some_and(|covering| covering.zmin.is_none() || covering.zmax.is_none());
+    if need_geometry_payload || !covering_lacks_z {
+        return declared;
+    }
+    match declared {
+        CoordinateDims::Xyz => CoordinateDims::Xy,
+        CoordinateDims::Xyzm => CoordinateDims::Xym,
+        other => other,
+    }
 }
 
 fn bounds_from_covering(

@@ -352,6 +352,25 @@ pub(crate) fn ordered_feature_refs(
 }
 
 /// Request for a source scan such as `GeoDataset::scan`.
+///
+/// # The payload plan chooses where envelopes come from
+///
+/// `PayloadPlan::None` and `PayloadPlan::RowRef` do not need the geometry
+/// bytes, so a GeoParquet bbox covering — when the file has one — supplies the
+/// envelopes and the geometry column is never decoded. `RowWkb` and
+/// `FeatureJson` decode the geometry anyway, so envelopes come from the WKB
+/// itself. The same file under the same [`EnvelopePolicy`] can therefore be
+/// indexed differently depending on the payload plan:
+///
+/// - Covering envelopes are as tight as the writer made them, and a covering
+///   with no `zmin`/`zmax` yields 2D envelopes even for a `Point Z` column.
+/// - A covering whose longitude interval wraps the antimeridian is rejected
+///   under [`EnvelopePolicy::Planar`], where the corresponding WKB envelope is
+///   accepted.
+///
+/// This matters most because the defaults differ: `BuildRequest` has no payload
+/// field and always scans with `PayloadPlan::None`, while
+/// `ConvertRequest::default()` uses `PayloadPlan::RowWkb`.
 #[derive(Debug, Clone)]
 pub struct ScanRequest {
     /// Geometry column selector.

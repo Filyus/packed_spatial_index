@@ -305,6 +305,11 @@ impl Default for IndexBuildOptions {
 /// # let _ = index;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+///
+/// A build carries no payload, so it always scans with [`PayloadPlan::None`]
+/// and takes its envelopes from a GeoParquet bbox covering when the file has
+/// one. See [`ScanRequest`] for what that implies — most visibly, a covering
+/// without z bounds yields a 2D index even for a `Point Z` column.
 #[derive(Debug, Clone)]
 pub struct BuildRequest {
     /// Geometry column selector.

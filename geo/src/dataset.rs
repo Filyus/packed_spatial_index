@@ -575,6 +575,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
             self.add_capability_issues(state, &req, &mut issues);
             self.add_native_stats_issues(state, &req, &mut issues);
             add_coordinate_aabb_warning(state, &mut issues);
+            add_covering_dims_warning(state, &mut issues);
 
             if req.exact && !validation::has_errors(&issues) {
                 match self.scan(ScanRequest {
@@ -1012,6 +1013,31 @@ fn add_coordinate_aabb_warning(state: &ColumnState, issues: &mut Vec<crate::Vali
             format!(
                 "column `{}` is indexed as coordinate axis-aligned bounding boxes; exact spherical/ellipsoidal predicates are not evaluated",
                 state.info.name
+            ),
+        ));
+    }
+}
+
+/// Warn when the declared geometry types carry a z that the bbox covering
+/// cannot describe.
+///
+/// Nothing is wrong with the file; the point is that a build which takes its
+/// envelopes from the covering indexes 2D boxes, so the z the column advertises
+/// will not be queryable. Reading geometry (`RowWkb` / `FeatureJson`) is the
+/// way to index it.
+fn add_covering_dims_warning(state: &ColumnState, issues: &mut Vec<crate::ValidationIssue>) {
+    let covering_lacks_z = state
+        .covering
+        .as_ref()
+        .is_some_and(|covering| covering.zmin.is_none() || covering.zmax.is_none());
+    if covering_lacks_z && state.info.coordinate_dims.has_z() {
+        issues.push(validation::issue(
+            ValidationSeverity::Warning,
+            ValidationCode::UnknownDimensions,
+            Some(state.info.name.clone()),
+            format!(
+                "column `{}` declares {} but its bbox covering has no z bounds; envelopes taken from the covering index 2D boxes",
+                state.info.name, state.info.coordinate_dims
             ),
         ));
     }

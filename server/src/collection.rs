@@ -145,6 +145,12 @@ impl Collection {
         self.directory.has_payload()
     }
 
+    /// Whether one source row can appear as several index entries, as
+    /// antimeridian splitting produces.
+    pub fn entries_may_duplicate_rows(&self) -> bool {
+        self.manifest().entries_may_duplicate_rows
+    }
+
     /// Whether `predicate=intersects` can run from artifact payloads alone.
     pub fn supports_intersects_predicate(&self) -> bool {
         matches!(

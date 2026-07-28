@@ -29,9 +29,15 @@ Artifact paths are resolved relative to the catalog file.
 
 `[server.limits]` bounds the cost of a single query; the values above are the
 defaults and `0` lifts a limit. A query that exceeds one is answered with 422
-`query_too_large` rather than running unbounded. This is the only bound on
-payload-less collections, whose id search has no pagination path: `limit` caps
-what is returned, not what is matched.
+`query_too_large` rather than running unbounded.
+
+Limits matter because `numberMatched` is exact, so a query still visits every
+match even when `limit` is small. What it *retains* depends on the collection:
+a paged header search keeps only the requested page, but that needs entry-level
+paging, so it does not apply when the artifact can split one source row across
+several entries (antimeridian handling) and the request asks for feature-level
+results — there the matched set is grouped in memory first. Payload-less
+collections have no paged path at all, so limits are their only bound.
 
 ## Run
 

@@ -1,8 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use packed_spatial_index_geo::{
     Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex, GeoMatch,
-    GeoMatchHeader, GeoPayload, GeoQuery2D, GeometryEncoding, NonPlanarExactPolicy, PayloadPlan,
-    SpatialPredicate, StoragePrecision,
+    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery2D, GeometryEncoding,
+    NonPlanarExactPolicy, PayloadPlan, SpatialPredicate, StoragePrecision,
 };
 use serde::{Deserialize, Serialize};
 
@@ -551,6 +551,17 @@ impl RecordShape {
     fn needs_payload_bodies(&self) -> bool {
         self.payload == PayloadMode::Full || self.identity == IdentityMode::Full
     }
+
+    /// Whether the artifact's paged header search can answer this shape.
+    ///
+    /// Paging happens over index entries. Feature-level results collapse split
+    /// entries first, and that regrouping has to see the whole match set before
+    /// anything can be counted or sliced — unless the artifact records that its
+    /// entries never duplicate a source row, in which case the collapse is a
+    /// no-op and entry order is already feature order.
+    fn can_page_entries(&self, collection: &Collection) -> bool {
+        matches!(self.level, ResultLevel::Entry) || !collection.entries_may_duplicate_rows()
+    }
 }
 
 fn search_records(
@@ -605,6 +616,14 @@ fn search_records(
                     PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
                 )
             {
+                if shape.can_page_entries(collection) {
+                    let page = index
+                        .search_match_headers_page(query, offset, limit)
+                        .map_err(ServerError::from_geo)?;
+                    return page_outcome(page, shape, payload_plan, |page| {
+                        index.fetch_matches(page)
+                    });
+                }
                 let headers = index
                     .search_match_headers(query)
                     .map_err(ServerError::from_geo)?;
@@ -654,6 +673,14 @@ fn search_records(
                 payload_plan,
                 PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
             ) {
+                if shape.can_page_entries(collection) {
+                    let page = index
+                        .search_match_headers_page(query, offset, limit)
+                        .map_err(ServerError::from_geo)?;
+                    return page_outcome(page, shape, payload_plan, |page| {
+                        index.fetch_matches(page)
+                    });
+                }
                 let headers = index
                     .search_match_headers(query)
                     .map_err(ServerError::from_geo)?;
@@ -716,6 +743,9 @@ fn match_outcome(
 
 /// Sort, dedupe, and page match headers; payload bodies are fetched only for
 /// the page, and only when the requested shape needs them.
+///
+/// Used when feature-level grouping has to happen before counting, which needs
+/// the whole match set in memory. [`page_outcome`] is the bounded path.
 fn header_outcome(
     mut headers: Vec<GeoMatchHeader>,
     shape: RecordShape,
@@ -730,21 +760,43 @@ fn header_outcome(
     }
     let number_matched = headers.len();
     let page = paginate(&headers, offset, limit);
-    let records = if shape.needs_payload_bodies() {
-        fetch(&page)
+    Ok(SearchOutcome {
+        number_matched,
+        records: page_records(page, shape, plan, fetch)?,
+    })
+}
+
+/// Build records from a page geo already counted and sliced.
+fn page_outcome(
+    page: GeoMatchHeaderPage,
+    shape: RecordShape,
+    plan: &PayloadPlan,
+    fetch: impl FnOnce(&[GeoMatchHeader]) -> Result<Vec<GeoMatch>, packed_spatial_index_geo::GeoError>,
+) -> Result<SearchOutcome, ServerError> {
+    Ok(SearchOutcome {
+        number_matched: page.number_matched,
+        records: page_records(page.headers, shape, plan, fetch)?,
+    })
+}
+
+fn page_records(
+    page: Vec<GeoMatchHeader>,
+    shape: RecordShape,
+    plan: &PayloadPlan,
+    fetch: impl FnOnce(&[GeoMatchHeader]) -> Result<Vec<GeoMatch>, packed_spatial_index_geo::GeoError>,
+) -> Result<Vec<MatchRecord>, ServerError> {
+    if shape.needs_payload_bodies() {
+        Ok(fetch(&page)
             .map_err(ServerError::from_geo)?
             .into_iter()
             .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, shape))
-            .collect()
+            .collect())
     } else {
-        page.into_iter()
+        Ok(page
+            .into_iter()
             .map(|header| header_record(header, shape, plan))
-            .collect()
-    };
-    Ok(SearchOutcome {
-        number_matched,
-        records,
-    })
+            .collect())
+    }
 }
 
 /// Build a record straight from a header — no payload body was read, so
@@ -764,9 +816,16 @@ fn header_record(header: GeoMatchHeader, shape: RecordShape, plan: &PayloadPlan)
         // The header search rejects payload-less artifacts up front.
         (_, PayloadPlan::None) => None,
     };
+    let mut feature = header.feature;
+    // A representative part number is meaningless once split entries collapse
+    // into one feature-level record. Feature-level dedupe already clears it,
+    // but the paged path skips dedupe when the artifact cannot split entries.
+    if matches!(shape.level, ResultLevel::Feature) {
+        feature.part = None;
+    }
     MatchRecord {
         entry_id: header.entry_id,
-        feature_ref: Some(header.feature.into()),
+        feature_ref: Some(feature.into()),
         payload,
     }
 }

@@ -433,6 +433,56 @@ async fn contract_error_shape() {
     );
 }
 
+/// Paging happens inside the artifact when entries never duplicate a source
+/// row, and in the server when feature-level grouping has to run first. Both
+/// must produce the same page and the same `numberMatched`.
+#[tokio::test]
+async fn paged_and_grouped_searches_agree() {
+    let split = state_with_geojson_request(
+        ConvertRequest {
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            payload: PayloadPlan::RowWkb,
+            ..ConvertRequest::default()
+        },
+        antimeridian_geojson(),
+    );
+    let plain = state_with_payload(PayloadPlan::RowWkb);
+
+    for (state, expected_matched) in [(split, 1), (plain, 2)] {
+        let app = router(state);
+        let bbox = "bbox=-180,-90,180,90";
+        let (status, whole) =
+            get_json(app.clone(), &format!("/collections/places/search?{bbox}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(whole["numberMatched"], expected_matched);
+
+        for offset in 0..=expected_matched {
+            let (status, page) = get_json(
+                app.clone(),
+                &format!("/collections/places/search?{bbox}&limit=1&offset={offset}"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(page["numberMatched"], expected_matched);
+            assert_contract(
+                &page["matches"],
+                json!(
+                    whole["matches"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .skip(offset)
+                        .take(1)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn unknown_query_parameters_are_rejected() {
     let app = router(state_with_payload(PayloadPlan::RowRef));

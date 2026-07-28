@@ -73,6 +73,16 @@ Use the selected crate's public API surface (pre-1.0):
 - bug/behavior fix only -> patch;
 - removed/changed public API -> major.
 
+While a crate is `0.x`, "major" means `0.Y+1.0` as well: Cargo already treats a
+change of `Y` as breaking for `0.x` dependents, so `0.Y+1.0` is the breaking
+slot and there is no cheaper one. A release may therefore carry new API and a
+breaking change together. This does **not** mean breaking changes are free —
+say so plainly in the release notes, and prefer a non-breaking shape when one
+exists. It means the cost is the same whether you break once or three times in
+the same release, so batch them rather than deferring a needed break to avoid a
+version number. Reaching `1.0.0` is a deliberate decision about stability, not
+the automatic consequence of removing something.
+
 Manifest paths:
 
 - `packed_spatial_index`: `Cargo.toml`;

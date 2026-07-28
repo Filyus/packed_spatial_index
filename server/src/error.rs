@@ -129,8 +129,7 @@ impl ServerError {
             | ServerError::InvalidPredicate(_)
             | ServerError::InvalidLevel(_)
             | ServerError::InvalidPayload(_)
-            | ServerError::InvalidIdentity(_)
-            | ServerError::Toml(_) => StatusCode::BAD_REQUEST,
+            | ServerError::InvalidIdentity(_) => StatusCode::BAD_REQUEST,
             ServerError::CollectionNotFound(_) | ServerError::RouteNotFound(_) => {
                 StatusCode::NOT_FOUND
             }
@@ -140,7 +139,10 @@ impl ServerError {
             | ServerError::UnsupportedPredicate(_)
             | ServerError::UnsupportedLevel(_)
             | ServerError::QueryTooLarge(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            // A catalog is parsed once at startup, never in a request, so a
+            // TOML error can only ever be a misconfigured server.
             ServerError::Config(_)
+            | ServerError::Toml(_)
             | ServerError::Io { .. }
             | ServerError::Geo(_)
             | ServerError::QueryTask(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -157,7 +159,6 @@ impl ServerError {
             ServerError::InvalidLevel(_) => "invalid_level",
             ServerError::InvalidPayload(_) => "invalid_payload",
             ServerError::InvalidIdentity(_) => "invalid_identity",
-            ServerError::Toml(_) => "bad_request",
             ServerError::CollectionNotFound(_) => "collection_not_found",
             ServerError::RouteNotFound(_) => "not_found",
             ServerError::MethodNotAllowed(_) => "method_not_allowed",
@@ -166,9 +167,9 @@ impl ServerError {
             ServerError::UnsupportedPredicate(_) => "unsupported_predicate",
             ServerError::UnsupportedLevel(_) => "unsupported_level",
             ServerError::QueryTooLarge(_) => "query_too_large",
-            ServerError::Config(_) => "configuration",
+            ServerError::Config(_) | ServerError::Toml(_) => "configuration",
             ServerError::Io { .. } => "io",
-            ServerError::QueryTask(_) => "internal",
+            ServerError::QueryTask(_) => "query_task",
             ServerError::Geo(_) => "artifact_error",
         }
     }

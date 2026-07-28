@@ -31,10 +31,6 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   page in memory. It reports the exact pre-pagination count while retaining at
   most `offset + limit` headers, and `GeoMatchHeaderPage` is no longer gated
   behind the `async` feature.
-- `GeoArtifactIndex2D::filter_matches` now checks the artifact's payload plan
-  before iterating candidates, so a `RowRef` artifact reports the documented
-  `PayloadDecode` error even when the candidate list is empty. It previously
-  returned `Ok(vec![])` in that case.
 - `IndexDimsRequest::D2` now projects away z instead of rejecting a source that
   has one, matching what "force 2D envelopes" always claimed. `D3` still
   requires the scan to find a z extent: promoting 2D input would have to invent
@@ -51,9 +47,21 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   said". **Breaking:** `ValidationCode` and `DiscoveryWarning` are now
   `#[non_exhaustive]` — the only geo vocabularies that were not — so exhaustive
   matches on them need a fallback arm. Future codes are additive after this.
+- `validate` reports that warning whenever a column's bbox covering cannot
+  describe the z its geometry types declare, since envelopes taken from such a
+  covering index 2D boxes.
 
 ### Documentation
 
+- Documented that the payload plan selects the envelope source (bbox covering
+  versus decoded WKB) and therefore the index dimensions, including that
+  `BuildRequest` always scans with `PayloadPlan::None` while
+  `ConvertRequest::default()` uses `RowWkb`. The README and guide now say so in
+  prose, not only rustdoc.
+- Documented that a geographic envelope decides "crosses the antimeridian" by
+  the shortest way round, the RFC 7946 reading, while every source this crate
+  reads declares planar edges. Where the two disagree, splitting indexes the
+  shortest-path interpretation.
 - Documented that `GeoMatchHeader` carries partial identity: its `FeatureRef`
   comes from the fixed payload prefix, which has no room for a source
   `feature_id`, so a header reports `None` where a `GeoMatch` for the same
@@ -65,6 +73,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### Geometry
 
+- `GeoArtifactIndex2D::filter_matches` now checks the artifact's payload plan
+  before iterating candidates, so a `RowRef` artifact reports the documented
+  `PayloadDecode` error even when the candidate list is empty. It previously
+  returned `Ok(vec![])` in that case.
 - A spherical-radius filter now wraps longitudes outside `[-180, 180]` instead
   of dropping the point. A dataset stored in `[0, 360)` silently matched
   nothing east of the antimeridian, even though the query side already wrapped
@@ -86,11 +98,7 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   geometry types decided the index dimensions while the covering supplied the
   envelopes, so every entry was placed at z == 0 and any z-restricted query
   silently matched nothing. Scanning with a payload plan that reads geometry
-  (`RowWkb` / `FeatureJson`) still indexes real z extents, and `validate`
-  reports a warning when a covering cannot describe the declared z.
-- Documented that the payload plan selects the envelope source (bbox covering
-  versus decoded WKB), including that `BuildRequest` always scans with
-  `PayloadPlan::None` while `ConvertRequest::default()` uses `RowWkb`.
+  (`RowWkb` / `FeatureJson`) still indexes real z extents.
 
 ### Persistence
 

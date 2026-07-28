@@ -364,12 +364,22 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
     } else {
         vec![ResultLevel::Feature, ResultLevel::Entry]
     };
+    // A source id lives in a `FeatureJson` body; every other plan keeps the
+    // whole feature reference in the fixed prefix, so `full` has nothing to
+    // add there. It is still accepted — a client querying a mixed catalog
+    // should not have to vary its request per collection — but advertising it
+    // would promise detail this collection cannot produce.
+    let identity_modes = if payload_kind == PayloadKind::FeatureJson {
+        vec![IdentityMode::Ref, IdentityMode::Full]
+    } else {
+        vec![IdentityMode::Ref]
+    };
     Capabilities {
         items: payload_kind == PayloadKind::FeatureJson,
         predicates,
         levels,
         payload_modes: vec![PayloadMode::None, PayloadMode::Summary, PayloadMode::Full],
-        identity_modes: vec![IdentityMode::Ref, IdentityMode::Full],
+        identity_modes,
     }
 }
 
@@ -547,9 +557,14 @@ impl RecordShape {
     /// Whether the requested shape needs payload bodies for the returned page.
     ///
     /// A body read serves two different needs: the payload value itself, and
-    /// the source `featureId`, which the fixed payload prefix cannot carry.
-    fn needs_payload_bodies(&self) -> bool {
-        self.payload == PayloadMode::Full || self.identity == IdentityMode::Full
+    /// the source `featureId`. Only `FeatureJson` bodies carry an id — every
+    /// other plan stores the whole feature reference in the fixed prefix — so
+    /// reading bodies for `identity=full` elsewhere would cost a page of I/O
+    /// for a byte-identical answer.
+    fn needs_payload_bodies(&self, plan: &PayloadPlan) -> bool {
+        self.payload == PayloadMode::Full
+            || (self.identity == IdentityMode::Full
+                && matches!(plan, PayloadPlan::FeatureJson { .. }))
     }
 
     /// Whether the artifact's paged header search can answer this shape.
@@ -785,7 +800,7 @@ fn page_records(
     plan: &PayloadPlan,
     fetch: impl FnOnce(&[GeoMatchHeader]) -> Result<Vec<GeoMatch>, packed_spatial_index_geo::GeoError>,
 ) -> Result<Vec<MatchRecord>, ServerError> {
-    if shape.needs_payload_bodies() {
+    if shape.needs_payload_bodies(plan) {
         Ok(fetch(&page)
             .map_err(ServerError::from_geo)?
             .into_iter()
@@ -1027,26 +1042,52 @@ mod tests {
 
     #[test]
     fn only_full_identity_reads_payload_bodies() {
+        let json = PayloadPlan::FeatureJson {
+            properties: packed_spatial_index_geo::PropertyProjection::AllNonGeometry,
+        };
         let summary = RecordShape {
             payload: PayloadMode::Summary,
             level: ResultLevel::Feature,
             identity: IdentityMode::Ref,
         };
-        assert!(!summary.needs_payload_bodies());
+        assert!(!summary.needs_payload_bodies(&json));
         assert!(
             RecordShape {
                 identity: IdentityMode::Full,
                 ..summary
             }
-            .needs_payload_bodies()
+            .needs_payload_bodies(&json)
         );
         assert!(
             RecordShape {
                 payload: PayloadMode::Full,
                 ..summary
             }
-            .needs_payload_bodies()
+            .needs_payload_bodies(&json)
         );
+    }
+
+    /// Only a `FeatureJson` body carries a source id, so asking for one
+    /// elsewhere must not buy a page of reads for an identical answer.
+    #[test]
+    fn full_identity_reads_bodies_only_where_an_id_can_live() {
+        let full_identity = RecordShape {
+            payload: PayloadMode::Summary,
+            level: ResultLevel::Feature,
+            identity: IdentityMode::Full,
+        };
+        for plan in [PayloadPlan::RowRef, PayloadPlan::RowWkb, PayloadPlan::None] {
+            assert!(!full_identity.needs_payload_bodies(&plan), "{plan:?}");
+            // The payload value itself is a separate reason to read.
+            assert!(
+                RecordShape {
+                    payload: PayloadMode::Full,
+                    ..full_identity
+                }
+                .needs_payload_bodies(&plan),
+                "{plan:?}"
+            );
+        }
     }
 
     #[test]

@@ -188,7 +188,7 @@ async fn contract_collections_summary_shape() {
                     "predicates": ["bbox"],
                     "levels": ["feature", "entry"],
                     "payloadModes": ["none", "summary", "full"],
-                    "identityModes": ["ref", "full"]
+                    "identityModes": ["ref"]
                 }
             }
         ]),
@@ -366,6 +366,36 @@ async fn identity_full_adds_the_source_feature_id() {
     .await;
     assert_eq!(json["query"]["identity"], "ref");
     assert!(json["matches"][0]["featureRef"].get("featureId").is_none());
+}
+
+/// `identity=full` is accepted everywhere so a client need not vary its request
+/// per collection, but only a `feature_json` body holds a source id — the other
+/// plans keep the whole feature reference in the fixed prefix. Asking for one
+/// there must change nothing, and must not buy a page of reads to prove it.
+#[tokio::test]
+async fn identity_full_is_a_no_op_where_no_id_is_stored() {
+    for payload in [PayloadPlan::RowRef, PayloadPlan::RowWkb, PayloadPlan::None] {
+        let app = router(state_with_payload(payload.clone()));
+
+        let (status, listed) = get_json(app.clone(), "/collections").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_contract(&listed[0]["capabilities"]["identityModes"], json!(["ref"]));
+
+        let (status, plain) =
+            get_json(app.clone(), "/collections/places/search?bbox=-10,0,30,5").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, asked) = get_json(
+            app,
+            "/collections/places/search?bbox=-10,0,30,5&identity=full",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Accepted and echoed, so the client can see what applied...
+        assert_eq!(asked["query"]["identity"], "full");
+        // ...but the records are the ones the fixed prefix already described.
+        assert_contract(&asked["matches"], plain["matches"].clone());
+    }
 }
 
 #[tokio::test]

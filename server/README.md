@@ -85,7 +85,9 @@ Query parameters:
   the fixed-width feature reference (row number, row group, part), but a source
   `featureId` lives inside the payload body, so `full` reads bodies for the
   returned page to include it. It only changes `feature_json` collections;
-  other payload kinds store no source id to recover.
+  other payload kinds store no source id to recover, so `full` is accepted and
+  echoed there but reads nothing extra, and `capabilities.identityModes` lists
+  `full` only where it can actually add something.
 - `limit`, `offset` — pagination over the matched set.
 
 Responses echo the effective query (after defaults) under `query`, so a client

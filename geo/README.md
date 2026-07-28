@@ -388,12 +388,18 @@ gp2psindex query input.parquet output.psi \
 - `GEOGRAPHY` is indexed as a coordinate-axis-aligned bounding box over the
   stored WKB coordinates. This is a candidate index, not exact spherical or
   ellipsoidal predicate evaluation.
-- Spherical radius exact filtering is available for spherical geography
-  `Point` / `MultiPoint` sources. Ellipsoidal predicates and exact spherical
-  line / polygon distance are out of scope for now.
-- Box exact filtering is XY planar. `GEOGRAPHY` and non-planar edge models
-  reject by default; opt in only when treating stored coordinates as planar is
-  acceptable for the query.
+- Spherical radius exact filtering is available for `Point` / `MultiPoint`
+  sources. Ellipsoidal predicates and exact spherical line / polygon distance
+  are out of scope for now.
+- `NonPlanarExactPolicy` is how a caller vouches for the stored coordinates
+  against the column's declared edge model, and what it vouches for depends on
+  the query: planar XY for a box or polygon, lon/lat degrees for a spherical
+  radius. Both reject by default. The radius case matters more than it sounds:
+  GeoJSON always declares planar edges, as does GeoParquet without an `edges`
+  member, so without the opt-in such a source produces radius candidates that
+  nothing is allowed to narrow.
+- A spherical radius against a known-projected CRS is rejected under every
+  policy — a radius in metres has no meaning there.
 
 ## License
 

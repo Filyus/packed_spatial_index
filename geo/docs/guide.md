@@ -304,12 +304,22 @@ single-row byte seek into Parquet.
 
 ## Spherical radius queries
 
-For `GEOGRAPHY(SPHERICAL)` / GeoParquet spherical edges, the CLI's
-`query --radius` performs a lon/lat radius lookup: it first searches the 2D
-artifact with one or two candidate boxes (splitting at the antimeridian when
-needed), then applies exact spherical distance filtering before reading
+The CLI's `query --radius` performs a lon/lat radius lookup: it first searches
+the 2D artifact with one or two candidate boxes (splitting at the antimeridian
+when needed), then applies exact spherical distance filtering before reading
 projected rows. This release supports `Point` and `MultiPoint` geometries;
 lines and polygons return a clear unsupported-geometry error.
+
+The exact filter runs unprompted for `GEOGRAPHY(SPHERICAL)` and GeoParquet
+spherical edges. Sources that store lon/lat degrees while declaring *planar*
+edges — GeoJSON always, and GeoParquet without an `edges` member — need
+`--treat-nonplanar-as-planar`, which is how you vouch that the coordinates are
+really degrees. Without it the search still returns candidate boxes but nothing
+may narrow them, so a radius query would report far more than it should.
+
+A known-projected CRS is rejected outright, with or without the flag: a radius
+in metres has no meaning against projected coordinates, and no policy can
+supply one.
 
 ```text
 gp2psindex query input.parquet output.psi \

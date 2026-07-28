@@ -6,6 +6,11 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- Added `count_entries_async` to `GeoArtifactIndex2D` and `GeoArtifactIndex3D`.
+  The docs claimed no async variant was possible because the async layer
+  exposed no visitor, which has not been true since the region visitors landed;
+  a box is its own region, so the count streams there too instead of
+  materializing entry ids.
 - Added `search_match_headers_page` to `GeoArtifactIndex2D` and
   `GeoArtifactIndex3D`. Bounded, deterministic entry pagination was previously
   async-only, so synchronous callers had to materialize every match header and

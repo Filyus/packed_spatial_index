@@ -12,6 +12,24 @@ pub enum NullPolicy {
 }
 
 /// How to handle envelopes crossing the antimeridian.
+///
+/// # Which way a geometry crosses
+///
+/// "Crossing the antimeridian" is not a property of the coordinates alone.
+/// Deciding it means choosing where a geometry's edges run between its
+/// vertices, and a geographic envelope takes the RFC 7946 reading: the
+/// shortest way round. A feature's longitude interval is the narrowest arc
+/// covering its vertices, so a two-vertex line from `170` to `-170` is treated
+/// as the 20-degree span across the antimeridian rather than the 340-degree
+/// span through the prime meridian.
+///
+/// Sources in this crate declare [`EdgeModel::Planar`](crate::EdgeModel),
+/// under which that same line runs straight through longitude 0. Where the two
+/// readings disagree, [`Split`](Self::Split) and
+/// [`ExpandToWorld`](Self::ExpandToWorld) index the shortest-path
+/// interpretation, so a query at longitude 0 will not find the feature. Index
+/// with [`EnvelopePolicy::Planar`] when the coordinates are not lon/lat, or
+/// when straight-in-lon/lat edges are what you mean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AntimeridianPolicy {

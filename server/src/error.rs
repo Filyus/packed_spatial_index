@@ -64,6 +64,9 @@ pub enum ServerError {
     /// The query exceeded the catalog's per-query cost limits.
     #[error("query too large: {0}")]
     QueryTooLarge(String),
+    /// The blocking task running an artifact query did not finish.
+    #[error("query task failed: {0}")]
+    QueryTask(String),
     /// File I/O failed.
     #[error("I/O error for {path}: {source}")]
     Io {
@@ -137,9 +140,10 @@ impl ServerError {
             | ServerError::UnsupportedPredicate(_)
             | ServerError::UnsupportedLevel(_)
             | ServerError::QueryTooLarge(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            ServerError::Config(_) | ServerError::Io { .. } | ServerError::Geo(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            ServerError::Config(_)
+            | ServerError::Io { .. }
+            | ServerError::Geo(_)
+            | ServerError::QueryTask(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -164,6 +168,7 @@ impl ServerError {
             ServerError::QueryTooLarge(_) => "query_too_large",
             ServerError::Config(_) => "configuration",
             ServerError::Io { .. } => "io",
+            ServerError::QueryTask(_) => "internal",
             ServerError::Geo(_) => "artifact_error",
         }
     }

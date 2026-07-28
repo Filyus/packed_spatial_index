@@ -104,7 +104,9 @@ async fn items(
     let collection = state
         .collection(&id)
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
-    Ok(Json(items_response(&collection, params)?))
+    Ok(Json(
+        query_blocking(move || items_response(&collection, params)).await?,
+    ))
 }
 
 async fn search(
@@ -115,5 +117,23 @@ async fn search(
     let collection = state
         .collection(&id)
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
-    Ok(Json(search_response(&collection, params)?))
+    Ok(Json(
+        query_blocking(move || search_response(&collection, params)).await?,
+    ))
+}
+
+/// Run an artifact query off the async runtime.
+///
+/// Querying an artifact is synchronous file I/O plus decoding. Running it
+/// directly inside a handler parks a runtime worker for the duration, so a
+/// handful of broad queries can stall every other request the runtime is
+/// driving, including `/health`.
+async fn query_blocking<T, F>(query: F) -> Result<T, ServerError>
+where
+    F: FnOnce() -> Result<T, ServerError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(query)
+        .await
+        .map_err(|err| ServerError::QueryTask(err.to_string()))?
 }

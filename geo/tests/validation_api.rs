@@ -342,3 +342,69 @@ fn cli_validate_json_and_strict_smoke() {
         String::from_utf8_lossy(&unknown_flag.stderr)
     );
 }
+
+/// A `Point ZM` column whose bbox covering carries only x/y bounds: the
+/// covering cannot describe the declared z, and envelopes taken from it index
+/// 2D boxes. The report must say which of the three "dimensions" conditions
+/// this is, which is why it has its own code.
+#[test]
+fn validate_reports_a_covering_that_cannot_describe_the_declared_z() {
+    let geo_json = r#"{"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point ZM"],"covering":{"bbox":{"xmin":["xmin"],"ymin":["ymin"],"xmax":["xmax"],"ymax":["ymax"]}}}}}"#;
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[Some(wkb_point_zm(1.0, 1.0, 5.0, 7.0))]),
+            ),
+            (
+                "xmin",
+                Arc::new(arrow::array::Float64Array::from(vec![1.0])) as ArrayRef,
+            ),
+            (
+                "ymin",
+                Arc::new(arrow::array::Float64Array::from(vec![1.0])) as ArrayRef,
+            ),
+            (
+                "xmax",
+                Arc::new(arrow::array::Float64Array::from(vec![1.0])) as ArrayRef,
+            ),
+            (
+                "ymax",
+                Arc::new(arrow::array::Float64Array::from(vec![1.0])) as ArrayRef,
+            ),
+        ],
+        geo_json.to_string(),
+    );
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
+    let report = dataset.validate(ValidateRequest::default()).unwrap();
+    assert!(has_issue(&report, ValidationCode::CoveringMissingZ));
+    assert!(
+        !has_issue(&report, ValidationCode::UnknownDimensions),
+        "the dimensions are declared; only the covering cannot carry them"
+    );
+
+    // The artifact that warning describes: 2D, and still an `M` column, since
+    // only the z flag is in dispute.
+    let mut dataset = open_geoparquet(data).unwrap();
+    let bytes = dataset
+        .convert(packed_spatial_index_geo::ConvertRequest {
+            payload: PayloadPlan::None,
+            ..Default::default()
+        })
+        .unwrap();
+    let manifest = packed_spatial_index_geo::read_geo_manifest(&bytes)
+        .unwrap()
+        .expect("artifact carries a geo manifest");
+    assert_eq!(manifest.dims, CoordinateDims::Xym);
+}
+
+fn wkb_point_zm(x: f64, y: f64, z: f64, m: f64) -> Vec<u8> {
+    let mut v = Vec::with_capacity(37);
+    v.push(1);
+    v.extend_from_slice(&3001u32.to_le_bytes());
+    v.extend_from_slice(&x.to_le_bytes());
+    v.extend_from_slice(&y.to_le_bytes());
+    v.extend_from_slice(&z.to_le_bytes());
+    v.extend_from_slice(&m.to_le_bytes());
+    v
+}

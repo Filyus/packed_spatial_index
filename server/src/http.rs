@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::{Method, Uri},
     routing::get,
 };
 use serde::Serialize;
@@ -11,6 +12,11 @@ use crate::{
 };
 
 /// Build the HTTP router.
+///
+/// Both fallbacks are registered after the routes on purpose:
+/// `method_not_allowed_fallback` attaches to the method routers registered so
+/// far, so an earlier call would leave later routes answering 405 in axum's
+/// default plain-text shape instead of this server's JSON error envelope.
 pub fn router(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -18,7 +24,17 @@ pub fn router(state: ServerState) -> Router {
         .route("/collections/{id}", get(collection))
         .route("/collections/{id}/items", get(items))
         .route("/collections/{id}/search", get(search))
+        .method_not_allowed_fallback(method_not_allowed)
+        .fallback(route_not_found)
         .with_state(state)
+}
+
+async fn route_not_found(uri: Uri) -> ServerError {
+    ServerError::RouteNotFound(uri.path().to_owned())
+}
+
+async fn method_not_allowed(method: Method, uri: Uri) -> ServerError {
+    ServerError::MethodNotAllowed(format!("{method} {}", uri.path()))
 }
 
 /// Serve the router on an already-bound listener.

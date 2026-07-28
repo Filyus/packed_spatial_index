@@ -16,6 +16,12 @@ pub enum ServerError {
     /// A collection id was not found.
     #[error("collection `{0}` was not found")]
     CollectionNotFound(String),
+    /// The request path matches no route.
+    #[error("no route for `{0}`")]
+    RouteNotFound(String),
+    /// The route exists but does not accept the request method.
+    #[error("method not allowed: {0}")]
+    MethodNotAllowed(String),
     /// The client supplied an invalid bbox.
     #[error("invalid bbox: {0}")]
     InvalidBbox(String),
@@ -117,7 +123,10 @@ impl ServerError {
             | ServerError::InvalidPayload(_)
             | ServerError::InvalidIdentity(_)
             | ServerError::Toml(_) => StatusCode::BAD_REQUEST,
-            ServerError::CollectionNotFound(_) => StatusCode::NOT_FOUND,
+            ServerError::CollectionNotFound(_) | ServerError::RouteNotFound(_) => {
+                StatusCode::NOT_FOUND
+            }
+            ServerError::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             ServerError::UnsupportedQuery(_)
             | ServerError::UnsupportedPayload(_)
             | ServerError::UnsupportedPredicate(_)
@@ -140,6 +149,8 @@ impl ServerError {
             ServerError::InvalidIdentity(_) => "invalid_identity",
             ServerError::Toml(_) => "bad_request",
             ServerError::CollectionNotFound(_) => "collection_not_found",
+            ServerError::RouteNotFound(_) => "not_found",
+            ServerError::MethodNotAllowed(_) => "method_not_allowed",
             ServerError::UnsupportedQuery(_) => "unsupported_query",
             ServerError::UnsupportedPayload(_) => "unsupported_payload",
             ServerError::UnsupportedPredicate(_) => "unsupported_predicate",

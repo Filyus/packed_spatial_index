@@ -112,6 +112,30 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
+async fn request_json(
+    app: axum::Router,
+    method: &str,
+    uri: &str,
+) -> (StatusCode, Option<String>, Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let allow = response
+        .headers()
+        .get("allow")
+        .map(|value| value.to_str().unwrap().to_owned());
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, allow, serde_json::from_slice(&bytes).unwrap())
+}
+
 fn assert_contract(actual: &Value, expected: Value) {
     assert_eq!(
         actual,
@@ -407,6 +431,40 @@ async fn contract_error_shape() {
             }
         }),
     );
+}
+
+#[tokio::test]
+async fn unknown_routes_and_methods_use_the_error_envelope() {
+    let app = router(state_with_payload(PayloadPlan::RowRef));
+
+    let (status, _, json) = request_json(app.clone(), "GET", "/nope").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_contract(
+        &json,
+        json!({"error": {"code": "not_found", "message": "no route for `/nope`"}}),
+    );
+
+    let (status, allow, json) = request_json(app.clone(), "POST", "/collections").await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    // The envelope replaces axum's empty body; it must not cost the `Allow`
+    // header a client needs to learn what the route accepts.
+    assert_eq!(allow.as_deref(), Some("GET,HEAD"));
+    assert_contract(
+        &json,
+        json!({
+            "error": {
+                "code": "method_not_allowed",
+                "message": "method not allowed: POST /collections"
+            }
+        }),
+    );
+
+    // The 405 fallback attaches to the routes registered so far, so it has to
+    // cover the last one as well as the first.
+    let (status, _, json) =
+        request_json(app, "DELETE", "/collections/places/search?bbox=0,0,1,1").await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(json["error"]["code"], "method_not_allowed");
 }
 
 #[tokio::test]

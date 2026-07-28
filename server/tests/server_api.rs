@@ -47,6 +47,26 @@ fn antimeridian_geojson() -> &'static [u8] {
     }"#
 }
 
+fn elevations_geojson() -> &'static [u8] {
+    br#"{
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "id": "low",
+                "geometry": {"type": "Point", "coordinates": [1.0, 1.0, 10.0]},
+                "properties": {"name": "low"}
+            },
+            {
+                "type": "Feature",
+                "id": "high",
+                "geometry": {"type": "Point", "coordinates": [2.0, 2.0, 90.0]},
+                "properties": {"name": "high"}
+            }
+        ]
+    }"#
+}
+
 fn write_artifact_with_request(path: &Path, req: ConvertRequest, doc: &[u8]) {
     let mut source = open_geojson_slice(doc).unwrap();
     let bytes = source.convert(req).unwrap();
@@ -481,6 +501,101 @@ async fn paged_and_grouped_searches_agree() {
             );
         }
     }
+}
+
+/// `search_records` has a whole 3D branch that no test reached: the server
+/// suite contained no six-number bbox at all.
+#[tokio::test]
+async fn three_dimensional_collections_are_served() {
+    let app = router(state_with_geojson_request(
+        ConvertRequest {
+            payload: PayloadPlan::RowWkb,
+            ..ConvertRequest::default()
+        },
+        elevations_geojson(),
+    ));
+
+    let (status, json) = get_json(app.clone(), "/collections/places").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["dims"], "xyz");
+    // Exact filtering is 2D-only, so a 3D collection must not advertise it.
+    assert_contract(&json["capabilities"]["predicates"], json!(["bbox"]));
+
+    // The z range is what separates the two features.
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=0,0,0,3,3,50&payload=full",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["numberMatched"], 1);
+    assert_eq!(json["matches"][0]["featureRef"]["rowNumber"], 0);
+
+    let (status, json) =
+        get_json(app.clone(), "/collections/places/search?bbox=0,0,0,3,3,100").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["numberMatched"], 2);
+
+    // A 2D bbox cannot address a 3D collection.
+    let (status, json) = get_json(app.clone(), "/collections/places/search?bbox=0,0,3,3").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_bbox");
+    assert!(
+        json["error"]["message"].as_str().unwrap().contains("minz"),
+        "{json}"
+    );
+
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=0,0,0,3,3,100&predicate=intersects",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_predicate");
+
+    // /items is GeoJSON-only, and this artifact stores WKB.
+    let (status, json) = get_json(app, "/collections/places/items?bbox=0,0,0,3,3,100").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_payload");
+}
+
+#[tokio::test]
+async fn three_dimensional_collections_page_and_group() {
+    let app = router(state_with_geojson_request(
+        ConvertRequest {
+            payload: PayloadPlan::FeatureJson {
+                properties: PropertyProjection::AllNonGeometry,
+            },
+            ..ConvertRequest::default()
+        },
+        elevations_geojson(),
+    ));
+    let bbox = "bbox=0,0,0,3,3,100";
+
+    let (status, whole) =
+        get_json(app.clone(), &format!("/collections/places/search?{bbox}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(whole["numberMatched"], 2);
+
+    for offset in 0..2 {
+        let (status, page) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?{bbox}&limit=1&offset={offset}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["numberMatched"], 2);
+        assert_contract(&page["matches"][0], whole["matches"][offset].clone());
+    }
+
+    // `identity=full` reads bodies on the 3D path too.
+    let (status, json) = get_json(
+        app,
+        &format!("/collections/places/search?{bbox}&identity=full&limit=1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["matches"][0]["featureRef"]["featureId"], "low");
 }
 
 #[tokio::test]

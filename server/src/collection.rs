@@ -120,11 +120,6 @@ impl Collection {
         )?)
     }
 
-    /// Per-query cost limits applied to this collection.
-    pub fn limits(&self) -> StreamLimits {
-        self.limits
-    }
-
     /// Cached geospatial artifact manifest.
     pub fn manifest(&self) -> &GeoArtifactManifest {
         self.directory.manifest()
@@ -138,11 +133,6 @@ impl Collection {
     /// Packed node size in the artifact.
     pub fn node_size(&self) -> usize {
         self.directory.node_size()
-    }
-
-    /// Whether the artifact carries a payload section.
-    pub fn has_payload(&self) -> bool {
-        self.directory.has_payload()
     }
 
     /// Whether one source row can appear as several index entries, as

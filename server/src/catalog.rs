@@ -21,6 +21,7 @@ pub struct Catalog {
 
 /// Server configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Socket address used by the binary unless overridden on the CLI.
     #[serde(default = "default_addr")]
@@ -51,6 +52,7 @@ fn default_addr() -> SocketAddr {
 /// its match set, and nothing else bounds that. Set a field to `0` to lift the
 /// limit.
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LimitsConfig {
     /// Maximum range reads per query. Defaults to unlimited: reads against a
     /// local file are cheap, and the byte and item caps already bound the work.
@@ -97,6 +99,7 @@ fn default_max_items() -> usize {
 
 /// Collection entry from the catalog.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CollectionConfig {
     /// URL-safe collection id.
     pub id: String,
@@ -111,6 +114,7 @@ pub struct CollectionConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawCatalog {
     #[serde(default)]
     server: ServerConfig,
@@ -217,6 +221,35 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("duplicate collection id"));
+    }
+
+    #[test]
+    fn rejects_unknown_catalog_keys() {
+        let err = Catalog::from_toml_str(
+            r#"
+            [[collections]]
+            id = "places"
+            titel = "Places"
+            artifact = "a.psindex"
+            "#,
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("titel"), "{err}");
+
+        let err = Catalog::from_toml_str(
+            r#"
+            [server.limits]
+            max_item = 5
+
+            [[collections]]
+            id = "places"
+            artifact = "a.psindex"
+            "#,
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("max_item"), "{err}");
     }
 
     #[test]

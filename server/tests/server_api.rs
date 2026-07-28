@@ -434,6 +434,31 @@ async fn contract_error_shape() {
 }
 
 #[tokio::test]
+async fn unknown_query_parameters_are_rejected() {
+    let app = router(state_with_payload(PayloadPlan::RowRef));
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-10,0,0,2&limitt=1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_query");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("limitt"),
+        "{json}"
+    );
+
+    // The rejection is about the name, not the value: a known parameter still
+    // reaches the handler and gets the domain-specific error.
+    let (status, json) = get_json(app, "/collections/places/search?bbox=-10,0,0,2&limit=x").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_limit");
+}
+
+#[tokio::test]
 async fn unknown_routes_and_methods_use_the_error_envelope() {
     let app = router(state_with_payload(PayloadPlan::RowRef));
 

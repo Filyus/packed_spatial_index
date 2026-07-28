@@ -13,8 +13,12 @@ const MAX_LIMIT: usize = 10_000;
 
 /// Query parameters accepted by `/search` and `/items`.
 ///
-/// `/items` rejects `level` and `payload`; both endpoints share the rest.
+/// `/items` rejects `level`, `payload`, and `identity`; both endpoints share
+/// the rest. Unknown parameters are rejected rather than ignored: a misspelled
+/// name would otherwise resolve to a default and silently answer a different
+/// question.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchParams {
     /// Query bbox as comma-separated numbers.
     #[serde(default)]

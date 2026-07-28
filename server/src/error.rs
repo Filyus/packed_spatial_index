@@ -22,6 +22,10 @@ pub enum ServerError {
     /// The route exists but does not accept the request method.
     #[error("method not allowed: {0}")]
     MethodNotAllowed(String),
+    /// The query string could not be deserialized, typically an unknown
+    /// parameter name.
+    #[error("invalid query: {0}")]
+    InvalidQuery(String),
     /// The client supplied an invalid bbox.
     #[error("invalid bbox: {0}")]
     InvalidBbox(String),
@@ -115,7 +119,8 @@ impl ServerError {
 
     fn status_code(&self) -> StatusCode {
         match self {
-            ServerError::InvalidBbox(_)
+            ServerError::InvalidQuery(_)
+            | ServerError::InvalidBbox(_)
             | ServerError::InvalidLimit(_)
             | ServerError::InvalidOffset(_)
             | ServerError::InvalidPredicate(_)
@@ -140,6 +145,7 @@ impl ServerError {
 
     fn code(&self) -> &'static str {
         match self {
+            ServerError::InvalidQuery(_) => "invalid_query",
             ServerError::InvalidBbox(_) => "invalid_bbox",
             ServerError::InvalidLimit(_) => "invalid_limit",
             ServerError::InvalidOffset(_) => "invalid_offset",

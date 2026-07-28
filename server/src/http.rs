@@ -1,10 +1,10 @@
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::{Method, Uri},
+    extract::{FromRequestParts, Path, Query, State},
+    http::{Method, Uri, request::Parts},
     routing::get,
 };
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     ServerError, ServerState,
@@ -27,6 +27,29 @@ pub fn router(state: ServerState) -> Router {
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(route_not_found)
         .with_state(state)
+}
+
+/// Query-string extractor that reports rejections in the JSON error envelope.
+///
+/// [`Query`] answers a malformed or unknown parameter with plain text, which
+/// would be the one failure shape a client cannot parse. It also means a
+/// misspelled parameter reaches the handler as a silent default, so the
+/// deserialized type is expected to carry `deny_unknown_fields`.
+struct ValidQuery<T>(T);
+
+impl<T, S> FromRequestParts<S> for ValidQuery<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ServerError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Query::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Query(params)| Self(params))
+            .map_err(|rejection| ServerError::InvalidQuery(rejection.body_text()))
+    }
 }
 
 async fn route_not_found(uri: Uri) -> ServerError {
@@ -76,7 +99,7 @@ async fn collection(
 async fn items(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Query(params): Query<SearchParams>,
+    ValidQuery(params): ValidQuery<SearchParams>,
 ) -> Result<Json<crate::query::FeatureCollectionResponse>, ServerError> {
     let collection = state
         .collection(&id)
@@ -87,7 +110,7 @@ async fn items(
 async fn search(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Query(params): Query<SearchParams>,
+    ValidQuery(params): ValidQuery<SearchParams>,
 ) -> Result<Json<crate::query::SearchResponse>, ServerError> {
     let collection = state
         .collection(&id)

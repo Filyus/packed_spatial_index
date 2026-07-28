@@ -54,6 +54,10 @@ a `matches` array. `/items` is the GeoJSON view: it returns a
 a 422 pointing at `/search`. `/items` also rejects `/search`-only options
 (`level`, `payload`) with `unsupported_query`.
 
+Unknown query parameters and unknown catalog keys are rejected (`invalid_query`
+and a startup error) rather than ignored, so a misspelled name fails loudly
+instead of silently resolving to a default.
+
 Query parameters:
 
 - `bbox` — required; 4 numbers for 2D artifacts, 6 for 3D.

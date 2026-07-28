@@ -368,6 +368,13 @@ gp2psindex build input.parquet output.psi \
 
 ## Querying a 3D index
 
+`--dims 3d` requires the scan to actually find a z extent. That is not the same
+as the column declaring one: when envelopes come from a GeoParquet bbox
+covering — which normally carries no `zmin`/`zmax` — a `Point Z` column scans
+as 2D, and `--dims 3d` fails with a dimension mismatch. Ask for a payload plan
+that reads geometry (`--payload row-wkb` or `feature-json`) to index the real z
+extents. `--dims 2d` always works: it projects z away.
+
 Against a `.psi` built with `--dims 3d`, `query --bbox` takes six
 comma-separated numbers instead of four: `xmin,ymin,zmin,xmax,ymax,zmax`.
 
@@ -391,7 +398,12 @@ on the returned features if you need exact matches.
 `GeoQuery3D::Frustum3D` narrows a 3D search by a view frustum instead of a
 box — tighter than the frustum's own bounding box, since the index search
 uses the frustum's actual overlap test during traversal, not just its
-covering box:
+covering box.
+
+`BuildRequest` scans without a payload, so on a GeoParquet file with a bbox
+covering the envelopes come from that covering — and a covering without
+`zmin`/`zmax` cannot produce a 3D index. Convert with a geometry-reading
+payload plan when the source has a covering but you need the z extents:
 
 ```rust
 use std::fs::File;
@@ -475,7 +487,8 @@ raycast lookups") but not previously implemented.
 ## Raycast lookups
 
 `GeoIndex2D`/`GeoIndex3D` (and their `f32` counterparts) can answer "which
-features does this ray cross":
+features does this ray cross". As above, `IndexDimsRequest::D3` needs the scan
+to find a z extent, which a bbox covering without z bounds cannot supply:
 
 ```rust
 use std::fs::File;

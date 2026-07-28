@@ -355,15 +355,30 @@ gp2psindex query input.parquet output.psi \
 ### Envelopes and encodings
 
 - Boxes come from the **bbox covering** column when present, otherwise from
-  each geometry's **WKB** or **GeoArrow** envelope.
+  each geometry's **WKB** or **GeoArrow** envelope. Which one applies is
+  decided by the payload plan: `PayloadPlan::None` and `RowRef` never decode
+  geometry, so they use the covering; `RowWkb` and `FeatureJson` decode it
+  anyway, so they use the geometry. `BuildRequest` has no payload field and
+  always scans with `None`, while `ConvertRequest::default()` uses `RowWkb` —
+  so the same file can be indexed from different envelopes depending on which
+  one you call.
+- **The envelope source also decides the index dimensions.** A GeoParquet 1.1
+  bbox covering usually carries only `xmin`/`ymin`/`xmax`/`ymax`, so a column
+  declaring `Point Z` builds a *2D* index when the covering supplies the
+  envelopes — there is no z extent to index, and inventing one would place
+  every entry at zero. Ask for a payload plan that reads geometry to index the
+  real z, and `validate` warns when a covering cannot describe the declared z.
 - Native Parquet `GEOMETRY` / `GEOGRAPHY` columns are WKB by definition, so
   they work for envelope scans and `RowWkb` payloads even without GeoParquet
   `geo` metadata.
 - GeoParquet GeoArrow encodings `point`, `linestring`, `polygon`,
   `multipoint`, `multilinestring`, and `multipolygon` can be scanned without a
   covering column and can be emitted as ISO WKB payloads.
-- Geometry columns may be `Binary`, `LargeBinary`, or `BinaryView`; dimensions
-  may be 2D or 3D (`XYZ` / `XYZM`).
+- Geometry columns may be `Binary`, `LargeBinary`, or `BinaryView`; declared
+  dimensions may be 2D or 3D (`XYZ` / `XYZM`), though the index is built in
+  whichever dimensions the scanned envelopes actually have (see above).
+  `IndexDimsRequest::D2` forces 2D by projecting z away; `D3` requires the scan
+  to find a z extent and fails otherwise.
 - Null / empty geometry: `BuildRequest` defaults to `NullPolicy::Error`;
   `ConvertRequest` defaults to `NullPolicy::Skip`. `FeatureRef::row_number`
   preserves the original source row number.

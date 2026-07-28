@@ -447,10 +447,14 @@ fn artifact_dims<R>(index: &GeoArtifactIndex<R>) -> u8 {
 /// arity check lives here rather than in the request parser, and the message
 /// names what the artifact actually is.
 fn bbox_arity_error(dims: u8, len: usize) -> JsValue {
-    JsValue::from_str(&format!(
+    JsValue::from_str(&bbox_arity_message(dims, len))
+}
+
+fn bbox_arity_message(dims: u8, len: usize) -> String {
+    format!(
         "this artifact is {dims}D, so bbox must contain {} numbers, not {len}",
         u32::from(dims) * 2
-    ))
+    )
 }
 
 async fn open_index(
@@ -779,7 +783,43 @@ fn geo_err(e: GeoError) -> JsValue {
 
 #[cfg(test)]
 mod tests {
-    use super::object_identity;
+    use super::{PayloadMode, ResultLevel, bbox_arity_message, object_identity, query_json};
+
+    #[test]
+    fn bbox_arity_message_names_the_artifact_dimensions() {
+        assert_eq!(
+            bbox_arity_message(3, 4),
+            "this artifact is 3D, so bbox must contain 6 numbers, not 4"
+        );
+        assert_eq!(
+            bbox_arity_message(2, 6),
+            "this artifact is 2D, so bbox must contain 4 numbers, not 6"
+        );
+    }
+
+    #[test]
+    fn query_json_echoes_the_bbox_it_was_given() {
+        let two = query_json(
+            &[1.0, 2.0, 3.0, 4.0],
+            10,
+            0,
+            PayloadMode::Summary,
+            ResultLevel::Feature,
+        );
+        assert_eq!(two["bbox"], serde_json::json!([1.0, 2.0, 3.0, 4.0]));
+
+        let three = query_json(
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            10,
+            0,
+            PayloadMode::Summary,
+            ResultLevel::Feature,
+        );
+        assert_eq!(
+            three["bbox"],
+            serde_json::json!([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        );
+    }
 
     #[test]
     fn object_identity_changes_with_etag_or_length() {

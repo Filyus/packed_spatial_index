@@ -20,6 +20,9 @@ use crate::{
 pub fn router(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
+        // These three take no query parameters, so unlike the two below they
+        // do not use `ValidQuery`: there is nothing a typo could silently
+        // become, and refusing an incidental `?f=json` would only be rude.
         .route("/collections", get(collections))
         .route("/collections/{id}", get(collection))
         .route("/collections/{id}/items", get(items))

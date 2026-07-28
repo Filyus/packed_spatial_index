@@ -2,6 +2,10 @@
 
 Local native HTTP server for querying existing geospatial `.psindex` artifacts.
 
+A reference server: it exists to show what the `packed_spatial_index_geo` query
+API looks like behind HTTP. It is not published to crates.io, and its changes
+are recorded in git history rather than a changelog.
+
 The MVP is artifact-first: it does not build or convert sources, does not read
 back original source files, and does not use remote/object storage. It opens
 each configured artifact at startup, caches the parsed geo manifest and stream
@@ -51,18 +55,21 @@ cargo run --manifest-path server/Cargo.toml -- --catalog psindex-server.toml
 - `GET /collections`
 - `GET /collections/{id}`
 - `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=`
-- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=&level=&payload=`
+- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=&level=&payload=&identity=`
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
 a `matches` array. `/items` is the GeoJSON view: it returns a
 `FeatureCollection` and requires a `feature_json` payload; other artifacts get
 a 422 pointing at `/search`. `/items` also rejects `/search`-only options
-(`level`, `payload`) with `unsupported_query`.
+(`level`, `payload`, `identity`) with `unsupported_query`.
 
 Unknown query parameters and unknown catalog keys are rejected (`invalid_query`
 and a startup error) rather than ignored, so a misspelled name fails loudly
-instead of silently resolving to a default.
+instead of silently resolving to a default. This applies to the two endpoints
+that take parameters; `/collections` and `/collections/{id}` take none, so
+there is nothing a typo could quietly become and they ignore the query string
+rather than refusing an incidental `?f=json`.
 
 Query parameters:
 

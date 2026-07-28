@@ -129,8 +129,7 @@ pub(crate) fn stamp_payload_part(
 /// and properties JSON. Format-specific callers supply the geometry however
 /// they hold it — decoded from WKB (Parquet) or taken straight from the
 /// source (GeoJSON) — so this stays free of arrow and WKB concerns.
-#[cfg(feature = "_source")]
-#[allow(dead_code)]
+#[cfg(feature = "parquet")]
 pub(crate) fn feature_json_from_parts(
     feature: &FeatureRef,
     geometry: serde_json::Value,

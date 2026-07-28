@@ -1252,11 +1252,6 @@ fn option_takes_value(arg: &str) -> bool {
     )
 }
 
-#[allow(dead_code)]
-fn map_geo_error(err: GeoError) -> Box<dyn std::error::Error> {
-    Box::new(err)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

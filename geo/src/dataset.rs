@@ -1034,7 +1034,7 @@ fn add_covering_dims_warning(state: &ColumnState, issues: &mut Vec<crate::Valida
     if covering_lacks_z && state.info.coordinate_dims.has_z() {
         issues.push(validation::issue(
             ValidationSeverity::Warning,
-            ValidationCode::UnknownDimensions,
+            ValidationCode::CoveringMissingZ,
             Some(state.info.name.clone()),
             format!(
                 "column `{}` declares {} but its bbox covering has no z bounds; envelopes taken from the covering index 2D boxes",

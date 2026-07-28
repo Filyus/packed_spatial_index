@@ -534,8 +534,12 @@ pub enum GeometrySelectionReason {
 
 #[cfg(feature = "parquet")]
 /// Non-fatal issue found during discovery.
+///
+/// Non-exhaustive: new warnings get their own variant as they are found, and a
+/// caller matching on this should keep a fallback arm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum DiscoveryWarning {
     /// GeoParquet primary column was referenced but not usable.
     GeoParquetPrimaryMissing {

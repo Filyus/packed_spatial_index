@@ -64,8 +64,12 @@ pub enum ValidationSeverity {
 }
 
 /// Stable validation issue code.
+///
+/// Non-exhaustive: new conditions get their own code as they are found, and a
+/// caller matching on this should keep a fallback arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ValidationCode {
     /// No usable geometry columns were found.
     NoGeometryColumns,
@@ -81,6 +85,9 @@ pub enum ValidationCode {
     CannotEmitPayload,
     /// Dimensions are unknown from metadata/statistics.
     UnknownDimensions,
+    /// The column declares a z coordinate that its bbox covering cannot
+    /// describe, so envelopes taken from that covering index 2D boxes.
+    CoveringMissingZ,
     /// Native Parquet geospatial statistics are missing for a native column.
     MissingNativeGeoStats,
     /// Native or scanned bounds cross the antimeridian.

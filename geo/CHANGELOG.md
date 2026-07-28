@@ -37,6 +37,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   scanned envelopes decide dimensionality, since a bbox covering without z
   bounds is the usual reason a `Point Z` source scans as 2D.
 
+### Validation
+
+- Added `ValidationCode::CoveringMissingZ` for a column that declares a z
+  coordinate its bbox covering cannot describe. That condition previously
+  reported as `UnknownDimensions`, which already means two unrelated things, so
+  a client could not tell "the covering cannot carry z" from "metadata never
+  said". **Breaking:** `ValidationCode` and `DiscoveryWarning` are now
+  `#[non_exhaustive]` — the only geo vocabularies that were not — so exhaustive
+  matches on them need a fallback arm. Future codes are additive after this.
+
 ### Documentation
 
 - Documented that `GeoMatchHeader` carries partial identity: its `FeatureRef`

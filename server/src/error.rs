@@ -34,6 +34,9 @@ pub enum ServerError {
     /// The client supplied an invalid payload mode.
     #[error("invalid payload mode: {0}")]
     InvalidPayload(String),
+    /// The client supplied an invalid identity mode.
+    #[error("invalid identity mode: {0}")]
+    InvalidIdentity(String),
     /// The client supplied a query the artifact's edge/encoding model rejects.
     /// 422, not 500: these describe a client request that cannot be satisfied
     /// by this collection, not a server-side fault.
@@ -102,6 +105,7 @@ impl ServerError {
             | ServerError::InvalidPredicate(_)
             | ServerError::InvalidLevel(_)
             | ServerError::InvalidPayload(_)
+            | ServerError::InvalidIdentity(_)
             | ServerError::Toml(_) => StatusCode::BAD_REQUEST,
             ServerError::CollectionNotFound(_) => StatusCode::NOT_FOUND,
             ServerError::UnsupportedQuery(_)
@@ -122,6 +126,7 @@ impl ServerError {
             ServerError::InvalidPredicate(_) => "invalid_predicate",
             ServerError::InvalidLevel(_) => "invalid_level",
             ServerError::InvalidPayload(_) => "invalid_payload",
+            ServerError::InvalidIdentity(_) => "invalid_identity",
             ServerError::Toml(_) => "bad_request",
             ServerError::CollectionNotFound(_) => "collection_not_found",
             ServerError::UnsupportedQuery(_) => "unsupported_query",

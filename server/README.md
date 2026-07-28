@@ -60,6 +60,11 @@ Query parameters:
 - `payload=none|summary|full` — `/search` only; default `summary`. Summary
   returns payload kind and cheap metadata; `full` materializes stored values
   such as base64 WKB or embedded GeoJSON features.
+- `identity=ref|full` — `/search` only; default `ref`. A match always carries
+  the fixed-width feature reference (row number, row group, part), but a source
+  `featureId` lives inside the payload body, so `full` reads bodies for the
+  returned page to include it. It only changes `feature_json` collections;
+  other payload kinds store no source id to recover.
 - `limit`, `offset` — pagination over the matched set.
 
 Responses echo the effective query (after defaults) under `query`, so a client
@@ -70,5 +75,5 @@ build, not across rebuilds) and, when the payload stores one, a `featureRef`
 back to the source feature.
 
 Collection metadata reports the artifact `payloadKind` plus a `capabilities`
-object listing the accepted `predicates`, `levels`, and `payloadModes`, and
-whether `/items` is available.
+object listing the accepted `predicates`, `levels`, `payloadModes`, and
+`identityModes`, and whether `/items` is available.

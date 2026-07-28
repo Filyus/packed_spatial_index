@@ -34,6 +34,9 @@ pub struct SearchParams {
     /// Payload materialization mode for `/search`.
     #[serde(default)]
     pub payload: Option<String>,
+    /// Source-identity mode for `/search`.
+    #[serde(default)]
+    pub identity: Option<String>,
 }
 
 /// Payload materialization mode for `/search`.
@@ -46,6 +49,22 @@ pub enum PayloadMode {
     #[default]
     Summary,
     /// Return full payload values where the artifact stores them.
+    Full,
+}
+
+/// Source-identity detail returned for each match.
+///
+/// Index entries carry a fixed-width feature reference, but a source
+/// `featureId` lives inside the payload body, so returning one costs a body
+/// read. This mode makes that cost explicit instead of letting it depend on
+/// which internal path answered the query.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityMode {
+    /// Return the fixed-width feature reference only; omit `featureId`.
+    #[default]
+    Ref,
+    /// Read payload bodies for the returned page so `featureId` is included.
     Full,
 }
 
@@ -112,6 +131,9 @@ pub struct QueryInfo {
     /// Applied payload mode; `/items` responses omit it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<PayloadMode>,
+    /// Applied identity mode; `/items` responses omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<IdentityMode>,
     /// Applied limit.
     pub limit: usize,
     /// Applied offset.
@@ -130,6 +152,8 @@ pub struct Capabilities {
     pub levels: Vec<ResultLevel>,
     /// Payload modes accepted by `/search`.
     pub payload_modes: Vec<PayloadMode>,
+    /// Identity modes accepted by `/search`.
+    pub identity_modes: Vec<IdentityMode>,
 }
 
 /// Collection summary returned by list/detail endpoints.
@@ -341,6 +365,7 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
         predicates,
         levels,
         payload_modes: vec![PayloadMode::None, PayloadMode::Summary, PayloadMode::Full],
+        identity_modes: vec![IdentityMode::Ref, IdentityMode::Full],
     }
 }
 
@@ -350,15 +375,17 @@ pub fn search_response(
     params: SearchParams,
 ) -> Result<SearchResponse, ServerError> {
     let options = SearchOptions::from_params(&params)?;
-    let payload_mode = parse_payload_mode(params.payload.as_deref())?;
-    let level = resolve_level(collection, parse_level(params.level.as_deref())?)?;
+    let shape = RecordShape {
+        payload: parse_payload_mode(params.payload.as_deref())?,
+        level: resolve_level(collection, parse_level(params.level.as_deref())?)?,
+        identity: parse_identity_mode(params.identity.as_deref())?,
+    };
     let payload_kind = PayloadKind::from(&collection.manifest().payload_plan);
     let outcome = search_records(
         collection,
         &options.bbox,
         options.predicate,
-        payload_mode,
-        level,
+        shape,
         options.offset,
         options.limit,
     )?;
@@ -367,8 +394,9 @@ pub fn search_response(
         query: QueryInfo {
             bbox: options.bbox,
             predicate: options.predicate,
-            level: Some(level),
-            payload: Some(payload_mode),
+            level: Some(shape.level),
+            payload: Some(shape.payload),
+            identity: Some(shape.identity),
             limit: options.limit,
             offset: options.offset,
         },
@@ -394,6 +422,11 @@ pub fn items_response(
             "level is only supported on /search".to_string(),
         ));
     }
+    if params.identity.is_some() {
+        return Err(ServerError::UnsupportedQuery(
+            "identity is only supported on /search".to_string(),
+        ));
+    }
     if !matches!(
         collection.manifest().payload_plan,
         PayloadPlan::FeatureJson { .. }
@@ -408,8 +441,13 @@ pub fn items_response(
         collection,
         &options.bbox,
         options.predicate,
-        PayloadMode::Full,
-        ResultLevel::Feature,
+        RecordShape {
+            payload: PayloadMode::Full,
+            level: ResultLevel::Feature,
+            // GeoJSON features carry their own `id`, so the server never emits
+            // a separate `featureRef` here.
+            identity: IdentityMode::Ref,
+        },
         options.offset,
         options.limit,
     )?;
@@ -431,6 +469,7 @@ pub fn items_response(
             predicate: options.predicate,
             level: None,
             payload: None,
+            identity: None,
             limit: options.limit,
             offset: options.offset,
         },
@@ -492,13 +531,29 @@ struct SearchOutcome {
     records: Vec<MatchRecord>,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What a returned record contains, independent of the path that produced it.
+#[derive(Debug, Clone, Copy)]
+struct RecordShape {
+    payload: PayloadMode,
+    level: ResultLevel,
+    identity: IdentityMode,
+}
+
+impl RecordShape {
+    /// Whether the requested shape needs payload bodies for the returned page.
+    ///
+    /// A body read serves two different needs: the payload value itself, and
+    /// the source `featureId`, which the fixed payload prefix cannot carry.
+    fn needs_payload_bodies(&self) -> bool {
+        self.payload == PayloadMode::Full || self.identity == IdentityMode::Full
+    }
+}
+
 fn search_records(
     collection: &Collection,
     bbox: &[f64],
     predicate: QueryPredicate,
-    payload_mode: PayloadMode,
-    level: ResultLevel,
+    shape: RecordShape,
     offset: usize,
     limit: usize,
 ) -> Result<SearchOutcome, ServerError> {
@@ -523,7 +578,7 @@ fn search_records(
                 }
                 return Ok(id_outcome(
                     index.search_entry_ids(query)?,
-                    payload_mode,
+                    shape,
                     offset,
                     limit,
                 ));
@@ -545,15 +600,9 @@ fn search_records(
                 )
             {
                 let headers = index.search_match_headers(query)?;
-                return header_outcome(
-                    headers,
-                    payload_mode,
-                    level,
-                    offset,
-                    limit,
-                    payload_plan,
-                    |page| index.fetch_matches(page),
-                );
+                return header_outcome(headers, shape, offset, limit, payload_plan, |page| {
+                    index.fetch_matches(page)
+                });
             }
             let mut matches = index.search_matches(query)?;
             if exact {
@@ -566,7 +615,7 @@ fn search_records(
                     )
                     .map_err(ServerError::from_geo)?;
             }
-            Ok(match_outcome(matches, payload_mode, level, offset, limit))
+            Ok(match_outcome(matches, shape, offset, limit))
         }
         GeoArtifactIndex::D3(index) => {
             if bbox.len() != 6 {
@@ -586,7 +635,7 @@ fn search_records(
             if matches!(payload_plan, PayloadPlan::None) {
                 return Ok(id_outcome(
                     index.search_entry_ids(query)?,
-                    payload_mode,
+                    shape,
                     offset,
                     limit,
                 ));
@@ -596,18 +645,12 @@ fn search_records(
                 PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
             ) {
                 let headers = index.search_match_headers(query)?;
-                return header_outcome(
-                    headers,
-                    payload_mode,
-                    level,
-                    offset,
-                    limit,
-                    payload_plan,
-                    |page| index.fetch_matches(page),
-                );
+                return header_outcome(headers, shape, offset, limit, payload_plan, |page| {
+                    index.fetch_matches(page)
+                });
             }
             let matches = index.search_matches(query)?;
-            Ok(match_outcome(matches, payload_mode, level, offset, limit))
+            Ok(match_outcome(matches, shape, offset, limit))
         }
     }
 }
@@ -615,7 +658,7 @@ fn search_records(
 /// Page an id-only (payload-less) result set.
 fn id_outcome(
     mut ids: Vec<usize>,
-    payload_mode: PayloadMode,
+    shape: RecordShape,
     offset: usize,
     limit: usize,
 ) -> SearchOutcome {
@@ -627,7 +670,7 @@ fn id_outcome(
         .map(|id| MatchRecord {
             entry_id: id,
             feature_ref: None,
-            payload: match_payload_none(payload_mode),
+            payload: match_payload_none(shape.payload),
         })
         .collect();
     SearchOutcome {
@@ -640,19 +683,18 @@ fn id_outcome(
 /// serialization) runs for the page only.
 fn match_outcome(
     mut matches: Vec<GeoMatch>,
-    payload_mode: PayloadMode,
-    level: ResultLevel,
+    shape: RecordShape,
     offset: usize,
     limit: usize,
 ) -> SearchOutcome {
     GeoMatch::sort_by_entry(&mut matches);
-    if matches!(level, ResultLevel::Feature) {
+    if matches!(shape.level, ResultLevel::Feature) {
         GeoMatch::dedupe_by_feature(&mut matches);
     }
     let number_matched = matches.len();
     let records = paginate(&matches, offset, limit)
         .into_iter()
-        .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
+        .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, shape))
         .collect();
     SearchOutcome {
         number_matched,
@@ -661,30 +703,29 @@ fn match_outcome(
 }
 
 /// Sort, dedupe, and page match headers; payload bodies are fetched only for
-/// the page, and only when `payload=full` needs them.
+/// the page, and only when the requested shape needs them.
 fn header_outcome(
     mut headers: Vec<GeoMatchHeader>,
-    payload_mode: PayloadMode,
-    level: ResultLevel,
+    shape: RecordShape,
     offset: usize,
     limit: usize,
     plan: &PayloadPlan,
     fetch: impl FnOnce(&[GeoMatchHeader]) -> Result<Vec<GeoMatch>, packed_spatial_index_geo::GeoError>,
 ) -> Result<SearchOutcome, ServerError> {
     GeoMatchHeader::sort_by_entry(&mut headers);
-    if matches!(level, ResultLevel::Feature) {
+    if matches!(shape.level, ResultLevel::Feature) {
         GeoMatchHeader::dedupe_by_feature(&mut headers);
     }
     let number_matched = headers.len();
     let page = paginate(&headers, offset, limit);
-    let records = if payload_mode == PayloadMode::Full {
+    let records = if shape.needs_payload_bodies() {
         fetch(&page)?
             .into_iter()
-            .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, payload_mode, level))
+            .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, shape))
             .collect()
     } else {
         page.into_iter()
-            .map(|header| header_record(header, payload_mode, plan))
+            .map(|header| header_record(header, shape, plan))
             .collect()
     };
     Ok(SearchOutcome {
@@ -695,12 +736,8 @@ fn header_outcome(
 
 /// Build a record straight from a header — no payload body was read, so
 /// summary mode derives `byteLength` from the header's payload length.
-fn header_record(
-    header: GeoMatchHeader,
-    payload_mode: PayloadMode,
-    plan: &PayloadPlan,
-) -> MatchRecord {
-    let payload = match (payload_mode, plan) {
+fn header_record(header: GeoMatchHeader, shape: RecordShape, plan: &PayloadPlan) -> MatchRecord {
+    let payload = match (shape.payload, plan) {
         (PayloadMode::None, _) => None,
         (_, PayloadPlan::RowRef) => Some(MatchPayload::RowRef),
         (_, PayloadPlan::RowWkb) => Some(MatchPayload::RowWkb {
@@ -725,10 +762,9 @@ fn match_record(
     entry_id: usize,
     feature_ref: Option<FeatureRef>,
     payload: GeoPayload,
-    payload_mode: PayloadMode,
-    level: ResultLevel,
+    shape: RecordShape,
 ) -> MatchRecord {
-    let payload = match (payload_mode, payload) {
+    let payload = match (shape.payload, payload) {
         (PayloadMode::None, _) => None,
         (_, GeoPayload::RowRef) => Some(MatchPayload::RowRef),
         (mode, GeoPayload::RowWkb(wkb)) => Some(MatchPayload::RowWkb {
@@ -742,13 +778,16 @@ fn match_record(
     let feature_ref = feature_ref.map(|mut feature| {
         // A representative part number is meaningless once split entries
         // collapse into one feature-level record.
-        if matches!(level, ResultLevel::Feature) {
+        if matches!(shape.level, ResultLevel::Feature) {
             feature.part = None;
         }
-        // Source feature ids live in payload bodies, so only the paths that
-        // decode bodies can produce one. Drop it here so a record describes the
-        // artifact rather than the path that found it.
-        feature.feature_id = None;
+        // Source feature ids live in payload bodies, so a body-decoding path
+        // can produce one where the header path cannot. Emit it only when the
+        // client asked for it, so a record describes the artifact rather than
+        // the path that found it.
+        if shape.identity == IdentityMode::Ref {
+            feature.feature_id = None;
+        }
         FeatureRefRecord::from(feature)
     });
     MatchRecord {
@@ -857,6 +896,16 @@ fn parse_payload_mode(raw: Option<&str>) -> Result<PayloadMode, ServerError> {
     }
 }
 
+fn parse_identity_mode(raw: Option<&str>) -> Result<IdentityMode, ServerError> {
+    match raw {
+        None | Some("") | Some("ref") => Ok(IdentityMode::Ref),
+        Some("full") => Ok(IdentityMode::Full),
+        Some(_) => Err(ServerError::InvalidIdentity(
+            "identity must be ref or full".to_string(),
+        )),
+    }
+}
+
 fn paginate<T: Clone>(records: &[T], offset: usize, limit: usize) -> Vec<T> {
     if offset >= records.len() {
         return Vec::new();
@@ -892,6 +941,40 @@ mod tests {
         assert_eq!(parse_payload_mode(None).unwrap(), PayloadMode::Summary);
         assert_eq!(parse_payload_mode(Some("none")).unwrap(), PayloadMode::None);
         assert!(parse_payload_mode(Some("yes")).is_err());
+    }
+
+    #[test]
+    fn identity_defaults_to_ref() {
+        assert_eq!(parse_identity_mode(None).unwrap(), IdentityMode::Ref);
+        assert_eq!(
+            parse_identity_mode(Some("full")).unwrap(),
+            IdentityMode::Full
+        );
+        assert!(parse_identity_mode(Some("id")).is_err());
+    }
+
+    #[test]
+    fn only_full_identity_reads_payload_bodies() {
+        let summary = RecordShape {
+            payload: PayloadMode::Summary,
+            level: ResultLevel::Feature,
+            identity: IdentityMode::Ref,
+        };
+        assert!(!summary.needs_payload_bodies());
+        assert!(
+            RecordShape {
+                identity: IdentityMode::Full,
+                ..summary
+            }
+            .needs_payload_bodies()
+        );
+        assert!(
+            RecordShape {
+                payload: PayloadMode::Full,
+                ..summary
+            }
+            .needs_payload_bodies()
+        );
     }
 
     #[test]

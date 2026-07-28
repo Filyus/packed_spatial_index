@@ -126,7 +126,8 @@ async fn contract_collections_summary_shape() {
                     "items": false,
                     "predicates": ["bbox"],
                     "levels": ["feature", "entry"],
-                    "payloadModes": ["none", "summary", "full"]
+                    "payloadModes": ["none", "summary", "full"],
+                    "identityModes": ["ref", "full"]
                 }
             }
         ]),
@@ -147,6 +148,7 @@ async fn contract_search_summary_shape() {
                 "predicate": "bbox",
                 "level": "feature",
                 "payload": "summary",
+                "identity": "ref",
                 "limit": 100,
                 "offset": 0
             },
@@ -186,6 +188,7 @@ async fn contract_search_feature_json_full_shape() {
                 "predicate": "bbox",
                 "level": "feature",
                 "payload": "full",
+                "identity": "ref",
                 "limit": 100,
                 "offset": 0
             },
@@ -232,6 +235,7 @@ async fn contract_search_feature_json_summary_shape() {
                 "predicate": "bbox",
                 "level": "feature",
                 "payload": "summary",
+                "identity": "ref",
                 "limit": 100,
                 "offset": 0
             },
@@ -273,6 +277,68 @@ async fn search_records_do_not_depend_on_the_predicate() {
         assert_eq!(exact_status, StatusCode::OK);
         assert_contract(&exact["matches"], bbox["matches"].clone());
     }
+}
+
+#[tokio::test]
+async fn identity_full_adds_the_source_feature_id() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-10,0,0,2&identity=full",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["query"]["identity"], "full");
+    assert_eq!(json["matches"][0]["featureRef"]["featureId"], "west");
+    // Identity is orthogonal to payload: asking for an id does not smuggle the
+    // payload body into the response.
+    assert_eq!(json["matches"][0]["payload"]["kind"], "feature_json");
+    assert!(json["matches"][0]["payload"].get("feature").is_none());
+
+    // The default stays cheap, and `payload=full` alone does not opt in.
+    let (_, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&payload=full",
+    )
+    .await;
+    assert_eq!(json["query"]["identity"], "ref");
+    assert!(json["matches"][0]["featureRef"].get("featureId").is_none());
+}
+
+#[tokio::test]
+async fn identity_full_resolves_ids_for_the_requested_page() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,30,5&identity=full&limit=1&offset=1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["numberMatched"], 2);
+    assert_eq!(json["numberReturned"], 1);
+    assert_eq!(json["matches"][0]["featureRef"]["featureId"], "east");
+}
+
+#[tokio::test]
+async fn identity_full_records_do_not_depend_on_the_predicate() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (_, bbox) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-10,0,0,2&identity=full",
+    )
+    .await;
+    let (_, exact) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&identity=full&predicate=intersects",
+    )
+    .await;
+    assert_contract(&exact["matches"], bbox["matches"].clone());
 }
 
 #[tokio::test]
@@ -654,6 +720,22 @@ async fn route_errors_are_json() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json["error"]["code"], "unsupported_query");
+
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/items?bbox=-10,0,0,2&identity=full",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-10,0,0,2&identity=id",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_identity");
 
     let (status, json) = get_json(
         app,

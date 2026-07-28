@@ -695,6 +695,82 @@ async fn server_faults_do_not_name_the_artifact_path() {
     );
 }
 
+/// CORS is opt-in per deployment: no configured origin means no headers, so a
+/// browser page from elsewhere cannot read the responses.
+#[tokio::test]
+async fn cross_origin_reads_are_opt_in() {
+    let state = state_with_payload(PayloadPlan::RowRef);
+    let closed = router(state.clone());
+    let response = closed
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .header("origin", "https://example.org")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+
+    let open = packed_spatial_index_server::router_with_cors(
+        state.clone(),
+        &["https://example.org".to_string()],
+    )
+    .unwrap();
+    let response = open
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .header("origin", "https://example.org")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .map(|v| v.to_str().unwrap()),
+        Some("https://example.org")
+    );
+
+    // A different origin is not on the list, so it gets nothing.
+    let open =
+        packed_spatial_index_server::router_with_cors(state, &["https://example.org".to_string()])
+            .unwrap();
+    let response = open
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .header("origin", "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+
+    assert!(
+        packed_spatial_index_server::router_with_cors(
+            state_with_payload(PayloadPlan::RowRef),
+            &["not a header value\n".to_string()]
+        )
+        .is_err()
+    );
+}
+
 #[tokio::test]
 async fn unknown_routes_and_methods_use_the_error_envelope() {
     let app = router(state_with_payload(PayloadPlan::RowRef));

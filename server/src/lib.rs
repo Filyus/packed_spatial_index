@@ -16,4 +16,4 @@ mod query;
 pub use catalog::{Catalog, CollectionConfig, ServerConfig};
 pub use collection::{Collection, ServerState};
 pub use error::{ErrorBody, ServerError};
-pub use http::{router, serve};
+pub use http::{router, router_with_cors, serve, serve_with_cors};

@@ -29,6 +29,15 @@ pub struct ServerConfig {
     /// Per-query cost limits applied to every artifact query.
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// Browser origins allowed to read this server, for example
+    /// `["https://example.org"]`.
+    ///
+    /// Empty by default: a browser page from another origin cannot read the
+    /// responses. There is no wildcard entry — this server has no
+    /// authentication, so allowing every origin is a decision to state per
+    /// deployment rather than a value to type once.
+    #[serde(default)]
+    pub cors: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -36,6 +45,7 @@ impl Default for ServerConfig {
         Self {
             addr: default_addr(),
             limits: LimitsConfig::default(),
+            cors: Vec::new(),
         }
     }
 }

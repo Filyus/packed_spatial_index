@@ -17,6 +17,8 @@ directory, then attaches a fresh local file reader per request.
 [server]
 addr = "127.0.0.1:3000"
 
+cors = []
+
 [server.limits]
 max_reads = 0
 max_read_bytes = 536870912
@@ -30,6 +32,11 @@ artifact = "data/places.psindex"
 ```
 
 Artifact paths are resolved relative to the catalog file.
+
+`cors` lists the browser origins allowed to read this server, exactly — there
+is no wildcard. It is empty by default, so a page from another origin cannot
+read the responses. Since the server has no authentication, opening it to an
+origin is a per-deployment decision rather than a default.
 
 `[server.limits]` bounds the cost of a single query; the values above are the
 defaults and `0` lifts a limit. A query that exceeds one is answered with 422

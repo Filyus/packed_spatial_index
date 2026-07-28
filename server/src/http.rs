@@ -1,10 +1,11 @@
 use axum::{
     Json, Router,
     extract::{FromRequestParts, Path, Query, State},
-    http::{Method, Uri, request::Parts},
+    http::{HeaderValue, Method, Uri, request::Parts},
     routing::get,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
@@ -20,7 +21,17 @@ use crate::{
 /// far, so an earlier call would leave later routes answering 405 in axum's
 /// default plain-text shape instead of this server's JSON error envelope.
 pub fn router(state: ServerState) -> Router {
-    Router::new()
+    router_with_cors(state, &[]).expect("an empty origin list is always valid")
+}
+
+/// Build the HTTP router, allowing the listed browser origins to read it.
+///
+/// An empty list adds no CORS headers at all, which is the default: a browser
+/// page from another origin cannot read the responses. Origins are exact —
+/// there is no wildcard — because this server has no authentication and
+/// opening it to every origin should be a per-deployment decision.
+pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router, ServerError> {
+    let router = Router::new()
         .route("/health", get(health))
         // These three take no query parameters, so unlike the two below they
         // do not use `ValidQuery`: there is nothing a typo could silently
@@ -37,7 +48,24 @@ pub fn router(state: ServerState) -> Router {
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
-        .with_state(state)
+        .with_state(state);
+
+    if origins.is_empty() {
+        return Ok(router);
+    }
+    let allowed = origins
+        .iter()
+        .map(|origin| {
+            origin
+                .parse::<HeaderValue>()
+                .map_err(|_| ServerError::Config(format!("`{origin}` is not a valid CORS origin")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(router.layer(
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(allowed))
+            .allow_methods([Method::GET, Method::HEAD]),
+    ))
 }
 
 /// Query-string extractor that reports rejections in the JSON error envelope.
@@ -82,6 +110,19 @@ pub async fn serve(
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
+}
+
+/// Serve with the catalog's allowed browser origins applied.
+pub async fn serve_with_cors(
+    listener: tokio::net::TcpListener,
+    state: ServerState,
+    origins: &[String],
+) -> Result<(), ServerError> {
+    let router = router_with_cors(state, origins)?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|err| ServerError::io("listener", err))
 }
 
 /// Resolve when the process is asked to stop.

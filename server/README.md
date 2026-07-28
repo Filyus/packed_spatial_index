@@ -49,6 +49,10 @@ collections have no paged path at all, so limits are their only bound.
 cargo run --manifest-path server/Cargo.toml -- --catalog psindex-server.toml
 ```
 
+Logging follows `RUST_LOG`; `RUST_LOG=info` prints one line per request with
+method, path, status, and latency. Ctrl-C (or SIGTERM on Unix, Ctrl-Break on
+Windows) shuts down after in-flight requests finish.
+
 ## Endpoints
 
 - `GET /health`

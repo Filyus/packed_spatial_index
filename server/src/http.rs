@@ -5,6 +5,8 @@ use axum::{
     routing::get,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::{
     ServerError, ServerState,
@@ -29,6 +31,12 @@ pub fn router(state: ServerState) -> Router {
         .route("/collections/{id}/search", get(search))
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(route_not_found)
+        // Layered outside the fallbacks so a 404 or 405 is logged too.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
         .with_state(state)
 }
 

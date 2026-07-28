@@ -623,6 +623,48 @@ async fn unknown_query_parameters_are_rejected() {
     assert_eq!(json["error"]["code"], "invalid_limit");
 }
 
+/// A 500 says the server failed, not where it keeps its files. The artifact is
+/// reopened per request, so a catalog entry whose file disappears after startup
+/// reaches a client.
+#[tokio::test]
+async fn server_faults_do_not_name_the_artifact_path() {
+    let dir = tempdir().unwrap().keep();
+    let data_dir = dir.join("data");
+    fs::create_dir(&data_dir).unwrap();
+    let artifact = data_dir.join("places.psindex");
+    write_artifact_with_request(
+        &artifact,
+        ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        },
+        sample_geojson(),
+    );
+    let catalog = Catalog::from_toml_str(
+        r#"
+        [[collections]]
+        id = "places"
+        artifact = "data/places.psindex"
+        "#,
+        &dir,
+    )
+    .unwrap();
+    let state = ServerState::from_catalog(catalog).unwrap();
+    // The directory is cached at startup; the file itself is opened per query.
+    fs::remove_file(&artifact).unwrap();
+
+    let (status, json) = get_json(router(state), "/collections/places/search?bbox=-10,0,0,2").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(json["error"]["code"], "io");
+    let message = json["error"]["message"].as_str().unwrap();
+    assert!(!message.contains("places.psindex"), "{message}");
+    assert!(!message.contains(&dir.display().to_string()), "{message}");
+    assert!(
+        !message.contains(&artifact.display().to_string()),
+        "{message}"
+    );
+}
+
 #[tokio::test]
 async fn unknown_routes_and_methods_use_the_error_envelope() {
     let app = router(state_with_payload(PayloadPlan::RowRef));

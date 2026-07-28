@@ -190,13 +190,35 @@ pub struct ErrorInfo {
     pub message: String,
 }
 
+impl ServerError {
+    /// Message safe to return to a client.
+    ///
+    /// Only [`ServerError::Io`] differs from [`Display`](std::fmt::Display):
+    /// its path describes where this server keeps its files, which is the
+    /// operator's business rather than the caller's. Everything else stays
+    /// verbatim — `Geo(_)` in particular describes the artifact the client
+    /// asked about (column names, row numbers, the source fingerprint) and
+    /// carries no filesystem paths, so redacting it would only make failures
+    /// harder to report.
+    fn client_message(&self) -> String {
+        match self {
+            ServerError::Io { source, .. } => format!("I/O error reading the artifact: {source}"),
+            other => other.to_string(),
+        }
+    }
+}
+
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let status = self.status_code();
+        if status.is_server_error() {
+            // The full form, path included, belongs in the operator's log.
+            tracing::error!(error = %self, "request failed");
+        }
         let body = ErrorBody {
             error: ErrorInfo {
                 code: self.code(),
-                message: self.to_string(),
+                message: self.client_message(),
             },
         };
         (status, Json(body)).into_response()

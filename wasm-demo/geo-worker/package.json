@@ -7,6 +7,7 @@
   "scripts": {
     "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
     "seed:geo": "cargo run --release --manifest-path ../geo-seed/Cargo.toml -- 100000 synthetic-points.parquet && cargo run --release --manifest-path ../../geo/Cargo.toml --bin gp2psindex -- build synthetic-points.parquet synthetic-points.psindex --payload feature-json --properties all",
+    "seed:geo:3d": "cargo run --release --manifest-path ../geo-seed/Cargo.toml -- 100000 synthetic-points.parquet --dims 3 && cargo run --release --manifest-path ../../geo/Cargo.toml --bin gp2psindex -- build synthetic-points.parquet synthetic-points.psindex --payload feature-json --properties all",
     "test": "node --test tests/artifact.test.mjs",
     "typecheck": "tsc --noEmit",
     "bucket:create": "wrangler r2 bucket create psi-geo-demo",

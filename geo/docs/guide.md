@@ -376,6 +376,23 @@ gp2psindex build input.parquet output.psi \
   --properties include:name,pop
 ```
 
+## Counting and paging matches
+
+`query --count` prints how many index entries match and stops, without reading
+a single source row. `query --limit n [--offset n]` reads back only one page,
+in index entry order, fetching payload bodies for that page alone instead of
+materializing every match first.
+
+```text
+gp2psindex query input.parquet output.psi --bbox -10,35,20,60 --count
+gp2psindex query input.parquet output.psi --bbox -10,35,20,60 \
+  --limit 20 --offset 40 --json
+```
+
+Both describe the index's own match set. `--exact` (and `--radius`, which is
+always exact) narrows that set afterwards, so combining them is refused rather
+than reporting a number that disagrees with what the same query would print.
+
 ## Querying a 3D index
 
 `--dims 3d` requires the scan to actually find a z extent. That is not the same

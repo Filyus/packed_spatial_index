@@ -63,10 +63,16 @@ usage:
       [--properties none|all|include:a,b|exclude:a,b]
       [--order source|match]
       [--duplicates dedup|parts]
+      [--count]
+        (print how many index entries match, then stop)
+      [--limit n] [--offset n]
+        (read back only one page of matches, in index entry order)
       [--json|--ndjson]
       [--allow-source-mismatch]
       (against a 3D index: --bbox takes xmin,ymin,zmin,xmax,ymax,zmax;
-       --radius/--exact/--predicate/--treat-nonplanar-as-planar are 2D-only)";
+       --radius/--exact/--predicate/--treat-nonplanar-as-planar are 2D-only.
+       --count and --limit/--offset describe the index's own match set, so
+       they are refused together with --exact, which narrows it afterwards)";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -530,6 +536,9 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "--properties",
         "--order",
         "--duplicates",
+        "--count",
+        "--limit",
+        "--offset",
         "--json",
         "--ndjson",
         "--allow-source-mismatch",
@@ -547,12 +556,73 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let artifact = open_geo_index(SliceReader::new(bytes))?;
     let manifest = artifact.manifest().clone();
 
+    if parsed.flag("--count") {
+        reject_post_index_narrowing(&parsed, "--count")?;
+        if parsed.option("--limit")?.is_some() || parsed.option("--offset")?.is_some() {
+            return Err("--count reports the whole match set; drop --limit/--offset".into());
+        }
+        let count = match artifact {
+            GeoArtifactIndex::D2(index) => index.count_entries(query_2d(&parsed)?)?,
+            GeoArtifactIndex::D3(index) => index.count_entries(query_3d(&parsed)?)?,
+        };
+        println!("{count}");
+        return Ok(());
+    }
+
+    let page = query_page(&parsed)?;
+    if page.is_some() {
+        reject_post_index_narrowing(&parsed, "--limit/--offset")?;
+    }
+
     let features = match artifact {
-        GeoArtifactIndex::D2(index) => query_cmd_2d(&parsed, source, kind, &index)?,
-        GeoArtifactIndex::D3(index) => query_cmd_3d(&parsed, &index)?,
+        GeoArtifactIndex::D2(index) => query_cmd_2d(&parsed, source, kind, &index, page)?,
+        GeoArtifactIndex::D3(index) => query_cmd_3d(&parsed, &index, page)?,
     };
 
     query_cmd_finish(&parsed, source, kind, &manifest, features)
+}
+
+/// Parse `--limit`/`--offset` into a page request.
+///
+/// `--offset` alone is meaningless without a limit, so it requires one.
+fn query_page(parsed: &Parsed<'_>) -> Result<Option<(usize, usize)>, Box<dyn std::error::Error>> {
+    let limit = parsed
+        .option("--limit")?
+        .map(parse_page_number)
+        .transpose()?;
+    let offset = parsed
+        .option("--offset")?
+        .map(parse_page_number)
+        .transpose()?;
+    match (limit, offset) {
+        (Some(limit), offset) => Ok(Some((offset.unwrap_or(0), limit))),
+        (None, Some(_)) => Err("--offset requires --limit".into()),
+        (None, None) => Ok(None),
+    }
+}
+
+fn parse_page_number(value: String) -> Result<usize, Box<dyn std::error::Error>> {
+    value
+        .parse::<usize>()
+        .map_err(|_| format!("`{value}` is not a non-negative integer").into())
+}
+
+/// Counting and paging both work on the index's own match set, which an exact
+/// filter narrows afterwards. Reporting a count or a page from before that
+/// filter would describe a different set than the one the same command without
+/// the flag would print.
+fn reject_post_index_narrowing(
+    parsed: &Parsed<'_>,
+    flag: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if parsed.flag("--exact") || parsed.option("--radius")?.is_some() {
+        return Err(format!(
+            "{flag} counts index matches, which --exact (and --radius, which is always exact) \
+             narrows afterwards; the numbers would not agree with the unfiltered query"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// 2D query path: `--bbox` (4 numbers) or `--radius`, with optional `--exact`
@@ -562,18 +632,17 @@ fn query_cmd_2d<R: RangeReader>(
     source: &str,
     kind: SourceKind,
     index: &GeoArtifactIndex2D<R>,
+    page: Option<(usize, usize)>,
 ) -> Result<Vec<FeatureRef>, Box<dyn std::error::Error>> {
-    let bbox = parsed.option("--bbox")?;
-    let radius = parsed.option("--radius")?;
-    let query = match (bbox, radius) {
-        (Some(_), Some(_)) => return Err("--bbox and --radius are mutually exclusive".into()),
-        (Some(value), None) => GeoQuery2D::box2d(parse_bbox(&value)?),
-        (None, Some(value)) => {
-            let (lon, lat, radius_metres) = parse_radius(&value)?;
-            GeoQuery2D::spherical_radius(lon, lat, radius_metres)
-        }
-        (None, None) => return Err("--bbox or --radius is required".into()),
-    };
+    let query = query_2d(parsed)?;
+    if let Some((offset, limit)) = page {
+        let page = index.search_match_headers_page(query, offset, limit)?;
+        return Ok(index
+            .fetch_matches(&page.headers)?
+            .into_iter()
+            .map(|m| m.feature)
+            .collect());
+    }
     let radius_query = matches!(query, GeoQuery2D::SphericalRadius { .. });
     let exact = parsed.flag("--exact") || radius_query;
     let predicate = parsed.option("--predicate")?;
@@ -625,13 +694,29 @@ fn query_cmd_2d<R: RangeReader>(
         .collect())
 }
 
-/// 3D query path: `--bbox` only (6 numbers). `--radius`, `--exact`,
-/// `--predicate`, and `--treat-nonplanar-as-planar` are 2D-only concepts and
-/// are rejected here with an explanatory error rather than dispatched.
-fn query_cmd_3d<R: RangeReader>(
-    parsed: &Parsed<'_>,
-    index: &GeoArtifactIndex3D<R>,
-) -> Result<Vec<FeatureRef>, Box<dyn std::error::Error>> {
+/// Parse the 2D query geometry from `--bbox` or `--radius`.
+fn query_2d(parsed: &Parsed<'_>) -> Result<GeoQuery2D, Box<dyn std::error::Error>> {
+    match (parsed.option("--bbox")?, parsed.option("--radius")?) {
+        (Some(_), Some(_)) => Err("--bbox and --radius are mutually exclusive".into()),
+        (Some(value), None) => Ok(GeoQuery2D::box2d(parse_bbox(&value)?)),
+        (None, Some(value)) => {
+            let (lon, lat, radius_metres) = parse_radius(&value)?;
+            Ok(GeoQuery2D::spherical_radius(lon, lat, radius_metres))
+        }
+        (None, None) => Err("--bbox or --radius is required".into()),
+    }
+}
+
+/// Parse the 3D query box, rejecting the 2D-only flags on the way.
+fn query_3d(parsed: &Parsed<'_>) -> Result<Box3D, Box<dyn std::error::Error>> {
+    reject_two_dimensional_flags(parsed)?;
+    let Some(value) = parsed.option("--bbox")? else {
+        return Err("--bbox is required for a 3D index (--radius is 2D-only)".into());
+    };
+    parse_bbox3d(&value)
+}
+
+fn reject_two_dimensional_flags(parsed: &Parsed<'_>) -> Result<(), Box<dyn std::error::Error>> {
     if parsed.option("--radius")?.is_some() {
         return Err("--radius is a 2D lon/lat query; this is a 3D index".into());
     }
@@ -658,11 +743,26 @@ fn query_cmd_3d<R: RangeReader>(
                 .into(),
         );
     }
+    Ok(())
+}
 
-    let Some(value) = parsed.option("--bbox")? else {
-        return Err("--bbox is required for a 3D index (--radius is 2D-only)".into());
-    };
-    let bbox3d = parse_bbox3d(&value)?;
+/// 3D query path: `--bbox` only (6 numbers). `--radius`, `--exact`,
+/// `--predicate`, and `--treat-nonplanar-as-planar` are 2D-only concepts and
+/// are rejected here with an explanatory error rather than dispatched.
+fn query_cmd_3d<R: RangeReader>(
+    parsed: &Parsed<'_>,
+    index: &GeoArtifactIndex3D<R>,
+    page: Option<(usize, usize)>,
+) -> Result<Vec<FeatureRef>, Box<dyn std::error::Error>> {
+    let bbox3d = query_3d(parsed)?;
+    if let Some((offset, limit)) = page {
+        let page = index.search_match_headers_page(bbox3d, offset, limit)?;
+        return Ok(index
+            .fetch_matches(&page.headers)?
+            .into_iter()
+            .map(|m| m.feature)
+            .collect());
+    }
     Ok(index.search_feature_refs(bbox3d)?)
 }
 
@@ -1249,6 +1349,8 @@ fn option_takes_value(arg: &str) -> bool {
             | "--duplicates"
             | "--predicate"
             | "--radius"
+            | "--limit"
+            | "--offset"
     )
 }
 

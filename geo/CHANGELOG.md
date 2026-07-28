@@ -6,6 +6,11 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- `gp2psindex query` gained `--count`, `--limit`, and `--offset`, so the CLI
+  can answer "how many" without reading source rows and can read back one page
+  instead of materializing every match. Both describe the index's own match
+  set, so they are refused together with `--exact` (and `--radius`, which is
+  always exact), which narrows that set afterwards.
 - Added the header and body-fetch family to async 3D artifacts:
   `search_match_headers_async`, `search_match_headers_page_async`,
   `fetch_matches_async`, `search_payload_headers_async`,

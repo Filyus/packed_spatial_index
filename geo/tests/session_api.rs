@@ -3343,6 +3343,120 @@ fn cli_query_radius_accepts_the_planar_opt_in() {
     );
 }
 
+/// `--count` and `--limit`/`--offset` answer from the index's own match set,
+/// so they must agree with the unpaged query and refuse the flags that narrow
+/// that set afterwards.
+#[test]
+fn cli_query_counts_and_pages() {
+    let data = write_geoparquet(
+        vec![
+            (
+                "geometry",
+                binary_col(&[
+                    Some(wkb_point_2d(1.0, 1.0)),
+                    Some(wkb_point_2d(2.0, 2.0)),
+                    Some(wkb_point_2d(3.0, 3.0)),
+                ]),
+            ),
+            (
+                "name",
+                Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
+            ),
+        ],
+        geo_meta_wkb(&["Point"]),
+    );
+    let mut dataset = open_geoparquet(data.clone()).unwrap();
+    let psindex = dataset
+        .convert(ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+
+    let dir = env::temp_dir().join(format!(
+        "psi_geo_query_page_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.parquet");
+    let index_path = dir.join("source.psi");
+    fs::write(&source_path, &data).unwrap();
+    fs::write(&index_path, &psindex).unwrap();
+
+    let query = |extra: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_gp2psindex"));
+        command
+            .arg("query")
+            .arg(&source_path)
+            .arg(&index_path)
+            .arg("--bbox")
+            .arg("0,0,10,10");
+        for arg in extra {
+            command.arg(arg);
+        }
+        command.output().unwrap()
+    };
+
+    let counted = query(&["--count"]);
+    assert!(
+        counted.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&counted.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&counted.stdout).trim(), "3");
+
+    // Every page is the corresponding slice of the whole answer.
+    let whole = query(&["--properties", "include:name", "--json"]);
+    let whole: serde_json::Value = serde_json::from_slice(&whole.stdout).unwrap();
+    let names: Vec<String> = whole
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["properties"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, vec!["a", "b", "c"]);
+
+    for (offset, expected) in [(0, "a"), (1, "b"), (2, "c")] {
+        let page = query(&[
+            "--limit",
+            "1",
+            "--offset",
+            &offset.to_string(),
+            "--properties",
+            "include:name",
+            "--json",
+        ]);
+        assert!(
+            page.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&page.stderr)
+        );
+        let page: serde_json::Value = serde_json::from_slice(&page.stdout).unwrap();
+        let page = page.as_array().unwrap();
+        assert_eq!(page.len(), 1, "offset {offset}");
+        assert_eq!(page[0]["properties"]["name"], expected);
+    }
+
+    // Past the end is empty, not an error.
+    let past_end = query(&["--limit", "2", "--offset", "9", "--json"]);
+    assert!(past_end.status.success());
+    let past_end: serde_json::Value = serde_json::from_slice(&past_end.stdout).unwrap();
+    assert!(past_end.as_array().unwrap().is_empty());
+
+    // An exact filter narrows the set afterwards, so counting or paging the
+    // index's set would describe something else.
+    for extra in [
+        vec!["--count", "--exact"],
+        vec!["--limit", "1", "--exact"],
+        vec!["--count", "--limit", "1"],
+        vec!["--offset", "1"],
+    ] {
+        let rejected = query(&extra);
+        assert!(!rejected.status.success(), "{extra:?} should be rejected");
+    }
+}
+
 #[test]
 fn cli_query_accepts_3d_bbox_and_rejects_2d_only_flags() {
     let data = write_geoparquet(

@@ -6,6 +6,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- Added the header and body-fetch family to async 3D artifacts:
+  `search_match_headers_async`, `search_match_headers_page_async`,
+  `fetch_matches_async`, `search_payload_headers_async`,
+  `search_payload_headers_page_async`, and
+  `fetch_payload_header_matches_async`. Async 3D previously exposed five
+  methods where 2D exposed twelve, so a 3D caller over async I/O had to read
+  full matches where a 2D caller could page headers. A 3D query never expands
+  to several candidate boxes, so these page without the cross-box
+  deduplication the 2D versions need.
 - Added `count_entries_async` to `GeoArtifactIndex2D` and `GeoArtifactIndex3D`.
   The docs claimed no async variant was possible because the async layer
   exposed no visitor, which has not been true since the region visitors landed;

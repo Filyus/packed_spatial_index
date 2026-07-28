@@ -2357,6 +2357,182 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
         Ok(count)
     }
 
+    /// Search headers over async range I/O; the 3D counterpart of
+    /// [`GeoArtifactIndex2D::search_match_headers_async`].
+    pub async fn search_match_headers_async<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<GeoMatchHeader>, GeoError> {
+        ensure_header_capable_plan(&self.manifest.payload_plan)?;
+        let mut headers = Vec::new();
+        let mut short_payload = false;
+        let collect = |p: PayloadPrefix<'_>| collect_header(p, &mut headers, &mut short_payload);
+        self.visit_prefixes_async(query.into(), FEATURE_REF_RECORD_LEN, collect)
+            .await?;
+        finish_headers(headers, short_payload)
+    }
+
+    /// Search headers and keep one deterministic page; the 3D counterpart of
+    /// [`GeoArtifactIndex2D::search_match_headers_page_async`].
+    pub async fn search_match_headers_page_async<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+        offset: usize,
+        limit: usize,
+    ) -> Result<GeoMatchHeaderPage, GeoError> {
+        ensure_header_capable_plan(&self.manifest.payload_plan)?;
+        let mut page = HeaderPageCollector::new(offset, limit);
+        let mut short_payload = false;
+        let collect = |p: PayloadPrefix<'_>| collect_header_page(p, &mut page, &mut short_payload);
+        self.visit_prefixes_async(query.into(), FEATURE_REF_RECORD_LEN, collect)
+            .await?;
+        finish_match_header_page(page, short_payload)
+    }
+
+    /// Fetch full matches for headers over async range I/O; the 3D counterpart
+    /// of [`GeoArtifactIndex2D::fetch_matches_async`].
+    pub async fn fetch_matches_async(
+        &self,
+        headers: &[GeoMatchHeader],
+    ) -> Result<Vec<GeoMatch>, GeoError> {
+        match &self.manifest.payload_plan {
+            PayloadPlan::RowRef => headers
+                .iter()
+                .map(GeoMatchHeader::to_row_ref_match)
+                .collect(),
+            PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. } => {
+                let by_rank = self
+                    .payloads_at_ranks_async(headers.iter().map(|h| h.leaf_rank))
+                    .await?;
+                assemble_matches(&self.manifest.payload_plan, headers, &by_rank)
+            }
+            plan => Err(GeoError::UnsupportedArtifact(format!(
+                "fetch_matches_async supports RowRef, RowWkb, and FeatureJson payload plans, not {plan:?}"
+            ))),
+        }
+    }
+
+    /// Search payload locations without decoding feature refs; the 3D
+    /// counterpart of [`GeoArtifactIndex2D::search_payload_headers_async`].
+    pub async fn search_payload_headers_async<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+    ) -> Result<Vec<GeoPayloadHeader>, GeoError> {
+        self.ensure_payload_section("search_payload_headers_async")?;
+        let mut headers = Vec::new();
+        let collect = |p: PayloadPrefix<'_>| headers.push(GeoPayloadHeader::from_prefix(p));
+        self.visit_prefixes_async(query.into(), 0, collect).await?;
+        Ok(headers)
+    }
+
+    /// Search payload locations and keep one deterministic page; the 3D
+    /// counterpart of
+    /// [`GeoArtifactIndex2D::search_payload_headers_page_async`].
+    pub async fn search_payload_headers_page_async<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+        offset: usize,
+        limit: usize,
+    ) -> Result<GeoPayloadHeaderPage, GeoError> {
+        self.ensure_payload_section("search_payload_headers_page_async")?;
+        let mut page = HeaderPageCollector::new(offset, limit);
+        let collect = |p: PayloadPrefix<'_>| page.push(GeoPayloadHeader::from_prefix(p));
+        self.visit_prefixes_async(query.into(), 0, collect).await?;
+        Ok(finish_payload_header_page(page))
+    }
+
+    /// Fetch full matches for payload headers; the 3D counterpart of
+    /// [`GeoArtifactIndex2D::fetch_payload_header_matches_async`].
+    pub async fn fetch_payload_header_matches_async(
+        &self,
+        headers: &[GeoPayloadHeader],
+    ) -> Result<Vec<GeoMatch>, GeoError> {
+        self.ensure_payload_section("fetch_payload_header_matches_async")?;
+        let by_rank = self
+            .payloads_at_ranks_async(headers.iter().map(|h| h.leaf_rank))
+            .await?;
+        headers
+            .iter()
+            .map(|header| {
+                let payload = payload_at_rank(&by_rank, header.leaf_rank, header.payload_len)?;
+                let (feature, payload) = decode_payload(&self.manifest.payload_plan, payload)?;
+                Ok(GeoMatch {
+                    entry_id: header.entry_id,
+                    feature,
+                    payload,
+                })
+            })
+            .collect()
+    }
+
+    fn ensure_payload_section(&self, method: &str) -> Result<(), GeoError> {
+        if matches!(self.manifest.payload_plan, PayloadPlan::None) {
+            return Err(GeoError::UnsupportedArtifact(format!(
+                "{method} needs an artifact with payloads"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Visit payload prefixes for either 3D query shape.
+    ///
+    /// A 3D query never expands to several candidate boxes, so unlike the 2D
+    /// path there is nothing to deduplicate across.
+    async fn visit_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
+        &self,
+        query: GeoQuery3D,
+        prefix_len: usize,
+        collect: F,
+    ) -> Result<(), GeoError> {
+        match query {
+            GeoQuery3D::Box3D(bbox) => match &self.index {
+                GeoStreamIndex3D::F64(index) => {
+                    index
+                        .visit_payload_prefixes_async(bbox, prefix_len, collect)
+                        .await?
+                }
+                GeoStreamIndex3D::F32(index) => {
+                    index
+                        .visit_payload_prefixes_async(bbox, prefix_len, collect)
+                        .await?
+                }
+            },
+            GeoQuery3D::Frustum3D(frustum) => match &self.index {
+                GeoStreamIndex3D::F64(index) => {
+                    index
+                        .visit_payload_prefixes_region_async(&frustum, prefix_len, collect)
+                        .await?
+                }
+                GeoStreamIndex3D::F32(index) => {
+                    index
+                        .visit_payload_prefixes_region_async(&frustum, prefix_len, collect)
+                        .await?
+                }
+            },
+        }
+        Ok(())
+    }
+
+    async fn payloads_at_ranks_async(
+        &self,
+        ranks: impl Iterator<Item = usize>,
+    ) -> Result<std::collections::HashMap<usize, Vec<u8>>, GeoError> {
+        let ranks: Vec<usize> = ranks.collect();
+        let mut by_rank = std::collections::HashMap::new();
+        let collect = |rank: usize, blob: &[u8]| {
+            by_rank.insert(rank, blob.to_vec());
+        };
+        match &self.index {
+            GeoStreamIndex3D::F64(index) => {
+                index.visit_payloads_at_ranks_async(&ranks, collect).await?
+            }
+            GeoStreamIndex3D::F32(index) => {
+                index.visit_payloads_at_ranks_async(&ranks, collect).await?
+            }
+        }
+        Ok(by_rank)
+    }
+
     /// Search over async range I/O and return source feature references.
     ///
     /// # Example

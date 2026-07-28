@@ -2027,6 +2027,110 @@ fn async_geo_artifact_frustum_query_prunes_over_bounding_box() {
     }
 }
 
+/// The async 3D surface had five methods where 2D had twelve. These are the
+/// six that were missing, checked against the synchronous answers.
+#[cfg(feature = "async")]
+#[test]
+fn async_3d_header_searches_match_the_synchronous_ones() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                Some(wkb_point_3d(1.0, 1.0, 1.0)),
+                Some(wkb_point_3d(2.0, 2.0, 2.0)),
+                Some(wkb_point_3d(3.0, 3.0, 3.0)),
+            ]),
+        )],
+        geo_meta_wkb(&["Point Z"]),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            dims: IndexDimsRequest::D3,
+            payload: PayloadPlan::RowWkb,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+
+    let GeoArtifactIndex::D3(sync_index) = open_geo_index(SliceReader::new(bytes.clone())).unwrap()
+    else {
+        panic!("expected 3D artifact");
+    };
+    let GeoArtifactIndex::D3(async_index) =
+        pollster::block_on(open_geo_index_async(AsyncSlice(bytes))).unwrap()
+    else {
+        panic!("expected 3D artifact");
+    };
+
+    let query = Box3D::new(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
+
+    let sync_headers = sync_index.search_match_headers(query).unwrap();
+    let async_headers = pollster::block_on(async_index.search_match_headers_async(query)).unwrap();
+    assert_eq!(async_headers, sync_headers);
+    assert_eq!(async_headers.len(), 3);
+
+    for (offset, limit) in [(0, 0), (0, 2), (1, 2), (5, 2)] {
+        let sync_page = sync_index
+            .search_match_headers_page(query, offset, limit)
+            .unwrap();
+        let async_page =
+            pollster::block_on(async_index.search_match_headers_page_async(query, offset, limit))
+                .unwrap();
+        assert_eq!(async_page, sync_page);
+        assert_eq!(async_page.number_matched, 3);
+    }
+
+    let sync_matches = sync_index.fetch_matches(&sync_headers).unwrap();
+    let async_matches =
+        pollster::block_on(async_index.fetch_matches_async(&async_headers)).unwrap();
+    assert_eq!(async_matches, sync_matches);
+
+    // Payload headers have no synchronous counterpart; check them against the
+    // match headers they locate.
+    let payload_headers =
+        pollster::block_on(async_index.search_payload_headers_async(query)).unwrap();
+    assert_eq!(payload_headers.len(), sync_headers.len());
+    let page =
+        pollster::block_on(async_index.search_payload_headers_page_async(query, 1, 1)).unwrap();
+    assert_eq!(page.number_matched, 3);
+    assert_eq!(page.headers.len(), 1);
+    let payload_matches =
+        pollster::block_on(async_index.fetch_payload_header_matches_async(&page.headers)).unwrap();
+    assert_eq!(payload_matches.len(), 1);
+    assert_eq!(payload_matches[0].entry_id, page.headers[0].entry_id);
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_3d_header_searches_reject_payload_less_artifacts() {
+    let data = write_geoparquet(
+        vec![("geometry", binary_col(&[Some(wkb_point_3d(1.0, 1.0, 1.0))]))],
+        geo_meta_wkb(&["Point Z"]),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            dims: IndexDimsRequest::D3,
+            payload: PayloadPlan::None,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D3(index) =
+        pollster::block_on(open_geo_index_async(AsyncSlice(bytes))).unwrap()
+    else {
+        panic!("expected 3D artifact");
+    };
+    let query = Box3D::new(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
+    assert!(matches!(
+        pollster::block_on(index.search_match_headers_async(query)),
+        Err(GeoError::UnsupportedArtifact(_))
+    ));
+    assert!(matches!(
+        pollster::block_on(index.search_payload_headers_async(query)),
+        Err(GeoError::UnsupportedArtifact(_))
+    ));
+}
+
 #[test]
 fn geo_artifact_reader_does_not_require_known_length() {
     struct NoLenReader(SliceReader<Vec<u8>>);

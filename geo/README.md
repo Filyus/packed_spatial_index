@@ -141,17 +141,20 @@ reattach fresh range readers without rereading the container directory or
 | Open artifact | [`open_geo_index`][open_geo_index], [`open_geo_index_async`][open_geo_index_async] (`async` feature) |
 | Cache and reattach metadata | [`GeoArtifactDirectory`][GeoArtifactDirectory], [`into_directory`][into_directory] / [`from_directory`][from_directory] |
 | Entry-id search | [`search_entry_ids`][artifact_search_entry_ids] |
-| Count matches without materializing | [`count_entries`][artifact_count_entries] |
+| Count matches without materializing | [`count_entries`][artifact_count_entries], `count_entries_async` (`async` feature) |
 | Payload search | [`GeoArtifactIndex2D::search_matches`][search_matches], [`GeoMatch`][GeoMatch] |
 | Feature-level payload search | [`GeoArtifactIndex2D::search_features`][artifact_search_features], [`GeoArtifactIndex2D::search_feature_matches`][artifact_search_feature_matches] |
-| Paged payload reads | [`search_match_headers`][search_match_headers], [`search_match_headers_page_async`][search_match_headers_page_async], [`search_payload_headers_page_async`][search_payload_headers_page_async], [`fetch_matches`][fetch_matches] |
+| Paged payload reads | [`search_match_headers`][search_match_headers], `search_match_headers_page`, [`search_match_headers_page_async`][search_match_headers_page_async], [`search_payload_headers_page_async`][search_payload_headers_page_async], [`fetch_matches`][fetch_matches] |
 | Exact-filter payload matches | [`GeoArtifactIndex2D::filter_matches`][filter_matches] |
 | Query shapes | [`GeoQuery2D`][GeoQuery2D] (box / polygon / radius), [`GeoQuery3D`][GeoQuery3D] (box / frustum) |
 | Payload plans | [`PayloadPlan`][PayloadPlan], [`FeatureRef`][FeatureRef] |
 
 Enable the `async` feature to open the same artifacts through an
-`AsyncRangeReader`; the async methods mirror window, polygon, and 3D frustum
-candidate queries, including payload-returning `search_matches_async`. When
+`AsyncRangeReader`. The async surface mirrors the synchronous one on both
+dimensions: window, polygon, and 3D frustum candidate queries, payload-returning
+`search_matches_async`, counting through `count_entries_async`, and the whole
+header family — `search_match_headers_async`, `search_match_headers_page_async`,
+`fetch_matches_async`, and the `GeoPayloadHeader` variants. When
 each request needs a fresh range reader — a server or worker — split an opened
 artifact with `into_directory`, cache the returned
 [`GeoArtifactDirectory`][GeoArtifactDirectory], and let later requests
@@ -169,7 +172,9 @@ polygon queries; fetch payload bodies for just `page.headers` with
 Artifacts whose entries can duplicate source rows can use
 [`search_match_headers_page_async`][search_match_headers_page_async] for the
 same bounded entry-level pagination while retaining decoded feature refs. It
-returns a [`GeoMatchHeaderPage`][GeoMatchHeaderPage]. Exact feature-level
+returns a [`GeoMatchHeaderPage`][GeoMatchHeaderPage]. `search_match_headers_page`
+is the synchronous counterpart, on both 2D and 3D artifacts, for callers not
+using async I/O. Exact feature-level
 pagination still requires the full match-header search followed by
 `GeoMatchHeader::dedupe_by_feature`, because choosing one representative per
 source feature needs global identity state.

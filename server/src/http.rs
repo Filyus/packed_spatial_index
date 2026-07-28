@@ -63,12 +63,59 @@ async fn method_not_allowed(method: Method, uri: Uri) -> ServerError {
     ServerError::MethodNotAllowed(format!("{method} {}", uri.path()))
 }
 
-/// Serve the router on an already-bound listener.
+/// Serve the router on an already-bound listener until a shutdown signal.
+///
+/// In-flight requests finish before the process exits, which matters here
+/// because a query holds an open artifact file and can be mid-read.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     state: ServerState,
 ) -> Result<(), std::io::Error> {
-    axum::serve(listener, router(state)).await
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+}
+
+/// Resolve when the process is asked to stop.
+///
+/// Ctrl-C everywhere, plus the platform's "please stop" signal: SIGTERM on
+/// Unix, which is what a container runtime or service manager sends first, and
+/// Ctrl-Break on Windows, which is the one a console process can be sent
+/// individually.
+async fn shutdown_signal() {
+    // A missing handler leaves nothing to wait for. Hold the future open so
+    // the server keeps serving instead of exiting the moment it starts.
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(windows)]
+    let terminate = async {
+        match tokio::signal::windows::ctrl_break() {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(any(unix, windows)))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => tracing::info!("interrupted; finishing in-flight requests"),
+        () = terminate => tracing::info!("termination requested; finishing in-flight requests"),
+    }
 }
 
 #[derive(Debug, Serialize)]

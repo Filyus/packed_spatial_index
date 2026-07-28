@@ -947,7 +947,7 @@ fn geometry_wkb(
         CoordinateDims::Xy
     };
     let (kind, parts) = geometry_parts(geometry, row, dims)?;
-    Ok(wkb::write_geometry(kind, dims, parts))
+    wkb::write_geometry(kind, dims, parts)
 }
 
 fn geometry_wkb_from_value(geometry: &serde_json::Value, row: usize) -> Result<Vec<u8>, GeoError> {

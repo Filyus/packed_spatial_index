@@ -74,7 +74,7 @@ pub(crate) fn scan_row(
     if !bounds.any {
         return Ok(None);
     }
-    let wkb = wkb::write_geometry(kind, dims, parts);
+    let wkb = wkb::write_geometry(kind, dims, parts)?;
     Ok(Some(GeoArrowRow { bounds, wkb }))
 }
 

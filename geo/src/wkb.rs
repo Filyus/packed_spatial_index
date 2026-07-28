@@ -929,10 +929,10 @@ pub(crate) fn write_geometry(
     kind: GeometryKind,
     dims: CoordinateDims,
     parts: GeometryParts,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, GeoError> {
     let mut out = Vec::new();
-    write_geometry_into(&mut out, kind, dims, parts);
-    out
+    write_geometry_into(&mut out, kind, dims, parts)?;
+    Ok(out)
 }
 
 #[cfg(any(feature = "parquet", feature = "geojson"))]
@@ -941,7 +941,7 @@ fn write_geometry_into(
     kind: GeometryKind,
     dims: CoordinateDims,
     parts: GeometryParts,
-) {
+) -> Result<(), GeoError> {
     match (kind, parts) {
         (GeometryKind::Point, GeometryParts::Point(point)) => {
             write_header(out, 1, dims);
@@ -979,14 +979,27 @@ fn write_geometry_into(
             write_header(out, 7, dims);
             write_u32(out, children.len());
             for (kind, child) in children {
-                write_geometry_into(out, kind, dims, child);
+                write_geometry_into(out, kind, dims, child)?;
             }
         }
-        _ => {
-            write_header(out, 7, dims);
-            write_u32(out, 0);
+        // The kind and the parts are built together by every caller, so a
+        // mismatch means the two drifted apart. Emitting an empty
+        // GeometryCollection here would write a geometry the source never
+        // had, and nothing downstream could tell it from a real one.
+        (kind, parts) => {
+            let parts = match parts {
+                GeometryParts::Point(_) => "point",
+                GeometryParts::LineString(_) => "line-string",
+                GeometryParts::Polygon(_) => "polygon",
+                GeometryParts::MultiPolygon(_) => "multi-polygon",
+                GeometryParts::GeometryCollection(_) => "geometry-collection",
+            };
+            return Err(GeoError::Wkb(format!(
+                "cannot write {kind} geometry from {parts} parts"
+            )));
         }
     }
+    Ok(())
 }
 
 #[cfg(any(feature = "parquet", feature = "geojson"))]
@@ -1101,6 +1114,43 @@ mod tests {
         let json = geometry_json(&point_wkb(5.0, 6.0)).unwrap();
         assert_eq!(json["type"], "Point");
         assert_eq!(json["coordinates"], serde_json::json!([5.0, 6.0]));
+    }
+
+    /// The kind and the parts are built together, so a mismatch means they
+    /// drifted apart in the caller. Writing an empty GeometryCollection would
+    /// hand back a geometry the source never had.
+    #[cfg(any(feature = "parquet", feature = "geojson"))]
+    #[test]
+    fn writing_a_mismatched_kind_and_parts_is_an_error() {
+        let err = write_geometry(
+            GeometryKind::Polygon,
+            CoordinateDims::Xy,
+            GeometryParts::Point(Coord {
+                x: 1.0,
+                y: 2.0,
+                z: None,
+                m: None,
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, GeoError::Wkb(message) if message.contains("polygon")),
+            "{err}"
+        );
+
+        // The matched pairs still write.
+        let wkb = write_geometry(
+            GeometryKind::Point,
+            CoordinateDims::Xy,
+            GeometryParts::Point(Coord {
+                x: 1.0,
+                y: 2.0,
+                z: None,
+                m: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(wkb, point_wkb(1.0, 2.0));
     }
 
     fn point_wkb(x: f64, y: f64) -> Vec<u8> {

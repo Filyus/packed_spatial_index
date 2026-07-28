@@ -707,8 +707,12 @@ fn header_record(
             byte_length: header.body_byte_len().unwrap_or(0),
             wkb_base64: None,
         }),
-        // The header search rejects every other plan up front.
-        _ => None,
+        // No `byteLength` for FeatureJson: the intersects path decodes bodies
+        // instead of headers and has no cheap equivalent, so reporting it here
+        // would make the field appear only on one of the two paths.
+        (_, PayloadPlan::FeatureJson { .. }) => Some(MatchPayload::FeatureJson { feature: None }),
+        // The header search rejects payload-less artifacts up front.
+        (_, PayloadPlan::None) => None,
     };
     MatchRecord {
         entry_id: header.entry_id,
@@ -741,6 +745,10 @@ fn match_record(
         if matches!(level, ResultLevel::Feature) {
             feature.part = None;
         }
+        // Source feature ids live in payload bodies, so only the paths that
+        // decode bodies can produce one. Drop it here so a record describes the
+        // artifact rather than the path that found it.
+        feature.feature_id = None;
         FeatureRefRecord::from(feature)
     });
     MatchRecord {

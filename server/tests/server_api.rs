@@ -196,8 +196,7 @@ async fn contract_search_feature_json_full_shape() {
                 {
                     "entryId": 0,
                     "featureRef": {
-                        "rowNumber": 0,
-                        "featureId": "west"
+                        "rowNumber": 0
                     },
                     "payload": {
                         "kind": "feature_json",
@@ -215,6 +214,65 @@ async fn contract_search_feature_json_full_shape() {
             ]
         }),
     );
+}
+
+#[tokio::test]
+async fn contract_search_feature_json_summary_shape() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (status, json) = get_json(app, "/collections/places/search?bbox=-10,0,0,2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_contract(
+        &json,
+        json!({
+            "collectionId": "places",
+            "query": {
+                "bbox": [-10.0, 0.0, 0.0, 2.0],
+                "predicate": "bbox",
+                "level": "feature",
+                "payload": "summary",
+                "limit": 100,
+                "offset": 0
+            },
+            "payloadKind": "feature_json",
+            "numberMatched": 1,
+            "numberReturned": 1,
+            "matches": [
+                {
+                    "entryId": 0,
+                    "featureRef": {
+                        "rowNumber": 0
+                    },
+                    "payload": {"kind": "feature_json"}
+                }
+            ]
+        }),
+    );
+}
+
+/// A match record describes the artifact, not the code path that found it, so
+/// swapping the predicate must not change its shape.
+#[tokio::test]
+async fn search_records_do_not_depend_on_the_predicate() {
+    for payload in [
+        PayloadPlan::RowWkb,
+        PayloadPlan::FeatureJson {
+            properties: PropertyProjection::AllNonGeometry,
+        },
+    ] {
+        let app = router(state_with_payload(payload));
+        let (bbox_status, bbox) =
+            get_json(app.clone(), "/collections/places/search?bbox=-10,0,0,2").await;
+        let (exact_status, exact) = get_json(
+            app,
+            "/collections/places/search?bbox=-10,0,0,2&predicate=intersects",
+        )
+        .await;
+        assert_eq!(bbox_status, StatusCode::OK);
+        assert_eq!(exact_status, StatusCode::OK);
+        assert_contract(&exact["matches"], bbox["matches"].clone());
+    }
 }
 
 #[tokio::test]

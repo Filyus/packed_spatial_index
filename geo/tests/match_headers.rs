@@ -340,6 +340,45 @@ impl packed_spatial_index_geo::AsyncRangeReader for AsyncSlice {
     }
 }
 
+/// `search_features_async` and `search_feature_matches_async` had no call
+/// sites in the suite on either dimension, so the async feature-level collapse
+/// was never checked against the synchronous one.
+#[cfg(feature = "async")]
+#[test]
+fn async_feature_searches_match_the_synchronous_ones() {
+    let bytes = artifact_bytes(PayloadPlan::RowWkb);
+    let GeoArtifactIndex::D2(sync_index) = artifact(PayloadPlan::RowWkb) else {
+        panic!("expected 2D artifact");
+    };
+    let GeoArtifactIndex::D2(async_index) = pollster::block_on(
+        packed_spatial_index_geo::open_geo_index_async(AsyncSlice(bytes)),
+    )
+    .unwrap() else {
+        panic!("expected 2D artifact");
+    };
+
+    for query in [
+        GeoQuery2D::from(world()),
+        GeoQuery2D::spherical_radius(179.0, 0.0, 2_000_000.0),
+    ] {
+        let features =
+            pollster::block_on(async_index.search_features_async(query.clone())).unwrap();
+        assert_eq!(features, sync_index.search_features(query.clone()).unwrap());
+        assert!(features.iter().all(|feature| feature.part.is_none()));
+
+        let matches =
+            pollster::block_on(async_index.search_feature_matches_async(query.clone())).unwrap();
+        assert_eq!(
+            matches,
+            sync_index.search_feature_matches(query.clone()).unwrap()
+        );
+
+        // The collapse is the point: entry level keeps the split parts.
+        let entries = pollster::block_on(async_index.search_feature_refs_async(query)).unwrap();
+        assert!(entries.len() >= features.len());
+    }
+}
+
 #[cfg(feature = "async")]
 #[test]
 fn async_payload_header_pages_match_full_search_order() {

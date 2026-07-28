@@ -2184,6 +2184,55 @@ fn async_3d_header_searches_match_the_synchronous_ones() {
     assert_eq!(payload_matches[0].entry_id, page.headers[0].entry_id);
 }
 
+/// The 3D half of the same gap: async feature-level searches had no call
+/// sites either.
+#[cfg(feature = "async")]
+#[test]
+fn async_3d_feature_searches_match_the_synchronous_ones() {
+    let data = write_geoparquet(
+        vec![(
+            "geometry",
+            binary_col(&[
+                Some(wkb_line_3d(&[(170.0, 0.0, 1.0), (-170.0, 1.0, 2.0)])),
+                Some(wkb_point_3d(5.0, 5.0, 5.0)),
+            ]),
+        )],
+        geo_meta_wkb(&["LineString Z", "Point Z"]),
+    );
+    let mut dataset = open_geoparquet(data).unwrap();
+    let bytes = dataset
+        .convert(ConvertRequest {
+            dims: IndexDimsRequest::D3,
+            payload: PayloadPlan::RowWkb,
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D3(sync_index) = open_geo_index(SliceReader::new(bytes.clone())).unwrap()
+    else {
+        panic!("expected 3D artifact");
+    };
+    let GeoArtifactIndex::D3(async_index) =
+        pollster::block_on(open_geo_index_async(AsyncSlice(bytes))).unwrap()
+    else {
+        panic!("expected 3D artifact");
+    };
+
+    let world = Box3D::new(-180.0, -90.0, -10.0, 180.0, 90.0, 10.0);
+    let features = pollster::block_on(async_index.search_features_async(world)).unwrap();
+    assert_eq!(features, sync_index.search_features(world).unwrap());
+    assert_eq!(features.len(), 2, "split entries collapse to two features");
+
+    let matches = pollster::block_on(async_index.search_feature_matches_async(world)).unwrap();
+    assert_eq!(matches, sync_index.search_feature_matches(world).unwrap());
+    assert_eq!(
+        pollster::block_on(async_index.count_entries_async(world)).unwrap(),
+        3
+    );
+}
+
 #[cfg(feature = "async")]
 #[test]
 fn async_3d_header_searches_reject_payload_less_artifacts() {

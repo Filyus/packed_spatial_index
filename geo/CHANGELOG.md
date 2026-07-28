@@ -6,6 +6,12 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- Added `search_match_headers_page` to `GeoArtifactIndex2D` and
+  `GeoArtifactIndex3D`. Bounded, deterministic entry pagination was previously
+  async-only, so synchronous callers had to materialize every match header and
+  page in memory. It reports the exact pre-pagination count while retaining at
+  most `offset + limit` headers, and `GeoMatchHeaderPage` is no longer gated
+  behind the `async` feature.
 - `GeoArtifactIndex2D::filter_matches` now checks the artifact's payload plan
   before iterating candidates, so a `RowRef` artifact reports the documented
   `PayloadDecode` error even when the candidate list is empty. It previously

@@ -399,6 +399,52 @@ fn async_payload_fetch_rejects_stale_header_length() {
     ));
 }
 
+#[test]
+fn match_header_pages_match_full_search_order() {
+    let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::RowWkb) else {
+        panic!("expected 2D artifact");
+    };
+
+    for query in [
+        GeoQuery2D::from(world()),
+        // An antimeridian-crossing radius expands to several boxes, which is
+        // the path that also has to deduplicate across them.
+        GeoQuery2D::spherical_radius(179.0, 0.0, 2_000_000.0),
+    ] {
+        let mut all = index.search_match_headers(query.clone()).unwrap();
+        GeoMatchHeader::sort_by_entry(&mut all);
+
+        for (offset, limit) in [(0, 0), (0, 2), (1, 2), (3, 10), (10, 2)] {
+            let page = index
+                .search_match_headers_page(query.clone(), offset, limit)
+                .unwrap();
+            let expected: Vec<_> = all.iter().skip(offset).take(limit).cloned().collect();
+            assert_eq!(page.number_matched, all.len());
+            assert_eq!(page.headers, expected);
+
+            let matches = index.fetch_matches(&page.headers).unwrap();
+            assert_eq!(matches.len(), expected.len());
+            assert!(
+                matches
+                    .iter()
+                    .zip(&expected)
+                    .all(|(matched, header)| matched.entry_id == header.entry_id)
+            );
+        }
+    }
+}
+
+#[test]
+fn match_header_pages_reject_unsupported_plans() {
+    let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::None) else {
+        panic!("expected 2D artifact");
+    };
+    assert!(matches!(
+        index.search_match_headers_page(world(), 0, 10),
+        Err(GeoError::UnsupportedArtifact(_))
+    ));
+}
+
 #[cfg(feature = "async")]
 #[test]
 fn async_match_header_pages_match_full_search_order() {

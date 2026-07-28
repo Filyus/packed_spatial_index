@@ -896,6 +896,79 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
         finish_headers(headers, short_payload)
     }
 
+    /// Search headers and keep only one deterministic page of them.
+    ///
+    /// Same result as [`search_match_headers`](Self::search_match_headers)
+    /// followed by sorting and slicing, except that at most `offset + limit`
+    /// headers are ever retained: `number_matched` is counted as entries are
+    /// visited. Memory is bounded for single-box and polygon queries; a
+    /// multi-box query (an antimeridian-crossing bbox) still keeps a set of
+    /// seen entry ids to deduplicate across boxes.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, SliceReader, open_geo_index};
+    ///
+    /// let bytes = std::fs::read("places.psi")?;
+    /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
+    ///     panic!("expected a 2D artifact");
+    /// };
+    /// let page = index.search_match_headers_page(Box2D::new(0.0, 0.0, 10.0, 10.0), 0, 20)?;
+    /// println!("{} of {} entries", page.headers.len(), page.number_matched);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn search_match_headers_page<Q: Into<GeoQuery2D>>(
+        &self,
+        query: Q,
+        offset: usize,
+        limit: usize,
+    ) -> Result<GeoMatchHeaderPage, GeoError> {
+        ensure_header_capable_plan(&self.manifest.payload_plan)?;
+        let query = query.into();
+        let mut page = HeaderPageCollector::new(offset, limit);
+        let mut short_payload = false;
+
+        if let GeoQuery2D::Polygon(multi_polygon) = &query {
+            ensure_polygon_query_not_empty(multi_polygon)?;
+            let region = PolygonRegion(multi_polygon);
+            let collect =
+                |p: PayloadPrefix<'_>| collect_header_page(p, &mut page, &mut short_payload);
+            match &self.index {
+                GeoStreamIndex2D::F64(index) => {
+                    index.visit_payload_prefixes_region(&region, FEATURE_REF_RECORD_LEN, collect)?
+                }
+                GeoStreamIndex2D::F32(index) => {
+                    index.visit_payload_prefixes_region(&region, FEATURE_REF_RECORD_LEN, collect)?
+                }
+            }
+            return finish_match_header_page(page, short_payload);
+        }
+
+        let boxes = query.candidate_boxes_2d()?;
+        let dedup = boxes.len() > 1;
+        let mut seen = std::collections::HashSet::new();
+        for bbox in boxes {
+            let collect = |p: PayloadPrefix<'_>| match GeoMatchHeader::from_prefix(p) {
+                Some(header) => {
+                    if !dedup || seen.insert(header.entry_id) {
+                        page.push(header);
+                    }
+                }
+                None => short_payload = true,
+            };
+            match &self.index {
+                GeoStreamIndex2D::F64(index) => {
+                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                }
+                GeoStreamIndex2D::F32(index) => {
+                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                }
+            }
+        }
+        finish_match_header_page(page, short_payload)
+    }
+
     /// Fetch and decode full [`GeoMatch`] values for the given headers
     /// (typically one page), preserving the input header order.
     ///
@@ -1966,6 +2039,63 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
         finish_headers(headers, short_payload)
     }
 
+    /// Search headers and keep only one deterministic page of them; the 3D
+    /// counterpart of [`GeoArtifactIndex2D::search_match_headers_page`].
+    ///
+    /// A 3D query never expands to several boxes, so retention is bounded by
+    /// `offset + limit` for every query shape.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use packed_spatial_index_geo::{Box3D, GeoArtifactIndex, SliceReader, open_geo_index};
+    /// # let bytes = std::fs::read("elevations.psindex")?;
+    /// # let GeoArtifactIndex::D3(index) = open_geo_index(SliceReader::new(bytes))? else {
+    /// #     panic!("expected a 3D artifact");
+    /// # };
+    /// let page = index.search_match_headers_page(
+    ///     Box3D::new(0.0, 0.0, 0.0, 10.0, 10.0, 10.0),
+    ///     0,
+    ///     20,
+    /// )?;
+    /// println!("{} of {} entries", page.headers.len(), page.number_matched);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn search_match_headers_page<Q: Into<GeoQuery3D>>(
+        &self,
+        query: Q,
+        offset: usize,
+        limit: usize,
+    ) -> Result<GeoMatchHeaderPage, GeoError> {
+        ensure_header_capable_plan(&self.manifest.payload_plan)?;
+        let mut page = HeaderPageCollector::new(offset, limit);
+        let mut short_payload = false;
+        let collect = |p: PayloadPrefix<'_>| collect_header_page(p, &mut page, &mut short_payload);
+        match query.into() {
+            GeoQuery3D::Box3D(bbox) => match &self.index {
+                GeoStreamIndex3D::F64(index) => {
+                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                }
+                GeoStreamIndex3D::F32(index) => {
+                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                }
+            },
+            GeoQuery3D::Frustum3D(frustum) => match &self.index {
+                GeoStreamIndex3D::F64(index) => index.visit_payload_prefixes_region(
+                    &frustum,
+                    FEATURE_REF_RECORD_LEN,
+                    collect,
+                )?,
+                GeoStreamIndex3D::F32(index) => index.visit_payload_prefixes_region(
+                    &frustum,
+                    FEATURE_REF_RECORD_LEN,
+                    collect,
+                )?,
+            },
+        }
+        finish_match_header_page(page, short_payload)
+    }
+
     /// Fetch and decode full [`GeoMatch`] values for the given headers; the 3D
     /// counterpart of [`GeoArtifactIndex2D::fetch_matches`].
     ///
@@ -2034,7 +2164,6 @@ fn collect_header(p: PayloadPrefix<'_>, out: &mut Vec<GeoMatchHeader>, short: &m
     }
 }
 
-#[cfg(feature = "async")]
 fn collect_header_page(
     p: PayloadPrefix<'_>,
     out: &mut HeaderPageCollector<GeoMatchHeader>,
@@ -2428,8 +2557,7 @@ impl GeoMatchHeader {
     }
 }
 
-/// One deterministic entry-level page from an async match-header search.
-#[cfg(feature = "async")]
+/// One deterministic entry-level page from a match-header search.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeoMatchHeaderPage {
     /// Total number of matching entries before pagination.
@@ -2496,12 +2624,10 @@ pub struct GeoPayloadHeaderPage {
     pub headers: Vec<GeoPayloadHeader>,
 }
 
-#[cfg(feature = "async")]
 trait PageHeader {
     fn page_order(a: &Self, b: &Self) -> std::cmp::Ordering;
 }
 
-#[cfg(feature = "async")]
 impl PageHeader for GeoMatchHeader {
     fn page_order(a: &Self, b: &Self) -> std::cmp::Ordering {
         Self::entry_order(a, b)
@@ -2515,7 +2641,6 @@ impl PageHeader for GeoPayloadHeader {
     }
 }
 
-#[cfg(feature = "async")]
 struct HeaderPageCollector<H: PageHeader> {
     number_matched: usize,
     offset: usize,
@@ -2523,7 +2648,6 @@ struct HeaderPageCollector<H: PageHeader> {
     headers: std::collections::BinaryHeap<HeaderByOrder<H>>,
 }
 
-#[cfg(feature = "async")]
 impl<H: PageHeader> HeaderPageCollector<H> {
     fn new(offset: usize, limit: usize) -> Self {
         Self {
@@ -2565,7 +2689,6 @@ impl<H: PageHeader> HeaderPageCollector<H> {
     }
 }
 
-#[cfg(feature = "async")]
 fn finish_match_header_page(
     page: HeaderPageCollector<GeoMatchHeader>,
     short_payload: bool,
@@ -2587,27 +2710,22 @@ fn finish_payload_header_page(page: HeaderPageCollector<GeoPayloadHeader>) -> Ge
     }
 }
 
-#[cfg(feature = "async")]
 struct HeaderByOrder<H: PageHeader>(H);
 
-#[cfg(feature = "async")]
 impl<H: PageHeader> PartialEq for HeaderByOrder<H> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other).is_eq()
     }
 }
 
-#[cfg(feature = "async")]
 impl<H: PageHeader> Eq for HeaderByOrder<H> {}
 
-#[cfg(feature = "async")]
 impl<H: PageHeader> PartialOrd for HeaderByOrder<H> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-#[cfg(feature = "async")]
 impl<H: PageHeader> Ord for HeaderByOrder<H> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         H::page_order(&self.0, &other.0)

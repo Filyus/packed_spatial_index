@@ -449,7 +449,7 @@ impl<R> GeoArtifactIndex2D<R> {
     /// };
     /// use packed_spatial_index_geo::geo_types::{Coord, LineString, Polygon};
     ///
-    /// let bytes = std::fs::read("places.psi")?;
+    /// let bytes = std::fs::read("places.psindex")?;
     /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
     ///     panic!("expected a 2D artifact");
     /// };
@@ -913,7 +913,7 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// ```no_run
     /// use packed_spatial_index_geo::{Box2D, GeoArtifactIndex, SliceReader, open_geo_index};
     ///
-    /// let bytes = std::fs::read("places.psi")?;
+    /// let bytes = std::fs::read("places.psindex")?;
     /// let GeoArtifactIndex::D2(index) = open_geo_index(SliceReader::new(bytes))? else {
     ///     panic!("expected a 2D artifact");
     /// };

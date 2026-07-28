@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use packed_spatial_index::{FileReader, RangeReader};
+use packed_spatial_index::{FileReader, RangeReader, StreamLimits};
 use packed_spatial_index_geo::{
     CoordinateDims, GeoArtifactDirectory, GeoArtifactIndex, GeoArtifactManifest, PayloadPlan,
     open_geo_index,
@@ -21,9 +21,10 @@ pub struct ServerState {
 impl ServerState {
     /// Open all catalog artifacts and cache their artifact directories.
     pub fn from_catalog(catalog: Catalog) -> Result<Self, ServerError> {
+        let limits = catalog.server.limits.to_stream_limits();
         let mut collections = HashMap::with_capacity(catalog.collections.len());
         for config in catalog.collections {
-            let collection = Arc::new(Collection::open(config)?);
+            let collection = Arc::new(Collection::open(config, limits)?);
             collections.insert(collection.id().to_owned(), collection);
         }
         Ok(Self {
@@ -51,10 +52,11 @@ pub struct Collection {
     description: Option<String>,
     artifact_path: PathBuf,
     directory: GeoArtifactDirectory,
+    limits: StreamLimits,
 }
 
 impl Collection {
-    fn open(config: CollectionConfig) -> Result<Self, ServerError> {
+    fn open(config: CollectionConfig, limits: StreamLimits) -> Result<Self, ServerError> {
         if !Path::new(&config.artifact).is_file() {
             return Err(ServerError::Config(format!(
                 "collection `{}` artifact does not exist or is not a file: {}",
@@ -72,6 +74,7 @@ impl Collection {
             description: config.description,
             artifact_path: config.artifact,
             directory,
+            limits,
         })
     }
 
@@ -103,11 +106,23 @@ impl Collection {
     }
 
     /// Attach an arbitrary range reader to the cached artifact directory.
+    ///
+    /// The catalog's per-query cost limits ride along, so every query issued
+    /// through the returned index is bounded.
     pub fn attach_reader<R: RangeReader>(
         &self,
         reader: R,
     ) -> Result<GeoArtifactIndex<R>, ServerError> {
-        Ok(GeoArtifactIndex::from_directory(&self.directory, reader)?)
+        Ok(GeoArtifactIndex::from_directory_with_limits(
+            &self.directory,
+            reader,
+            self.limits,
+        )?)
+    }
+
+    /// Per-query cost limits applied to this collection.
+    pub fn limits(&self) -> StreamLimits {
+        self.limits
     }
 
     /// Cached geospatial artifact manifest.

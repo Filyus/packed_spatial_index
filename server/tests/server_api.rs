@@ -84,6 +84,23 @@ fn state_with_geojson_request(req: ConvertRequest, doc: &[u8]) -> ServerState {
     ServerState::from_catalog(catalog).unwrap()
 }
 
+fn state_with_catalog(payload: PayloadPlan, catalog_text: &str) -> ServerState {
+    let dir = tempdir().unwrap().keep();
+    let data_dir = dir.join("data");
+    fs::create_dir(&data_dir).unwrap();
+    let artifact = data_dir.join("places.psindex");
+    write_artifact_with_request(
+        &artifact,
+        ConvertRequest {
+            payload,
+            ..ConvertRequest::default()
+        },
+        sample_geojson(),
+    );
+    let catalog = Catalog::from_toml_str(catalog_text, &dir).unwrap();
+    ServerState::from_catalog(catalog).unwrap()
+}
+
 async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     let response = app
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -390,6 +407,47 @@ async fn contract_error_shape() {
             }
         }),
     );
+}
+
+#[tokio::test]
+async fn queries_over_the_catalog_limits_are_rejected() {
+    let app = router(state_with_catalog(
+        PayloadPlan::RowRef,
+        r#"
+        [server.limits]
+        max_items = 1
+
+        [[collections]]
+        id = "places"
+        artifact = "data/places.psindex"
+        "#,
+    ));
+    // One match stays inside the budget.
+    let (status, _) = get_json(app.clone(), "/collections/places/search?bbox=-10,0,0,2").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Two matches exceed it, and that is the client's problem, not a 500.
+    let (status, json) = get_json(app, "/collections/places/search?bbox=-10,0,30,5").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "query_too_large");
+}
+
+#[tokio::test]
+async fn zero_lifts_a_catalog_limit() {
+    let app = router(state_with_catalog(
+        PayloadPlan::RowRef,
+        r#"
+        [server.limits]
+        max_items = 0
+
+        [[collections]]
+        id = "places"
+        artifact = "data/places.psindex"
+        "#,
+    ));
+    let (status, json) = get_json(app, "/collections/places/search?bbox=-10,0,30,5").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["numberMatched"], 2);
 }
 
 #[tokio::test]

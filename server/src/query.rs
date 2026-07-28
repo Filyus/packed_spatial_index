@@ -577,7 +577,9 @@ fn search_records(
                     )));
                 }
                 return Ok(id_outcome(
-                    index.search_entry_ids(query)?,
+                    index
+                        .search_entry_ids(query)
+                        .map_err(ServerError::from_geo)?,
                     shape,
                     offset,
                     limit,
@@ -599,12 +601,14 @@ fn search_records(
                     PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
                 )
             {
-                let headers = index.search_match_headers(query)?;
+                let headers = index
+                    .search_match_headers(query)
+                    .map_err(ServerError::from_geo)?;
                 return header_outcome(headers, shape, offset, limit, payload_plan, |page| {
                     index.fetch_matches(page)
                 });
             }
-            let mut matches = index.search_matches(query)?;
+            let mut matches = index.search_matches(query).map_err(ServerError::from_geo)?;
             if exact {
                 matches = index
                     .filter_matches(
@@ -634,7 +638,9 @@ fn search_records(
             let payload_plan = &collection.manifest().payload_plan;
             if matches!(payload_plan, PayloadPlan::None) {
                 return Ok(id_outcome(
-                    index.search_entry_ids(query)?,
+                    index
+                        .search_entry_ids(query)
+                        .map_err(ServerError::from_geo)?,
                     shape,
                     offset,
                     limit,
@@ -644,12 +650,14 @@ fn search_records(
                 payload_plan,
                 PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
             ) {
-                let headers = index.search_match_headers(query)?;
+                let headers = index
+                    .search_match_headers(query)
+                    .map_err(ServerError::from_geo)?;
                 return header_outcome(headers, shape, offset, limit, payload_plan, |page| {
                     index.fetch_matches(page)
                 });
             }
-            let matches = index.search_matches(query)?;
+            let matches = index.search_matches(query).map_err(ServerError::from_geo)?;
             Ok(match_outcome(matches, shape, offset, limit))
         }
     }
@@ -719,7 +727,8 @@ fn header_outcome(
     let number_matched = headers.len();
     let page = paginate(&headers, offset, limit);
     let records = if shape.needs_payload_bodies() {
-        fetch(&page)?
+        fetch(&page)
+            .map_err(ServerError::from_geo)?
             .into_iter()
             .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, shape))
             .collect()

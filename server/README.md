@@ -13,6 +13,11 @@ directory, then attaches a fresh local file reader per request.
 [server]
 addr = "127.0.0.1:3000"
 
+[server.limits]
+max_reads = 0
+max_read_bytes = 536870912
+max_items = 1000000
+
 [[collections]]
 id = "places"
 title = "Places"
@@ -21,6 +26,12 @@ artifact = "data/places.psindex"
 ```
 
 Artifact paths are resolved relative to the catalog file.
+
+`[server.limits]` bounds the cost of a single query; the values above are the
+defaults and `0` lifts a limit. A query that exceeds one is answered with 422
+`query_too_large` rather than running unbounded. This is the only bound on
+payload-less collections, whose id search has no pagination path: `limit` caps
+what is returned, not what is matched.
 
 ## Run
 

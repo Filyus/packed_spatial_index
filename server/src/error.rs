@@ -51,6 +51,9 @@ pub enum ServerError {
     /// The requested result level cannot run for this collection.
     #[error("unsupported level: {0}")]
     UnsupportedLevel(String),
+    /// The query exceeded the catalog's per-query cost limits.
+    #[error("query too large: {0}")]
+    QueryTooLarge(String),
     /// File I/O failed.
     #[error("I/O error for {path}: {source}")]
     Io {
@@ -84,8 +87,15 @@ impl ServerError {
     /// column with `predicate=intersects`, or a payload the artifact cannot
     /// decode, is a property of the request, not a server fault.
     pub(crate) fn from_geo(err: packed_spatial_index_geo::GeoError) -> Self {
+        use packed_spatial_index::StreamError;
         use packed_spatial_index_geo::GeoError as G;
         match err {
+            // The artifact is fine and the server is fine; the query asked for
+            // more work than the catalog allows.
+            G::Stream(StreamError::LimitExceeded) => Self::QueryTooLarge(
+                "the query exceeded this server's per-query cost limits; narrow the bbox"
+                    .to_string(),
+            ),
             G::NonPlanarExactPredicate { .. } | G::NonSphericalExactPredicate { .. } => {
                 Self::UnsupportedQuery(err.to_string())
             }
@@ -111,7 +121,8 @@ impl ServerError {
             ServerError::UnsupportedQuery(_)
             | ServerError::UnsupportedPayload(_)
             | ServerError::UnsupportedPredicate(_)
-            | ServerError::UnsupportedLevel(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            | ServerError::UnsupportedLevel(_)
+            | ServerError::QueryTooLarge(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ServerError::Config(_) | ServerError::Io { .. } | ServerError::Geo(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -133,6 +144,7 @@ impl ServerError {
             ServerError::UnsupportedPayload(_) => "unsupported_payload",
             ServerError::UnsupportedPredicate(_) => "unsupported_predicate",
             ServerError::UnsupportedLevel(_) => "unsupported_level",
+            ServerError::QueryTooLarge(_) => "query_too_large",
             ServerError::Config(_) => "configuration",
             ServerError::Io { .. } => "io",
             ServerError::Geo(_) => "artifact_error",

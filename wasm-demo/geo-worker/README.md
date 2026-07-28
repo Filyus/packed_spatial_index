@@ -29,8 +29,15 @@ demo.
 - `GET /health`
 - `GET /collections`
 - `GET /collections/synthetic-points`
-- `GET /collections/synthetic-points/search?bbox=minx,miny,maxx,maxy&limit=&offset=&payload=none|summary|full&level=entry|feature`
-- `GET /collections/synthetic-points/items?bbox=minx,miny,maxx,maxy&limit=&offset=`
+- `GET /collections/synthetic-points/search?bbox=&limit=&offset=&payload=none|summary|full&level=entry|feature`
+- `GET /collections/synthetic-points/items?bbox=&limit=&offset=`
+
+`bbox` is `minx,miny,maxx,maxy` for a 2D artifact and
+`minx,miny,minz,maxx,maxy,maxz` for a 3D one. The Worker takes the dimensions
+from the artifact manifest rather than from configuration, so whichever object
+is uploaded is the one it serves; any other length is a `400 invalid_bbox`, and
+the right length for the wrong artifact is a `422 query_error` naming how many
+numbers that artifact wants.
 
 `/search` returns an artifact-native envelope with `numberMatched`,
 `numberReturned`, `query`, `payloadKind`, and `matches`. `/items` returns a
@@ -71,12 +78,21 @@ npm test
 ```
 
 The Node tests mock R2 to cover ETag replacement, missing objects, transport
-and body failures, short ranges, query errors, and read/byte operation counters.
+and body failures, short ranges, query errors, and read/byte operation counters,
+and check the bbox parser against both arities. They need no artifact: the
+request parsers live in `src/query.ts` precisely so they can be tested without
+the wasm module, which only resolves inside the Worker runtime.
 
 `seed:geo` writes:
 
 - `synthetic-points.parquet`: deterministic synthetic clustered GeoParquet from `../geo-seed`
 - `synthetic-points.psindex`: `gp2psindex build --payload feature-json --properties all`
+
+`seed:geo:3d` writes the same two file names from `Point Z` geometries, so the
+Worker serves a 3D collection instead. What makes the artifact 3D is the
+six-field covering the seed emits alongside them: the covering decides the
+dimensions of the built index, so a `Point Z` column whose covering carries only
+`xmin`/`ymin`/`xmax`/`ymax` still converts to a 2D artifact.
 
 The wasm module depends on `packed_spatial_index_geo` with
 `default-features = false, features = ["async"]`, so it keeps Arrow/Parquet out
@@ -111,6 +127,13 @@ a deterministic bbox around one synthetic seed-data cluster:
 
 ```text
 bbox=64,23,71,29
+```
+
+Pass a different bbox as a second argument (or in `WORKER_BBOX`) when the
+deployed object is 3D:
+
+```sh
+npm run smoke:live -- https://psi-geo-r2-demo.<your-subdomain>.workers.dev 64,23,0,71,29,4000
 ```
 
 Representative response using the counters measured on a deployed Worker (the

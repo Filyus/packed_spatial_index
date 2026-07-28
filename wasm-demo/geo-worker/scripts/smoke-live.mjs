@@ -1,11 +1,15 @@
 const base = (process.argv[2] || process.env.WORKER_URL || "").replace(/\/$/, "");
 
 if (!base) {
-  console.error("usage: npm run smoke:live -- https://psi-geo-r2-demo.<subdomain>.workers.dev");
+  console.error(
+    "usage: npm run smoke:live -- https://psi-geo-r2-demo.<subdomain>.workers.dev [bbox]",
+  );
   process.exit(2);
 }
 
-const bbox = "64,23,71,29";
+// Four numbers for a 2D artifact, six for a 3D one. The default matches the
+// 2D seed; override it when the deployed object was built with `seed:geo:3d`.
+const bbox = process.argv[3] || process.env.WORKER_BBOX || "64,23,71,29";
 const collectionId = "synthetic-points";
 
 async function get(path) {

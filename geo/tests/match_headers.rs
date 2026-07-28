@@ -298,6 +298,24 @@ fn headers_reject_unsupported_plans() {
     ));
 }
 
+/// Whether exact filtering is possible is a property of the artifact, so an
+/// empty candidate list must not make an unsupported one look supported.
+#[test]
+fn filter_matches_rejects_row_ref_artifacts_before_reading_candidates() {
+    let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::RowRef) else {
+        panic!("expected 2D artifact");
+    };
+    assert!(matches!(
+        index.filter_matches(
+            Vec::new(),
+            world(),
+            packed_spatial_index_geo::SpatialPredicate::Intersects,
+            packed_spatial_index_geo::NonPlanarExactPolicy::TreatAsPlanar,
+        ),
+        Err(GeoError::PayloadDecode(_))
+    ));
+}
+
 #[cfg(feature = "async")]
 struct AsyncSlice(Vec<u8>);
 

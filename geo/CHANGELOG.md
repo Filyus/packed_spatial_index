@@ -6,6 +6,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- `GeoArtifactIndex2D::filter_matches` now checks the artifact's payload plan
+  before iterating candidates, so a `RowRef` artifact reports the documented
+  `PayloadDecode` error even when the candidate list is empty. It previously
+  returned `Ok(vec![])` in that case.
 - `IndexDimsRequest::D2` now projects away z instead of rejecting a source that
   has one, matching what "force 2D envelopes" always claimed. `D3` still
   requires the scan to find a z extent: promoting 2D input would have to invent

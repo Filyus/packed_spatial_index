@@ -484,6 +484,15 @@ impl<R> GeoArtifactIndex2D<R> {
         predicate: SpatialPredicate,
         non_planar: NonPlanarExactPolicy,
     ) -> Result<Vec<GeoMatch>, GeoError> {
+        // Checked from the manifest rather than per match, so an empty
+        // candidate list reports the same unsupported artifact as a non-empty
+        // one instead of succeeding by accident.
+        if matches!(self.manifest.payload_plan, PayloadPlan::RowRef) {
+            return Err(GeoError::PayloadDecode(
+                "filter_matches needs a geometry payload (RowWkb or FeatureJson); RowRef has none"
+                    .to_string(),
+            ));
+        }
         let prepared = prepare_filter_query(
             &self.manifest.encoding,
             self.manifest.edges,

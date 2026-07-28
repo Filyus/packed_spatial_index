@@ -162,7 +162,7 @@ fn geojson_null_policy_preserves_source_row_numbers() {
 }
 
 #[test]
-fn geojson_detects_3d_and_rejects_forced_2d() {
+fn geojson_detects_3d_and_projects_forced_2d() {
     let doc = br#"{"type":"FeatureCollection","features":[
         {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0,3.0]},"properties":{}}
     ]}"#;
@@ -172,17 +172,58 @@ fn geojson_detects_3d_and_rejects_forced_2d() {
         GeometryScan::D3(_)
     ));
 
-    let err = source
+    // Forcing 2D drops z rather than refusing the source.
+    let scan = source
         .scan(ScanRequest {
             dims: IndexDimsRequest::D2,
+            ..ScanRequest::default()
+        })
+        .unwrap();
+    let GeometryScan::D2(scan) = scan else {
+        panic!("expected a projected 2D scan");
+    };
+    assert_eq!(scan.boxes.len(), 1);
+    assert_eq!(
+        (scan.boxes[0].min_x, scan.boxes[0].min_y),
+        (1.0, 2.0),
+        "x/y survive the projection"
+    );
+
+    // The manifest describes the index that was written, not the source.
+    let mut bytes = Vec::new();
+    let mut source = open_geojson_slice(doc).unwrap();
+    source
+        .convert_into(
+            ConvertRequest {
+                dims: IndexDimsRequest::D2,
+                ..ConvertRequest::default()
+            },
+            &mut bytes,
+        )
+        .unwrap();
+    assert!(matches!(
+        open_geo_index(SliceReader::new(bytes)).unwrap(),
+        GeoArtifactIndex::D2(_)
+    ));
+}
+
+#[test]
+fn geojson_rejects_forced_3d_without_z() {
+    let doc = br#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{}}
+    ]}"#;
+    let mut source = open_geojson_slice(doc).unwrap();
+    let err = source
+        .scan(ScanRequest {
+            dims: IndexDimsRequest::D3,
             ..ScanRequest::default()
         })
         .unwrap_err();
     assert!(matches!(
         err,
         GeoError::DimMismatch {
-            expected: 2,
-            found: 3
+            expected: 3,
+            found: 2
         }
     ));
 }

@@ -4,6 +4,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- `IndexDimsRequest::D2` now projects away z instead of rejecting a source that
+  has one, matching what "force 2D envelopes" always claimed. `D3` still
+  requires the scan to find a z extent: promoting 2D input would have to invent
+  one, placing every entry at zero. The `DimMismatch` message now says that
+  scanned envelopes decide dimensionality, since a bbox covering without z
+  bounds is the usual reason a `Point Z` source scans as 2D.
+
 ### Geometry
 
 - A GeoParquet bbox covering without `zmin`/`zmax` now builds a 2D index even

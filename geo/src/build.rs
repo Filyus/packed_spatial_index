@@ -241,8 +241,14 @@ pub(crate) fn artifact_manifest(
 fn manifest_dims(declared: CoordinateDims, index_dims: u8) -> CoordinateDims {
     match declared.index_dims() {
         Some(dims) if dims == index_dims => declared,
-        _ if index_dims == 3 => CoordinateDims::Xyz,
-        _ => CoordinateDims::Xy,
+        // Only the z flag is in dispute; an `M` the source declared is not
+        // affected by how many spatial dimensions were indexed.
+        _ => match (index_dims == 3, declared.has_m()) {
+            (true, true) => CoordinateDims::Xyzm,
+            (true, false) => CoordinateDims::Xyz,
+            (false, true) => CoordinateDims::Xym,
+            (false, false) => CoordinateDims::Xy,
+        },
     }
 }
 

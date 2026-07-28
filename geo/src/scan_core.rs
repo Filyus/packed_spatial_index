@@ -22,11 +22,13 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexDimsRequest {
-    /// Infer dimensions.
+    /// Infer dimensions from the scanned envelopes.
     Auto,
-    /// Force 2D envelopes.
+    /// Force 2D envelopes, projecting away any z the scan found.
     D2,
-    /// Force 3D envelopes.
+    /// Require 3D envelopes. The scan must find a z extent — the request
+    /// cannot invent one, and a source without z is rejected with
+    /// [`GeoError::DimMismatch`](crate::GeoError::DimMismatch).
     D3,
 }
 
@@ -66,10 +68,9 @@ pub(crate) fn resolve_scan_dims(
 ) -> Result<ResolvedDims, GeoError> {
     let has_z = detected.has_z() || entries.iter().any(|entry| entry.bounds.dims.has_z());
     match requested {
-        IndexDimsRequest::D2 if has_z => Err(GeoError::DimMismatch {
-            expected: 2,
-            found: 3,
-        }),
+        // Forcing 2D drops z, which loses information but describes the source
+        // truthfully. The reverse is not symmetric: forcing 3D on 2D input
+        // would have to invent a z, placing every entry at zero.
         IndexDimsRequest::D2 => Ok(ResolvedDims::D2),
         IndexDimsRequest::D3 if !has_z => Err(GeoError::DimMismatch {
             expected: 3,

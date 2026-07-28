@@ -217,7 +217,7 @@ impl CoordinateDims {
         matches!(self, CoordinateDims::Xyz | CoordinateDims::Xyzm)
     }
 
-    #[cfg(any(feature = "parquet", feature = "flatgeobuf"))]
+    #[cfg(feature = "_source")]
     pub(crate) fn has_m(self) -> bool {
         matches!(self, CoordinateDims::Xym | CoordinateDims::Xyzm)
     }

@@ -118,29 +118,98 @@ Rank alignment is free: the writer already receives `leaf_order` and writes
 `PYLD` from it, so a second section built in the same pass is aligned with `PYLD`
 by construction.
 
-### When to emit it
+## When it is worth it: the body-size cliff
 
-Only when the body stride actually defeats coalescing. The pathology is not
-"prefix scans are strided" — it is "the stride is wider than the gap". Measure the
-same 553-match query across payload kinds, all built from the same 100 000 points:
+The pathology is not "prefix scans are strided" — it is "the stride is wider than
+the gap", and that has an exact boundary. Two consecutive matching ranks merge
+when the bytes between them fit in `gap = prefix_len`; the distance from one
+prefix's end to the next prefix's start is `body - prefix_len`. So they merge iff
 
-| payload kind | body size | small bbox | world bbox |
+```text
+body <= 2 * prefix_len
+```
+
+which is **48 bytes** for a 24-byte feature reference. It is a cliff, not a slope.
+Sweeping body size over 100 000 items with a query matching 1 001 consecutive
+ranks, prefix scan only:
+
+| body | reads | bytes | a `PFIX` section would cost |
 | --- | --- | --- | --- |
-| `feature-json` | ~370 B | **554 reads**, 20 632 B | **100 001 reads**, 3 200 008 B |
-| `row-wkb` | 45 B | 7 reads, 32 119 B | 2 reads, 5 299 987 B |
-| `row-ref` | 24 B | 7 reads, 20 632 B | 2 reads, 3 200 008 B |
+| 40 B | 11 | 355 188 | 26.5% of the file |
+| 48 B | 11 | 363 188 | 24.3% |
+| **49 B** | **1 011** | 339 188 | 24.1% |
+| 64 B | 1 011 | 339 188 | 20.9% |
+| 128 B | 1 011 | 339 188 | 13.4% |
+| 370 B | 1 011 | 339 188 | 5.7% |
+| 4096 B | 1 011 | 339 188 | 0.6% |
 
-Bodies at or below the gap already coalesce, and a `row-ref` artifact — whose
-blobs *are* a contiguous 24-byte array — is the best case a `PFIX` section could
-reach. So `PFIX` is worth writing only when `stride > prefix_len` by enough to
-break runs, which in practice means embedded-document payloads.
+One byte of body turns 11 reads into 1 011.
 
-That rule also bounds its own cost. A section is `record_stride` bytes per item;
-emitted only where bodies are fat, that is a small fraction by construction —
-2.4 MB on the 40.9 MB `feature-json` artifact, **5.9%**. Emitting it
-indiscriminately would be much worse in relative terms: the same 2.4 MB on the
-9.6 MB `row-wkb` artifact is 25%, and on the 7.5 MB `row-ref` one 32% — for
-artifacts that need no help at all.
+### Which real payloads land where
+
+WKB sizes are fixed, so this is arithmetic, not estimation. With the 24-byte
+feature-ref prefix:
+
+| payload | body | side of the cliff |
+| --- | --- | --- |
+| `row-ref` | 24 B | below |
+| `row-wkb`, 2D point | 45 B | below, **by 3 bytes** |
+| `row-wkb`, 3D point | 53 B | above |
+| `row-wkb`, 2-vertex 2D line | 65 B | above |
+| `row-wkb`, 5-vertex 2D polygon | 117 B | above |
+| `feature-json` | ≥ ~100 B, typically 300+ | far above |
+
+So the story is not "`feature-json` is the odd one out". `feature-json` is merely
+*always* above the cliff; `row-wkb` is above it for everything except a 2D point.
+The reassuring `row-wkb` measurement in the geo demo is an accident of its seed
+being 2D points — a demo of 3D points, or of any line or polygon, would show the
+same read storm. Below the cliff there are only bare references.
+
+`FeatureJson` is not a test-only payload kind, either: it is what `/items` and
+every GeoJSON response in the geo layer are built on, and it is the plan the
+worker demo ships. It is simply the plan whose bodies are unambiguously fat.
+
+### Two tools, not one
+
+Above the cliff there are two ways out, and they suit different body sizes.
+
+**Lift the clamp** (a reader-side knob, no format change). Merging two prefixes
+means reading the body between them, so this costs about `body` bytes per match
+instead of `prefix_len`. Same sweep, clamp lifted:
+
+| body | reads | bytes | vs clamped |
+| --- | --- | --- | --- |
+| 64 B | 11 | 379 188 | +12% bytes, 92× fewer reads |
+| 128 B | 11 | 443 188 | +31% bytes, 92× fewer reads |
+| 370 B | 11 | 685 188 | +102% bytes |
+| 4096 B | 11 | 4 411 188 | +1200% bytes |
+
+For a small body this is an excellent trade and costs nothing on disk. For a fat
+one it degenerates into reading the whole payload region — the 36.7 MB world
+query from the opening section.
+
+**Write the section.** Constant `prefix_len` bytes per match at any body size, at
+the price of `prefix_len / body` file growth: 24% at the cliff, 5.7% at 370 B,
+0.6% at 4 KB.
+
+The two costs are reciprocal, which makes the boundary easy to state. Let
+`r = body / prefix_len`:
+
+- lifting the clamp wastes about `r ×` the query bytes and 0% of the file;
+- the section wastes 0 query bytes and about `1/r` of the file.
+
+They cross at `r = 1`, but neither cost matters much while it is small, so the
+useful rule is a band rather than a point. Taking 10% as "small":
+
+| regime | `r` | body (24-byte prefix) | tool |
+| --- | --- | --- | --- |
+| already fine | ≤ 2 | ≤ 48 B | nothing |
+| small bodies | 2 – 10 | 49 – 240 B | lift the clamp |
+| fat bodies | > 10 | > 240 B | write the section |
+
+In the middle band, over-reading wastes at most 10× on query bytes and those
+bytes are small in absolute terms; above it, the section costs under 10% of the
+file and nothing per query.
 
 ### Reader
 
@@ -228,6 +297,39 @@ the coalescing gap, this is not a trade: it is strictly better on both axes than
 the clamped scan on wide queries, and costs 43% more bytes than the clamped scan
 on narrow ones while cutting 554 requests to 2.
 
+## Who decides: an option below, automatic above
+
+Both tools need a policy, and the two layers know different things.
+
+**The core cannot decide, and should not guess.** `PYLD` blobs are opaque bytes;
+nothing in this crate knows that the first 24 of them mean anything. So both knobs
+are explicit here:
+
+- a serializer option — `payload_prefix_len(n)` — that writes the section. Absent,
+  no section, exactly as today.
+- a `StreamLimits` field for the prefix coalescing gap, defaulting to today's
+  `prefix_len`. It belongs with the other limits because it is a property of the
+  *reader's* storage, not of the data: 1 011 range requests is a catastrophe over
+  R2 and a non-event on a local file. The same artifact wants different answers in
+  the server and in the Worker.
+
+**The geo layer can decide, and should.** It knows `prefix_len` is always 24 and
+it holds every body at write time, so it can measure instead of guess. The rule
+should read the body distribution, **not the payload plan** — the table above is
+the reason: `RowWkb` straddles the cliff, so `--payload row-wkb` predicts nothing.
+A median body size, compared against the two thresholds, predicts exactly.
+
+Default it to automatic, with an explicit override (`--prefix-index auto|on|off`),
+because the two error directions are not symmetric. Emitting a section that was
+not needed costs under 10% of file size, once. Not emitting one that was needed
+costs one range request per match, on every query, forever — and the failure is
+invisible at build time and only shows up as a bill.
+
+The one thing automatic must not do is surprise someone building a local-only
+artifact with a 24% size increase, which is exactly what the `r > 10` threshold
+is there to prevent: below it the answer is a reader-side knob that costs no
+bytes on disk at all.
+
 ## What it unblocks
 
 - A remote reader can return feature references from a summary search at the same
@@ -247,7 +349,9 @@ use fixed-width `PYLD` (`record_stride = 24`) instead: it drops the
 `(num_items + 1) × 8` offset table entirely and makes the prefix scan contiguous
 for free, with no new chunk. It only helps `RowRef`, which is the payload kind
 that needs prefix scans least — but it is a few lines and shrinks those artifacts
-by 800 KB per 100 000 items.
+by 800 KB per 100 000 items. It is also the case where the *whole payload* is the
+prefix, so it is the one payload plan for which a `PFIX` section would be pure
+duplication and must never be emitted.
 
 ## Non-goals
 
@@ -255,5 +359,6 @@ by 800 KB per 100 000 items.
   `PYLD`'s descriptor today; keeping `PFIX` symmetric leaves the door open
   without opening it.
 - Making `PFIX` critical. Nothing in it cannot be recovered from the bodies.
-- Changing the clamp. With `PFIX` present the clamped blob scan is a fallback
-  path, and its current value is right for the local files it still serves.
+- Changing the clamp's *default*. It is right for the local files it was written
+  for, and for every artifact below the cliff. Making it configurable is the
+  middle band's whole answer; moving the default is not.

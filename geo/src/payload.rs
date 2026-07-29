@@ -137,13 +137,17 @@ pub(crate) fn feature_json_from_parts(
 ) -> Result<Vec<u8>, GeoError> {
     let properties =
         properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-    let value = serde_json::json!({
-        "type": "Feature",
-        "id": feature.feature_id.as_deref().unwrap_or(""),
-        "feature_ref": feature,
-        "geometry": geometry,
-        "properties": properties,
-    });
+    let mut value = serde_json::Map::new();
+    value.insert("type".to_string(), serde_json::json!("Feature"));
+    // RFC 7946 makes `id` optional, and only GeoJSON sources supply one at all.
+    // Writing `""` for a feature that has none asserts an identity it does not
+    // have, and no reader can tell that apart from an id that really is empty.
+    if let Some(id) = &feature.feature_id {
+        value.insert("id".to_string(), serde_json::json!(id));
+    }
+    value.insert("feature_ref".to_string(), serde_json::json!(feature));
+    value.insert("geometry".to_string(), geometry);
+    value.insert("properties".to_string(), properties);
     let json = serde_json::to_vec(&value).map_err(|e| GeoError::Wkb(e.to_string()))?;
     Ok(encode_feature_json(feature, &json))
 }
@@ -160,7 +164,10 @@ pub(crate) fn feature_json_from_raw_parts(
     struct RawFeatureJson<'a> {
         #[serde(rename = "type")]
         kind: &'static str,
-        id: &'a str,
+        // Omitted rather than emptied when the source feature has no id; see
+        // `feature_json_from_parts`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<&'a str>,
         feature_ref: &'a FeatureRef,
         geometry: &'a RawValue,
         properties: serde_json::Value,
@@ -168,7 +175,7 @@ pub(crate) fn feature_json_from_raw_parts(
 
     let payload = RawFeatureJson {
         kind: "Feature",
-        id: feature.feature_id.as_deref().unwrap_or(""),
+        id: feature.feature_id.as_deref(),
         feature_ref: feature,
         geometry,
         properties: properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
@@ -303,6 +310,45 @@ mod tests {
         // just as malformed as the others, so it is refused too.
         let mut payload = br#"{"type":"Feature","feature_ref":null}"#.to_vec();
         assert!(stamp_payload_part(&plan, &mut payload, 1).is_err());
+    }
+
+    /// Only GeoJSON sources supply a feature id; Parquet and FlatGeobuf never
+    /// do. An `"id": ""` written for those would be indistinguishable from a
+    /// source id that really is the empty string.
+    #[cfg(feature = "_source")]
+    #[test]
+    fn a_feature_without_a_source_id_carries_no_id_member() {
+        let geometry =
+            RawValue::from_string(r#"{"type":"Point","coordinates":[1.0,2.0]}"#.to_string())
+                .unwrap();
+        let stored = |feature: &FeatureRef| -> serde_json::Value {
+            let payload = feature_json_from_raw_parts(feature, &geometry, None).unwrap();
+            serde_json::from_slice(feature_json_body(&payload)).unwrap()
+        };
+
+        let anonymous = stored(&FeatureRef::row_number(7));
+        assert!(anonymous.get("id").is_none(), "{anonymous}");
+
+        let mut named = FeatureRef::row_number(7);
+        named.feature_id = Some("west".to_string());
+        assert_eq!(stored(&named)["id"], "west");
+    }
+
+    #[cfg(feature = "parquet")]
+    #[test]
+    fn the_parquet_serializer_omits_the_id_the_same_way() {
+        let geometry = serde_json::json!({"type": "Point", "coordinates": [1.0, 2.0]});
+        let stored = |feature: &FeatureRef| -> serde_json::Value {
+            let payload = feature_json_from_parts(feature, geometry.clone(), None).unwrap();
+            serde_json::from_slice(feature_json_body(&payload)).unwrap()
+        };
+
+        let anonymous = stored(&FeatureRef::row_in_group(7, 0, 7));
+        assert!(anonymous.get("id").is_none(), "{anonymous}");
+
+        let mut named = FeatureRef::row_in_group(7, 0, 7);
+        named.feature_id = Some("west".to_string());
+        assert_eq!(stored(&named)["id"], "west");
     }
 }
 

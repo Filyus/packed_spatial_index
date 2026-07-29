@@ -108,6 +108,13 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### Persistence
 
+- **Breaking:** a `FeatureJson` body now omits the GeoJSON `id` member when the
+  source feature has none, instead of writing `""`. Only GeoJSON sources supply
+  a feature id at all — Parquet and FlatGeobuf never do — so every body they
+  produced claimed an identity the feature did not have, and no reader could
+  tell that apart from an id that really is the empty string. RFC 7946 makes
+  `id` optional. Existing artifacts keep their `""`; the change applies to
+  newly written bodies.
 - A converted artifact now carries a contiguous copy of its feature refs when
   the payload bodies are large enough for it to pay, so a header search reads
   runs instead of one range request per match — the difference between a usable

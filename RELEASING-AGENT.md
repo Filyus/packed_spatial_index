@@ -24,7 +24,8 @@ tagging, and GitHub release.
 
 - **Agent**: prepares the bump + changelog for one crate, shows the diff, and —
   only after the maintainer OKs the wording — creates and pushes the release
-  commit. Stops there unless explicitly asked to start the workflow.
+  commit. Stops there unless asked to start the publish workflow; being asked
+  once covers the crates of that release, and covers nothing past the gate.
 - **Maintainer**: reviews the changelog wording before the push, and approves the
   `release` GitHub environment after CI + preflight. Only that approval
   publishes. The agent cannot and must not approve it.
@@ -55,6 +56,22 @@ git rev-list --left-right --count origin/main...HEAD  # must be "0  0"
 
 If the tree is dirty, classify per `RELEASING.md`; never fold stray work into
 the release commit.
+
+Establish what is **actually published**, from the registry and the tags rather
+than from the manifest:
+
+```sh
+git ls-remote --tags origin | grep -E "psi(-geo)?-v"
+curl -s "https://crates.io/api/v1/crates/<crate>" | grep -o '"max_version":"[^"]*"'
+```
+
+A version bumped in the manifest, dated in the changelog and never published is
+a real state: preparation that stopped before the commit or before the workflow.
+Treat the last tag as the previous release, not the manifest. When the prepared
+version exists nowhere outside the repository, fold the new work into its
+section and re-date it rather than opening the next number — nobody can depend
+on a version that was never there, and skipping it leaves a hole in the history
+plus a compare link pointing at a tag that does not exist.
 
 For geo changes, run the formatter exactly as the geo CI lane does:
 
@@ -141,7 +158,26 @@ If the minor changed, update install snippets in the relevant README:
 Touch no other docs in the release commit unless they must mention the new
 version.
 
-### 5. Show the diff and pause
+### 5. Run the checks that fail on code
+
+Run these before there is a release commit to protect. Preflight runs them too,
+but by then the commit is pushed and has to stay at the head of `main`, so a
+failure costs a rewrite of a shared branch:
+
+```sh
+rustup update nightly   # which rustdoc lints fire changes with the toolchain
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc \
+  --manifest-path <manifest> --no-deps --all-features
+cargo semver-checks --manifest-path <manifest>
+```
+
+Neither is covered by `CI: Rust checks`. Its `lint & docs` lane builds docs on
+**stable** and without `--cfg docsrs`, so a lint that only exists on nightly —
+`rustdoc::redundant_explicit_links` among them — passes CI and fails preflight.
+Semver compatibility is checked nowhere but preflight. Update nightly first: a
+stale local toolchain passes what the runner rejects.
+
+### 6. Show the diff and pause
 
 ```sh
 git diff -- Cargo.toml CHANGELOG.md README.md geo/Cargo.toml geo/CHANGELOG.md geo/README.md
@@ -152,7 +188,10 @@ If the wording was already committed under `## [Unreleased]`, still show the
 final release diff so the maintainer can review the promoted `## [X.Y.Z]`
 section before the release commit is created.
 
-### 6. Commit and push after approval
+This pause is owed for each crate separately. A maintainer who delegated the
+commands still reviews each changelog, and silence is not an OK.
+
+### 7. Commit and push after approval
 
 Commit exactly the release files that changed for release prep with the exact
 subject:
@@ -167,16 +206,37 @@ publish workflow refuses to publish. The changelog prose may have landed in an
 earlier feature commit, but this release commit's `HEAD` must contain a
 non-empty `## [X.Y.Z]` section for the selected crate.
 
-### 7. Start the publish workflow after CI passes
+### 8. Start the publish workflow after CI passes
 
 ```sh
 gh workflow run publish.yml --ref main -f crate=<crate>
 ```
 
-It runs against `main` `HEAD`, which must still be the release commit. This only
-starts the pipeline; it gates at the `release` environment for the maintainer.
+It runs against `main` `HEAD`, which must still be the release commit. Start it
+in the same turn that observes CI go green: nothing else guards that commit's
+place at the head, and any push landing meanwhile invalidates it. `Pages: deploy
+WASM demo` also runs on the push and is not a gate — it deploys the demo, and
+preflight neither waits for it nor should. This only starts the pipeline; it
+gates at the `release` environment for the maintainer.
 
-### 8. Stop
+### 9. If preflight fails
+
+The subject check reads the head of `main`, so the repair is a normal commit and
+a *new* release commit:
+
+- fix the cause in its own commit, with its own domain prefix — code never
+  belongs in the release commit;
+- put the release commit back on top. Prefer rebuilding the pair over an empty
+  marker commit: reset to the commit before the original release commit,
+  cherry-pick the fix, cherry-pick the release commit, and
+  `push --force-with-lease`. The alternative leaves two commits with the same
+  release subject, one of them empty, in the history forever;
+- a force-push to `main` is safe only while nothing points at those commits.
+  Once the tag and the crates.io version exist, that door is closed;
+- the rewrite discards the working tree. Commit or copy aside anything
+  uncommitted first — `git reset --hard` takes unrelated drafts with it.
+
+### 10. Stop
 
 Do not publish, tag, create releases, or approve the `release` environment unless
 the maintainer explicitly asks for that specific action.

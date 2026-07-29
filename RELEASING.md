@@ -80,6 +80,22 @@ committing:
 git diff -- Cargo.toml CHANGELOG.md README.md geo/Cargo.toml geo/CHANGELOG.md geo/README.md
 ```
 
+Run the two preflight checks that fail on code **before** committing — once the
+release commit is pushed it has to stay at the head of `main`, so a failure
+costs a rewrite of a shared branch:
+
+```powershell
+rustup update nightly
+$env:RUSTDOCFLAGS = "--cfg docsrs -D warnings"
+cargo +nightly doc --manifest-path <manifest> --no-deps --all-features
+cargo semver-checks --manifest-path <manifest>
+```
+
+`CI: Rust checks` does not cover either: it builds docs on stable and without
+`--cfg docsrs`, so nightly-only rustdoc lints pass it and fail preflight, and it
+never runs semver-checks. Update nightly first — a stale local toolchain passes
+what the runner rejects.
+
 ### 2. Commit and push
 
 After approval, create one release commit with this exact subject:
@@ -110,7 +126,15 @@ gh workflow run publish.yml --ref main -f crate=<crate>
 ```
 
 The workflow runs against the current `main` `HEAD`, which must still be the
-release commit.
+release commit, so start it as soon as CI is green — any push landing meanwhile
+invalidates it. `Pages: deploy WASM demo` runs on the same push and is not a
+gate; preflight does not wait for it.
+
+If preflight fails, the repair is a fix commit plus a *new* release commit on
+top, because the subject check reads the head of `main`. Prefer rebuilding the
+pair with a `--force-with-lease` push over leaving an empty marker commit —
+[`RELEASING-AGENT.md`](RELEASING-AGENT.md) describes the steps. That is only
+available while no tag or published version points at those commits.
 
 Preflight checks:
 

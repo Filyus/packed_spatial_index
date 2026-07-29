@@ -10,9 +10,10 @@ use crate::manifest;
 use crate::payload;
 use crate::{
     AntimeridianPolicy, CoordinateDims, EnvelopePolicy, FEATURE_JSON_CONTENT_TYPE,
-    FEATURE_REF_CONTENT_TYPE, FEATURE_WKB_CONTENT_TYPE, FeatureRef, GeoArtifactManifest, GeoError,
-    GeoQuery2D, GeoQuery3D, GeometryMetadataSource, GeometryProfile, GeometryScan,
-    GeometrySelector, IndexDimsRequest, NullPolicy, PayloadPlan, ScanRequest, StoragePrecision,
+    FEATURE_REF_CONTENT_TYPE, FEATURE_REF_RECORD_LEN, FEATURE_WKB_CONTENT_TYPE, FeatureRef,
+    GeoArtifactManifest, GeoError, GeoQuery2D, GeoQuery3D, GeometryMetadataSource, GeometryProfile,
+    GeometryScan, GeometrySelector, IndexDimsRequest, NullPolicy, PayloadPlan, ScanRequest,
+    StoragePrecision,
 };
 
 /// A geospatial source that can be scanned, built, and converted into a
@@ -97,7 +98,7 @@ fn collect_nearest(
 /// no common trait in the core crate, so this is a macro rather than a
 /// generic function.
 macro_rules! configure_and_write {
-    ($index:expr, $interleaved:expr, $payload:expr, $payload_plan:expr, $crs:expr, $out:expr) => {{
+    ($index:expr, $interleaved:expr, $payload:expr, $payload_plan:expr, $prefix:expr, $crs:expr, $out:expr) => {{
         let mut serializer = $index.serialize();
         if $interleaved && $payload.is_some() {
             serializer = serializer.interleaved();
@@ -109,17 +110,22 @@ macro_rules! configure_and_write {
             serializer = serializer
                 .payloads(payload)
                 .content_type(content_type_for_payload($payload_plan));
+            if $prefix {
+                serializer = serializer.payload_prefix_len(FEATURE_REF_RECORD_LEN as u32);
+            }
         }
         serializer.to_bytes_into($out)?;
     }};
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn serialize_2d(
     builder: Index2DBuilder,
     precision: StoragePrecision,
     interleaved: bool,
     payload: Option<&[Vec<u8>]>,
     payload_plan: &PayloadPlan,
+    prefix_index: bool,
     profile: &GeometryProfile,
     out: &mut Vec<u8>,
 ) -> Result<(), GeoError> {
@@ -127,22 +133,40 @@ pub(crate) fn serialize_2d(
     match precision {
         StoragePrecision::F64 => {
             let index = builder.finish()?;
-            configure_and_write!(index, interleaved, payload, payload_plan, crs, out)
+            configure_and_write!(
+                index,
+                interleaved,
+                payload,
+                payload_plan,
+                prefix_index,
+                crs,
+                out
+            )
         }
         StoragePrecision::F32 => {
             let index: Index2DF32 = builder.finish_f32()?;
-            configure_and_write!(index, interleaved, payload, payload_plan, crs, out)
+            configure_and_write!(
+                index,
+                interleaved,
+                payload,
+                payload_plan,
+                prefix_index,
+                crs,
+                out
+            )
         }
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn serialize_3d(
     builder: Index3DBuilder,
     precision: StoragePrecision,
     interleaved: bool,
     payload: Option<&[Vec<u8>]>,
     payload_plan: &PayloadPlan,
+    prefix_index: bool,
     profile: &GeometryProfile,
     out: &mut Vec<u8>,
 ) -> Result<(), GeoError> {
@@ -150,14 +174,87 @@ pub(crate) fn serialize_3d(
     match precision {
         StoragePrecision::F64 => {
             let index = builder.finish()?;
-            configure_and_write!(index, interleaved, payload, payload_plan, crs, out)
+            configure_and_write!(
+                index,
+                interleaved,
+                payload,
+                payload_plan,
+                prefix_index,
+                crs,
+                out
+            )
         }
         StoragePrecision::F32 => {
             let index: Index3DF32 = builder.finish_f32()?;
-            configure_and_write!(index, interleaved, payload, payload_plan, crs, out)
+            configure_and_write!(
+                index,
+                interleaved,
+                payload,
+                payload_plan,
+                prefix_index,
+                crs,
+                out
+            )
         }
     }
     Ok(())
+}
+
+/// Whether to write the contiguous feature-ref section beside the payload.
+///
+/// The section makes a header search read runs instead of one range per match,
+/// at the cost of [`FEATURE_REF_RECORD_LEN`] bytes per entry on disk. Which way
+/// that trades depends on how big the payload bodies are, which is why the
+/// default measures rather than guesses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum PrefixIndexPolicy {
+    /// Write it when the payload bodies are large enough for it to pay.
+    #[default]
+    Auto,
+    /// Always write it for a payload plan that carries a feature ref.
+    Always,
+    /// Never write it.
+    Never,
+}
+
+/// Body size above which a prefix section pays for itself.
+///
+/// Two consecutive matching entries' prefixes coalesce into one read only while
+/// the body between them fits the gap, so bodies at or under
+/// `2 * FEATURE_REF_RECORD_LEN` already scan in runs and need no help. Above
+/// that the scan degrades to one read per match, and the section's relative cost
+/// (`FEATURE_REF_RECORD_LEN / body`) keeps falling — so the threshold is set
+/// where that cost drops under a tenth of the payload.
+const PREFIX_INDEX_MIN_BODY: usize = 10 * FEATURE_REF_RECORD_LEN;
+
+/// Decide whether this artifact gets a prefix section.
+///
+/// `RowRef` never does: its whole body *is* the feature ref, so the section
+/// would be a second copy of the payload. `None` has nothing to copy.
+fn wants_prefix_index(
+    policy: PrefixIndexPolicy,
+    plan: &PayloadPlan,
+    payloads: Option<&[Vec<u8>]>,
+) -> bool {
+    if !matches!(plan, PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }) {
+        return false;
+    }
+    match policy {
+        PrefixIndexPolicy::Never => false,
+        PrefixIndexPolicy::Always => payloads.is_some(),
+        // Judge by the median rather than the mean so one huge geometry in an
+        // otherwise small collection does not buy a section nothing else uses.
+        PrefixIndexPolicy::Auto => match payloads {
+            Some(bodies) if !bodies.is_empty() => {
+                let mut lens: Vec<usize> = bodies.iter().map(Vec::len).collect();
+                let mid = lens.len() / 2;
+                let (_, median, _) = lens.select_nth_unstable(mid);
+                *median > PREFIX_INDEX_MIN_BODY
+            }
+            _ => false,
+        },
+    }
 }
 
 fn content_type_for_payload(payload: &PayloadPlan) -> &'static str {
@@ -376,6 +473,8 @@ pub struct ConvertRequest {
     pub payload: PayloadPlan,
     /// Whether to use the stream-optimized interleaved artifact layout.
     pub interleaved: bool,
+    /// Whether to write the contiguous feature-ref section beside the payload.
+    pub prefix_index: PrefixIndexPolicy,
 }
 
 impl Default for ConvertRequest {
@@ -389,6 +488,7 @@ impl Default for ConvertRequest {
             precision: StoragePrecision::F64,
             payload: PayloadPlan::RowWkb,
             interleaved: true,
+            prefix_index: PrefixIndexPolicy::default(),
         }
     }
 }
@@ -1284,6 +1384,7 @@ impl GeoArtifact {
                     req.interleaved,
                     payload,
                     &scan.payload,
+                    wants_prefix_index(req.prefix_index, &scan.payload, payload),
                     &scan.profile,
                     out,
                 )?;
@@ -1313,6 +1414,7 @@ impl GeoArtifact {
                     req.interleaved,
                     payload,
                     &scan.payload,
+                    wants_prefix_index(req.prefix_index, &scan.payload, payload),
                     &scan.profile,
                     out,
                 )?;
@@ -1789,5 +1891,69 @@ mod tests {
             let decoded: PayloadPlan = serde_json::from_slice(&encoded).unwrap();
             assert_eq!(decoded, plan);
         }
+    }
+
+    #[test]
+    fn prefix_index_policy_follows_the_median_body() {
+        let json = PayloadPlan::FeatureJson {
+            properties: PropertyProjection::AllNonGeometry,
+        };
+        let fat: Vec<Vec<u8>> = (0..10).map(|_| vec![0u8; 400]).collect();
+        let lean: Vec<Vec<u8>> = (0..10).map(|_| vec![0u8; 45]).collect();
+        // One outlier must not decide for the collection.
+        let mut mostly_lean = lean.clone();
+        mostly_lean.push(vec![0u8; 100_000]);
+
+        assert!(wants_prefix_index(
+            PrefixIndexPolicy::Auto,
+            &json,
+            Some(&fat)
+        ));
+        assert!(!wants_prefix_index(
+            PrefixIndexPolicy::Auto,
+            &json,
+            Some(&lean)
+        ));
+        assert!(!wants_prefix_index(
+            PrefixIndexPolicy::Auto,
+            &json,
+            Some(&mostly_lean)
+        ));
+
+        // `RowWkb` straddles the threshold, so the plan alone predicts nothing:
+        // a 2D point is 45 bytes with the ref, a polygon far more.
+        assert!(wants_prefix_index(
+            PrefixIndexPolicy::Auto,
+            &PayloadPlan::RowWkb,
+            Some(&fat)
+        ));
+        assert!(!wants_prefix_index(
+            PrefixIndexPolicy::Auto,
+            &PayloadPlan::RowWkb,
+            Some(&lean)
+        ));
+
+        // A row-ref body *is* the prefix, so a section would duplicate the
+        // whole payload; `None` has nothing to copy.
+        for policy in [PrefixIndexPolicy::Auto, PrefixIndexPolicy::Always] {
+            assert!(!wants_prefix_index(
+                policy,
+                &PayloadPlan::RowRef,
+                Some(&fat)
+            ));
+            assert!(!wants_prefix_index(policy, &PayloadPlan::None, Some(&fat)));
+        }
+
+        assert!(wants_prefix_index(
+            PrefixIndexPolicy::Always,
+            &json,
+            Some(&lean)
+        ));
+        assert!(!wants_prefix_index(
+            PrefixIndexPolicy::Never,
+            &json,
+            Some(&fat)
+        ));
+        assert!(!wants_prefix_index(PrefixIndexPolicy::Always, &json, None));
     }
 }

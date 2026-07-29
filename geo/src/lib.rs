@@ -39,7 +39,7 @@ pub use artifact::{GeoPayloadHeaderPage, open_geo_index_async, open_geo_index_wi
 #[cfg(feature = "_source")]
 pub use build::{
     BuildRequest, ConvertRequest, GeoArtifact, GeoIndex, GeoIndex2D, GeoIndex2DF32, GeoIndex3D,
-    GeoIndex3DF32, GeoIndexMetadata, GeoSource, IndexBuildOptions,
+    GeoIndex3DF32, GeoIndexMetadata, GeoSource, IndexBuildOptions, PrefixIndexPolicy,
 };
 #[cfg(feature = "parquet")]
 pub use dataset::{GeoDataset, InspectRequest, ValidateRequest, open_geoparquet};

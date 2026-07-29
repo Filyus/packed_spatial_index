@@ -6,6 +6,9 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- **Breaking:** `ConvertRequest` gained `prefix_index: PrefixIndexPolicy`,
+  deciding whether the artifact carries a contiguous copy of its feature refs.
+
 - `gp2psindex query` gained `--count`, `--limit`, and `--offset`, so the CLI
   can answer "how many" without reading source rows and can read back one page
   instead of materializing every match. Both describe the index's own match
@@ -102,6 +105,14 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### Persistence
 
+- A converted artifact now carries a contiguous copy of its feature refs when
+  the payload bodies are large enough for it to pay, so a header search reads
+  runs instead of one range request per match — the difference between a usable
+  and an unusable paged query over object storage. `PrefixIndexPolicy::Auto`
+  decides from the median body size rather than from the payload plan, because
+  `RowWkb` sits on both sides of the threshold: a 2D point is 45 bytes with its
+  ref and coalesces already, while a polygon does not. `RowRef` never gets one —
+  its whole body is the ref.
 - The `geoM` manifest now records the dimensions the index was actually built
   in rather than the ones the source profile declared. A scan whose geometries
   were all skipped, or an empty source, left the profile at `Unknown` and wrote

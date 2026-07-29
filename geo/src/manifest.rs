@@ -64,6 +64,20 @@ pub struct GeoArtifactManifest {
     pub index_entry_count: usize,
     /// Whether one source row may map to multiple entries.
     pub entries_may_duplicate_rows: bool,
+    /// Whether any payload body carries a source feature id.
+    ///
+    /// Only `FeatureJson` bodies have room for one, and only GeoJSON sources
+    /// supply one at all — so a `FeatureJson` artifact built from Parquet or
+    /// FlatGeobuf answers `Some(false)`. Readers use this to decide whether
+    /// recovering ids is worth a body read: without it, the payload plan is
+    /// the only clue, and it says where an id *would* live rather than whether
+    /// one exists.
+    ///
+    /// `None` for artifacts written before this field existed. Treat it as
+    /// "unknown", not as `false`: an older `FeatureJson` artifact may well
+    /// carry ids.
+    #[serde(default)]
+    pub stores_feature_ids: Option<bool>,
 }
 
 pub(crate) const FORMAT_MAGIC: &[u8; 8] = b"PSINDEX\0";

@@ -108,6 +108,14 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### Persistence
 
+- **Breaking:** `GeoArtifactManifest` gained `stores_feature_ids:
+  Option<bool>`, recording whether any payload body actually carries a source
+  feature id. The payload plan was the only clue before, and it answers a
+  different question — where an id *would* live, not whether one exists — so a
+  reader keying on it spends a page of body reads on every `FeatureJson`
+  artifact built from Parquet or FlatGeobuf, neither of which ever assigns one.
+  `None` on artifacts written before the field existed; that means unknown, not
+  false.
 - **Breaking:** a `FeatureJson` body now omits the GeoJSON `id` member when the
   source feature has none, instead of writing `""`. Only GeoJSON sources supply
   a feature id at all — Parquet and FlatGeobuf never do — so every body they

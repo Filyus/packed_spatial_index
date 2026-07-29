@@ -77,6 +77,13 @@ Payload modes:
 - `PayloadPlan::FeatureJson`: GeoJSON Feature bytes with projected properties.
 - `PayloadPlan::None`: no payload section.
 
+Only `FeatureJson` bodies have room for a source feature id, and only GeoJSON
+sources supply one — a Parquet or FlatGeobuf scan never assigns `feature_id`.
+The manifest records the outcome as `stores_feature_ids`, so a reader can tell
+"this artifact can produce a source id" from "this plan is where one would
+live" without reading a body to find out. It is `None` on artifacts written
+before the field existed, which means unknown rather than false.
+
 Converted `PSINDEX` files also carry an app-private `geoM` manifest chunk. Core
 `packed_spatial_index` readers skip it; this crate reads it through
 `open_geo_index` (or `open_geo_index_async` with the `async` feature) and, when

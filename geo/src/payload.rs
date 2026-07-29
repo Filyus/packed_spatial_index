@@ -361,6 +361,17 @@ pub(crate) fn unique_feature_count(features: &[FeatureRef]) -> usize {
         .len()
 }
 
+/// Whether the written payload bodies carry any source feature id.
+///
+/// Only a `FeatureJson` body has room for one; the fixed-width record the
+/// other plans write has no id field at all, so a scan that collected ids
+/// still produces an artifact without them.
+#[cfg(feature = "_source")]
+pub(crate) fn stores_feature_ids(plan: &PayloadPlan, features: &[FeatureRef]) -> bool {
+    matches!(plan, PayloadPlan::FeatureJson { .. })
+        && features.iter().any(|feature| feature.feature_id.is_some())
+}
+
 #[cfg(feature = "_source")]
 pub(crate) fn entries_may_duplicate_rows(features: &[FeatureRef]) -> bool {
     let mut seen = HashSet::new();

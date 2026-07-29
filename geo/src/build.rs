@@ -298,6 +298,7 @@ pub(crate) fn artifact_manifest(
     feature_count: usize,
     index_entry_count: usize,
     entries_may_duplicate_rows: bool,
+    stores_feature_ids: bool,
     source_fingerprint: &str,
 ) -> GeoArtifactManifest {
     GeoArtifactManifest {
@@ -324,6 +325,7 @@ pub(crate) fn artifact_manifest(
         feature_count,
         index_entry_count,
         entries_may_duplicate_rows,
+        stores_feature_ids: Some(stores_feature_ids),
     }
 }
 
@@ -1398,6 +1400,7 @@ impl GeoArtifact {
                     payload::unique_feature_count(&scan.features),
                     scan.boxes.len(),
                     payload::entries_may_duplicate_rows(&scan.features),
+                    payload::stores_feature_ids(&scan.payload, &scan.features),
                     source_fingerprint,
                 )
             }
@@ -1428,6 +1431,7 @@ impl GeoArtifact {
                     payload::unique_feature_count(&scan.features),
                     scan.boxes.len(),
                     payload::entries_may_duplicate_rows(&scan.features),
+                    payload::stores_feature_ids(&scan.payload, &scan.features),
                     source_fingerprint,
                 )
             }

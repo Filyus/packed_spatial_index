@@ -96,13 +96,20 @@ pub(crate) fn stamp_payload_part(
             Ok(())
         }
         PayloadPlan::FeatureJson { .. } => {
-            if has_feature_ref_prefix(payload) {
+            let stamped_prefix = has_feature_ref_prefix(payload);
+            if stamped_prefix {
                 payload[16..18].copy_from_slice(&part.to_le_bytes());
             }
             let body = feature_json_body(payload);
             let mut value: serde_json::Value =
                 serde_json::from_slice(body).map_err(|e| GeoError::PayloadDecode(e.to_string()))?;
             let Some(feature_ref) = value.get_mut("feature_ref") else {
+                // The JSON member is written only where it carries a source id
+                // the fixed record has no room for, so its absence is normal —
+                // as long as the record that replaced it took the stamp.
+                if stamped_prefix {
+                    return Ok(());
+                }
                 return Err(GeoError::PayloadDecode(
                     "FeatureJson payload is missing the feature_ref member".to_string(),
                 ));
@@ -139,13 +146,15 @@ pub(crate) fn feature_json_from_parts(
         properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let mut value = serde_json::Map::new();
     value.insert("type".to_string(), serde_json::json!("Feature"));
-    // RFC 7946 makes `id` optional, and only GeoJSON sources supply one at all.
-    // Writing `""` for a feature that has none asserts an identity it does not
-    // have, and no reader can tell that apart from an id that really is empty.
+    // Both members hinge on the same thing, and only GeoJSON sources ever
+    // supply one: RFC 7946 makes `id` optional, and writing `""` would assert
+    // an identity the feature does not have; `feature_ref` re-encodes the
+    // fixed record this payload already carries, so the id is the only part of
+    // it the record has no room for. Without an id it is pure duplication.
     if let Some(id) = &feature.feature_id {
         value.insert("id".to_string(), serde_json::json!(id));
+        value.insert("feature_ref".to_string(), serde_json::json!(feature));
     }
-    value.insert("feature_ref".to_string(), serde_json::json!(feature));
     value.insert("geometry".to_string(), geometry);
     value.insert("properties".to_string(), properties);
     let json = serde_json::to_vec(&value).map_err(|e| GeoError::Wkb(e.to_string()))?;
@@ -164,11 +173,12 @@ pub(crate) fn feature_json_from_raw_parts(
     struct RawFeatureJson<'a> {
         #[serde(rename = "type")]
         kind: &'static str,
-        // Omitted rather than emptied when the source feature has no id; see
-        // `feature_json_from_parts`.
+        // Both are written only for a feature that has a source id; see
+        // `feature_json_from_parts` for why they travel together.
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<&'a str>,
-        feature_ref: &'a FeatureRef,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        feature_ref: Option<&'a FeatureRef>,
         geometry: &'a RawValue,
         properties: serde_json::Value,
     }
@@ -176,7 +186,7 @@ pub(crate) fn feature_json_from_raw_parts(
     let payload = RawFeatureJson {
         kind: "Feature",
         id: feature.feature_id.as_deref(),
-        feature_ref: feature,
+        feature_ref: feature.feature_id.is_some().then_some(feature),
         geometry,
         properties: properties.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
     };
@@ -332,6 +342,58 @@ mod tests {
         let mut named = FeatureRef::row_number(7);
         named.feature_id = Some("west".to_string());
         assert_eq!(stored(&named)["id"], "west");
+    }
+
+    /// The JSON `feature_ref` re-encodes the fixed record the payload already
+    /// carries in front of it. The id is the only field that record has no
+    /// room for, so without one the member is pure duplication.
+    #[cfg(feature = "_source")]
+    #[test]
+    fn the_json_feature_ref_is_written_only_to_carry_an_id() {
+        let geometry =
+            RawValue::from_string(r#"{"type":"Point","coordinates":[1.0,2.0]}"#.to_string())
+                .unwrap();
+        let stored = |feature: &FeatureRef| -> (Vec<u8>, serde_json::Value) {
+            let payload = feature_json_from_raw_parts(feature, &geometry, None).unwrap();
+            let body = serde_json::from_slice(feature_json_body(&payload)).unwrap();
+            (payload, body)
+        };
+
+        let (payload, anonymous) = stored(&FeatureRef::row_number(7));
+        assert!(anonymous.get("feature_ref").is_none(), "{anonymous}");
+        // Nothing is lost: the fixed record in front of the JSON says the same.
+        assert_eq!(decode_feature_ref_payload(&payload).unwrap().row_number, 7);
+
+        let mut named = FeatureRef::row_number(7);
+        named.feature_id = Some("west".to_string());
+        let (_, named) = stored(&named);
+        assert_eq!(named["feature_ref"]["feature_id"], "west");
+    }
+
+    /// Stamping a split part must still work on a payload whose only feature
+    /// ref is the fixed record — that is now the common shape, not a defect.
+    #[cfg(feature = "_source")]
+    #[test]
+    fn stamping_a_part_uses_the_fixed_record_when_the_member_is_gone() {
+        let plan = PayloadPlan::FeatureJson {
+            properties: PropertyProjection::None,
+        };
+        let geometry =
+            RawValue::from_string(r#"{"type":"Point","coordinates":[1.0,2.0]}"#.to_string())
+                .unwrap();
+        let mut payload =
+            feature_json_from_raw_parts(&FeatureRef::row_number(7), &geometry, None).unwrap();
+        let before = payload.clone();
+
+        stamp_payload_part(&plan, &mut payload, 3).unwrap();
+
+        assert_eq!(decode_feature_ref_payload(&payload).unwrap().part, Some(3));
+        // Only the record changed; the JSON body was left byte-for-byte alone.
+        assert_eq!(feature_json_body(&payload), feature_json_body(&before));
+
+        // A payload with neither a record nor a member is still a defect.
+        let mut orphan = br#"{"type":"Feature"}"#.to_vec();
+        assert!(stamp_payload_part(&plan, &mut orphan, 1).is_err());
     }
 
     #[cfg(feature = "parquet")]

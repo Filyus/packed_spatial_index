@@ -1715,9 +1715,16 @@ fn feature_json_includes_projected_properties() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(feature_json_body(&hits[0].1)).unwrap();
     assert_eq!(json["type"], "Feature");
-    assert_eq!(json["feature_ref"]["row_number"], 0);
     assert_eq!(json["properties"]["name"], "alpha");
     assert_eq!(json["geometry"]["type"], "Point");
+    // A Parquet source supplies no feature id, so the JSON `feature_ref` would
+    // only repeat the fixed record in front of it. The record is where the
+    // reference lives.
+    assert!(json.get("feature_ref").is_none(), "{json}");
+    assert_eq!(
+        decode_feature_ref_payload(&hits[0].1).unwrap().row_number,
+        0
+    );
 }
 
 #[test]

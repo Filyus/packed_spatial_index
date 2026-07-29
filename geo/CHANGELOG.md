@@ -116,6 +116,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   artifact built from Parquet or FlatGeobuf, neither of which ever assigns one.
   `None` on artifacts written before the field existed; that means unknown, not
   false.
+- **Breaking:** a `FeatureJson` body now writes its `feature_ref` member only
+  when the source feature has an id. The member re-encodes the fixed-width
+  record the payload already carries in front of it, and the id is the only
+  field that record has no room for — so without one it was pure duplication,
+  measured at 23.5% of a 100k-feature artifact built from GeoParquet (42.5 MB
+  to 32.6 MB). Readers already preferred the record and fell back to the
+  member, including the published 0.22 and 0.23, so an artifact written this
+  way decodes to the same `FeatureRef` everywhere. Legacy bodies that carry no
+  fixed record are still read from the member.
 - **Breaking:** a `FeatureJson` body now omits the GeoJSON `id` member when the
   source feature has none, instead of writing `""`. Only GeoJSON sources supply
   a feature id at all — Parquet and FlatGeobuf never do — so every body they

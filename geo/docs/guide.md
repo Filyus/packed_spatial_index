@@ -77,6 +77,11 @@ Payload modes:
 - `PayloadPlan::FeatureJson`: GeoJSON Feature bytes with projected properties.
 - `PayloadPlan::None`: no payload section.
 
+A `FeatureJson` payload is a fixed-width `FeatureRef` record followed by the
+GeoJSON bytes. The JSON repeats that reference as a `feature_ref` member only
+when the source feature has an id, which is the one field the record has no
+room for; otherwise the record is the only copy and readers take it from there.
+
 Only `FeatureJson` bodies have room for a source feature id, and only GeoJSON
 sources supply one — a Parquet or FlatGeobuf scan never assigns `feature_id`.
 The manifest records the outcome as `stores_feature_ids`, so a reader can tell

@@ -8,7 +8,8 @@ import initSync, {
   search as wasmSearch,
 } from "../pkg/psi_geo_worker.js";
 import wasmModule from "../pkg/psi_geo_worker_bg.wasm";
-import { HttpError, withArtifact, type Metrics } from "./artifact";
+import { withArtifact, type Metrics } from "./artifact";
+import { errorBody, HttpError } from "./errors.ts";
 import {
   maxReads,
   parseBbox,
@@ -39,25 +40,15 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
     if (req.method !== "GET") {
-      return jsonResponse(
-        { code: "method_not_allowed", message: "only GET is supported" },
-        { status: 405 },
+      return errorResponse(
+        new HttpError(405, "method_not_allowed", "only GET is supported"),
       );
     }
 
     try {
       return await route(req, env);
     } catch (error) {
-      if (error instanceof HttpError) {
-        return jsonResponse(
-          { code: error.code, message: error.message },
-          { status: error.status },
-        );
-      }
-      return jsonResponse(
-        { code: "internal_error", message: String(error) },
-        { status: 500 },
-      );
+      return errorResponse(error);
     }
   },
 };
@@ -166,6 +157,13 @@ async function route(req: Request, env: Env): Promise<Response> {
   }
 
   throw new HttpError(404, "not_found", "unknown endpoint");
+}
+
+// Render any failure in the shared envelope. Every error exit goes through
+// here, so the wire shape has exactly one definition.
+function errorResponse(error: unknown): Response {
+  const { status, body } = errorBody(error);
+  return jsonResponse(body, { status });
 }
 
 function jsonResponse(

@@ -1,3 +1,5 @@
+import { HttpError } from "./errors.ts";
+
 export type Metrics = {
   reads: number;
   bytes: number;
@@ -12,16 +14,7 @@ export type ArtifactContext = {
   metrics: Omit<Metrics, "ms">;
 };
 
-export class HttpError extends Error {
-  readonly status: number;
-  readonly code: string;
-
-  constructor(status: number, code: string, message: string) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
+export { HttpError };
 
 const ARTIFACT_IO_MARKER = "PSI_ARTIFACT_IO:";
 const ARTIFACT_CHANGED_MARKER = "PSI_ARTIFACT_CHANGED:";

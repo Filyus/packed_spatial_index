@@ -3,7 +3,7 @@
 // Kept apart from `index.ts` so it can be exercised without the wasm module:
 // `index.ts` imports the compiled `.wasm` as a Cloudflare module, which only
 // resolves inside the Worker runtime.
-import { HttpError } from "./artifact.ts";
+import { HttpError } from "./errors.ts";
 
 // Either arity is accepted here and the artifact decides which one is right:
 // the Worker cannot know whether the object is 2D or 3D until it is open, so

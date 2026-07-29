@@ -106,14 +106,24 @@ Query parameters:
 - `identity=ref|full` — `/search` only; default `ref`. A match always carries
   the fixed-width feature reference (row number, row group, part), but a source
   `featureId` lives inside the payload body, so `full` reads bodies for the
-  returned page to include it. It only changes `feature_json` collections;
-  other payload kinds store no source id to recover, so `full` is accepted and
-  echoed there but reads nothing extra, and `capabilities.identityModes` lists
-  `full` only where it can actually add something.
+  returned page to include it. Like `level`, it is resolved against the
+  collection and the rest of the request rather than taken literally, and the
+  echoed value is the mode that applied:
+  - a collection that stores no source id resolves to `ref` whatever was asked,
+    so `full` never buys a page of reads for an identical answer. `full` is
+    still accepted — a client querying a mixed catalog should not have to vary
+    its request per collection — and `capabilities.identityModes` lists it only
+    where it can add something. Only `feature_json` bodies have room for an id,
+    and only GeoJSON sources supply one, so a `feature_json` artifact built
+    from Parquet or FlatGeobuf lands here too.
+  - `payload=full` resolves to `full`, because the bodies are read regardless
+    and the returned GeoJSON feature carries its own `id` anyway. Withholding
+    it from `featureRef` there would hide nothing.
 - `limit`, `offset` — pagination over the matched set.
 
-Responses echo the effective query (after defaults) under `query`, so a client
-can always see which `level` and `predicate` actually applied. `numberMatched`
+Responses echo the effective query (after defaults and collection-dependent
+resolution) under `query`, so a client can always see which `level`,
+`identity`, and `predicate` actually applied. `numberMatched`
 counts matches before pagination and `numberReturned` after. Each match
 carries `entryId` (index entry ordinal in the artifact; stable per artifact
 build, not across rebuilds) and, when the payload stores one, a `featureRef`

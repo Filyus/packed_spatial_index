@@ -33,6 +33,26 @@ fn sample_geojson() -> &'static [u8] {
     }"#
 }
 
+/// The same places without ids — what every Parquet and FlatGeobuf source
+/// looks like, since neither scan ever assigns one.
+fn anonymous_geojson() -> &'static [u8] {
+    br#"{
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [-5.0, 1.0]},
+                "properties": {"name": "west"}
+            },
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [25.0, 3.0]},
+                "properties": {"name": "east"}
+            }
+        ]
+    }"#
+}
+
 fn antimeridian_geojson() -> &'static [u8] {
     br#"{
         "type": "FeatureCollection",
@@ -249,7 +269,9 @@ async fn contract_search_feature_json_full_shape() {
                 "predicate": "bbox",
                 "level": "feature",
                 "payload": "full",
-                "identity": "ref",
+                // `payload=full` reads the body, which is where the id is, so
+                // withholding it from `featureRef` would hide nothing.
+                "identity": "full",
                 "limit": 100,
                 "offset": 0
             },
@@ -260,7 +282,8 @@ async fn contract_search_feature_json_full_shape() {
                 {
                     "entryId": 0,
                     "featureRef": {
-                        "rowNumber": 0
+                        "rowNumber": 0,
+                        "featureId": "west"
                     },
                     "payload": {
                         "kind": "feature_json",
@@ -353,29 +376,60 @@ async fn identity_full_adds_the_source_feature_id() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["query"]["identity"], "full");
     assert_eq!(json["matches"][0]["featureRef"]["featureId"], "west");
-    // Identity is orthogonal to payload: asking for an id does not smuggle the
-    // payload body into the response.
+    // Identity does not work the other way round: asking for an id does not
+    // smuggle the payload body into the response.
     assert_eq!(json["matches"][0]["payload"]["kind"], "feature_json");
     assert!(json["matches"][0]["payload"].get("feature").is_none());
 
-    // The default stays cheap, and `payload=full` alone does not opt in.
-    let (_, json) = get_json(
-        app,
-        "/collections/places/search?bbox=-10,0,0,2&payload=full",
-    )
-    .await;
+    // The default stays cheap.
+    let (_, json) = get_json(app, "/collections/places/search?bbox=-10,0,0,2").await;
     assert_eq!(json["query"]["identity"], "ref");
     assert!(json["matches"][0]["featureRef"].get("featureId").is_none());
 }
 
-/// `identity=full` is accepted everywhere so a client need not vary its request
-/// per collection, but only a `feature_json` body holds a source id — the other
-/// plans keep the whole feature reference in the fixed prefix. Asking for one
-/// there must change nothing, and must not buy a page of reads to prove it.
+/// The returned GeoJSON feature carries its own `id`, so `payload=full` puts
+/// the source id in the response whatever `identity` says. Withholding it from
+/// `featureRef` there would hide nothing while costing a second parameter, so
+/// the mode resolves up — and the echo says so.
 #[tokio::test]
-async fn identity_full_is_a_no_op_where_no_id_is_stored() {
-    for payload in [PayloadPlan::RowRef, PayloadPlan::RowWkb, PayloadPlan::None] {
-        let app = router(state_with_payload(payload.clone()));
+async fn payload_full_resolves_identity_up_because_it_reads_the_body_anyway() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&payload=full&identity=ref",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["query"]["identity"], "full");
+    assert_eq!(json["matches"][0]["featureRef"]["featureId"], "west");
+    // The same id, in the place a GeoJSON reader looks for it.
+    assert_eq!(json["matches"][0]["payload"]["feature"]["id"], "west");
+}
+
+/// `identity=full` is accepted everywhere so a client need not vary its request
+/// per collection, but a collection with no source id to give must not sell
+/// one: `full` there would buy a page of body reads for a byte-identical
+/// answer. It resolves down to `ref`, and the echo reports what applied.
+#[tokio::test]
+async fn identity_full_resolves_down_where_no_id_is_stored() {
+    let plans = [
+        // No room for an id: the fixed-width record has no such field.
+        (PayloadPlan::RowRef, sample_geojson()),
+        (PayloadPlan::RowWkb, sample_geojson()),
+        (PayloadPlan::None, sample_geojson()),
+        // Room for one, but the source supplied none. This is every artifact
+        // built from Parquet or FlatGeobuf, whose scans never assign an id.
+        (
+            PayloadPlan::FeatureJson {
+                properties: PropertyProjection::AllNonGeometry,
+            },
+            anonymous_geojson(),
+        ),
+    ];
+    for (payload, doc) in plans {
+        let app = router(state_with_geojson(payload.clone(), doc));
 
         let (status, listed) = get_json(app.clone(), "/collections").await;
         assert_eq!(status, StatusCode::OK);
@@ -391,9 +445,9 @@ async fn identity_full_is_a_no_op_where_no_id_is_stored() {
         .await;
         assert_eq!(status, StatusCode::OK);
 
-        // Accepted and echoed, so the client can see what applied...
-        assert_eq!(asked["query"]["identity"], "full");
-        // ...but the records are the ones the fixed prefix already described.
+        // Accepted, but reported as the mode that actually applied...
+        assert_eq!(asked["query"]["identity"], "ref", "{payload:?}");
+        // ...and the records are the ones the cheap path already produced.
         assert_contract(&asked["matches"], plain["matches"].clone());
     }
 }

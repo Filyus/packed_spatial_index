@@ -132,6 +132,54 @@ fn lean_bodies_are_left_alone() {
     );
 }
 
+/// `N` two-point line strings: a 65-byte payload, which is the smallest shape
+/// whose prefixes no longer coalesce. There is no middle ground on either side
+/// of that cliff, so the section has to start right there.
+fn line_strings(n: usize) -> Vec<u8> {
+    let features: Vec<String> = (0..n)
+        .map(|i| {
+            let x = (i % 100) as f64 * 0.1;
+            let y = (i / 100) as f64 * 0.1;
+            format!(
+                r#"{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[[{x},{y}],[{},{y}]]}},"properties":{{}}}}"#,
+                x + 0.001
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    )
+    .into_bytes()
+}
+
+#[test]
+fn a_payload_just_past_the_coalescing_window_gets_a_section() {
+    let source = line_strings(N);
+    let auto = convert(&source, PayloadPlan::RowWkb, PrefixIndexPolicy::Auto);
+    let never = convert(&source, PayloadPlan::RowWkb, PrefixIndexPolicy::Never);
+
+    // 24 bytes per entry and no more; this is the whole price.
+    let overhead = auto.len() - never.len();
+    let section = N * FEATURE_REF_RECORD_LEN;
+    assert!(
+        (section..section + 64).contains(&overhead),
+        "unexpected overhead {overhead} for a {section}-byte section"
+    );
+
+    let (auto_reads, hits) = header_search_reads(auto);
+    let (never_reads, _) = header_search_reads(never);
+    assert_eq!(hits, N);
+    assert!(
+        never_reads >= N,
+        "a 65-byte payload should scan one read per match, got {never_reads}"
+    );
+    assert!(
+        auto_reads * 10 < never_reads,
+        "the section should collapse reads: {auto_reads} vs {never_reads}"
+    );
+}
+
 #[test]
 fn a_row_ref_artifact_never_duplicates_its_payload() {
     let source = geojson(N, 0);

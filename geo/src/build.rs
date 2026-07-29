@@ -220,13 +220,25 @@ pub enum PrefixIndexPolicy {
 
 /// Body size above which a prefix section pays for itself.
 ///
+/// Smallest payload that earns a prefix section, compared against the whole
+/// stored blob rather than the part after the fixed record.
+///
 /// Two consecutive matching entries' prefixes coalesce into one read only while
-/// the body between them fits the gap, so bodies at or under
-/// `2 * FEATURE_REF_RECORD_LEN` already scan in runs and need no help. Above
-/// that the scan degrades to one read per match, and the section's relative cost
-/// (`FEATURE_REF_RECORD_LEN / body`) keeps falling — so the threshold is set
-/// where that cost drops under a tenth of the payload.
-const PREFIX_INDEX_MIN_BODY: usize = 10 * FEATURE_REF_RECORD_LEN;
+/// the bytes between them fit the reader's window, which is the prefix length
+/// itself — so payloads at or under `2 * FEATURE_REF_RECORD_LEN` already scan in
+/// runs and a section would be dead weight. One byte above that the scan
+/// degrades to one read per match, with nothing in between: measured over
+/// `row-wkb` artifacts of 1000 entries, a 45-byte payload takes 2 reads and a
+/// 54-byte payload takes 1001.
+///
+/// So the threshold is that cliff and nothing else. The section's price is file
+/// size — the scan reads the same bytes either way, only in far fewer requests
+/// — and it is worst right at the cliff (about a quarter), falling to a tenth by
+/// 190 bytes and 6% by 350. A quarter is a fair price for not issuing one
+/// request per match over object storage, which is what these artifacts are
+/// for; a build that would rather have the bytes back passes
+/// `PrefixIndexPolicy::Never`.
+const PREFIX_INDEX_MIN_PAYLOAD: usize = 2 * FEATURE_REF_RECORD_LEN;
 
 /// Decide whether this artifact gets a prefix section.
 ///
@@ -246,11 +258,11 @@ fn wants_prefix_index(
         // Judge by the median rather than the mean so one huge geometry in an
         // otherwise small collection does not buy a section nothing else uses.
         PrefixIndexPolicy::Auto => match payloads {
-            Some(bodies) if !bodies.is_empty() => {
-                let mut lens: Vec<usize> = bodies.iter().map(Vec::len).collect();
+            Some(blobs) if !blobs.is_empty() => {
+                let mut lens: Vec<usize> = blobs.iter().map(Vec::len).collect();
                 let mid = lens.len() / 2;
                 let (_, median, _) = lens.select_nth_unstable(mid);
-                *median > PREFIX_INDEX_MIN_BODY
+                *median > PREFIX_INDEX_MIN_PAYLOAD
             }
             _ => false,
         },

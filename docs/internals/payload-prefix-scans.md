@@ -199,18 +199,34 @@ The two costs are reciprocal, which makes the boundary easy to state. Let
 - lifting the clamp wastes about `r ×` the query bytes and 0% of the file;
 - the section wastes 0 query bytes and about `1/r` of the file.
 
-They cross at `r = 1`, but neither cost matters much while it is small, so the
-useful rule is a band rather than a point. Taking 10% as "small":
+They look reciprocal, which once suggested a middle band where lifting the clamp
+is the cheaper tool. Measurement says otherwise: the two costs are not in the
+same currency. Reads over 1000 `row-wkb` entries, whole-extent header scan:
 
-| regime | `r` | body (24-byte prefix) | tool |
+| payload | reads without the section | bytes read | file growth with it |
 | --- | --- | --- | --- |
-| already fine | ≤ 2 | ≤ 48 B | nothing |
-| small bodies | 2 – 10 | 49 – 240 B | lift the clamp |
-| fat bodies | > 10 | > 240 B | write the section |
+| 45 B | **2** | 52 987 | 24.9% |
+| 54 B | 1001 | 32 008 | 22.8% |
+| 65 B | 1001 | 32 008 | 20.6% |
+| 97 B | 1001 | 32 008 | 16.2% |
+| 193 B | 1001 | 32 008 | 9.8% |
+| 353 B | 1001 | 32 008 | 5.9% |
 
-In the middle band, over-reading wastes at most 10× on query bytes and those
-bytes are small in absolute terms; above it, the section costs under 10% of the
-file and nothing per query.
+The read *volume* is the same with and without the section — it is the request
+count that collapses, 1001 to 2. And it collapses at a cliff, not along a slope:
+one payload size below, the scan already runs in 2 reads; one above, it is one
+read per match, and it stays there however large the payload grows. So there is
+no band in which a client is better off lifting the clamp; there is a size at
+which the section starts to matter, and above it the section always wins.
+
+| regime | payload (24-byte prefix) | tool |
+| --- | --- | --- |
+| prefixes still coalesce | ≤ 48 B | nothing; a section would be dead weight |
+| scan degrades to one read per match | > 48 B | write the section |
+
+The price is file size only, worst at the cliff (about a quarter) and falling to
+a tenth by 190 B. Lifting the clamp remains the tool for an artifact you cannot
+rebuild.
 
 ### Reader
 

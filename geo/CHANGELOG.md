@@ -132,14 +132,18 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   tell that apart from an id that really is the empty string. RFC 7946 makes
   `id` optional. Existing artifacts keep their `""`; the change applies to
   newly written bodies.
-- A converted artifact now carries a contiguous copy of its feature refs when
-  the payload bodies are large enough for it to pay, so a header search reads
-  runs instead of one range request per match — the difference between a usable
-  and an unusable paged query over object storage. `PrefixIndexPolicy::Auto`
-  decides from the median body size rather than from the payload plan, because
-  `RowWkb` sits on both sides of the threshold: a 2D point is 45 bytes with its
-  ref and coalesces already, while a polygon does not. `RowRef` never gets one —
-  its whole body is the ref.
+- A converted artifact now carries a contiguous copy of its feature refs when a
+  header search would otherwise cost one range request per match — the
+  difference between a usable and an unusable paged query over object storage.
+  `PrefixIndexPolicy::Auto` decides from the median stored payload rather than
+  from the payload plan, because `RowWkb` sits on both sides of the line: a 2D
+  point is 45 bytes with its ref and its prefixes still coalesce, while a
+  two-point line at 65 bytes takes 1001 reads over 1000 entries where the
+  section takes 2. That cliff is the whole rule; there is no slope between the
+  two, and above it the request count stays at one per match however large the
+  payload grows. The price is file size — the scan reads the same bytes either
+  way — worst at the cliff at about a quarter and a tenth by 190 bytes.
+  `RowRef` never gets a section: its whole payload is the ref.
 - The `geoM` manifest now records the dimensions the index was actually built
   in rather than the ones the source profile declared. A scan whose geometries
   were all skipped, or an empty source, left the profile at `Unknown` and wrote

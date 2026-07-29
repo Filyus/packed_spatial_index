@@ -104,10 +104,12 @@ async function route(req: Request, env: Env): Promise<Response> {
 
   if (path === `${collectionPrefix}/search`) {
     const bbox = parseBbox(url);
-    const limit = parseIntParam(url, "limit", DEFAULT_LIMIT, 0, MAX_LIMIT);
+    const limit = parseIntParam(url, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT);
     const offset = parseIntParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
     const payload = parseEnum(url, "payload", "summary", ["none", "summary", "full"]);
-    const level = parseEnum(url, "level", "feature", ["entry", "feature"]);
+    // Empty means "unspecified": only the artifact knows whether feature level
+    // is even available, so the default is resolved on the other side.
+    const level = parseEnum(url, "level", "", ["entry", "feature"]);
     const identity = parseEnum(url, "identity", "ref", ["ref", "full"]);
     // `/items` deliberately keeps its own shorter list, so `identity` there is a
     // 422 rather than a silently ignored parameter.
@@ -145,7 +147,7 @@ async function route(req: Request, env: Env): Promise<Response> {
 
   if (path === `${collectionPrefix}/items`) {
     const bbox = parseBbox(url);
-    const limit = parseIntParam(url, "limit", DEFAULT_LIMIT, 0, MAX_LIMIT);
+    const limit = parseIntParam(url, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT);
     const offset = parseIntParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
     rejectUnsupportedSearchParams(url, ["bbox", "limit", "offset", "maxReads"]);
 

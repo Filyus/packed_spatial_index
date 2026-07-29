@@ -89,7 +89,7 @@ pub async fn collection(
     let index = open_index(read_range, file_len, object_etag, max_reads).await?;
     let (dir, _reader) = index.into_directory();
     let manifest = dir.manifest();
-    let mut out = collection_summary(manifest, dir.num_entries(), dir.node_size());
+    let mut out = collection_summary(manifest, dir.num_entries());
     if detail {
         let obj = out.as_object_mut().ok_or_else(|| {
             worker_err(
@@ -133,7 +133,7 @@ pub async fn search(
     let limit = bounded_usize(limit, 100, 1_000);
     let offset = bounded_usize(offset, 0, usize::MAX);
     let payload_mode = parse_payload_mode(&payload)?;
-    let result_level = parse_level(&level)?;
+    let result_level = resolve_level(parse_level(&level)?, &index.manifest().payload_plan)?;
     let identity_mode = parse_identity_mode(&identity)?;
 
     match (index, bbox.len()) {
@@ -507,11 +507,7 @@ fn object_identity(file_len: f64, etag: String) -> Result<ObjectIdentity, &'stat
     })
 }
 
-fn collection_summary(
-    manifest: &GeoArtifactManifest,
-    entry_count: usize,
-    node_size: usize,
-) -> Value {
+fn collection_summary(manifest: &GeoArtifactManifest, entry_count: usize) -> Value {
     let payload_kind = payload_kind(&manifest.payload_plan);
     json!({
         "id": COLLECTION_ID,
@@ -522,11 +518,16 @@ fn collection_summary(
         "dims": manifest.dims,
         "storagePrecision": manifest.storage_precision,
         "payloadKind": payload_kind,
-        "nodeSize": node_size,
         "capabilities": {
             "items": payload_kind == "feature_json",
             "predicates": ["bbox"],
-            "levels": ["feature", "entry"],
+            // A payload-less artifact stores no feature references, so there is
+            // nothing to deduplicate entries into.
+            "levels": if payload_kind == "none" {
+                json!(["entry"])
+            } else {
+                json!(["feature", "entry"])
+            },
             "payloadModes": ["none", "summary", "full"],
             // A source id lives in a `feature_json` body; every other plan keeps
             // the whole feature reference in the fixed prefix, so `full` has
@@ -755,15 +756,47 @@ fn needs_payload_bodies(payload: PayloadMode, identity: IdentityMode, plan: &Pay
         || (identity == IdentityMode::Full && matches!(plan, PayloadPlan::FeatureJson { .. }))
 }
 
-fn parse_level(value: &str) -> Result<ResultLevel, JsValue> {
+fn parse_level(value: &str) -> Result<Option<ResultLevel>, JsValue> {
     match value {
-        "entry" => Ok(ResultLevel::Entry),
-        "feature" => Ok(ResultLevel::Feature),
+        "" => Ok(None),
+        "entry" => Ok(Some(ResultLevel::Entry)),
+        "feature" => Ok(Some(ResultLevel::Feature)),
         _ => Err(worker_err(
             400,
             "invalid_level",
             "level must be one of entry, feature",
         )),
+    }
+}
+
+/// Pick the result level, which the collection has a say in.
+///
+/// The default cannot be a constant: an artifact with no payload stores no
+/// feature references, so there is nothing to group entries into, and asking
+/// for feature level there is a request the collection cannot serve rather
+/// than one to quietly reinterpret. Same rule as the native server's
+/// `resolve_level`.
+fn resolve_level(
+    requested: Option<ResultLevel>,
+    plan: &PayloadPlan,
+) -> Result<ResultLevel, JsValue> {
+    // The decision is kept free of `JsValue` so it can be unit-tested: building
+    // one outside a wasm target aborts the process.
+    level_for_plan(requested, plan).map_err(|message| worker_err(422, "unsupported_level", message))
+}
+
+fn level_for_plan(
+    requested: Option<ResultLevel>,
+    plan: &PayloadPlan,
+) -> Result<ResultLevel, &'static str> {
+    let has_feature_refs = !matches!(plan, PayloadPlan::None);
+    match requested {
+        None if has_feature_refs => Ok(ResultLevel::Feature),
+        None => Ok(ResultLevel::Entry),
+        Some(ResultLevel::Feature) if !has_feature_refs => {
+            Err("this collection stores no feature references; use level=entry")
+        }
+        Some(level) => Ok(level),
     }
 }
 
@@ -885,8 +918,8 @@ fn geo_error_class(e: &GeoError) -> (u16, &'static str) {
 mod tests {
     use super::{
         FeatureRef, GeoError, GeoMatch, GeoPayload, IdentityMode, PayloadMode, PayloadPlan,
-        ResultLevel, StreamError, bbox_arity_message, geo_error_class, match_record,
-        needs_payload_bodies, object_identity, query_json,
+        ResultLevel, StreamError, bbox_arity_message, geo_error_class, level_for_plan,
+        match_record, needs_payload_bodies, object_identity, query_json,
     };
     use packed_spatial_index_geo::PropertyProjection;
 
@@ -928,6 +961,26 @@ mod tests {
                 "identity=full must not read bodies for {plan:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_collection_has_a_say_in_the_result_level() {
+        let json = feature_json_plan();
+        // Unspecified: feature level where refs exist, entry level where they
+        // cannot. A constant default cannot express that.
+        assert_eq!(level_for_plan(None, &json).unwrap(), ResultLevel::Feature);
+        assert_eq!(
+            level_for_plan(None, &PayloadPlan::None).unwrap(),
+            ResultLevel::Entry
+        );
+        // Explicit entry level is always available.
+        assert_eq!(
+            level_for_plan(Some(ResultLevel::Entry), &PayloadPlan::None).unwrap(),
+            ResultLevel::Entry
+        );
+        // Explicit feature level on a payload-less artifact is a request the
+        // collection cannot serve, not one to quietly reinterpret.
+        assert!(level_for_plan(Some(ResultLevel::Feature), &PayloadPlan::None).is_err());
     }
 
     #[test]

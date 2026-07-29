@@ -13,11 +13,26 @@ export interface Env {
 const KEY = "index.psi";
 let ready = false;
 
+// Same envelope and code vocabulary as the native server and the geo Worker,
+// so a client reading one reads all three.
+function errorResponse(status: number, code: string, message: string): Response {
+  return Response.json({ error: { code, message } }, { status });
+}
+
+// An R2 failure raised inside `readRange` comes back as text: the wasm layer
+// extracts the message and wraps it, so the JS class identity is gone by then.
+// A marker survives that trip, which is the same trick the geo Worker uses.
+const ARTIFACT_IO_MARKER = "PSI_ARTIFACT_IO:";
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     if (!ready) {
       initSync(wasmModule);
       ready = true;
+    }
+
+    if (req.method !== "GET") {
+      return errorResponse(405, "method_not_allowed", "only GET is supported");
     }
 
     const url = new URL(req.url);
@@ -31,9 +46,11 @@ export default {
 
     const head = await env.BUCKET.head(KEY);
     if (!head) {
-      return new Response(`missing R2 object "${KEY}" — run the seed + upload`, {
-        status: 404,
-      });
+      return errorResponse(
+        404,
+        "artifact_not_found",
+        `missing R2 object "${KEY}" — run the seed + upload`,
+      );
     }
 
     // The wasm module caches the parsed directory across requests (crate's
@@ -48,7 +65,9 @@ export default {
       reads++;
       bytes += length;
       const obj = await env.BUCKET.get(KEY, { range: { offset, length } });
-      if (!obj) throw new Error("R2 range get returned null");
+      if (!obj) {
+        throw new Error(`${ARTIFACT_IO_MARKER}R2 range get returned null`);
+      }
       return new Uint8Array(await obj.arrayBuffer());
     };
 
@@ -70,7 +89,19 @@ export default {
         maxReads,
       )) as typeof result;
     } catch (e) {
-      return new Response(`query error: ${e}`, { status: 502 });
+      // An R2 failure is the storage's fault (502); anything else the wasm
+      // module rejects with is about the query (422). Reporting both as 502 --
+      // as this demo used to -- makes a too-wide query look like a broken
+      // object.
+      const message = e instanceof Error ? e.message : String(e);
+      const marker = message.indexOf(ARTIFACT_IO_MARKER);
+      return marker === -1
+        ? errorResponse(422, "query_error", message)
+        : errorResponse(
+            502,
+            "artifact_io_error",
+            message.slice(marker + ARTIFACT_IO_MARKER.length).trim(),
+          );
     }
     const ms = Date.now() - t0;
 

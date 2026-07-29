@@ -3,6 +3,7 @@ mod errors;
 mod metadata;
 mod payload;
 mod payload_chunk;
+mod prefix_chunk;
 mod tree_chunk;
 mod writer;
 
@@ -15,6 +16,7 @@ pub use metadata::{FileMetadata, read_metadata};
 pub(crate) use metadata::{MetaFields, TAG_META};
 pub(crate) use payload::{ParsedPayload, build_id_to_leaf, parse_payload_body, payload_slice};
 pub(crate) use payload_chunk::{PYLD_DESC_LEN, PYLD_DESC_LEN_FIXED, TAG_PYLD, parse_pyld_chunk};
+pub(crate) use prefix_chunk::{PFIX_DESC_LEN, TAG_PFIX};
 pub(crate) use tree_chunk::{TAG_TREE, TREE_DESC_LEN, parse_tree_chunk};
 pub(crate) use writer::{ByteWriter, write_index_container};
 
@@ -322,6 +324,130 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(find_chunk(&chunks, TAG_TREE).is_some());
         assert!(find_chunk(&chunks, *b"XTRA").is_some());
+    }
+
+    #[test]
+    fn prefix_section_is_a_dense_copy_of_the_blob_heads() {
+        const PREFIX: usize = 6;
+        let index = build(64);
+        let n = index.num_items();
+        // Blobs of differing lengths, one deliberately shorter than the prefix.
+        let blobs: Vec<Vec<u8>> = (0..n)
+            .map(|id| {
+                let len = if id == 3 { PREFIX - 2 } else { 40 + id % 7 };
+                (0..len).map(|b| (id * 31 + b) as u8).collect()
+            })
+            .collect();
+        let bytes = index
+            .serialize()
+            .payloads(&blobs)
+            .payload_prefix_len(PREFIX as u32)
+            .to_bytes()
+            .unwrap();
+
+        let chunks = parse_container(&bytes, &[TAG_TREE]).unwrap();
+        let pfix = find_chunk(&chunks, TAG_PFIX).expect("prefix chunk");
+        let body = &bytes[pfix.offset + PFIX_DESC_LEN..pfix.offset + pfix.len];
+        assert_eq!(body.len(), n * PREFIX);
+
+        // Leaf rank order, and a short blob is zero-padded rather than skipped.
+        let (tree, payload) = parse_index(&bytes, 2, 8).unwrap();
+        for rank in 0..n {
+            let id = read_u64_at(tree.indices, rank * 8).unwrap() as usize;
+            let blob = &blobs[id];
+            let take = blob.len().min(PREFIX);
+            let slot = &body[rank * PREFIX..(rank + 1) * PREFIX];
+            assert_eq!(&slot[..take], &blob[..take], "rank {rank} id {id}");
+            assert!(slot[take..].iter().all(|&b| b == 0), "rank {rank} padding");
+        }
+
+        // The bytes are still in the bodies: this is a copy, not a relocation,
+        // so a reader that ignores the chunk loses nothing.
+        let payload = payload.expect("payload");
+        let id_to_leaf = build_id_to_leaf(tree.indices, n);
+        for id in 0..n {
+            let rank = id_to_leaf[id] as usize;
+            assert_eq!(payload_slice(&payload, rank), &blobs[id][..]);
+        }
+    }
+
+    #[test]
+    fn every_optional_chunk_combination_lands_where_the_directory_says() {
+        // The chunk-slot arithmetic used to be hand-written per chunk, so the
+        // point here is that each optional chunk is found at its own recorded
+        // offset whether or not the others are present.
+        let index = build(48);
+        let n = index.num_items();
+        let blobs: Vec<Vec<u8>> = (0..n).map(|id| vec![id as u8; 40]).collect();
+        for (want_payload, want_prefix, want_meta) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (true, false, true),
+            (true, true, true),
+            (false, false, true),
+        ] {
+            let mut ser = index.serialize();
+            if want_payload {
+                ser = ser.payloads(&blobs);
+            }
+            if want_prefix {
+                ser = ser.payload_prefix_len(8);
+            }
+            if want_meta {
+                ser = ser.content_type("application/x-test");
+            }
+            let bytes = ser.to_bytes().unwrap();
+            let chunks = parse_container(&bytes, &[TAG_TREE]).unwrap();
+
+            // A prefix section without a payload is nothing to copy, so it is
+            // dropped rather than written empty.
+            let expect_prefix = want_prefix && want_payload;
+            assert_eq!(find_chunk(&chunks, TAG_PYLD).is_some(), want_payload);
+            assert_eq!(find_chunk(&chunks, TAG_PFIX).is_some(), expect_prefix);
+            assert_eq!(find_chunk(&chunks, TAG_META).is_some(), want_meta);
+            assert_eq!(
+                chunks.len(),
+                1 + usize::from(want_payload) + usize::from(expect_prefix) + usize::from(want_meta)
+            );
+
+            if expect_prefix {
+                let pfix = find_chunk(&chunks, TAG_PFIX).unwrap();
+                let body = &bytes[pfix.offset + PFIX_DESC_LEN..pfix.offset + pfix.len];
+                assert_eq!(body.len(), n * 8);
+            }
+            // Whatever the mix, the index still parses and the payload with it.
+            let (_, payload) = parse_index(&bytes, 2, 8).unwrap();
+            assert_eq!(payload.is_some(), want_payload);
+        }
+    }
+
+    #[test]
+    fn prefix_section_is_skipped_when_it_would_duplicate_a_fixed_payload() {
+        const STRIDE: usize = 12;
+        let index = build(32);
+        let n = index.num_items();
+        let flat = vec![7u8; n * STRIDE];
+        // A fixed-width payload whose whole record is the prefix: the section
+        // would be a byte-for-byte second copy of PYLD, so it is not written.
+        let bytes = index
+            .serialize()
+            .records(STRIDE, &flat)
+            .payload_prefix_len(STRIDE as u32)
+            .to_bytes()
+            .unwrap();
+        let chunks = parse_container(&bytes, &[TAG_TREE]).unwrap();
+        assert!(find_chunk(&chunks, TAG_PFIX).is_none());
+
+        // A shorter prefix over the same fixed records still earns a section.
+        let bytes = index
+            .serialize()
+            .records(STRIDE, &flat)
+            .payload_prefix_len(4)
+            .to_bytes()
+            .unwrap();
+        let chunks = parse_container(&bytes, &[TAG_TREE]).unwrap();
+        assert!(find_chunk(&chunks, TAG_PFIX).is_some());
     }
 
     #[test]

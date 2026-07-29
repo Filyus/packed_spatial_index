@@ -2,8 +2,8 @@ use crate::geometry::{Box2D, Box3D};
 
 use super::container::FORMAT_MAGIC;
 use super::{
-    CHUNK_ENTRY_LEN, MetaFields, PYLD_DESC_LEN, PYLD_DESC_LEN_FIXED, PayloadError, SUPERBLOCK_LEN,
-    TAG_META, TAG_PYLD, TAG_TREE, TREE_DESC_LEN, plan_container,
+    CHUNK_ENTRY_LEN, MetaFields, PFIX_DESC_LEN, PYLD_DESC_LEN, PYLD_DESC_LEN_FIXED, PayloadError,
+    SUPERBLOCK_LEN, TAG_META, TAG_PFIX, TAG_PYLD, TAG_TREE, TREE_DESC_LEN, plan_container,
 };
 
 pub(crate) struct ByteWriter<'a> {
@@ -329,6 +329,25 @@ impl<'a> ByteWriter<'a> {
         }
     }
 
+    /// Write the payload-prefix section in **leaf order**: the first
+    /// `prefix_len` bytes of each blob, zero-padded when a blob is shorter, so
+    /// the section is a dense `num_items * prefix_len` array addressed by leaf
+    /// rank. The bytes stay in the blobs too — this is a read-shape copy, not a
+    /// relocation, so a reader that ignores the section is still correct.
+    pub(crate) fn write_payload_prefixes(
+        &mut self,
+        payloads: &[&[u8]],
+        leaf_order: &[usize],
+        prefix_len: usize,
+    ) {
+        for &id in leaf_order {
+            let blob = payloads[id];
+            let take = blob.len().min(prefix_len);
+            self.write_bytes(&blob[..take]);
+            self.write_zeros(prefix_len - take);
+        }
+    }
+
     pub(crate) fn finish(self) {
         debug_assert_eq!(self.bytes.len(), self.len);
     }
@@ -355,10 +374,11 @@ impl<'a> ByteWriter<'a> {
     }
 }
 
-/// Frame a `TREE` chunk (+ optional `PYLD` / `META`) into a container in `out`.
-/// The dimension-specific node bytes are written by `write_nodes`, called once
-/// after the `TREE` descriptor; everything else (sizing, directory, alignment,
-/// payload, metadata) is shared by the 2D and 3D serializers.
+/// Frame a `TREE` chunk (+ optional `PYLD` / `PFIX` / `META`) into a container
+/// in `out`. The dimension-specific node bytes are written by `write_nodes`,
+/// called once after the `TREE` descriptor; everything else (sizing, directory,
+/// alignment, payload, prefixes, metadata) is shared by the 2D and 3D
+/// serializers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_index_container(
     out: &mut Vec<u8>,
@@ -371,6 +391,7 @@ pub(crate) fn write_index_container(
     write_nodes: impl FnOnce(&mut ByteWriter),
     payloads: Option<&[&[u8]]>,
     record_stride: Option<u32>,
+    prefix_len: Option<u32>,
     leaf_order: &[usize],
     meta: &MetaFields<'_>,
 ) -> Result<(), PayloadError> {
@@ -420,25 +441,47 @@ pub(crate) fn write_index_container(
         }
         None => None,
     };
+    // A prefix section is a contiguous copy of each blob's head; it only exists
+    // alongside a payload, and duplicating a fixed-width payload whose whole
+    // record is the prefix would buy nothing.
+    let prefix_len = match (prefix_len, payloads) {
+        (Some(0), _) => return Err(PayloadError::RecordSizeMismatch { stride: 0, got: 0 }),
+        (Some(len), Some(_)) if record_stride != Some(len) => Some(len),
+        _ => None,
+    };
+    let pfix_len = prefix_len
+        .map(|len| {
+            num_items
+                .checked_mul(len as usize)
+                .map(|body| PFIX_DESC_LEN + body)
+                .ok_or(PayloadError::TooLarge)
+        })
+        .transpose()?;
     let meta_len = (!meta.is_empty()).then(|| meta.content_len());
 
-    // Chunks in write order: TREE, then optional PYLD, then optional META.
+    // Chunks in write order: TREE, then optional PYLD, PFIX, META. Each length
+    // pushed remembers its own directory slot, so adding another optional chunk
+    // does not shift the ones after it by hand.
     let mut lens = vec![tree_len];
-    if let Some(pl) = pyld_len {
-        lens.push(pl);
-    }
-    if let Some(ml) = meta_len {
-        lens.push(ml);
-    }
+    let mut push = |len: Option<usize>| {
+        len.map(|len| {
+            lens.push(len);
+            lens.len() - 1
+        })
+    };
+    let pyld_idx = push(pyld_len);
+    let pfix_idx = push(pfix_len);
+    let meta_idx = push(meta_len);
     let (total, off) = plan_container(&lens).map_err(|_| PayloadError::TooLarge)?;
-    let pyld_idx = pyld_len.map(|_| 1);
-    let meta_idx = meta_len.map(|_| if pyld_len.is_some() { 2 } else { 1 });
 
     let mut bytes = ByteWriter::new(out, total);
     bytes.write_superblock(lens.len() as u32);
     bytes.write_chunk_entry(&TAG_TREE, true, off[0], tree_len);
     if let Some(i) = pyld_idx {
         bytes.write_chunk_entry(&TAG_PYLD, false, off[i], lens[i]);
+    }
+    if let Some(i) = pfix_idx {
+        bytes.write_chunk_entry(&TAG_PFIX, false, off[i], lens[i]);
     }
     if let Some(i) = meta_idx {
         bytes.write_chunk_entry(&TAG_META, false, off[i], lens[i]);
@@ -456,6 +499,12 @@ pub(crate) fn write_index_container(
             Some(_) => bytes.write_payload_blobs_fixed(p, leaf_order),
             None => bytes.write_payload_offsets_and_blobs(p, leaf_order),
         }
+        pos = off[i] + lens[i];
+    }
+    if let (Some(i), Some(len), Some(p)) = (pfix_idx, prefix_len, payloads) {
+        bytes.write_zeros(off[i] - pos);
+        bytes.write_pfix_desc(len);
+        bytes.write_payload_prefixes(p, leaf_order, len as usize);
         pos = off[i] + lens[i];
     }
     if let Some(i) = meta_idx {

@@ -2,7 +2,7 @@
 
 | Revision | Last revised |
 | -------- | ------------ |
-| 12       | 2026-06-15   |
+| 13       | 2026-07-29   |
 
 This document describes the binary format used by packed spatial indexes
 (`format_version` 2).
@@ -48,12 +48,13 @@ the whole `level_bounds` table are functions of `num_items` and `node_size`, so
 they are recomputed at load rather than stored — there is no second copy that
 could drift.
 
-Two chunk types are defined:
+Four chunk types are defined:
 
 | Tag    | Critical | Contents |
 | ------ | -------- | -------- |
 | `TREE` | yes      | The packed tree: a descriptor plus the node data. Exactly one. |
 | `PYLD` | no       | Optional payload: one opaque blob per item. At most one. |
+| `PFIX` | no       | Optional dense copy of each payload blob's leading bytes. At most one. |
 | `META` | no       | Optional descriptive fields (CRS / content type / attribution). At most one. |
 
 ## Superblock
@@ -213,6 +214,41 @@ Blobs are opaque bytes with no required interpretation. A reader that does not
 handle payloads simply skips the optional `PYLD` chunk and reads the index from
 `TREE`.
 
+## `PFIX` chunk (optional)
+
+A dense, leaf-rank-indexed copy of the first `record_stride` bytes of every
+payload blob:
+
+```text
+0       4     desc_len       u32 = 12
+4       1     ordering       u8 = 0 (leaf rank)
+5       1     compression    u8 = 0 (none)
+6       2     reserved       (zero)
+8       4     record_stride  u32, bytes per item (non-zero)
+--- then num_items * record_stride bytes
+```
+
+The descriptor is deliberately the same shape as `PYLD`'s, including the leading
+`desc_len`, so both parse the same way and both can gain trailing fields.
+
+It exists for **read count**, not for size. A query that wants only a fixed-size
+head of each payload — an id, a key, a record header — otherwise reads those
+bytes where they lie, strided through variable-length bodies. Strided reads
+cannot coalesce, so such a scan issues one range read per match: unremarkable on
+a local file, ruinous over object storage. Stored contiguously the same bytes are
+fetched in a handful of runs, like the offset table beside them.
+
+The item at leaf rank `r` occupies `payload_prefixes[r * record_stride ..][..
+record_stride]`. A blob shorter than `record_stride` is zero-padded, so the
+section is always exactly `num_items * record_stride` bytes.
+
+The bytes are a **copy**: they are still at the head of their blob in `PYLD`.
+Nothing in this chunk is unrecoverable, which is why it is optional and why a
+reader may ignore it and answer identically, only with more reads. A writer
+should emit it only when it pays — when bodies are much larger than the prefix,
+since the section costs `record_stride` bytes per item — and never when a
+fixed-width `PYLD` already makes the prefix contiguous.
+
 ## `META` chunk (optional)
 
 The `META` chunk carries small descriptive fields. It is a flat list of fields,
@@ -249,8 +285,8 @@ The container is designed so future additions do not break readers:
   directory), so it is non-breaking;
 - a new **critical** chunk type is rejected by older readers, which is the safe
   outcome when they cannot interpret required data;
-- a `TREE` / `PYLD` descriptor may gain trailing fields (its `desc_len` grows);
-  older readers read the prefix they know.
+- a `TREE` / `PYLD` / `PFIX` descriptor may gain trailing fields (its `desc_len`
+  grows); older readers read the prefix they know.
 
 `format_version` is bumped only on a change that breaks these rules.
 

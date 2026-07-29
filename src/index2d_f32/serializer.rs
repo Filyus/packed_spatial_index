@@ -14,6 +14,9 @@ pub struct Serializer2DF32<'a> {
     payloads: Option<Vec<&'a [u8]>>,
     record_stride: Option<u32>,
     interleaved: bool,
+    /// `Some(len)` also writes a contiguous copy of each blob's first `len`
+    /// bytes, so a prefix scan reads runs instead of one range per match.
+    prefix_len: Option<u32>,
     meta: MetaFields<'a>,
 }
 
@@ -23,6 +26,7 @@ impl<'a> Serializer2DF32<'a> {
             index,
             payloads: None,
             record_stride: None,
+            prefix_len: None,
             interleaved: false,
             meta: MetaFields::default(),
         }
@@ -88,6 +92,23 @@ impl<'a> Serializer2DF32<'a> {
         Ok(out)
     }
 
+    /// Also write a **payload-prefix section**: a contiguous, leaf-rank-indexed
+    /// copy of the first `len` bytes of every payload blob.
+    ///
+    /// Queries that need only a fixed-size head of each payload — an id, a key,
+    /// a record header — otherwise read those bytes where they lie, strided
+    /// through variable-length bodies, which cannot coalesce and costs one range
+    /// read per match. A dense copy collapses that to a handful of runs, for
+    /// `len` extra bytes per item on disk. Worth it when bodies are much larger
+    /// than `len` and the reader is remote; pointless otherwise.
+    ///
+    /// Requires [`payloads`](Self::payloads); ignored for a fixed-width payload
+    /// whose whole record is already the prefix.
+    pub fn payload_prefix_len(mut self, len: u32) -> Self {
+        self.prefix_len = Some(len);
+        self
+    }
+
     /// Serialize into a reused buffer (cleared first).
     pub fn to_bytes_into(self, out: &mut Vec<u8>) -> Result<(), PayloadError> {
         let idx = self.index;
@@ -107,6 +128,7 @@ impl<'a> Serializer2DF32<'a> {
             interleaved,
             self.payloads.as_deref(),
             record_stride,
+            self.prefix_len,
             &self.meta,
         )
     }

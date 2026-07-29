@@ -8,6 +8,7 @@ pub(crate) fn write_columns2d(
     interleaved: bool,
     payloads: Option<&[&[u8]]>,
     record_stride: Option<u32>,
+    prefix_len: Option<u32>,
     meta: &MetaFields<'_>,
 ) -> Result<(), PayloadError> {
     debug_assert_eq!(columns.min_xs.len(), columns.min_ys.len());
@@ -44,6 +45,7 @@ pub(crate) fn write_columns2d(
         },
         payloads,
         record_stride,
+        prefix_len,
         &columns.indices[..columns.num_items],
         meta,
     )
@@ -56,6 +58,7 @@ pub(crate) fn write_columns3d(
     interleaved: bool,
     payloads: Option<&[&[u8]]>,
     record_stride: Option<u32>,
+    prefix_len: Option<u32>,
     meta: &MetaFields<'_>,
 ) -> Result<(), PayloadError> {
     debug_assert_eq!(columns.min_xs.len(), columns.min_ys.len());
@@ -98,6 +101,7 @@ pub(crate) fn write_columns3d(
         },
         payloads,
         record_stride,
+        prefix_len,
         &columns.indices[..columns.num_items],
         meta,
     )

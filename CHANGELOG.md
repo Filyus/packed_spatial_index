@@ -12,6 +12,13 @@ All notable changes to this crate are documented here.
 
 ### Persistence
 
+- Added the optional `PFIX` chunk (format revision 13, no `format_version`
+  bump) and `Serializer*::payload_prefix_len`: a dense, leaf-rank-indexed copy
+  of each payload blob's leading bytes, so a prefix scan reads runs instead of
+  one range per match. The bytes stay in the blobs too, so the chunk is purely
+  additive — an older reader skips it and answers identically, just with more
+  reads. It is not written for a fixed-width payload whose whole record is
+  already the prefix.
 - Added `StreamLimits::prefix_coalesce_gap_bytes`, the coalescing gap for
   payload-prefix visits. It defaulted — and still defaults — to `prefix_len`,
   which never merges once bodies exceed `2 * prefix_len`, so a prefix scan

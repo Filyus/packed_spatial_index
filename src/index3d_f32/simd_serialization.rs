@@ -31,6 +31,7 @@ impl SimdIndex3DF32 {
             false,
             None,
             None,
+            None,
             &MetaFields::default(),
         )
         .expect("index-only serialization cannot fail");

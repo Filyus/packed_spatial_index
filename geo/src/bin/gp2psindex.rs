@@ -19,9 +19,9 @@ use packed_spatial_index_geo::{
     FeatureRows, GeoArtifact, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D,
     GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D, GeometryProfile, GeometryReadMode,
     GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NonPlanarExactPolicy,
-    NullPolicy, PayloadPlan, PropertyProjection, RangeReader, ScanRequest, SliceReader,
-    SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity,
-    open_geo_index, open_geoparquet,
+    NullPolicy, PayloadPlan, PrefixIndexPolicy, PropertyProjection, RangeReader, ScanRequest,
+    SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport,
+    ValidationSeverity, open_geo_index, open_geoparquet,
 };
 #[cfg(feature = "geojson")]
 use packed_spatial_index_geo::{convert_geojson_stream, open_geojson};
@@ -40,6 +40,7 @@ usage:
       [--properties none|all|include:a,b|exclude:a,b]
       [--antimeridian reject|split|world]
       [--no-interleave]
+      [--prefix-index auto|on|off]
   gp2psindex validate <input>
       [--format parquet|flatgeobuf|geojson]
       [--geometry-column name]
@@ -424,6 +425,7 @@ fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "--properties",
         "--antimeridian",
         "--no-interleave",
+        "--prefix-index",
     ])?;
     let input = parsed.required_pos(0, "input")?;
     let output = parsed.required_pos(1, "output.psi")?;
@@ -441,6 +443,7 @@ fn build_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         precision: parse_precision(parsed.option("--precision")?.as_deref().unwrap_or("f64"))?,
         payload,
         interleaved: !parsed.flag("--no-interleave"),
+        prefix_index: parse_prefix_index(parsed.option("--prefix-index")?.as_deref())?,
         ..ConvertRequest::default()
     };
     let mut bytes = Vec::new();
@@ -944,6 +947,19 @@ fn parse_precision(value: &str) -> Result<StoragePrecision, Box<dyn std::error::
     }
 }
 
+/// Whether the artifact should carry a contiguous copy of its feature refs.
+/// `auto` measures the payload bodies; see `PrefixIndexPolicy`.
+fn parse_prefix_index(
+    value: Option<&str>,
+) -> Result<PrefixIndexPolicy, Box<dyn std::error::Error>> {
+    match value.unwrap_or("auto") {
+        "auto" => Ok(PrefixIndexPolicy::Auto),
+        "on" => Ok(PrefixIndexPolicy::Always),
+        "off" => Ok(PrefixIndexPolicy::Never),
+        other => Err(format!("invalid --prefix-index `{other}`").into()),
+    }
+}
+
 fn parse_geometry_read(value: &str) -> Result<GeometryReadMode, Box<dyn std::error::Error>> {
     match value {
         "none" => Ok(GeometryReadMode::Omit),
@@ -1351,6 +1367,7 @@ fn option_takes_value(arg: &str) -> bool {
             | "--radius"
             | "--limit"
             | "--offset"
+            | "--prefix-index"
     )
 }
 

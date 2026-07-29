@@ -293,6 +293,17 @@ gp2psindex build layer.fgb layer.psi \
   --payload row-wkb
 ```
 
+`--prefix-index auto|on|off` (default `auto`) controls whether the artifact
+carries a contiguous copy of its feature refs. Without it, a header search reads
+those refs where they lie — strided through the payload bodies, which cannot
+coalesce — so it issues one range request per match. That is unremarkable on a
+local file and ruinous over object storage. With it, the same scan reads a
+couple of runs, for 24 bytes per entry on disk. `auto` writes the section when
+the median payload body is large enough for that trade to pay, which is the only
+honest test: `--payload row-wkb` sits on both sides of it, since a 2D point is
+45 bytes with its ref and already coalesces while a polygon does not. A
+`row-ref` artifact never gets one — its body *is* the ref.
+
 Query a sidecar and read projected source properties back as NDJSON:
 
 ```text

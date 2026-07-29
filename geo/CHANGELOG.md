@@ -8,6 +8,7 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 - **Breaking:** `ConvertRequest` gained `prefix_index: PrefixIndexPolicy`,
   deciding whether the artifact carries a contiguous copy of its feature refs.
+  `gp2psindex build` exposes it as `--prefix-index auto|on|off`.
 
 - `gp2psindex query` gained `--count`, `--limit`, and `--offset`, so the CLI
   can answer "how many" without reading source rows and can read back one page

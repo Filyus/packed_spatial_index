@@ -143,6 +143,53 @@ fn a_row_ref_artifact_never_duplicates_its_payload() {
 }
 
 #[test]
+fn the_cli_flag_reaches_the_artifact() {
+    // Registering an option in only some of the CLI's five places is a real
+    // failure mode here -- a missing entry in `option_takes_value` turns the
+    // value into a stray positional -- so drive the binary rather than the API.
+    let dir = std::env::temp_dir().join("psi-prefix-index-cli");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("in.geojson");
+    std::fs::write(&source, geojson(N, 400)).unwrap();
+
+    let build = |mode: &str, out: &std::path::Path| {
+        let status = std::process::Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+            .args(["build", source.to_str().unwrap(), out.to_str().unwrap()])
+            .args(["--format", "geojson"])
+            .args(["--payload", "feature-json"])
+            .args(["--properties", "all"])
+            .args(["--prefix-index", mode])
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+        std::fs::metadata(out).unwrap().len()
+    };
+
+    let on = build("on", &dir.join("on.psindex"));
+    let off = build("off", &dir.join("off.psindex"));
+    let auto = build("auto", &dir.join("auto.psindex"));
+    assert!(on > off, "`on` should add a section: {on} vs {off}");
+    assert_eq!(auto, on, "fat bodies should pick the section by themselves");
+
+    let bad = std::process::Command::new(env!("CARGO_BIN_EXE_gp2psindex"))
+        .args(["build", source.to_str().unwrap(), "unused.psindex"])
+        .args(["--format", "geojson"])
+        .args(["--prefix-index", "yes-please"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad.stderr).contains("--prefix-index"),
+        "stderr: {}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+}
+
+#[test]
 fn the_geo_manifest_survives_the_extra_chunk() {
     // `append_geo_manifest` rewrites the container after the core writes it,
     // moving every chunk right to make room. A fourth optional chunk is exactly

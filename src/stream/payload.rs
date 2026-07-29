@@ -19,6 +19,20 @@ pub(crate) struct PayloadSection {
     pub(crate) stride: u64,
 }
 
+/// Byte locations of a streamed index's optional payload-prefix section: a
+/// dense `num_items * stride` array of blob heads in leaf-rank order.
+///
+/// Purely a read-shape optimization. The same bytes are still at the head of
+/// each payload blob, so a reader that ignores this answers identically — it
+/// just pays one read per match instead of one per run.
+#[derive(Clone)]
+pub(crate) struct PrefixSection {
+    /// Byte offset of the prefix array.
+    pub(crate) start: u64,
+    /// Bytes per item; the prefix for leaf rank `r` is at `start + r * stride`.
+    pub(crate) stride: usize,
+}
+
 /// Index of the last leaf position coalesced into the run starting at `j` (leaf
 /// positions whose offset-table byte gap is within budget read together).
 pub(super) fn payload_run_end(leaf_positions: &[usize], j: usize, max_gap: u64) -> usize {

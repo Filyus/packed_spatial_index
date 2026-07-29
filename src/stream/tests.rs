@@ -51,6 +51,10 @@ fn open_slice(bytes: Vec<u8>) -> StreamIndex2D<SliceReader<Vec<u8>>> {
     StreamIndex2D::open(SliceReader::new(bytes)).expect("open should succeed")
 }
 
+fn open_slice_counting(bytes: Vec<u8>) -> StreamIndex2D<CountingReader<SliceReader<Vec<u8>>>> {
+    StreamIndex2D::open(CountingReader::new(SliceReader::new(bytes))).expect("open should succeed")
+}
+
 #[test]
 fn metadata_matches_owned_across_sizes() {
     for &n in &[0usize, 1, 16, 17, 1000] {
@@ -989,6 +993,119 @@ fn prefix_gap_trades_reads_for_bytes() {
 }
 
 #[test]
+fn prefix_section_collapses_reads_without_over_reading() {
+    const BODY: usize = 512;
+    const PREFIX: usize = 24;
+    let (owned, _) = random_owned(300, 0xAB08);
+    let n = owned.num_items();
+    let payloads: Vec<Vec<u8>> = (0..n)
+        .map(|i| {
+            let mut blob = vec![0u8; BODY];
+            blob[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            blob
+        })
+        .collect();
+    let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+
+    let without = owned.serialize().payloads(&payloads).to_bytes().unwrap();
+    let with = owned
+        .serialize()
+        .payloads(&payloads)
+        .payload_prefix_len(PREFIX as u32)
+        .to_bytes()
+        .unwrap();
+
+    let cost = |bytes: Vec<u8>| -> (usize, u64, Vec<(usize, u64)>) {
+        let idx = open_slice_counting(bytes);
+        let reads0 = *idx.core.reader.reads.borrow();
+        let bytes0 = *idx.core.reader.bytes.borrow();
+        let mut seen = Vec::new();
+        idx.visit_payload_prefixes(query, PREFIX, |p| {
+            assert_eq!(p.prefix.len(), PREFIX);
+            assert_eq!(p.payload_len, BODY);
+            seen.push((p.id, u64::from_le_bytes(p.prefix[..8].try_into().unwrap())));
+        })
+        .unwrap();
+        (
+            *idx.core.reader.reads.borrow() - reads0,
+            *idx.core.reader.bytes.borrow() - bytes0,
+            seen,
+        )
+    };
+
+    let (blob_reads, blob_bytes, blob_seen) = cost(without);
+    let (pfix_reads, pfix_bytes, pfix_seen) = cost(with);
+
+    // Identical answers: the section is a copy of what the blobs already say.
+    assert_eq!(blob_seen, pfix_seen);
+    assert_eq!(blob_seen.len(), n);
+    for &(id, marker) in &pfix_seen {
+        assert_eq!(marker, id as u64);
+    }
+
+    // Strided blob heads cannot coalesce, so the blob path pays a read per
+    // match; the dense section is read in a couple of runs.
+    assert!(
+        blob_reads >= n,
+        "blob scan should read once per match, got {blob_reads} for {n}"
+    );
+    assert!(
+        pfix_reads * 10 < blob_reads,
+        "section should cut reads by an order of magnitude: {pfix_reads} vs {blob_reads}"
+    );
+    // And unlike a wider coalescing gap, it does not buy that with bytes.
+    assert!(
+        pfix_bytes <= blob_bytes,
+        "section should not read more bytes than the strided scan: {pfix_bytes} vs {blob_bytes}"
+    );
+}
+
+#[test]
+fn prefix_section_survives_a_split_directory() {
+    const PREFIX: usize = 16;
+    let (owned, _) = random_owned(200, 0xAB09);
+    let payloads: Vec<Vec<u8>> = (0..owned.num_items())
+        .map(|i| {
+            let mut blob = vec![7u8; 400];
+            blob[0] = i as u8;
+            blob
+        })
+        .collect();
+    let bytes = owned
+        .serialize()
+        .payloads(&payloads)
+        .payload_prefix_len(PREFIX as u32)
+        .to_bytes()
+        .unwrap();
+    let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+
+    let direct = open_slice_counting(bytes.clone());
+    let reads0 = *direct.core.reader.reads.borrow();
+    let mut direct_seen = 0usize;
+    direct
+        .visit_payload_prefixes(query, PREFIX, |_| direct_seen += 1)
+        .unwrap();
+    let direct_reads = *direct.core.reader.reads.borrow() - reads0;
+
+    // A cached directory reattached to a fresh reader must keep the section;
+    // dropping it there would silently restore the read-per-match behaviour in
+    // exactly the warm-isolate case the section is for.
+    let (dir, _reader) = direct.into_directory();
+    let warm =
+        StreamIndex2D::from_directory(&dir, CountingReader::new(SliceReader::new(bytes))).unwrap();
+    let mut warm_seen = 0usize;
+    warm.visit_payload_prefixes(query, PREFIX, |_| warm_seen += 1)
+        .unwrap();
+    let warm_reads = *warm.core.reader.reads.borrow();
+
+    assert_eq!(direct_seen, warm_seen);
+    assert!(
+        warm_reads <= direct_reads,
+        "reattached directory should not read more: {warm_reads} vs {direct_reads}"
+    );
+}
+
+#[test]
 fn fixed_width_payload_prefixes_and_ranks() {
     const STRIDE: usize = 12;
     let (owned, _) = random_owned(2_000, 0xAB05);
@@ -1722,6 +1839,43 @@ fn async_search_payloads_matches_sync() {
         assert_eq!(blob, &payloads[*id]);
     }
     assert!(astream.has_payload_async());
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_prefix_section_matches_the_blob_scan() {
+    const PREFIX: usize = 24;
+    let (owned, _) = random_owned(2_000, 0xAB0A);
+    let payloads: Vec<Vec<u8>> = (0..owned.num_items())
+        .map(|i| {
+            let mut blob = vec![0u8; 300];
+            blob[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            blob
+        })
+        .collect();
+    let without = owned.serialize().payloads(&payloads).to_bytes().unwrap();
+    let with = owned
+        .serialize()
+        .payloads(&payloads)
+        .payload_prefix_len(PREFIX as u32)
+        .to_bytes()
+        .unwrap();
+    let q = Box2D::new(300.0, 300.0, 500.0, 500.0);
+
+    let collect = |bytes: Vec<u8>| {
+        let stream = pollster::block_on(StreamIndex2D::open_async(AsyncSlice(bytes))).unwrap();
+        let mut out = Vec::new();
+        pollster::block_on(stream.visit_payload_prefixes_async(q, PREFIX, |p| {
+            out.push((p.id, p.leaf_rank, p.payload_len, p.prefix.to_vec()));
+        }))
+        .unwrap();
+        out
+    };
+
+    let blob_scan = collect(without);
+    let section_scan = collect(with);
+    assert!(!blob_scan.is_empty());
+    assert_eq!(blob_scan, section_scan);
 }
 
 #[cfg(feature = "async")]

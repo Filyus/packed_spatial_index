@@ -3,18 +3,18 @@ use std::sync::Arc;
 
 use crate::geometry::{Box2D, Box3D, Overlaps2D, Overlaps3D};
 use crate::persistence::{
-    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PYLD_DESC_LEN,
-    PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PYLD, TAG_TREE, TREE_DESC_LEN, derive_level_bounds,
-    expected_tree_shape, parse_pyld_chunk, parse_tree_chunk, read_u32_at, read_u64_at,
-    read_u64_le_unchecked,
+    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PFIX_DESC_LEN, PYLD_DESC_LEN,
+    PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PFIX, TAG_PYLD, TAG_TREE, TREE_DESC_LEN,
+    derive_level_bounds, expected_tree_shape, parse_pfix_chunk, parse_pyld_chunk, parse_tree_chunk,
+    read_u32_at, read_u64_at, read_u64_le_unchecked,
 };
 
 use super::core::{align8_u64, checked_directory_span};
 use super::directory::directory_start;
 use super::limits::{Budget, directory_node_budget};
 use super::payload::{
-    PayloadSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span, payload_run_end,
-    payload_run_end_fixed,
+    PayloadSection, PrefixSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span,
+    payload_run_end, payload_run_end_fixed,
 };
 use super::planner::{apply_gather_run, expand_frontier, plan_gather};
 use super::{
@@ -87,6 +87,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         let mut max_end = dir_end;
         let mut tree: Option<(u64, u64)> = None;
         let mut pyld: Option<(u64, u64)> = None;
+        let mut pfix: Option<(u64, u64)> = None;
         for i in 0..chunk_count {
             let base = i * CHUNK_ENTRY_LEN;
             let mut tag = [0u8; 4];
@@ -103,6 +104,8 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 tree = Some((offset, len));
             } else if tag == TAG_PYLD {
                 pyld = Some((offset, len));
+            } else if tag == TAG_PFIX {
+                pfix = Some((offset, len));
             } else if flags & CHUNK_FLAG_CRITICAL != 0 {
                 return Err(StreamError::Format(LoadError::UnsupportedVersion));
             }
@@ -195,6 +198,29 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             None => None,
         };
 
+        // The optional prefix section: a dense copy of the blob heads. Only
+        // useful next to a payload, and only when its stride can satisfy the
+        // requested prefix, both of which the scan re-checks per query.
+        let prefix = match pfix {
+            Some((poff, plen)) if payload.is_some() => {
+                if plen < PFIX_DESC_LEN as u64 {
+                    return Err(StreamError::Format(LoadError::Truncated));
+                }
+                let mut pd = [0u8; PFIX_DESC_LEN];
+                reader.read_exact_at(poff, &mut pd).await?;
+                let desc = parse_pfix_chunk(&pd)?;
+                let need = desc.desc_len as u64 + td.num_items as u64 * desc.record_stride as u64;
+                if plen != need {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                Some(PrefixSection {
+                    start: poff + desc.desc_len as u64,
+                    stride: desc.record_stride,
+                })
+            }
+            _ => None,
+        };
+
         // Directory prefetch (mirror of the sync `open` epilogue).
         let budget = directory_node_budget(&limits, box_stride, td.interleaved);
         let dir_node_start = directory_start(&level_bounds, level_count, budget);
@@ -231,6 +257,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             dir_boxes,
             dir_indices,
             payload,
+            prefix,
             limits,
         })
     }
@@ -580,6 +607,54 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                     prefix: &[],
                     payload_len: span.payload_len,
                 });
+            }
+            return Ok(());
+        }
+
+        // With a prefix section the same bytes sit in a dense array, so the scan
+        // reads rank runs instead of one strided range per match. The ordinary
+        // record gap applies: what lies between two prefixes here is other
+        // prefixes, not bodies, so over-reading is cheap.
+        if let Some(pfix) = self.prefix.as_ref().filter(|p| prefix_len <= p.stride) {
+            let stride = pfix.stride;
+            let ranks: Vec<usize> = spans.iter().map(|s| s.leaf_rank).collect();
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            let mut j = 0;
+            while j < ranks.len() {
+                let k = payload_run_end_fixed(&ranks, j, stride, self.coalesce_gap());
+                runs.push((j, k));
+                j = k + 1;
+            }
+            let mut bufs: Vec<Vec<u8>> = runs
+                .iter()
+                .map(|&(j, k)| vec![0u8; (ranks[k] + 1 - ranks[j]) * stride])
+                .collect();
+            for buf in &bufs {
+                budget.charge_read(buf.len())?;
+            }
+            let reads = runs.iter().zip(bufs.iter_mut()).map(|(&(j, _), buf)| {
+                self.reader
+                    .read_exact_at(pfix.start + (ranks[j] * stride) as u64, buf.as_mut_slice())
+            });
+            futures_util::future::try_join_all(reads).await?;
+
+            for (&(j, k), read_buf) in runs.iter().zip(&bufs) {
+                let lo = ranks[j];
+                for span in &spans[j..=k] {
+                    let id = read_index(indices, span.run_index)?;
+                    if id >= self.num_items {
+                        return Err(StreamError::Format(LoadError::InvalidTree));
+                    }
+                    budget.charge_item()?;
+                    let at = (span.leaf_rank - lo) * stride;
+                    let take = span.payload_len.min(prefix_len);
+                    emit(PayloadPrefix {
+                        id,
+                        leaf_rank: span.leaf_rank,
+                        prefix: &read_buf[at..at + take],
+                        payload_len: span.payload_len,
+                    });
+                }
             }
             return Ok(());
         }

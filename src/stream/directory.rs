@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::persistence::LoadError;
 
-use super::payload::PayloadSection;
+use super::payload::{PayloadSection, PrefixSection};
 use super::{StreamCore, StreamError, StreamLimits};
 
 /// The reader-independent half of a [`StreamCore`]: validated header counts,
@@ -30,6 +30,7 @@ pub(crate) struct StreamCoreParts {
     pub(crate) dir_boxes: Arc<[u8]>,
     pub(crate) dir_indices: Arc<[u8]>,
     pub(crate) payload: Option<PayloadSection>,
+    pub(crate) prefix: Option<PrefixSection>,
 }
 
 /// Choose the first node position to cache in the directory: walk levels from

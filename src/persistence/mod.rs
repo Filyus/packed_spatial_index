@@ -16,6 +16,8 @@ pub use metadata::{FileMetadata, read_metadata};
 pub(crate) use metadata::{MetaFields, TAG_META};
 pub(crate) use payload::{ParsedPayload, build_id_to_leaf, parse_payload_body, payload_slice};
 pub(crate) use payload_chunk::{PYLD_DESC_LEN, PYLD_DESC_LEN_FIXED, TAG_PYLD, parse_pyld_chunk};
+#[cfg(feature = "stream")]
+pub(crate) use prefix_chunk::parse_pfix_chunk;
 pub(crate) use prefix_chunk::{PFIX_DESC_LEN, TAG_PFIX};
 pub(crate) use tree_chunk::{TAG_TREE, TREE_DESC_LEN, parse_tree_chunk};
 pub(crate) use writer::{ByteWriter, write_index_container};

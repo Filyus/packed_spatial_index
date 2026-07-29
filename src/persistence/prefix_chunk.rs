@@ -1,4 +1,6 @@
 use super::ByteWriter;
+#[cfg(feature = "stream")]
+use super::{LoadError, read_u32_at};
 
 /// The optional payload-prefix section: a contiguous, leaf-rank-indexed copy of
 /// the first `record_stride` bytes of every payload blob.
@@ -16,6 +18,42 @@ pub(crate) const TAG_PFIX: [u8; 4] = *b"PFIX";
 /// Minimum `PFIX` descriptor length an older reader must tolerate (`desc_len`
 /// floor). Readers accept any `desc_len >= PFIX_DESC_LEN` and skip to the body.
 pub(crate) const PFIX_DESC_LEN: usize = 12;
+
+/// Decoded `PFIX` descriptor; returns it plus the slice that follows (the
+/// `num_items * record_stride` prefix bytes).
+#[cfg(feature = "stream")]
+pub(crate) struct PfixDesc {
+    /// Where the prefix bytes start relative to the chunk.
+    pub(crate) desc_len: usize,
+    /// Bytes per item. Always non-zero — a zero-stride section carries nothing
+    /// and is never written.
+    pub(crate) record_stride: usize,
+}
+
+#[cfg(feature = "stream")]
+pub(crate) fn parse_pfix_chunk(chunk: &[u8]) -> Result<PfixDesc, LoadError> {
+    if chunk.len() < PFIX_DESC_LEN {
+        return Err(LoadError::Truncated);
+    }
+    let desc_len = read_u32_at(chunk, 0)? as usize;
+    if desc_len < PFIX_DESC_LEN {
+        return Err(LoadError::InvalidTree);
+    }
+    let ordering = chunk[4];
+    let compression = chunk[5];
+    // Only leaf-rank ordering, uncompressed prefixes exist in this version.
+    if ordering != 0 || compression != 0 {
+        return Err(LoadError::UnsupportedVersion);
+    }
+    let record_stride = read_u32_at(chunk, 8)? as usize;
+    if record_stride == 0 {
+        return Err(LoadError::InvalidTree);
+    }
+    Ok(PfixDesc {
+        desc_len,
+        record_stride,
+    })
+}
 
 impl ByteWriter<'_> {
     /// Write the `PFIX` descriptor. Deliberately the same shape as

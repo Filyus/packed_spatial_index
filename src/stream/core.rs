@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
 use crate::persistence::{
-    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PYLD_DESC_LEN,
-    PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PYLD, TAG_TREE, TREE_DESC_LEN, derive_level_bounds,
-    expected_tree_shape, parse_pyld_chunk, parse_tree_chunk, read_u32_at, read_u64_at,
-    read_u64_le_unchecked,
+    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PFIX_DESC_LEN, PYLD_DESC_LEN,
+    PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PFIX, TAG_PYLD, TAG_TREE, TREE_DESC_LEN,
+    derive_level_bounds, expected_tree_shape, parse_pfix_chunk, parse_pyld_chunk, parse_tree_chunk,
+    read_u32_at, read_u64_at, read_u64_le_unchecked,
 };
 
 use super::StreamError;
 use super::directory::{StreamCoreParts, directory_start};
 use super::limits::{Budget, COALESCE_GAP_BYTES, StreamLimits, directory_node_budget};
 use super::payload::{
-    PayloadSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span, payload_run_end,
-    payload_run_end_fixed,
+    PayloadSection, PrefixSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span,
+    payload_run_end, payload_run_end_fixed,
 };
 use super::planner::{apply_gather_run, expand_frontier, plan_gather};
 use super::readers::RangeReader;
@@ -58,6 +58,9 @@ pub(crate) struct StreamCore<R> {
     pub(crate) dir_indices: Arc<[u8]>,
     /// Optional payload section. `None` when the index carries no payload.
     pub(crate) payload: Option<PayloadSection>,
+    /// Optional payload-prefix section: a dense copy of the blob heads, so a
+    /// prefix scan reads runs instead of one range per match.
+    pub(crate) prefix: Option<PrefixSection>,
     /// Per-query cost limits applied to every query (default: unbounded).
     pub(crate) limits: StreamLimits,
 }
@@ -107,6 +110,7 @@ impl<R> StreamCore<R> {
             dir_boxes: self.dir_boxes,
             dir_indices: self.dir_indices,
             payload: self.payload,
+            prefix: self.prefix,
         };
         (parts, self.reader)
     }
@@ -129,6 +133,7 @@ impl<R> StreamCore<R> {
             dir_boxes: parts.dir_boxes,
             dir_indices: parts.dir_indices,
             payload: parts.payload,
+            prefix: parts.prefix,
             limits,
         }
     }
@@ -190,6 +195,7 @@ impl<R: RangeReader> StreamCore<R> {
         let mut max_end = dir_end;
         let mut tree: Option<(u64, u64)> = None;
         let mut pyld: Option<(u64, u64)> = None;
+        let mut pfix: Option<(u64, u64)> = None;
         for i in 0..chunk_count {
             let base = i * CHUNK_ENTRY_LEN;
             let mut tag = [0u8; 4];
@@ -206,6 +212,8 @@ impl<R: RangeReader> StreamCore<R> {
                 tree = Some((offset, len));
             } else if tag == TAG_PYLD {
                 pyld = Some((offset, len));
+            } else if tag == TAG_PFIX {
+                pfix = Some((offset, len));
             } else if flags & CHUNK_FLAG_CRITICAL != 0 {
                 return Err(StreamError::Format(LoadError::UnsupportedVersion));
             }
@@ -300,6 +308,29 @@ impl<R: RangeReader> StreamCore<R> {
             None => None,
         };
 
+        // The optional prefix section: a dense copy of the blob heads. Only
+        // useful next to a payload, and only when its stride can satisfy the
+        // requested prefix, both of which the scan re-checks per query.
+        let prefix = match pfix {
+            Some((poff, plen)) if payload.is_some() => {
+                if plen < PFIX_DESC_LEN as u64 {
+                    return Err(StreamError::Format(LoadError::Truncated));
+                }
+                let mut pd = [0u8; PFIX_DESC_LEN];
+                reader.read_exact_at(poff, &mut pd)?;
+                let desc = parse_pfix_chunk(&pd)?;
+                let need = desc.desc_len as u64 + td.num_items as u64 * desc.record_stride as u64;
+                if plen != need {
+                    return Err(StreamError::Format(LoadError::InvalidTree));
+                }
+                Some(PrefixSection {
+                    start: poff + desc.desc_len as u64,
+                    stride: desc.record_stride,
+                })
+            }
+            _ => None,
+        };
+
         // Directory: cache the upper levels (a contiguous suffix of the node
         // section) up to the byte budget.
         let budget = directory_node_budget(&limits, box_stride, td.interleaved);
@@ -341,6 +372,7 @@ impl<R: RangeReader> StreamCore<R> {
             dir_boxes,
             dir_indices,
             payload,
+            prefix,
             limits,
         })
     }
@@ -688,6 +720,43 @@ impl<R: RangeReader> StreamCore<R> {
                     }
                     j = k + 1;
                 }
+            }
+
+            // With a prefix section the same bytes sit in a dense array, so the
+            // scan reads rank runs instead of one strided range per match. The
+            // ordinary record gap applies: what lies between two prefixes here
+            // is other prefixes, not bodies, so over-reading is cheap.
+            if let Some(pfix) = self.prefix.as_ref().filter(|p| prefix_len <= p.stride) {
+                let stride = pfix.stride;
+                let ranks: Vec<usize> = spans.iter().map(|s| s.leaf_rank).collect();
+                let mut j = 0;
+                while j < spans.len() {
+                    let k = payload_run_end_fixed(&ranks, j, stride, self.coalesce_gap());
+                    let lo = ranks[j];
+                    let hi = ranks[k];
+                    read_buf.clear();
+                    read_buf.resize((hi + 1 - lo) * stride, 0);
+                    budget.charge_read(read_buf.len())?;
+                    self.reader
+                        .read_exact_at(pfix.start + (lo * stride) as u64, &mut read_buf)?;
+                    for span in &spans[j..=k] {
+                        let id = read_index(indices, span.run_index)?;
+                        if id >= self.num_items {
+                            return Err(StreamError::Format(LoadError::InvalidTree));
+                        }
+                        budget.charge_item()?;
+                        let at = (span.leaf_rank - lo) * stride;
+                        let take = span.payload_len.min(prefix_len);
+                        emit(PayloadPrefix {
+                            id,
+                            leaf_rank: span.leaf_rank,
+                            prefix: &read_buf[at..at + take],
+                            payload_len: span.payload_len,
+                        });
+                    }
+                    j = k + 1;
+                }
+                return Ok(());
             }
 
             // Coalesce the prefix byte spans into runs and emit each survivor.

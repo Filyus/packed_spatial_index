@@ -13,8 +13,8 @@ use js_sys::{Function, Promise, Uint8Array};
 use packed_spatial_index_geo::{
     AsyncRangeReader, Box2D, Box3D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoError, GeoMatch,
-    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoPayloadHeader, GeoPayloadHeaderPage,
-    PayloadPlan, StreamError, StreamLimits, open_geo_index_with_limits_async,
+    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, PayloadPlan, StreamError, StreamLimits,
+    open_geo_index_with_limits_async,
 };
 use serde_json::{Map, Value, json};
 use wasm_bindgen::prelude::*;
@@ -172,57 +172,30 @@ async fn search_impl<I: AsyncGeoIndex>(
     payload_mode: PayloadMode,
     result_level: ResultLevel,
 ) -> Result<String, JsValue> {
-    let records: Vec<Value>;
-    let number_matched;
-    if !index.manifest().entries_may_duplicate_rows {
-        let page = index
-            .search_payload_headers_page(query, offset, limit)
+    let (number_matched, page_headers) = header_page(&index, query, result_level, offset, limit)
+        .await
+        .map_err(geo_err)?;
+    let records: Vec<Value> = if payload_mode == PayloadMode::Full {
+        index
+            .fetch_matches(&page_headers)
             .await
-            .map_err(geo_err)?;
-        number_matched = page.number_matched;
-        let page_headers = page.headers;
-        records = if payload_mode == PayloadMode::Full {
-            index
-                .fetch_payload_header_matches(&page_headers)
-                .await
-                .map_err(geo_err)?
-                .into_iter()
-                .map(|m| match_record(m, payload_mode, result_level))
-                .collect()
-        } else {
-            page_headers
-                .into_iter()
-                .map(|h| payload_header_record(h, payload_mode, &index.manifest().payload_plan))
-                .collect()
-        };
+            .map_err(geo_err)?
+            .into_iter()
+            .map(|m| match_record(m, payload_mode, result_level))
+            .collect()
     } else {
-        let (matched, page_headers) = if result_level == ResultLevel::Entry {
-            let page = index
-                .search_match_headers_page(query, offset, limit)
-                .await
-                .map_err(geo_err)?;
-            (page.number_matched, page.headers)
-        } else {
-            let mut headers = index.search_match_headers(query).await.map_err(geo_err)?;
-            GeoMatchHeader::dedupe_by_feature(&mut headers);
-            (headers.len(), page(&headers, offset, limit))
-        };
-        number_matched = matched;
-        records = if payload_mode == PayloadMode::Full {
-            index
-                .fetch_matches(&page_headers)
-                .await
-                .map_err(geo_err)?
-                .into_iter()
-                .map(|m| match_record(m, payload_mode, result_level))
-                .collect()
-        } else {
-            page_headers
-                .into_iter()
-                .map(|h| header_record(h, payload_mode, &index.manifest().payload_plan))
-                .collect()
-        };
-    }
+        page_headers
+            .into_iter()
+            .map(|h| {
+                header_record(
+                    h,
+                    payload_mode,
+                    result_level,
+                    &index.manifest().payload_plan,
+                )
+            })
+            .collect()
+    };
 
     let body = json!({
         "collectionId": COLLECTION_ID,
@@ -279,31 +252,49 @@ async fn items_impl<I: AsyncGeoIndex>(
     limit: usize,
     offset: usize,
 ) -> Result<String, JsValue> {
-    if !index.manifest().entries_may_duplicate_rows {
-        let page = index
-            .search_payload_headers_page(query, offset, limit)
+    // `/items` is a feature-level view by definition.
+    let (number_matched, page_headers) =
+        header_page(&index, query, ResultLevel::Feature, offset, limit)
             .await
             .map_err(geo_err)?;
-        let number_matched = page.number_matched;
-        let page_headers = page.headers;
-        let matches = index
-            .fetch_payload_header_matches(&page_headers)
-            .await
-            .map_err(geo_err)?;
-        return items_response(matches, number_matched, bbox, limit, offset);
-    }
-
-    let mut headers = index.search_match_headers(query).await.map_err(geo_err)?;
-    GeoMatchHeader::dedupe_by_feature(&mut headers);
-    let number_matched = headers.len();
-    let page_headers = page(&headers, offset, limit);
+    let page_len = page_headers.len();
     let matches = index.fetch_matches(&page_headers).await.map_err(geo_err)?;
-    items_response(matches, number_matched, bbox, limit, offset)
+    items_response(matches, number_matched, page_len, bbox, limit, offset)
+}
+
+/// Pick one page of match headers, mirroring how the native server chooses.
+///
+/// Paging inside the artifact is only correct when entry order is already
+/// answer order: at `level=entry`, or when the artifact cannot split one source
+/// row across several entries. Otherwise deduplication has to see every match
+/// before a page can be cut, so the full header set is collected first.
+///
+/// Both cases go through match headers rather than payload headers, which costs
+/// the fixed feature-ref prefix per candidate and buys a `featureRef` on every
+/// record -- the shape the native server always returns.
+async fn header_page<I: AsyncGeoIndex>(
+    index: &I,
+    query: I::Query,
+    level: ResultLevel,
+    offset: usize,
+    limit: usize,
+) -> Result<(usize, Vec<GeoMatchHeader>), GeoError> {
+    if level == ResultLevel::Entry || !index.manifest().entries_may_duplicate_rows {
+        let page = index
+            .search_match_headers_page(query, offset, limit)
+            .await?;
+        Ok((page.number_matched, page.headers))
+    } else {
+        let mut headers = index.search_match_headers(query).await?;
+        GeoMatchHeader::dedupe_by_feature(&mut headers);
+        Ok((headers.len(), page(&headers, offset, limit)))
+    }
 }
 
 fn items_response(
     matches: Vec<GeoMatch>,
     number_matched: usize,
+    page_len: usize,
     bbox: &[f64],
     limit: usize,
     offset: usize,
@@ -315,6 +306,13 @@ fn items_response(
             _ => None,
         })
         .collect();
+    // The route already refused a non-FeatureJson plan, so the filter above is
+    // total; if it ever were not, `numberReturned` would quietly under-report.
+    debug_assert_eq!(
+        features.len(),
+        page_len,
+        "an /items page silently lost a feature"
+    );
 
     Ok(json!({
         "type": "FeatureCollection",
@@ -343,18 +341,6 @@ trait AsyncGeoIndex {
 
     fn manifest(&self) -> &GeoArtifactManifest;
 
-    async fn search_payload_headers_page(
-        &self,
-        query: Self::Query,
-        offset: usize,
-        limit: usize,
-    ) -> Result<GeoPayloadHeaderPage, GeoError>;
-
-    async fn fetch_payload_header_matches(
-        &self,
-        headers: &[GeoPayloadHeader],
-    ) -> Result<Vec<GeoMatch>, GeoError>;
-
     async fn search_match_headers_page(
         &self,
         query: Self::Query,
@@ -377,23 +363,6 @@ macro_rules! impl_async_geo_index {
 
             fn manifest(&self) -> &GeoArtifactManifest {
                 <$index>::manifest(self)
-            }
-
-            async fn search_payload_headers_page(
-                &self,
-                query: Self::Query,
-                offset: usize,
-                limit: usize,
-            ) -> Result<GeoPayloadHeaderPage, GeoError> {
-                self.search_payload_headers_page_async(query, offset, limit)
-                    .await
-            }
-
-            async fn fetch_payload_header_matches(
-                &self,
-                headers: &[GeoPayloadHeader],
-            ) -> Result<Vec<GeoMatch>, GeoError> {
-                self.fetch_payload_header_matches_async(headers).await
             }
 
             async fn search_match_headers_page(
@@ -600,11 +569,22 @@ fn match_record(m: GeoMatch, payload_mode: PayloadMode, level: ResultLevel) -> V
     Value::Object(record)
 }
 
-fn header_record(header: GeoMatchHeader, payload_mode: PayloadMode, plan: &PayloadPlan) -> Value {
+fn header_record(
+    header: GeoMatchHeader,
+    payload_mode: PayloadMode,
+    level: ResultLevel,
+    plan: &PayloadPlan,
+) -> Value {
     let body_byte_len = header.body_byte_len().unwrap_or(0);
+    let mut feature_ref = header.feature;
+    // The paged path skips deduplication when the artifact cannot split a row
+    // across entries, so nothing else clears `part` on the way here.
+    if level == ResultLevel::Feature {
+        feature_ref.part = None;
+    }
     let mut record = Map::new();
     record.insert("entryId".to_string(), json!(header.entry_id));
-    record.insert("featureRef".to_string(), feature_ref_json(header.feature));
+    record.insert("featureRef".to_string(), feature_ref_json(feature_ref));
     if payload_mode != PayloadMode::None {
         record.insert(
             "payload".to_string(),
@@ -613,30 +593,6 @@ fn header_record(header: GeoMatchHeader, payload_mode: PayloadMode, plan: &Paylo
                 PayloadPlan::RowWkb => json!({
                     "kind": "row_wkb",
                     "byteLength": body_byte_len,
-                }),
-                PayloadPlan::FeatureJson { .. } => json!({ "kind": "feature_json" }),
-                PayloadPlan::None => json!({ "kind": "none" }),
-            },
-        );
-    }
-    Value::Object(record)
-}
-
-fn payload_header_record(
-    header: GeoPayloadHeader,
-    payload_mode: PayloadMode,
-    plan: &PayloadPlan,
-) -> Value {
-    let mut record = Map::new();
-    record.insert("entryId".to_string(), json!(header.entry_id));
-    if payload_mode != PayloadMode::None {
-        record.insert(
-            "payload".to_string(),
-            match plan {
-                PayloadPlan::RowRef => json!({ "kind": "row_ref" }),
-                PayloadPlan::RowWkb => json!({
-                    "kind": "row_wkb",
-                    "byteLength": header.body_byte_len().unwrap_or(0),
                 }),
                 PayloadPlan::FeatureJson { .. } => json!({ "kind": "feature_json" }),
                 PayloadPlan::None => json!({ "kind": "none" }),

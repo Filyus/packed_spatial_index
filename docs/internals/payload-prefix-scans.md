@@ -89,7 +89,8 @@ it.
 
 ## The fix: a contiguous prefix section
 
-The prefixes are fixed-size and rank-indexed. Every other fixed-size rank-indexed
+This is what shipped, as the optional `PFIX` chunk (format revision 13, no
+`format_version` bump). The prefixes are fixed-size and rank-indexed. Every other fixed-size rank-indexed
 array in this format — the offset table, the tree's SoA `indices`, a fixed-width
 `PYLD` — is stored contiguously, which is exactly why those are cheap to scan. The
 prefixes are the one such array that is *interleaved into variable-length data*.
@@ -98,8 +99,8 @@ trade-off.
 
 ### Layout
 
-A new optional chunk, tag from the format-reserved uppercase space (`PFIX`), with
-a descriptor deliberately shaped like `PYLD`'s so the parse path is the same:
+An optional chunk, tag from the format-reserved uppercase space (`PFIX`), with a
+descriptor deliberately shaped like `PYLD`'s so the parse path is the same:
 
 ```text
 0       4     desc_len       u32 = 12
@@ -213,15 +214,23 @@ file and nothing per query.
 
 ### Reader
 
-`visit_payload_prefixes` gains one branch: when a `PFIX` section is present and
-`prefix_len <= pfix.record_stride`, read the prefixes from it instead of from the
-blobs. Everything downstream is unchanged — the visitor still emits
-`PayloadPrefix { id, leaf_rank, prefix, payload_len }`, and `payload_len` still
-comes from the offset table, which the scan already reads.
+`visit_payload_prefixes` has one extra branch: when a `PFIX` section is present
+and `prefix_len <= pfix.record_stride`, it reads the prefixes from there instead
+of from the blobs. Everything downstream is unchanged — the visitor still emits
+`PayloadPrefix { id, leaf_rank, prefix, payload_len }`, `payload_len` still comes
+from the offset table the scan already reads, and the four public
+`visit_payload_prefixes*` entry points did not change at all. They just got
+faster.
 
-`StreamCoreParts` gains an `Option<PrefixSection>` alongside `payload`; the open
-path reads one more descriptor. The directory node budget is unaffected — it
+The section lives on `StreamCoreParts`, not only on `StreamCore`, so a directory
+split off with `into_directory` and reattached to a fresh reader keeps it — the
+warm-isolate path is exactly the one the section exists for. The open path costs
+one more descriptor read; the directory node budget is unaffected, since it
 covers tree nodes only.
+
+Coalescing inside the section uses the ordinary record gap rather than the prefix
+gap: what lies between two prefixes there is other prefixes, not bodies, so
+merging over them is cheap by construction.
 
 ### Compatibility
 
@@ -275,68 +284,71 @@ The conditional worth recording: **if a format break is happening anyway** — a
 then moving is the right design and copying becomes waste. Revisit this then, not
 before.
 
-### Measured, not projected
+### What it actually did
 
-A `--payload row-ref` artifact has uniformly 24-byte bodies, so its `PYLD` blobs
-*are* a contiguous rank-indexed 24-byte array — the same thing `PFIX` would be. A
-prefix scan over one therefore measures the proposal directly. The clamp does not
-apply to a dedicated section (there are no bodies to over-read into, so the gap is
-the reader's ordinary `coalesce_gap`), so the figures below are that scan with the
-clamp lifted — 7 reads become 2:
+The same 100 000-point GeoParquet source, converted twice — once with the section
+and once with `--prefix-index off` — and scanned through a counting reader:
 
-| | reads | bytes |
-| --- | --- | --- |
-| today, `feature-json` bodies | 554 | 20 632 |
-| contiguous section, small bbox | **2** | 29 416 |
-| today, world bbox | 100 001 | 3 200 008 |
-| contiguous section, world bbox | **2** | 3 200 008 |
+| bbox | | reads | bytes |
+| --- | --- | --- | --- |
+| small (553 matches) | without | 554 | 20 632 |
+| small | **with** | **2** | 29 416 |
+| world (100 000 matches) | without | 100 001 | 3 200 008 |
+| world | **with** | **2** | 3 200 008 |
 
-The byte counts barely move — the same 24 bytes per match are needed either way.
-Only the read count collapses, by two to five orders of magnitude. Unlike raising
-the coalescing gap, this is not a trade: it is strictly better on both axes than
-the clamped scan on wide queries, and costs 43% more bytes than the clamped scan
-on narrow ones while cutting 554 requests to 2.
+The read count collapses by two to five orders of magnitude. The byte counts
+barely move — the same 24 bytes per match are needed either way — so unlike
+raising the coalescing gap this is not a trade: it is strictly better on both
+axes on a wide query, and costs 43% more bytes on a narrow one while cutting 554
+requests to 2. The artifact grew from 40 927 824 to 43 327 864 bytes, **+5.9%**,
+exactly the 24 bytes per entry the section is.
 
-## Who decides: an option below, automatic above
+Compatibility was checked in both directions with a binary built from the commit
+before this work: it reads a section-carrying artifact and returns byte-identical
+query output, and the new reader falls back to the blob scan on an artifact
+without one.
+
+## Who decides: explicit below, automatic above
 
 Both tools need a policy, and the two layers know different things.
 
-**The core cannot decide, and should not guess.** `PYLD` blobs are opaque bytes;
-nothing in this crate knows that the first 24 of them mean anything. So both knobs
-are explicit here:
+| layer | knob | default |
+| --- | --- | --- |
+| core, writer | `Serializer*::payload_prefix_len(n)` | absent — no section |
+| core, reader | `StreamLimits::prefix_coalesce_gap_bytes` | `prefix_len`, i.e. the clamp |
+| geo, writer | `ConvertRequest::prefix_index`, `gp2psindex build --prefix-index` | `auto` |
 
-- a serializer option — `payload_prefix_len(n)` — that writes the section. Absent,
-  no section, exactly as today.
-- a `StreamLimits` field for the prefix coalescing gap, defaulting to today's
-  `prefix_len`. It belongs with the other limits because it is a property of the
-  *reader's* storage, not of the data: 1 011 range requests is a catastrophe over
-  R2 and a non-event on a local file. The same artifact wants different answers in
-  the server and in the Worker.
+**The core cannot decide, and does not guess.** `PYLD` blobs are opaque bytes;
+nothing in that crate knows the first 24 of them mean anything. So both of its
+knobs are explicit, and both default to the old behaviour. The reader-side one
+belongs with the limits rather than with the data because it is a property of the
+*reader's* storage: 1 011 range requests is a catastrophe over R2 and a non-event
+on a local file, and the same artifact wants opposite answers in the native
+server and in the Worker.
 
-**The geo layer can decide, and should.** It knows `prefix_len` is always 24 and
-it holds every body at write time, so it can measure instead of guess. The rule
-should read the body distribution, **not the payload plan** — the table above is
-the reason: `RowWkb` straddles the cliff, so `--payload row-wkb` predicts nothing.
-A median body size, compared against the two thresholds, predicts exactly.
+**The geo layer can decide, and does.** It knows the prefix is always a 24-byte
+feature ref and it holds every body at write time, so `auto` measures instead of
+guessing. It reads the body distribution, **not the payload plan** — the cliff
+table is the reason: `RowWkb` straddles it, so `--payload row-wkb` predicts
+nothing. It compares the *median* body against the threshold, so one huge
+geometry cannot buy a section the rest of the collection never uses.
 
-Default it to automatic, with an explicit override (`--prefix-index auto|on|off`),
-because the two error directions are not symmetric. Emitting a section that was
-not needed costs under 10% of file size, once. Not emitting one that was needed
-costs one range request per match, on every query, forever — and the failure is
-invisible at build time and only shows up as a bill.
+Automatic by default because the two error directions are not symmetric. Emitting
+a section that was not needed costs under 10% of file size, once. Not emitting one
+that was needed costs a range request per match, on every query, forever — and
+that failure is invisible at build time and shows up as a bill.
 
-The one thing automatic must not do is surprise someone building a local-only
-artifact with a 24% size increase, which is exactly what the `r > 10` threshold
-is there to prevent: below it the answer is a reader-side knob that costs no
-bytes on disk at all.
+What automatic must not do is surprise someone building a local-only artifact
+with a 24% size increase, which is what the `r > 10` threshold prevents: below it
+the answer is the reader-side knob, which costs no bytes on disk at all.
 
 ## What it unblocks
 
 - A remote reader can return feature references from a summary search at the same
-  cost as returning none. Today the geo Worker demo avoids the header path
-  precisely to avoid the read storm, which leaves its `/search` returning records
-  without `featureRef` — a contract divergence from the native server that exists
-  for no reason other than this.
+  cost as returning none. The geo Worker demo avoided the header path precisely
+  to dodge the read storm, which left its `/search` returning records without
+  `featureRef` — a contract divergence from the native server that existed for no
+  other reason. It is now free to converge.
 - The native server's paged search stops being local-file-only in practice.
 - `count`-style queries that need identity (dedupe by feature) become viable over
   object storage.

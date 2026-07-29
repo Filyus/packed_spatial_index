@@ -16,6 +16,7 @@ does and when to use it, see the [guide](../guide.md). For the numbers, see
   prefetching the next node's box while the current one is hit-tested. A free
   latency hint on range search and all-hits raycast.
 - **[payload-prefix-scans.md](payload-prefix-scans.md)** — why reading the first
-  few bytes of every matching payload costs one range request per match over
-  object storage, why neither coalescing setting fixes it, and the contiguous
-  prefix section that would. Measured, with a design that is not built yet.
+  few bytes of every matching payload used to cost one range request per match
+  over object storage, why neither coalescing setting alone fixes it, and the
+  contiguous `PFIX` section that does. The body size at which each tool starts
+  paying, measured.

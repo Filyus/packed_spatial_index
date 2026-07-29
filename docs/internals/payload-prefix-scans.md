@@ -112,13 +112,35 @@ a descriptor deliberately shaped like `PYLD`'s so the parse path is the same:
 
 The content is `min(record_stride, payload_len)` bytes copied from the head of
 each blob, zero-padded when a blob is shorter. It duplicates bytes that remain in
-the bodies; it does **not** relocate them. That matters for compatibility (below)
-and costs `record_stride` bytes per item — 2.4 MB on the 40 MB artifact above,
-about 6%.
+the bodies; it does **not** relocate them (see [Copy, not move](#copy-not-move)).
 
 Rank alignment is free: the writer already receives `leaf_order` and writes
 `PYLD` from it, so a second section built in the same pass is aligned with `PYLD`
 by construction.
+
+### When to emit it
+
+Only when the body stride actually defeats coalescing. The pathology is not
+"prefix scans are strided" — it is "the stride is wider than the gap". Measure the
+same 553-match query across payload kinds, all built from the same 100 000 points:
+
+| payload kind | body size | small bbox | world bbox |
+| --- | --- | --- | --- |
+| `feature-json` | ~370 B | **554 reads**, 20 632 B | **100 001 reads**, 3 200 008 B |
+| `row-wkb` | 45 B | 7 reads, 32 119 B | 2 reads, 5 299 987 B |
+| `row-ref` | 24 B | 7 reads, 20 632 B | 2 reads, 3 200 008 B |
+
+Bodies at or below the gap already coalesce, and a `row-ref` artifact — whose
+blobs *are* a contiguous 24-byte array — is the best case a `PFIX` section could
+reach. So `PFIX` is worth writing only when `stride > prefix_len` by enough to
+break runs, which in practice means embedded-document payloads.
+
+That rule also bounds its own cost. A section is `record_stride` bytes per item;
+emitted only where bodies are fat, that is a small fraction by construction —
+2.4 MB on the 40.9 MB `feature-json` artifact, **5.9%**. Emitting it
+indiscriminately would be much worse in relative terms: the same 2.4 MB on the
+9.6 MB `row-wkb` artifact is 25%, and on the 7.5 MB `row-ref` one 32% — for
+artifacts that need no help at all.
 
 ### Reader
 
@@ -145,20 +167,53 @@ readers, as long as they are marked optional."*
 - **New reader, old artifact** — no `PFIX` section, falls back to the blob scan.
   Correct, just not faster.
 
-Because the prefix bytes stay in the bodies, nothing that decodes a body changes:
-`has_feature_ref_prefix` and `feature_json_body` in the geo layer keep working on
-old and new artifacts alike. Relocating the prefixes instead of copying them
-would save the 6% and break exactly this — an old reader would see a body with no
-prefix and silently treat it as a reference-less legacy payload.
-
 Existing artifacts do not gain the section until they are rebuilt. No migration
 tool is needed: this is an optimization, not a semantic change.
+
+### Copy, not move
+
+The obvious objection to copying is that it duplicates 24 bytes per item that are
+already in the bodies. Why not relocate the prefixes into `PFIX` and leave the
+bodies as bare WKB or bare GeoJSON?
+
+The tempting answer — "because an old reader would see a body with no prefix and
+silently treat it as a reference-less legacy payload" — is true but not decisive,
+because it is fixable. Mark `PFIX` **critical** and an old reader rejects the file
+outright instead of misreading it; that is precisely what the critical bit is for.
+Silence is a property of moving prefixes under an *optional* chunk, not of moving
+them.
+
+The decisive reasons are the other three:
+
+- **The win is small and one-dimensional.** Moving saves `record_stride` bytes per
+  item, which is 5.9% of a `feature-json` artifact and nothing at all for the
+  payload kinds that never get a section. It saves no reads: the body fetch spans
+  the same runs either way.
+- **Bodies stop being self-describing.** Today a blob alone recovers its feature
+  reference — `has_feature_ref_prefix`, `decode_feature_ref_payload`,
+  `feature_json_body` and `stamp_payload_part` all work on the blob and nothing
+  else. After a move, every decode needs a rank-join against `PFIX`. And the
+  blob-prefix path cannot be deleted anyway, because artifacts built before the
+  change still have to load — so the cost is two decode paths, permanently, in
+  exchange for 5.9%.
+- **It changes the kind of change this is.** Copying is additive: nothing that
+  reads today stops reading. Moving makes every artifact the new writer produces
+  unreadable by every older reader. That is a reasonable thing to do for a
+  reasonable price, and 5.9% of one payload kind is not one.
+
+The conditional worth recording: **if a format break is happening anyway** — a
+`format_version` bump, or a new critical chunk introduced for some other reason —
+then moving is the right design and copying becomes waste. Revisit this then, not
+before.
 
 ### Measured, not projected
 
 A `--payload row-ref` artifact has uniformly 24-byte bodies, so its `PYLD` blobs
 *are* a contiguous rank-indexed 24-byte array — the same thing `PFIX` would be. A
-prefix scan over one therefore measures the proposal directly:
+prefix scan over one therefore measures the proposal directly. The clamp does not
+apply to a dedicated section (there are no bodies to over-read into, so the gap is
+the reader's ordinary `coalesce_gap`), so the figures below are that scan with the
+clamp lifted — 7 reads become 2:
 
 | | reads | bytes |
 | --- | --- | --- |

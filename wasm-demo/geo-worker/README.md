@@ -29,29 +29,32 @@ demo.
 - `GET /health`
 - `GET /collections`
 - `GET /collections/synthetic-points`
-- `GET /collections/synthetic-points/search?bbox=&limit=&offset=&payload=none|summary|full&level=entry|feature`
+- `GET /collections/synthetic-points/search?bbox=&limit=&offset=&payload=none|summary|full&level=entry|feature&identity=ref|full`
 - `GET /collections/synthetic-points/items?bbox=&limit=&offset=`
 
 `bbox` is `minx,miny,maxx,maxy` for a 2D artifact and
 `minx,miny,minz,maxx,maxy,maxz` for a 3D one. The Worker takes the dimensions
 from the artifact manifest rather than from configuration, so whichever object
-is uploaded is the one it serves; any other length is a `400 invalid_bbox`, and
-the right length for the wrong artifact is a `422 query_error` naming how many
-numbers that artifact wants.
+is uploaded is the one it serves; any other length is a `400 invalid_bbox`,
+whether the request or the artifact is the odd one out.
 
 `/search` returns an artifact-native envelope with `numberMatched`,
 `numberReturned`, `query`, `payloadKind`, and `matches`. `/items` returns a
 GeoJSON `FeatureCollection`. Search is bbox-only in this milestone; exact
 predicate/source read-back is deliberately left to the native server.
-For artifacts whose manifest says entries cannot duplicate rows, summary search
-uses an entry/rank header path and omits `featureRef`; request `payload=full` or
-use `/items` when the client needs the returned GeoJSON features.
-That path uses `search_payload_headers_page_async`, so a broad bbox counts every
-match but retains only `offset + limit` headers before fetching the requested
-payload bodies. For artifacts with split/duplicate source rows, `level=entry`
-uses the same bounded strategy through `search_match_headers_page_async`.
-`level=feature` and `/items` keep the full-header fallback because exact
-feature-level deduplication needs global identity state.
+Every match carries `entryId` and `featureRef`, whichever way the query was
+answered. `payload` picks how much of the stored value comes back;
+`identity=ref|full` picks how much of the source identity does. They are
+separate because a source `featureId` lives inside a `feature_json` body, so
+`full` reads bodies even at `payload=summary` -- and only where such an id can
+exist. Other payload kinds keep the whole feature reference in the fixed
+prefix, so `full` is accepted and echoed there but reads nothing extra, and
+`capabilities.identityModes` lists it only where it can add something.
+
+Paging happens inside the artifact whenever entry order is already answer
+order -- at `level=entry`, or when the manifest says entries cannot duplicate
+rows. Otherwise the full header set is collected first, because deduplicating
+split rows into features needs to see every match before a page can be cut.
 
 Every R2-backed response includes `X-PSI-Reads`, `X-PSI-Bytes`, and
 `X-PSI-R2-Operations`. Search and items responses expose the same counters in
@@ -62,10 +65,41 @@ the JSON body together with `ms`:
 - `r2Operations` counts the initial HEAD plus all range GETs.
 - `ms` covers the full R2-backed request, starting before HEAD.
 
-If the object changes between HEAD and a conditional range GET, the Worker
-returns `409 artifact_changed`; R2 transport failures return
-`502 artifact_io_error`. Artifact/query validation failures remain
-`422 query_error`.
+## Errors
+
+One envelope, matching the native server, so a client written against one reads
+the other without special cases:
+
+```json
+{
+  "error": {
+    "code": "query_too_large",
+    "message": "query exceeded its configured limits"
+  }
+}
+```
+
+| status | code | when |
+| --- | --- | --- |
+| 400 | `invalid_bbox` | missing, malformed, inverted, or the wrong length for this artifact |
+| 400 | `invalid_limit` / `invalid_offset` | not an integer in range (`limit` is 1-1000 here) |
+| 400 | `invalid_payload` / `invalid_level` / `invalid_identity` | not one of the accepted values |
+| 400 | `invalid_query` | any other parameter out of range |
+| 404 | `artifact_not_found` | the R2 object is missing; seed and upload it |
+| 404 | `collection_not_found` / `not_found` | unknown collection or route |
+| 405 | `method_not_allowed` | only GET is served |
+| 409 | `artifact_changed` | the object changed between HEAD and a conditional range GET |
+| 422 | `unsupported_query` | a parameter this endpoint does not take, such as `identity` on `/items` |
+| 422 | `unsupported_payload` | `/items` against an artifact without `feature-json` payloads |
+| 422 | `unsupported_level` | `level=feature` on an artifact that stores no feature references |
+| 422 | `query_too_large` | the query exceeded `maxReads` or the built-in budgets |
+| 500 | `artifact_error` | the artifact itself is unreadable or inconsistent |
+| 502 | `artifact_io_error` | R2 transport failure |
+| 500 | `internal_error` | anything unclassified |
+
+The distinction that matters: 4xx means the request can be fixed, 5xx means the
+object cannot. An R2 failure keeps its own classification even when it surfaces
+through the wasm layer, which only sees an opaque I/O error.
 
 ## Local build
 

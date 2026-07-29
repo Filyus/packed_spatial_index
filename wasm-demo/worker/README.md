@@ -35,6 +35,13 @@ signal: how cheap a spatial query over a remote object actually is.
 - The index is **interleaved + fixed-width records** (the layout the local
   simulator showed issues the fewest reads/bytes).
 
+Failures use the same envelope as the geo Worker and the native server —
+`{"error":{"code","message"}}` — with the same distinction: a 4xx means the
+request can be fixed, a 5xx means the object cannot. `404 artifact_not_found`
+when the R2 object is missing, `405 method_not_allowed` for anything but GET,
+`502 artifact_io_error` for an R2 read failure, and `422 query_error` for a
+query the index refuses.
+
 ## Local validation (no cloud)
 
 The reads/bytes counts come from the crate's real coalescing/traversal, so they

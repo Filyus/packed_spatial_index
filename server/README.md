@@ -75,6 +75,10 @@ a `matches` array. `/items` is the GeoJSON view: it returns a
 a 422 pointing at `/search`. `/items` also rejects `/search`-only options
 (`level`, `payload`, `identity`) with `unsupported_query`.
 
+Failures are reported as `{"error":{"code","message"}}`; the two Cloudflare
+Worker demos under `wasm-demo/` use the same envelope and code vocabulary, so a
+client written against one reads the others without special cases.
+
 Unknown query parameters and unknown catalog keys are rejected (`invalid_query`
 and a startup error) rather than ignored, so a misspelled name fails loudly
 instead of silently resolving to a default. This applies to the two endpoints

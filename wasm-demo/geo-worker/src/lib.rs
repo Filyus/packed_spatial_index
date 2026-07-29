@@ -126,6 +126,7 @@ pub async fn search(
     offset: f64,
     payload: String,
     level: String,
+    identity: String,
     max_reads: f64,
 ) -> Result<String, JsValue> {
     let index = open_index(read_range, file_len, object_etag, max_reads).await?;
@@ -133,6 +134,7 @@ pub async fn search(
     let offset = bounded_usize(offset, 0, usize::MAX);
     let payload_mode = parse_payload_mode(&payload)?;
     let result_level = parse_level(&level)?;
+    let identity_mode = parse_identity_mode(&identity)?;
 
     match (index, bbox.len()) {
         (GeoArtifactIndex::D2(index), 4) => {
@@ -144,6 +146,7 @@ pub async fn search(
                 offset,
                 payload_mode,
                 result_level,
+                identity_mode,
             )
             .await
         }
@@ -156,6 +159,7 @@ pub async fn search(
                 offset,
                 payload_mode,
                 result_level,
+                identity_mode,
             )
             .await
         }
@@ -163,6 +167,7 @@ pub async fn search(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn search_impl<I: AsyncGeoIndex>(
     index: I,
     query: I::Query,
@@ -171,35 +176,37 @@ async fn search_impl<I: AsyncGeoIndex>(
     offset: usize,
     payload_mode: PayloadMode,
     result_level: ResultLevel,
+    identity_mode: IdentityMode,
 ) -> Result<String, JsValue> {
     let (number_matched, page_headers) = header_page(&index, query, result_level, offset, limit)
         .await
         .map_err(geo_err)?;
-    let records: Vec<Value> = if payload_mode == PayloadMode::Full {
-        index
-            .fetch_matches(&page_headers)
-            .await
-            .map_err(geo_err)?
-            .into_iter()
-            .map(|m| match_record(m, payload_mode, result_level))
-            .collect()
-    } else {
-        page_headers
-            .into_iter()
-            .map(|h| {
-                header_record(
-                    h,
-                    payload_mode,
-                    result_level,
-                    &index.manifest().payload_plan,
-                )
-            })
-            .collect()
-    };
+    let records: Vec<Value> =
+        if needs_payload_bodies(payload_mode, identity_mode, &index.manifest().payload_plan) {
+            index
+                .fetch_matches(&page_headers)
+                .await
+                .map_err(geo_err)?
+                .into_iter()
+                .map(|m| match_record(m, payload_mode, result_level, identity_mode))
+                .collect()
+        } else {
+            page_headers
+                .into_iter()
+                .map(|h| {
+                    header_record(
+                        h,
+                        payload_mode,
+                        result_level,
+                        &index.manifest().payload_plan,
+                    )
+                })
+                .collect()
+        };
 
     let body = json!({
         "collectionId": COLLECTION_ID,
-        "query": query_json(bbox, limit, offset, payload_mode, result_level),
+        "query": query_json(bbox, limit, offset, payload_mode, result_level, identity_mode),
         "payloadKind": payload_kind(&index.manifest().payload_plan),
         "numberMatched": number_matched,
         "numberReturned": records.len(),
@@ -521,6 +528,17 @@ fn collection_summary(
             "predicates": ["bbox"],
             "levels": ["feature", "entry"],
             "payloadModes": ["none", "summary", "full"],
+            // A source id lives in a `feature_json` body; every other plan keeps
+            // the whole feature reference in the fixed prefix, so `full` has
+            // nothing to add there. It is still accepted -- a client querying a
+            // mixed catalog should not have to vary its request per collection --
+            // but advertising it would promise detail this collection cannot
+            // produce.
+            "identityModes": if payload_kind == "feature_json" {
+                json!(["ref", "full"])
+            } else {
+                json!(["ref"])
+            },
         },
     })
 }
@@ -531,21 +549,33 @@ fn query_json(
     offset: usize,
     payload: PayloadMode,
     level: ResultLevel,
+    identity: IdentityMode,
 ) -> Value {
     json!({
         "bbox": bbox,
         "predicate": "bbox",
         "level": level.as_str(),
         "payload": payload.as_str(),
+        "identity": identity.as_str(),
         "limit": limit,
         "offset": offset,
     })
 }
 
-fn match_record(m: GeoMatch, payload_mode: PayloadMode, level: ResultLevel) -> Value {
+fn match_record(
+    m: GeoMatch,
+    payload_mode: PayloadMode,
+    level: ResultLevel,
+    identity: IdentityMode,
+) -> Value {
     let mut feature_ref = m.feature;
     if level == ResultLevel::Feature {
         feature_ref.part = None;
+    }
+    // A decoded body may carry a source id; returning it unasked would make
+    // `featureId` a function of which internal path answered.
+    if identity == IdentityMode::Ref {
+        feature_ref.feature_id = None;
     }
     let payload = match (payload_mode, m.payload) {
         (PayloadMode::None, _) => Value::Null,
@@ -681,6 +711,50 @@ impl ResultLevel {
     }
 }
 
+/// Whether a match should carry the source `featureId` from its payload body.
+///
+/// Split from `payload` because they answer different questions: `payload`
+/// picks how much of the stored value to return, `identity` picks how much of
+/// the source identity to recover. The id lives inside a `FeatureJson` body, so
+/// asking for it costs a body read even at `payload=summary`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityMode {
+    Ref,
+    Full,
+}
+
+impl IdentityMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ref => "ref",
+            Self::Full => "full",
+        }
+    }
+}
+
+fn parse_identity_mode(value: &str) -> Result<IdentityMode, JsValue> {
+    match value {
+        "ref" => Ok(IdentityMode::Ref),
+        "full" => Ok(IdentityMode::Full),
+        _ => Err(worker_err(
+            400,
+            "invalid_identity",
+            "identity must be ref or full",
+        )),
+    }
+}
+
+/// Whether this request has to read payload bodies.
+///
+/// Copied from the native server: `identity=full` only buys a body read where a
+/// source id can actually live. Every other payload plan keeps the whole feature
+/// reference in the fixed prefix, so reading bodies there would cost the page
+/// and return byte-for-byte the same records.
+fn needs_payload_bodies(payload: PayloadMode, identity: IdentityMode, plan: &PayloadPlan) -> bool {
+    payload == PayloadMode::Full
+        || (identity == IdentityMode::Full && matches!(plan, PayloadPlan::FeatureJson { .. }))
+}
+
 fn parse_level(value: &str) -> Result<ResultLevel, JsValue> {
     match value {
         "entry" => Ok(ResultLevel::Entry),
@@ -810,9 +884,84 @@ fn geo_error_class(e: &GeoError) -> (u16, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        GeoError, PayloadMode, ResultLevel, StreamError, bbox_arity_message, geo_error_class,
-        object_identity, query_json,
+        FeatureRef, GeoError, GeoMatch, GeoPayload, IdentityMode, PayloadMode, PayloadPlan,
+        ResultLevel, StreamError, bbox_arity_message, geo_error_class, match_record,
+        needs_payload_bodies, object_identity, query_json,
     };
+    use packed_spatial_index_geo::PropertyProjection;
+
+    fn feature_json_plan() -> PayloadPlan {
+        PayloadPlan::FeatureJson {
+            properties: PropertyProjection::AllNonGeometry,
+        }
+    }
+
+    #[test]
+    fn bodies_are_read_only_where_an_id_can_live() {
+        // `payload=full` always materializes; `identity=full` buys a body read
+        // only where a source id can exist, and never on its own otherwise.
+        for plan in [
+            feature_json_plan(),
+            PayloadPlan::RowWkb,
+            PayloadPlan::RowRef,
+            PayloadPlan::None,
+        ] {
+            assert!(needs_payload_bodies(
+                PayloadMode::Full,
+                IdentityMode::Ref,
+                &plan
+            ));
+            assert!(!needs_payload_bodies(
+                PayloadMode::Summary,
+                IdentityMode::Ref,
+                &plan
+            ));
+        }
+        assert!(needs_payload_bodies(
+            PayloadMode::Summary,
+            IdentityMode::Full,
+            &feature_json_plan()
+        ));
+        for plan in [PayloadPlan::RowWkb, PayloadPlan::RowRef, PayloadPlan::None] {
+            assert!(
+                !needs_payload_bodies(PayloadMode::Summary, IdentityMode::Full, &plan),
+                "identity=full must not read bodies for {plan:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_ref_withholds_the_source_id() {
+        let with_id = |identity| {
+            let feature = FeatureRef {
+                row_number: 7,
+                row_group: None,
+                row_in_group: None,
+                part: Some(1),
+                feature_id: Some("f7".to_string()),
+            };
+            match_record(
+                GeoMatch {
+                    entry_id: 3,
+                    feature,
+                    payload: GeoPayload::RowRef,
+                },
+                PayloadMode::Summary,
+                ResultLevel::Feature,
+                identity,
+            )
+        };
+
+        let refd = with_id(IdentityMode::Ref);
+        assert!(refd["featureRef"].get("featureId").is_none());
+        let full = with_id(IdentityMode::Full);
+        assert_eq!(full["featureRef"]["featureId"], "f7");
+        // `part` is a property of the entry, not of identity, so feature level
+        // drops it in both.
+        for record in [&refd, &full] {
+            assert!(record["featureRef"].get("part").is_none());
+        }
+    }
 
     #[test]
     fn geo_errors_are_classified_like_the_server() {
@@ -861,7 +1010,9 @@ mod tests {
             0,
             PayloadMode::Summary,
             ResultLevel::Feature,
+            IdentityMode::Ref,
         );
+        assert_eq!(two["identity"], "ref");
         assert_eq!(two["bbox"], serde_json::json!([1.0, 2.0, 3.0, 4.0]));
 
         let three = query_json(
@@ -870,7 +1021,9 @@ mod tests {
             0,
             PayloadMode::Summary,
             ResultLevel::Feature,
+            IdentityMode::Full,
         );
+        assert_eq!(three["identity"], "full");
         assert_eq!(
             three["bbox"],
             serde_json::json!([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])

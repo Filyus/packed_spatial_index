@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HttpError } from "../src/artifact.ts";
-import { parseBbox } from "../src/query.ts";
+import { parseBbox, parseEnum, parseIntParam } from "../src/query.ts";
 
 function bbox(raw) {
   return parseBbox(new URL(`https://example.test/search?bbox=${raw}`));
@@ -47,4 +47,43 @@ test("checks min <= max on every axis, including z", () => {
   expectHttpError(() => bbox("64,29,71,23"), 400, "invalid_bbox", /min values/);
   // The z pair is the one an xy-only check would wave through.
   expectHttpError(() => bbox("64,23,100,71,29,0"), 400, "invalid_bbox", /min values/);
+});
+
+test("names the parameter in the error code, as the server does", () => {
+  const bad = (query) =>
+    assert.throws(
+      () => {
+        const url = new URL(`https://example.test/search?${query}`);
+        parseEnum(url, "payload", "summary", ["none", "summary", "full"]);
+        parseEnum(url, "level", "feature", ["entry", "feature"]);
+        parseEnum(url, "identity", "ref", ["ref", "full"]);
+        parseIntParam(url, "limit", 100, 1, 1000);
+        parseIntParam(url, "offset", 0, 0, 1e6);
+      },
+      (error) => error instanceof HttpError && error.status === 400 && error.code === expected,
+    );
+
+  let expected = "invalid_payload";
+  bad("payload=lots");
+  expected = "invalid_level";
+  bad("level=deep");
+  expected = "invalid_identity";
+  bad("identity=maybe");
+  expected = "invalid_limit";
+  bad("limit=0");
+  expected = "invalid_offset";
+  bad("offset=-1");
+  // A parameter with no dedicated code keeps the generic one.
+  expected = "invalid_query";
+  assert.throws(
+    () =>
+      parseIntParam(
+        new URL("https://example.test/search?maxReads=nope"),
+        "maxReads",
+        0,
+        0,
+        10,
+      ),
+    (error) => error instanceof HttpError && error.code === "invalid_query",
+  );
 });

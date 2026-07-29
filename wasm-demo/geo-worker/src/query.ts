@@ -34,6 +34,32 @@ export function parseBbox(url: URL): number[] {
   return values;
 }
 
+/**
+ * The error code for a bad value of `key`.
+ *
+ * The server names the parameter in the code — `invalid_limit`, not a blanket
+ * `invalid_query` — so a client can branch on which one it got wrong without
+ * parsing prose. Anything without a dedicated code keeps the generic one.
+ */
+export function invalidCode(key: string): string {
+  switch (key) {
+    case "bbox":
+      return "invalid_bbox";
+    case "limit":
+      return "invalid_limit";
+    case "offset":
+      return "invalid_offset";
+    case "payload":
+      return "invalid_payload";
+    case "level":
+      return "invalid_level";
+    case "identity":
+      return "invalid_identity";
+    default:
+      return "invalid_query";
+  }
+}
+
 export function parseIntParam(
   url: URL,
   key: string,
@@ -45,7 +71,7 @@ export function parseIntParam(
   if (raw === null || raw === "") return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
-    throw new HttpError(400, "invalid_query", `${key} must be an integer in [${min}, ${max}]`);
+    throw new HttpError(400, invalidCode(key), `${key} must be an integer in [${min}, ${max}]`);
   }
   return value;
 }
@@ -59,7 +85,7 @@ export function parseEnum<T extends string>(
   const raw = url.searchParams.get(key);
   if (raw === null || raw === "") return fallback;
   if (allowed.includes(raw as T)) return raw as T;
-  throw new HttpError(400, "invalid_query", `${key} must be one of ${allowed.join(", ")}`);
+  throw new HttpError(400, invalidCode(key), `${key} must be one of ${allowed.join(", ")}`);
 }
 
 export function maxReads(url: URL): number {

@@ -108,7 +108,18 @@ async function route(req: Request, env: Env): Promise<Response> {
     const offset = parseIntParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
     const payload = parseEnum(url, "payload", "summary", ["none", "summary", "full"]);
     const level = parseEnum(url, "level", "feature", ["entry", "feature"]);
-    rejectUnsupportedSearchParams(url, ["bbox", "limit", "offset", "payload", "level", "maxReads"]);
+    const identity = parseEnum(url, "identity", "ref", ["ref", "full"]);
+    // `/items` deliberately keeps its own shorter list, so `identity` there is a
+    // 422 rather than a silently ignored parameter.
+    rejectUnsupportedSearchParams(url, [
+      "bbox",
+      "limit",
+      "offset",
+      "payload",
+      "level",
+      "identity",
+      "maxReads",
+    ]);
 
     const { body, metrics } = await withArtifact(
       env.BUCKET,
@@ -123,6 +134,7 @@ async function route(req: Request, env: Env): Promise<Response> {
           offset,
           payload,
           level,
+          identity,
           maxReads(url),
         );
         return JSON.parse(json);

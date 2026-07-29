@@ -6,10 +6,12 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- Re-exported `StreamError` from the core crate. `GeoError::Stream` wraps it,
+  so a caller could not tell an exhausted read budget from a corrupt artifact
+  without naming the type.
 - **Breaking:** `ConvertRequest` gained `prefix_index: PrefixIndexPolicy`,
   deciding whether the artifact carries a contiguous copy of its feature refs.
   `gp2psindex build` exposes it as `--prefix-index auto|on|off`.
-
 - `gp2psindex query` gained `--count`, `--limit`, and `--offset`, so the CLI
   can answer "how many" without reading source rows and can read back one page
   instead of materializing every match. Both describe the index's own match

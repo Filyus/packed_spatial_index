@@ -105,7 +105,14 @@ export async function withArtifact<T>(
     });
     return { body, metrics: { ...counters, ms: Date.now() - t0 } };
   } catch (error) {
+    if (error instanceof HttpError) {
+      throw error;
+    }
     const message = errorMessage(error);
+    // Markers first, and deliberately so: an R2 failure raised inside
+    // `readRange` comes back wrapped by the wasm layer, so its marker is
+    // embedded in whatever the classifier there decided to call it. The
+    // original cause wins over the wrapper's guess.
     const changed = markedMessage(message, ARTIFACT_CHANGED_MARKER);
     if (changed !== null) {
       throw new HttpError(409, "artifact_changed", changed);
@@ -114,9 +121,39 @@ export async function withArtifact<T>(
     if (ioFailure !== null) {
       throw new HttpError(502, "artifact_io_error", ioFailure);
     }
-    throw new HttpError(422, "query_error", message);
+    throw classifiedError(message);
   }
 }
+
+/**
+ * Recover the status and code the wasm layer chose.
+ *
+ * `wasm_bindgen` can only reject with a `JsValue`, so the Rust side encodes one
+ * as a JSON object; without it every wasm failure — a wrong-length bbox, an
+ * exhausted read budget, a corrupt artifact — arrives as the same opaque
+ * string. Anything that is not one of those objects keeps the old catch-all.
+ */
+function classifiedError(message: string): HttpError {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message);
+  } catch {
+    return new HttpError(422, "query_error", message);
+  }
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    typeof (parsed as WasmError).status === "number" &&
+    typeof (parsed as WasmError).code === "string" &&
+    typeof (parsed as WasmError).message === "string"
+  ) {
+    const { status, code, message: detail } = parsed as WasmError;
+    return new HttpError(status, code, detail);
+  }
+  return new HttpError(422, "query_error", message);
+}
+
+type WasmError = { status: number; code: string; message: string };
 
 function markedError(marker: string, message: string): Error {
   return new Error(`${marker}${message}`);

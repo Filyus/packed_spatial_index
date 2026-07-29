@@ -14,7 +14,7 @@ use packed_spatial_index_geo::{
     AsyncRangeReader, Box2D, Box3D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoError, GeoMatch,
     GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoPayloadHeader, GeoPayloadHeaderPage,
-    PayloadPlan, StreamLimits, open_geo_index_with_limits_async,
+    PayloadPlan, StreamError, StreamLimits, open_geo_index_with_limits_async,
 };
 use serde_json::{Map, Value, json};
 use wasm_bindgen::prelude::*;
@@ -91,9 +91,13 @@ pub async fn collection(
     let manifest = dir.manifest();
     let mut out = collection_summary(manifest, dir.num_entries(), dir.node_size());
     if detail {
-        let obj = out
-            .as_object_mut()
-            .ok_or_else(|| JsValue::from_str("collection summary was not an object"))?;
+        let obj = out.as_object_mut().ok_or_else(|| {
+            worker_err(
+                500,
+                "artifact_error",
+                "collection summary was not an object",
+            )
+        })?;
         obj.insert("nodeSize".to_string(), json!(dir.node_size()));
         obj.insert("sourceFormat".to_string(), json!(manifest.source_format));
         obj.insert(
@@ -247,7 +251,9 @@ pub async fn items(
         index.manifest().payload_plan,
         PayloadPlan::FeatureJson { .. }
     ) {
-        return Err(JsValue::from_str(
+        return Err(worker_err(
+            422,
+            "unsupported_payload",
             "/items requires an artifact built with --payload feature-json",
         ));
     }
@@ -447,7 +453,7 @@ fn artifact_dims<R>(index: &GeoArtifactIndex<R>) -> u8 {
 /// arity check lives here rather than in the request parser, and the message
 /// names what the artifact actually is.
 fn bbox_arity_error(dims: u8, len: usize) -> JsValue {
-    JsValue::from_str(&bbox_arity_message(dims, len))
+    worker_err(400, "invalid_bbox", bbox_arity_message(dims, len))
 }
 
 fn bbox_arity_message(dims: u8, len: usize) -> String {
@@ -463,7 +469,8 @@ async fn open_index(
     object_etag: String,
     max_reads: f64,
 ) -> Result<GeoArtifactIndex<R2Reader>, JsValue> {
-    let identity = object_identity(file_len, object_etag).map_err(JsValue::from_str)?;
+    let identity = object_identity(file_len, object_etag)
+        .map_err(|message| worker_err(500, "artifact_error", message))?;
     let reader = R2Reader {
         read_range,
         len: Some(identity.file_len),
@@ -695,7 +702,9 @@ fn parse_payload_mode(value: &str) -> Result<PayloadMode, JsValue> {
         "none" => Ok(PayloadMode::None),
         "summary" => Ok(PayloadMode::Summary),
         "full" => Ok(PayloadMode::Full),
-        _ => Err(JsValue::from_str(
+        _ => Err(worker_err(
+            400,
+            "invalid_payload",
             "payload must be one of none, summary, full",
         )),
     }
@@ -720,7 +729,11 @@ fn parse_level(value: &str) -> Result<ResultLevel, JsValue> {
     match value {
         "entry" => Ok(ResultLevel::Entry),
         "feature" => Ok(ResultLevel::Feature),
-        _ => Err(JsValue::from_str("level must be one of entry, feature")),
+        _ => Err(worker_err(
+            400,
+            "invalid_level",
+            "level must be one of entry, feature",
+        )),
     }
 }
 
@@ -780,13 +793,97 @@ fn js_io(v: JsValue) -> io::Error {
     io::Error::other(message)
 }
 
+/// One failure, in the shape the Worker's HTTP layer speaks.
+///
+/// Serialized as JSON across the wasm boundary so the classification survives
+/// the trip: `wasm_bindgen` can only reject with a `JsValue`, and a bare string
+/// would leave the TypeScript side unable to tell "the bbox is the wrong
+/// length" from "the artifact is corrupt". The codes and statuses are the
+/// native server's (`server/src/error.rs`).
+struct WorkerError {
+    status: u16,
+    code: &'static str,
+    message: String,
+}
+
+impl From<WorkerError> for JsValue {
+    fn from(err: WorkerError) -> Self {
+        JsValue::from_str(
+            &json!({
+                "status": err.status,
+                "code": err.code,
+                "message": err.message,
+            })
+            .to_string(),
+        )
+    }
+}
+
+fn worker_err(status: u16, code: &'static str, message: impl Into<String>) -> JsValue {
+    WorkerError {
+        status,
+        code,
+        message: message.into(),
+    }
+    .into()
+}
+
+/// Classify a [`GeoError`], mirroring the intercepts the native server applies
+/// before its catch-all (`server/src/error.rs`).
+///
+/// The default is a 500: a geo error that is not one of the cases below
+/// describes the artifact, not the request, so blaming the client would be
+/// wrong. The exceptions are the ones the client *can* act on — narrow the
+/// bbox, or ask for something the artifact supports.
 fn geo_err(e: GeoError) -> JsValue {
-    JsValue::from_str(&e.to_string())
+    let (status, code) = geo_error_class(&e);
+    worker_err(status, code, e.to_string())
+}
+
+fn geo_error_class(e: &GeoError) -> (u16, &'static str) {
+    match e {
+        GeoError::Stream(StreamError::LimitExceeded) => (422, "query_too_large"),
+        GeoError::NonPlanarExactPredicate { .. } | GeoError::NonSphericalExactPredicate { .. } => {
+            (422, "unsupported_query")
+        }
+        GeoError::InvalidSphericalQuery(_) | GeoError::EmptyQueryPolygon => (400, "invalid_bbox"),
+        _ => (500, "artifact_error"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PayloadMode, ResultLevel, bbox_arity_message, object_identity, query_json};
+    use super::{
+        GeoError, PayloadMode, ResultLevel, StreamError, bbox_arity_message, geo_error_class,
+        object_identity, query_json,
+    };
+
+    #[test]
+    fn geo_errors_are_classified_like_the_server() {
+        // The client can act on these two, so they are 4xx.
+        assert_eq!(
+            geo_error_class(&GeoError::Stream(StreamError::LimitExceeded)),
+            (422, "query_too_large")
+        );
+        assert_eq!(
+            geo_error_class(&GeoError::InvalidSphericalQuery("bad".into())),
+            (400, "invalid_bbox")
+        );
+        // Everything else describes the artifact rather than the request, so
+        // blaming the caller would be wrong.
+        assert_eq!(
+            geo_error_class(&GeoError::MissingGeoManifest),
+            (500, "artifact_error")
+        );
+        assert_eq!(
+            geo_error_class(&GeoError::PayloadDecode("truncated".into())),
+            (500, "artifact_error")
+        );
+        assert_eq!(
+            geo_error_class(&GeoError::Stream(StreamError::NoPayload)),
+            (500, "artifact_error")
+        );
+    }
 
     #[test]
     fn bbox_arity_message_names_the_artifact_dimensions() {

@@ -10,6 +10,14 @@ function body(length, read = async () => new ArrayBuffer(length)) {
   return { body: {}, arrayBuffer: read };
 }
 
+// A bucket that answers HEAD, so a test can reach the `run` callback.
+function okBucket() {
+  return {
+    head: async () => HEAD,
+    get: async () => body(4),
+  };
+}
+
 async function expectHttpError(run, status, code, message) {
   await assert.rejects(run, (error) => {
     assert.ok(error instanceof HttpError);
@@ -157,5 +165,59 @@ test("keeps unmarked WASM/query failures separate from R2 failures", async () =>
     422,
     "query_error",
     /invalid bbox/,
+  );
+});
+
+test("recovers the code the wasm layer chose", async () => {
+  // `wasm_bindgen` can only reject with a string, so the Rust side encodes the
+  // classification as JSON. Without this the three cases below would all be
+  // one opaque `query_error`.
+  const wasmRejects = (payload) => async () =>
+    withArtifact(okBucket(), OBJECT_KEY, async () => {
+      throw payload;
+    });
+
+  await expectHttpError(
+    wasmRejects(
+      JSON.stringify({
+        status: 422,
+        code: "query_too_large",
+        message: "narrow the bbox",
+      }),
+    ),
+    422,
+    "query_too_large",
+    /narrow the bbox/,
+  );
+  await expectHttpError(
+    wasmRejects(
+      JSON.stringify({ status: 400, code: "invalid_bbox", message: "wrong length" }),
+    ),
+    400,
+    "invalid_bbox",
+    /wrong length/,
+  );
+  // Anything that is not one of those objects keeps the old catch-all, so a
+  // stray string from any other layer is still reported rather than swallowed.
+  await expectHttpError(wasmRejects("plain old failure"), 422, "query_error", /plain old/);
+  await expectHttpError(wasmRejects('{"code":"partial"}'), 422, "query_error", /partial/);
+});
+
+test("an R2 marker outranks whatever the wasm layer called it", async () => {
+  // The wasm layer sees an opaque I/O failure and classifies it 500; the
+  // marker says what actually happened, and must win.
+  const wrapped = JSON.stringify({
+    status: 500,
+    code: "artifact_error",
+    message: "streaming read failed: PSI_ARTIFACT_IO: R2 range GET failed: timeout",
+  });
+  await expectHttpError(
+    async () =>
+      withArtifact(okBucket(), OBJECT_KEY, async () => {
+        throw wrapped;
+      }),
+    502,
+    "artifact_io_error",
+    /timeout/,
   );
 });

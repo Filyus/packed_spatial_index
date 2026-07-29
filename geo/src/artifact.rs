@@ -315,10 +315,8 @@ impl<R> GeoArtifactIndex<R> {
     /// # let bytes = std::fs::read("places.psindex")?;
     /// # let artifact = open_geo_index(SliceReader::new(bytes.clone()))?;
     /// # let (directory, _reader) = artifact.into_directory();
-    /// let limits = StreamLimits {
-    ///     max_read_bytes: Some(8 * 1024 * 1024),
-    ///     ..StreamLimits::default()
-    /// };
+    /// let mut limits = StreamLimits::default();
+    /// limits.max_read_bytes = Some(8 * 1024 * 1024);
     /// let warm = GeoArtifactIndex::from_directory_with_limits(
     ///     &directory,
     ///     SliceReader::new(bytes),

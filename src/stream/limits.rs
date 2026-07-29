@@ -23,7 +23,19 @@ pub(super) const COALESCE_GAP_BYTES: u64 = 4096;
 /// by its subrequest limit and bytes/items by its memory budget. A query that
 /// would exceed any limit aborts with [`StreamError::LimitExceeded`] instead of
 /// running unbounded over a broad window.
+///
+/// The struct is `#[non_exhaustive]`, so build one from [`Default`] and assign
+/// the fields you care about; a later release can then add a limit without
+/// breaking callers.
+///
+/// ```
+/// # use packed_spatial_index::StreamLimits;
+/// let mut limits = StreamLimits::default();
+/// limits.max_reads = Some(64);
+/// limits.coalesce_gap_bytes = Some(256 * 1024);
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub struct StreamLimits {
     /// Maximum number of range reads a single query may issue.
     pub max_reads: Option<usize>,
@@ -45,6 +57,16 @@ pub struct StreamLimits {
     /// local file. Bounded by `max_read_bytes`, so a broad query still aborts
     /// rather than over-reading unbounded.
     pub coalesce_gap_bytes: Option<u64>,
+    /// Max byte gap between two payload *prefixes* still fetched in one read,
+    /// for the prefix-visiting queries. `None` keeps the built-in default of
+    /// `prefix_len`, which never skips more than one prefix worth of bytes and
+    /// therefore never merges once bodies exceed `2 * prefix_len` — right for a
+    /// local file, where a read is nearly free, and catastrophic over object
+    /// storage, where it becomes one request per match. Raise it to buy those
+    /// requests back by reading the bodies in between. Still capped by
+    /// [`coalesce_gap_bytes`](Self::coalesce_gap_bytes) and charged against
+    /// [`max_read_bytes`](Self::max_read_bytes).
+    pub prefix_coalesce_gap_bytes: Option<u64>,
 }
 
 /// Running per-query cost counters checked against [`StreamLimits`].

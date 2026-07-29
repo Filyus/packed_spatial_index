@@ -4,6 +4,23 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### API
+
+- **Breaking:** `StreamLimits` is now `#[non_exhaustive]`, so it is built from
+  `Default` and assigned field by field rather than with a struct literal. The
+  fields stay public; this is the last time adding a limit breaks callers.
+
+### Persistence
+
+- Added `StreamLimits::prefix_coalesce_gap_bytes`, the coalescing gap for
+  payload-prefix visits. It defaulted — and still defaults — to `prefix_len`,
+  which never merges once bodies exceed `2 * prefix_len`, so a prefix scan
+  issues one range read per match. That is the right trade for a local file and
+  the wrong one over object storage, where it is a request per match; raising
+  the gap buys those requests back by reading the bodies in between. Measured
+  over 100 000 items with 64-byte bodies and 1 001 matches: 1 011 reads for
+  339 188 bytes become 11 reads for 379 188.
+
 ## [0.25.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.24.1...psi-v0.25.0) - 2026-07-15
 
 ### Search

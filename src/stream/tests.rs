@@ -929,6 +929,66 @@ fn payload_prefixes_stay_within_a_budget_full_blobs_exceed() {
 }
 
 #[test]
+fn prefix_gap_trades_reads_for_bytes() {
+    // Bodies well past `2 * prefix_len`, so consecutive prefixes cannot merge
+    // under the default clamp: the scan degenerates to one read per match.
+    const BODY: usize = 512;
+    const PREFIX: usize = 24;
+    let (owned, _) = random_owned(300, 0xAB07);
+    let n = owned.num_items();
+    let payloads: Vec<Vec<u8>> = (0..n).map(|i| vec![i as u8; BODY]).collect();
+    let bytes = owned.to_bytes_with_payloads(&payloads).unwrap();
+    let query = Box2D::new(-1.0, -1.0, 2000.0, 2000.0);
+
+    let cost = |gap: Option<u64>| -> (usize, u64, usize) {
+        let limits = StreamLimits {
+            prefix_coalesce_gap_bytes: gap,
+            ..Default::default()
+        };
+        let idx = StreamIndex2D::open_with_limits(
+            CountingReader::new(SliceReader::new(bytes.clone())),
+            limits,
+        )
+        .unwrap();
+        let reads0 = *idx.core.reader.reads.borrow();
+        let bytes0 = *idx.core.reader.bytes.borrow();
+        let mut seen = 0usize;
+        idx.visit_payload_prefixes(query, PREFIX, |p| {
+            assert_eq!(p.prefix.len(), PREFIX);
+            assert_eq!(p.payload_len, BODY);
+            seen += 1;
+        })
+        .unwrap();
+        (
+            *idx.core.reader.reads.borrow() - reads0,
+            *idx.core.reader.bytes.borrow() - bytes0,
+            seen,
+        )
+    };
+
+    let (clamped_reads, clamped_bytes, clamped_seen) = cost(None);
+    let (wide_reads, wide_bytes, wide_seen) = cost(Some(4096));
+
+    assert_eq!(clamped_seen, n);
+    assert_eq!(wide_seen, n);
+    // The default still reads each prefix on its own...
+    assert!(
+        clamped_reads >= n,
+        "clamped scan should read once per match, got {clamped_reads} for {n}"
+    );
+    // ...and raising the gap collapses them into a handful of runs, paying the
+    // skipped bodies in bytes.
+    assert!(
+        wide_reads * 10 < clamped_reads,
+        "wide gap should cut reads by an order of magnitude: {wide_reads} vs {clamped_reads}"
+    );
+    assert!(
+        wide_bytes > clamped_bytes,
+        "wide gap over-reads the bodies between prefixes: {wide_bytes} vs {clamped_bytes}"
+    );
+}
+
+#[test]
 fn fixed_width_payload_prefixes_and_ranks() {
     const STRIDE: usize = 12;
     let (owned, _) = random_owned(2_000, 0xAB05);

@@ -585,7 +585,7 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         }
 
         let mut prefix_runs: Vec<(usize, usize, u64, u64)> = Vec::new();
-        let gap = self.coalesce_gap().min(prefix_len as u64);
+        let gap = self.prefix_coalesce_gap(prefix_len);
         let mut j = 0;
         while j < spans.len() {
             let run_start = spans[j].blob_start;

@@ -99,19 +99,18 @@ pub async fn query(
     // isolates; we just answer fast). Cache all internal levels for the fewest
     // round-trips, and cap result memory well under the isolate's 128 MB so a
     // broad query can't OOM and evict the warm directory. Peak ~32 MB.
-    let limits = StreamLimits {
-        max_reads: if max_reads > 0.0 {
-            Some(max_reads as usize)
-        } else {
-            None
-        },
-        max_read_bytes: Some(16 * 1024 * 1024),
-        max_items: Some(1_000_000),
-        directory_budget_bytes: Some(16 * 1024 * 1024),
-        // Over-read up to 256 KB to collapse round-trips: a strong win on R2
-        // (high latency), bounded by max_read_bytes above.
-        coalesce_gap_bytes: Some(256 * 1024),
+    let mut limits = StreamLimits::default();
+    limits.max_reads = if max_reads > 0.0 {
+        Some(max_reads as usize)
+    } else {
+        None
     };
+    limits.max_read_bytes = Some(16 * 1024 * 1024);
+    limits.max_items = Some(1_000_000);
+    limits.directory_budget_bytes = Some(16 * 1024 * 1024);
+    // Over-read up to 256 KB to collapse round-trips: a strong win on R2
+    // (high latency), bounded by max_read_bytes above.
+    limits.coalesce_gap_bytes = Some(256 * 1024);
 
     // Reattach the cached directory if this warm isolate already has one (no
     // directory reads); otherwise open once and cache it for later requests.

@@ -468,13 +468,16 @@ async fn open_index(
         read_range,
         len: Some(identity.file_len),
     };
-    let limits = StreamLimits {
-        max_reads: (max_reads > 0.0).then_some(max_reads as usize),
-        max_read_bytes: Some(16 * 1024 * 1024),
-        max_items: Some(1_000_000),
-        directory_budget_bytes: Some(16 * 1024 * 1024),
-        coalesce_gap_bytes: Some(256 * 1024),
-    };
+    let mut limits = StreamLimits::default();
+    limits.max_reads = (max_reads > 0.0).then_some(max_reads as usize);
+    limits.max_read_bytes = Some(16 * 1024 * 1024);
+    limits.max_items = Some(1_000_000);
+    limits.directory_budget_bytes = Some(16 * 1024 * 1024);
+    limits.coalesce_gap_bytes = Some(256 * 1024);
+    // Every read here is an R2 round trip and a billed operation, so buy them
+    // back with bytes: a strided prefix scan would otherwise issue one request
+    // per match.
+    limits.prefix_coalesce_gap_bytes = Some(256 * 1024);
 
     let cached = DIRECTORY.with(|d| {
         d.borrow()

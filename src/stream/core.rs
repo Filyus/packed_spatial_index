@@ -75,6 +75,21 @@ impl<R> StreamCore<R> {
         self.limits.coalesce_gap_bytes.unwrap_or(COALESCE_GAP_BYTES)
     }
 
+    /// Byte gap below which payload *prefixes* coalesce into one read.
+    ///
+    /// Defaults to `prefix_len`: never skip more than one prefix worth of
+    /// bytes, so asking for 24 bytes cannot drag a whole body along. That makes
+    /// the scan strided once bodies exceed `2 * prefix_len`, which is the right
+    /// trade on a local file and the wrong one over a network, hence the
+    /// override. The ordinary record gap stays the ceiling either way.
+    pub(crate) fn prefix_coalesce_gap(&self, prefix_len: usize) -> u64 {
+        let requested = self
+            .limits
+            .prefix_coalesce_gap_bytes
+            .unwrap_or(prefix_len as u64);
+        self.coalesce_gap().min(requested)
+    }
+
     /// Split off the reader, keeping the reusable directory. No I/O.
     pub(crate) fn into_parts(self) -> (StreamCoreParts, R) {
         let parts = StreamCoreParts {
@@ -676,7 +691,7 @@ impl<R: RangeReader> StreamCore<R> {
             }
 
             // Coalesce the prefix byte spans into runs and emit each survivor.
-            let gap = self.coalesce_gap().min(prefix_len as u64);
+            let gap = self.prefix_coalesce_gap(prefix_len);
             let mut j = 0;
             while j < spans.len() {
                 let run_start = spans[j].blob_start;

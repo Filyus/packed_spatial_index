@@ -90,12 +90,11 @@ impl Default for LimitsConfig {
 impl LimitsConfig {
     /// Translate to core stream limits, mapping `0` to unbounded.
     pub fn to_stream_limits(self) -> StreamLimits {
-        StreamLimits {
-            max_reads: (self.max_reads > 0).then_some(self.max_reads),
-            max_read_bytes: (self.max_read_bytes > 0).then_some(self.max_read_bytes),
-            max_items: (self.max_items > 0).then_some(self.max_items),
-            ..StreamLimits::default()
-        }
+        let mut limits = StreamLimits::default();
+        limits.max_reads = (self.max_reads > 0).then_some(self.max_reads);
+        limits.max_read_bytes = (self.max_read_bytes > 0).then_some(self.max_read_bytes);
+        limits.max_items = (self.max_items > 0).then_some(self.max_items);
+        limits
     }
 }
 

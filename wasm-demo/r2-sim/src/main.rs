@@ -75,10 +75,8 @@ fn measure(label: &str, bytes: &[u8]) {
     let reader = CountingReader { inner: SliceReader::new(bytes), counters: counters.clone() };
     // Cache all internal levels (serverless: trade a little memory for fewer
     // per-query round-trips). `None` would keep the small built-in default.
-    let limits = StreamLimits {
-        directory_budget_bytes: Some(64 * 1024 * 1024),
-        ..Default::default()
-    };
+    let mut limits = StreamLimits::default();
+    limits.directory_budget_bytes = Some(64 * 1024 * 1024);
     let stream = StreamIndex2D::open_with_limits(reader, limits).expect("open");
     let (open_reads, open_bytes) = counters.get();
 

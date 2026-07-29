@@ -168,6 +168,15 @@ so a broad query still aborts rather than over-reading without limit. On a 1M
 file a wide window drops from tens of reads to a handful with both this and a
 roomy directory budget.
 
+`StreamLimits::prefix_coalesce_gap_bytes` is the same knob for the queries that
+read only the first few bytes of each matching payload. It defaults to the
+requested prefix length, which never skips more than one prefix worth of bytes
+and therefore never merges once bodies are larger than twice the prefix — so
+such a scan issues one read per match. That is right for a local file and very
+wrong over object storage; raise it there. See
+[internals](internals/payload-prefix-scans.md) for the measured trade and the
+body sizes at which it flips.
+
 **Compact `f32` streaming:** `StreamIndex2DF32` / `StreamIndex3DF32` stream a
 compact `f32`-box file for half the box bytes over the wire, with the same
 sync and async `search` / `search_payloads` / `search_region` /

@@ -134,7 +134,11 @@ pub async fn search(
     let offset = bounded_usize(offset, 0, usize::MAX);
     let payload_mode = parse_payload_mode(&payload)?;
     let result_level = resolve_level(parse_level(&level)?, &index.manifest().payload_plan)?;
-    let identity_mode = parse_identity_mode(&identity)?;
+    let identity_mode = resolve_identity(
+        stores_feature_ids(index.manifest()),
+        payload_mode,
+        parse_identity_mode(&identity)?,
+    );
 
     match (index, bbox.len()) {
         (GeoArtifactIndex::D2(index), 4) => {
@@ -181,28 +185,27 @@ async fn search_impl<I: AsyncGeoIndex>(
     let (number_matched, page_headers) = header_page(&index, query, result_level, offset, limit)
         .await
         .map_err(geo_err)?;
-    let records: Vec<Value> =
-        if needs_payload_bodies(payload_mode, identity_mode, &index.manifest().payload_plan) {
-            index
-                .fetch_matches(&page_headers)
-                .await
-                .map_err(geo_err)?
-                .into_iter()
-                .map(|m| match_record(m, payload_mode, result_level, identity_mode))
-                .collect()
-        } else {
-            page_headers
-                .into_iter()
-                .map(|h| {
-                    header_record(
-                        h,
-                        payload_mode,
-                        result_level,
-                        &index.manifest().payload_plan,
-                    )
-                })
-                .collect()
-        };
+    let records: Vec<Value> = if needs_payload_bodies(payload_mode, identity_mode) {
+        index
+            .fetch_matches(&page_headers)
+            .await
+            .map_err(geo_err)?
+            .into_iter()
+            .map(|m| match_record(m, payload_mode, result_level, identity_mode))
+            .collect()
+    } else {
+        page_headers
+            .into_iter()
+            .map(|h| {
+                header_record(
+                    h,
+                    payload_mode,
+                    result_level,
+                    &index.manifest().payload_plan,
+                )
+            })
+            .collect()
+    };
 
     let body = json!({
         "collectionId": COLLECTION_ID,
@@ -529,13 +532,11 @@ fn collection_summary(manifest: &GeoArtifactManifest, entry_count: usize) -> Val
                 json!(["feature", "entry"])
             },
             "payloadModes": ["none", "summary", "full"],
-            // A source id lives in a `feature_json` body; every other plan keeps
-            // the whole feature reference in the fixed prefix, so `full` has
-            // nothing to add there. It is still accepted -- a client querying a
-            // mixed catalog should not have to vary its request per collection --
-            // but advertising it would promise detail this collection cannot
+            // `full` is still accepted -- a client querying a mixed catalog
+            // should not have to vary its request per collection -- but
+            // advertising it would promise detail this collection cannot
             // produce.
-            "identityModes": if payload_kind == "feature_json" {
+            "identityModes": if stores_feature_ids(manifest) {
                 json!(["ref", "full"])
             } else {
                 json!(["ref"])
@@ -745,15 +746,48 @@ fn parse_identity_mode(value: &str) -> Result<IdentityMode, JsValue> {
     }
 }
 
+/// Whether this collection can produce a source feature id at all.
+///
+/// Copied from the native server. The payload plan answers a different
+/// question -- `feature_json` says where an id would live, not whether one
+/// exists -- and only a GeoJSON source ever supplies one, so the manifest has
+/// to say. An artifact written before it recorded that says nothing, and the
+/// benefit of the doubt goes to the client.
+fn stores_feature_ids(manifest: &GeoArtifactManifest) -> bool {
+    matches!(manifest.payload_plan, PayloadPlan::FeatureJson { .. })
+        && manifest.stores_feature_ids.unwrap_or(true)
+}
+
+/// Pick the identity mode, which the collection and the rest of the request
+/// both have a say in. Same rule as the native server's `resolve_identity`.
+///
+/// `full` costs a page of body reads, so it must not be granted where it buys
+/// nothing and must not be withheld where it costs nothing: a collection
+/// storing no source id resolves to `ref` whatever was asked, and
+/// `payload=full` resolves to `full` because it reads the bodies regardless
+/// and returns the id inside the GeoJSON feature anyway.
+fn resolve_identity(
+    stores_feature_ids: bool,
+    payload: PayloadMode,
+    requested: IdentityMode,
+) -> IdentityMode {
+    if !stores_feature_ids {
+        IdentityMode::Ref
+    } else if payload == PayloadMode::Full {
+        IdentityMode::Full
+    } else {
+        requested
+    }
+}
+
 /// Whether this request has to read payload bodies.
 ///
-/// Copied from the native server: `identity=full` only buys a body read where a
-/// source id can actually live. Every other payload plan keeps the whole feature
-/// reference in the fixed prefix, so reading bodies there would cost the page
-/// and return byte-for-byte the same records.
-fn needs_payload_bodies(payload: PayloadMode, identity: IdentityMode, plan: &PayloadPlan) -> bool {
-    payload == PayloadMode::Full
-        || (identity == IdentityMode::Full && matches!(plan, PayloadPlan::FeatureJson { .. }))
+/// `identity` here is the mode that survived [`resolve_identity`], which is
+/// `Full` only where an id can actually be recovered -- so this does not have
+/// to re-examine the payload plan to avoid buying a page of reads for a
+/// byte-identical answer.
+fn needs_payload_bodies(payload: PayloadMode, identity: IdentityMode) -> bool {
+    payload == PayloadMode::Full || identity == IdentityMode::Full
 }
 
 fn parse_level(value: &str) -> Result<Option<ResultLevel>, JsValue> {
@@ -917,9 +951,10 @@ fn geo_error_class(e: &GeoError) -> (u16, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        FeatureRef, GeoError, GeoMatch, GeoPayload, IdentityMode, PayloadMode, PayloadPlan,
-        ResultLevel, StreamError, bbox_arity_message, geo_error_class, level_for_plan,
-        match_record, needs_payload_bodies, object_identity, query_json,
+        FeatureRef, GeoArtifactManifest, GeoError, GeoMatch, GeoPayload, IdentityMode, PayloadMode,
+        PayloadPlan, ResultLevel, StreamError, bbox_arity_message, geo_error_class, level_for_plan,
+        match_record, needs_payload_bodies, object_identity, query_json, resolve_identity,
+        stores_feature_ids,
     };
     use packed_spatial_index_geo::PropertyProjection;
 
@@ -930,36 +965,97 @@ mod tests {
     }
 
     #[test]
-    fn bodies_are_read_only_where_an_id_can_live() {
-        // `payload=full` always materializes; `identity=full` buys a body read
-        // only where a source id can exist, and never on its own otherwise.
-        for plan in [
-            feature_json_plan(),
-            PayloadPlan::RowWkb,
-            PayloadPlan::RowRef,
-            PayloadPlan::None,
-        ] {
-            assert!(needs_payload_bodies(
-                PayloadMode::Full,
-                IdentityMode::Ref,
-                &plan
-            ));
-            assert!(!needs_payload_bodies(
-                PayloadMode::Summary,
-                IdentityMode::Ref,
-                &plan
-            ));
-        }
+    fn only_full_identity_reads_payload_bodies() {
+        assert!(needs_payload_bodies(PayloadMode::Full, IdentityMode::Ref));
         assert!(needs_payload_bodies(
             PayloadMode::Summary,
-            IdentityMode::Full,
-            &feature_json_plan()
+            IdentityMode::Full
         ));
-        for plan in [PayloadPlan::RowWkb, PayloadPlan::RowRef, PayloadPlan::None] {
-            assert!(
-                !needs_payload_bodies(PayloadMode::Summary, IdentityMode::Full, &plan),
-                "identity=full must not read bodies for {plan:?}"
+        assert!(!needs_payload_bodies(
+            PayloadMode::Summary,
+            IdentityMode::Ref
+        ));
+        assert!(!needs_payload_bodies(PayloadMode::None, IdentityMode::Ref));
+    }
+
+    /// A collection with no source id to give must not sell one: `full` there
+    /// would buy a page of body reads for a byte-identical answer.
+    #[test]
+    fn identity_resolves_down_where_no_id_is_stored() {
+        for payload in [PayloadMode::None, PayloadMode::Summary, PayloadMode::Full] {
+            for requested in [IdentityMode::Ref, IdentityMode::Full] {
+                assert_eq!(
+                    resolve_identity(false, payload, requested),
+                    IdentityMode::Ref,
+                    "{payload:?} {requested:?}"
+                );
+            }
+        }
+    }
+
+    /// `payload=full` reads the bodies anyway and returns the id inside the
+    /// GeoJSON feature, so withholding it from `featureRef` hides nothing.
+    #[test]
+    fn identity_resolves_up_where_the_bodies_are_read_anyway() {
+        assert_eq!(
+            resolve_identity(true, PayloadMode::Full, IdentityMode::Ref),
+            IdentityMode::Full
+        );
+        for payload in [PayloadMode::None, PayloadMode::Summary] {
+            assert_eq!(
+                resolve_identity(true, payload, IdentityMode::Ref),
+                IdentityMode::Ref,
+                "{payload:?}"
             );
+            assert_eq!(
+                resolve_identity(true, payload, IdentityMode::Full),
+                IdentityMode::Full,
+                "{payload:?}"
+            );
+        }
+    }
+
+    /// The plan says where an id would live; the manifest flag says whether
+    /// one is there. An artifact predating the flag keeps the benefit of the
+    /// doubt, because its bodies may well carry ids.
+    #[test]
+    fn only_a_feature_json_artifact_that_kept_ids_stores_them() {
+        for (plan, expected) in [
+            (feature_json_plan(), [false, true, true]),
+            (PayloadPlan::RowWkb, [false, false, false]),
+            (PayloadPlan::RowRef, [false, false, false]),
+            (PayloadPlan::None, [false, false, false]),
+        ] {
+            for (flag, expected) in [Some(false), Some(true), None].into_iter().zip(expected) {
+                let manifest = manifest_with(plan.clone(), flag);
+                assert_eq!(stores_feature_ids(&manifest), expected, "{plan:?} {flag:?}");
+            }
+        }
+    }
+
+    fn manifest_with(
+        payload_plan: PayloadPlan,
+        stores_feature_ids: Option<bool>,
+    ) -> GeoArtifactManifest {
+        GeoArtifactManifest {
+            schema_version: 2,
+            source_format: "geojson".to_string(),
+            source_fingerprint: String::new(),
+            selected_column: "geometry".to_string(),
+            crs: packed_spatial_index_geo::CrsInfo::ImpliedDefault {
+                value: "OGC:CRS84".to_string(),
+            },
+            edges: packed_spatial_index_geo::EdgeModel::Planar,
+            encoding: packed_spatial_index_geo::GeometryEncoding::GeoJson,
+            dims: packed_spatial_index_geo::CoordinateDims::Xy,
+            storage_precision: packed_spatial_index_geo::StoragePrecision::F64,
+            null_policy: packed_spatial_index_geo::NullPolicy::Skip,
+            antimeridian_policy: packed_spatial_index_geo::AntimeridianPolicy::Reject,
+            payload_plan,
+            feature_count: 0,
+            index_entry_count: 0,
+            entries_may_duplicate_rows: false,
+            stores_feature_ids,
         }
     }
 

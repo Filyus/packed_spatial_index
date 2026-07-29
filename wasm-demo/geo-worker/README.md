@@ -46,10 +46,17 @@ Every match carries `entryId` and `featureRef`, whichever way the query was
 answered. `payload` picks how much of the stored value comes back;
 `identity=ref|full` picks how much of the source identity does. They are
 separate because a source `featureId` lives inside a `feature_json` body, so
-`full` reads bodies even at `payload=summary` -- and only where such an id can
-exist. Other payload kinds keep the whole feature reference in the fixed
-prefix, so `full` is accepted and echoed there but reads nothing extra, and
-`capabilities.identityModes` lists it only where it can add something.
+`full` reads bodies even at `payload=summary`.
+
+Like `level`, `identity` is resolved against the collection and the rest of the
+request rather than taken literally, and the echoed value is the mode that
+applied. A collection storing no source id resolves to `ref` whatever was
+asked, so `full` never buys a page of reads for an identical answer -- only
+`feature_json` bodies have room for an id, and only GeoJSON sources supply one,
+so an artifact built from Parquet or FlatGeobuf lands here too. `payload=full`
+resolves to `full`, because the bodies are read regardless and the returned
+GeoJSON feature carries its own `id` anyway. `full` stays accepted everywhere,
+and `capabilities.identityModes` lists it only where it can add something.
 
 Paging happens inside the artifact whenever entry order is already answer
 order -- at `level=entry`, or when the manifest says entries cannot duplicate

@@ -54,9 +54,11 @@ changes. But it cuts both ways, so:
 ## Releases
 
 Releases are prepared **by hand** (no generator tool). The agent prepares the
-version bump and changelog, shows the diff, and pushes the release commit only
-after the maintainer OKs the wording; the maintainer alone approves the `release`
-GitHub environment that publishes.
+version bump and changelog and shows the diff — the one stop in a release. After
+the maintainer OKs the wording it carries on without asking again: commit, push,
+wait for CI, start the publish workflow, and confirm the version reached
+crates.io. The maintainer alone approves the `release` GitHub environment that
+publishes, and no amount of asking brings that button forward.
 
 Full step list and the changelog taxonomy: **[`RELEASING-AGENT.md`](RELEASING-AGENT.md)**.
 The human-facing contract: [`RELEASING.md`](RELEASING.md).

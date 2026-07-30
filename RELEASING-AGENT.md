@@ -22,13 +22,20 @@ tagging, and GitHub release.
 
 ## Roles (keep them separate)
 
-- **Agent**: prepares the bump + changelog for one crate, shows the diff, and —
-  only after the maintainer OKs the wording — creates and pushes the release
-  commit. Stops there unless asked to start the publish workflow; being asked
-  once covers the crates of that release, and covers nothing past the gate.
-- **Maintainer**: reviews the changelog wording before the push, and approves the
-  `release` GitHub environment after CI + preflight. Only that approval
-  publishes. The agent cannot and must not approve it.
+- **Agent**: prepares the bump + changelog for one crate and shows the diff.
+  **That is the one stop.** After the maintainer OKs the wording it runs the rest
+  without asking again: commit, push, wait for CI, start the publish workflow,
+  and then check the crate is on crates.io and the GitHub Release exists. Asking
+  again before the gate buys nothing — the gate is a button, and nobody but the
+  maintainer can press it, early or otherwise.
+- **Maintainer**: reviews the changelog wording before the push — that wording is
+  what ships, as the GitHub Release body — and presses approve on the `release`
+  GitHub environment when the pipeline reaches it. Only that approval publishes.
+  The agent cannot and must not approve it.
+  - That gate exists because the `release` environment carries a
+    required-reviewer rule in the repository settings, not because the workflow
+    names an environment. It also allows self-review, so it is a confirmation
+    rather than a second pair of eyes.
 
 ## Dependency order
 
@@ -191,6 +198,10 @@ section before the release commit is created.
 This pause is owed for each crate separately. A maintainer who delegated the
 commands still reviews each changelog, and silence is not an OK.
 
+It is also the **only** pause in the release. Everything after it is mechanical
+and reversible until the `release` environment gate, which no amount of asking
+can pass on the maintainer's behalf.
+
 ### 7. Commit and push after approval
 
 Commit exactly the release files that changed for release prep with the exact
@@ -207,6 +218,8 @@ earlier feature commit, but this release commit's `HEAD` must contain a
 non-empty `## [X.Y.Z]` section for the selected crate.
 
 ### 8. Start the publish workflow after CI passes
+
+Without asking — step 6 already covered it.
 
 ```sh
 gh workflow run publish.yml --ref main -f crate=<crate>
@@ -236,10 +249,17 @@ a *new* release commit:
 - the rewrite discards the working tree. Commit or copy aside anything
   uncommitted first — `git reset --hard` takes unrelated drafts with it.
 
-### 10. Stop
+### 10. Wait at the gate, then confirm the release happened
 
-Do not publish, tag, create releases, or approve the `release` environment unless
-the maintainer explicitly asks for that specific action.
+Do not publish, tag, create releases, or approve the `release` environment. The
+pipeline does the first three itself once the maintainer presses approve, and the
+approval is theirs alone.
+
+A green publish workflow is not the same as a release. Check the thing it was
+supposed to produce: the version on crates.io, and the GitHub Release for the tag
+with the changelog section as its body. Read that from the registry and the
+release list, never from the manifest — a version bumped and dated but published
+nowhere is a real state, and it looks identical in the repository.
 
 ## First release note
 

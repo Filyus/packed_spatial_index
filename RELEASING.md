@@ -167,6 +167,14 @@ After approval, the workflow authenticates to crates.io through Trusted
 Publishing, publishes the selected crate, creates the annotated release tag,
 extracts the selected changelog section, and creates the GitHub Release.
 
+This approval is the only place a person is needed after the changelog wording is
+settled. Everything between is mechanical, so there is nothing to confirm on the
+way here — and nothing anyone can do to reach this button sooner.
+
+When the workflow is green, confirm what it produced rather than assuming:
+`cargo search <crate>` or the crates.io page for the version, and
+`gh release view <tag>` for the release and its notes.
+
 ## First Release
 
 Trusted Publishing cannot publish a crate that does not exist yet. For a brand

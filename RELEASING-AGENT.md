@@ -20,6 +20,12 @@ changelog is grouped using the [taxonomy](#changelog-taxonomy) below. The publis
 pipeline (`.github/workflows/publish.yml`, run per crate) does its own preflight,
 tagging, and GitHub release.
 
+There is deliberately no workflow triggered by the release tag. A tag pushed with
+`GITHUB_TOKEN` raises no workflow events, so such a workflow would never run —
+one existed for two months and never did, while `publish.yml` created every
+release itself. Whatever a release has to produce goes in the workflow that
+creates the tag, or is dispatched explicitly from it.
+
 ## Roles (keep them separate)
 
 - **Agent**: prepares the bump + changelog for one crate and shows the diff.

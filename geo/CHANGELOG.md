@@ -4,6 +4,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.23.0...psi-geo-v0.24.0) - 2026-07-31
+
 ### API
 
 - Added the query-shape vocabulary an artifact frontend answers a search with:
@@ -53,6 +55,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   one, placing every entry at zero. The `DimMismatch` message now says that
   scanned envelopes decide dimensionality, since a bbox covering without z
   bounds is the usual reason a `Point Z` source scans as 2D.
+- Updated the public `packed_spatial_index` dependency to 0.26.0. That is where
+  `Serializer*::payload_prefix_len` and `StreamLimits::prefix_coalesce_gap_bytes`
+  live, so the `prefix_index` option above cannot be built against an older
+  core — this release requires it rather than merely preferring it.
 
 ### Validation
 

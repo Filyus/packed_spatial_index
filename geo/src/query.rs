@@ -224,6 +224,11 @@ fn coords_to_ring(coords: Vec<[f64; 2]>) -> LineString<f64> {
 
 /// 3D geospatial query.
 ///
+/// Unlike [`GeoQuery2D`], there is no polygon/exact-predicate variant here,
+/// and correspondingly no `filter_matches` on
+/// [`GeoArtifactIndex3D`](crate::GeoArtifactIndex3D) — box and frustum
+/// candidate queries are all this crate supports in 3D today.
+///
 /// # Example
 ///
 /// ```rust

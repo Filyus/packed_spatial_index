@@ -21,6 +21,7 @@ mod geojson;
 mod manifest;
 mod payload;
 mod query;
+mod response_shape;
 #[cfg(feature = "parquet")]
 mod scan;
 #[cfg(feature = "_source")]
@@ -56,7 +57,7 @@ pub use discovery::{
 pub use discovery::{
     DeclaredExtent, GeometryMetadataSource, GeometryProfile, GeometryTypeSet, RowBoundsSource,
 };
-pub use error::GeoError;
+pub use error::{GeoError, GeoErrorClass, classify_geo_error};
 #[cfg(feature = "parquet")]
 pub use feature_read::FeatureRows;
 #[cfg(feature = "flatgeobuf")]
@@ -74,6 +75,10 @@ pub use payload::{
     decode_feature_ref_payload, decode_feature_wkb_payload, feature_json_body,
 };
 pub use query::{GeoQuery2D, GeoQuery3D, NonPlanarExactPolicy, SpatialPredicate};
+pub use response_shape::{
+    IdentityMode, LevelError, PayloadMode, ResultLevel, needs_payload_bodies, public_feature_json,
+    resolve_identity, resolve_level, stores_feature_ids,
+};
 #[cfg(feature = "_source")]
 pub use scan_core::{
     DuplicateFeatureRows, FeatureReadOrder, FeatureReadRequest, FeatureRecord, GeometryReadMode,

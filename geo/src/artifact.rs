@@ -1696,6 +1696,11 @@ fn feature_json_geometry(
 }
 
 /// A 3D geospatial artifact index.
+///
+/// Unlike [`GeoArtifactIndex2D`], this type has no `filter_matches` /
+/// exact-predicate equivalent: [`GeoQuery3D`](crate::GeoQuery3D) has no
+/// polygon/exact variant to filter against, so there is nothing for one to
+/// narrow. This is an intentional scope boundary, not a missing feature.
 pub struct GeoArtifactIndex3D<R> {
     index: GeoStreamIndex3D<R>,
     manifest: GeoArtifactManifest,

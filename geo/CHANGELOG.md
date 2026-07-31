@@ -6,6 +6,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- Added the query-shape vocabulary an artifact frontend answers a search with:
+  `PayloadMode`, `IdentityMode`, `ResultLevel`, and the rules that resolve
+  them against an artifact — `resolve_identity`, `resolve_level` (with
+  `LevelError`), `needs_payload_bodies`, `stores_feature_ids`, and
+  `public_feature_json`. Added `GeoErrorClass` and `classify_geo_error`
+  alongside them, mapping a `GeoError` to the status and code a frontend
+  should report for it. The native server and the Worker demo each carried
+  their own copy of all of this, and the copies had already drifted: the
+  Worker's classifier never learned `UnsupportedGeodeticGeometry`, so that
+  error reported 500 where the server reports 422.
 - Re-exported `StreamError` from the core crate. `GeoError::Stream` wraps it,
   so a caller could not tell an exhausted read budget from a corrupt artifact
   without naming the type.
@@ -59,6 +69,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### Documentation
 
+- Documented that `GeoArtifactIndex3D` has no `filter_matches` and `GeoQuery3D`
+  no polygon variant by design: there is no exact 3D predicate for one to
+  narrow candidates with, so the asymmetry with 2D is a scope boundary rather
+  than a feature still missing.
 - Documented that the payload plan selects the envelope source (bbox covering
   versus decoded WKB) and therefore the index dimensions, including that
   `BuildRequest` always scans with `PayloadPlan::None` while

@@ -13,8 +13,9 @@ use js_sys::{Function, Promise, Uint8Array};
 use packed_spatial_index_geo::{
     AsyncRangeReader, Box2D, Box3D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoError, GeoMatch,
-    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, PayloadPlan, StreamError, StreamLimits,
-    open_geo_index_with_limits_async,
+    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, IdentityMode, PayloadMode, PayloadPlan,
+    ResultLevel, StreamLimits, classify_geo_error, needs_payload_bodies,
+    open_geo_index_with_limits_async, public_feature_json, resolve_identity, stores_feature_ids,
 };
 use serde_json::{Map, Value, json};
 use wasm_bindgen::prelude::*;
@@ -652,36 +653,12 @@ fn feature_ref_json(feature: FeatureRef) -> Value {
     Value::Object(out)
 }
 
-fn public_feature_json(mut feature: Value) -> Value {
-    if let Some(object) = feature.as_object_mut() {
-        object.remove("feature_ref");
-    }
-    feature
-}
-
 fn payload_kind(plan: &PayloadPlan) -> &'static str {
     match plan {
         PayloadPlan::None => "none",
         PayloadPlan::RowRef => "row_ref",
         PayloadPlan::RowWkb => "row_wkb",
         PayloadPlan::FeatureJson { .. } => "feature_json",
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PayloadMode {
-    None,
-    Summary,
-    Full,
-}
-
-impl PayloadMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Summary => "summary",
-            Self::Full => "full",
-        }
     }
 }
 
@@ -698,42 +675,6 @@ fn parse_payload_mode(value: &str) -> Result<PayloadMode, JsValue> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResultLevel {
-    Entry,
-    Feature,
-}
-
-impl ResultLevel {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Entry => "entry",
-            Self::Feature => "feature",
-        }
-    }
-}
-
-/// Whether a match should carry the source `featureId` from its payload body.
-///
-/// Split from `payload` because they answer different questions: `payload`
-/// picks how much of the stored value to return, `identity` picks how much of
-/// the source identity to recover. The id lives inside a `FeatureJson` body, so
-/// asking for it costs a body read even at `payload=summary`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IdentityMode {
-    Ref,
-    Full,
-}
-
-impl IdentityMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Ref => "ref",
-            Self::Full => "full",
-        }
-    }
-}
-
 fn parse_identity_mode(value: &str) -> Result<IdentityMode, JsValue> {
     match value {
         "ref" => Ok(IdentityMode::Ref),
@@ -744,50 +685,6 @@ fn parse_identity_mode(value: &str) -> Result<IdentityMode, JsValue> {
             "identity must be ref or full",
         )),
     }
-}
-
-/// Whether this collection can produce a source feature id at all.
-///
-/// Copied from the native server. The payload plan answers a different
-/// question -- `feature_json` says where an id would live, not whether one
-/// exists -- and only a GeoJSON source ever supplies one, so the manifest has
-/// to say. An artifact written before it recorded that says nothing, and the
-/// benefit of the doubt goes to the client.
-fn stores_feature_ids(manifest: &GeoArtifactManifest) -> bool {
-    matches!(manifest.payload_plan, PayloadPlan::FeatureJson { .. })
-        && manifest.stores_feature_ids.unwrap_or(true)
-}
-
-/// Pick the identity mode, which the collection and the rest of the request
-/// both have a say in. Same rule as the native server's `resolve_identity`.
-///
-/// `full` costs a page of body reads, so it must not be granted where it buys
-/// nothing and must not be withheld where it costs nothing: a collection
-/// storing no source id resolves to `ref` whatever was asked, and
-/// `payload=full` resolves to `full` because it reads the bodies regardless
-/// and returns the id inside the GeoJSON feature anyway.
-fn resolve_identity(
-    stores_feature_ids: bool,
-    payload: PayloadMode,
-    requested: IdentityMode,
-) -> IdentityMode {
-    if !stores_feature_ids {
-        IdentityMode::Ref
-    } else if payload == PayloadMode::Full {
-        IdentityMode::Full
-    } else {
-        requested
-    }
-}
-
-/// Whether this request has to read payload bodies.
-///
-/// `identity` here is the mode that survived [`resolve_identity`], which is
-/// `Full` only where an id can actually be recovered -- so this does not have
-/// to re-examine the payload plan to avoid buying a page of reads for a
-/// byte-identical answer.
-fn needs_payload_bodies(payload: PayloadMode, identity: IdentityMode) -> bool {
-    payload == PayloadMode::Full || identity == IdentityMode::Full
 }
 
 fn parse_level(value: &str) -> Result<Option<ResultLevel>, JsValue> {
@@ -803,35 +700,24 @@ fn parse_level(value: &str) -> Result<Option<ResultLevel>, JsValue> {
     }
 }
 
-/// Pick the result level, which the collection has a say in.
+/// Pick the result level, which the artifact has a say in.
 ///
-/// The default cannot be a constant: an artifact with no payload stores no
-/// feature references, so there is nothing to group entries into, and asking
-/// for feature level there is a request the collection cannot serve rather
-/// than one to quietly reinterpret. Same rule as the native server's
-/// `resolve_level`.
+/// The decision itself lives in [`packed_spatial_index_geo::resolve_level`],
+/// shared with the native server; this wrapper only turns the failure into
+/// the `JsValue` shape the Worker's HTTP layer speaks.
 fn resolve_level(
     requested: Option<ResultLevel>,
     plan: &PayloadPlan,
 ) -> Result<ResultLevel, JsValue> {
-    // The decision is kept free of `JsValue` so it can be unit-tested: building
-    // one outside a wasm target aborts the process.
-    level_for_plan(requested, plan).map_err(|message| worker_err(422, "unsupported_level", message))
-}
-
-fn level_for_plan(
-    requested: Option<ResultLevel>,
-    plan: &PayloadPlan,
-) -> Result<ResultLevel, &'static str> {
-    let has_feature_refs = !matches!(plan, PayloadPlan::None);
-    match requested {
-        None if has_feature_refs => Ok(ResultLevel::Feature),
-        None => Ok(ResultLevel::Entry),
-        Some(ResultLevel::Feature) if !has_feature_refs => {
-            Err("this collection stores no feature references; use level=entry")
-        }
-        Some(level) => Ok(level),
-    }
+    packed_spatial_index_geo::resolve_level(requested, plan).map_err(
+        |_: packed_spatial_index_geo::LevelError| {
+            worker_err(
+                422,
+                "unsupported_level",
+                "this collection stores no feature references; use level=entry",
+            )
+        },
+    )
 }
 
 fn bounded_usize(value: f64, default: usize, max: usize) -> usize {
@@ -925,159 +811,30 @@ fn worker_err(status: u16, code: &'static str, message: impl Into<String>) -> Js
     .into()
 }
 
-/// Classify a [`GeoError`], mirroring the intercepts the native server applies
-/// before its catch-all (`server/src/error.rs`).
+/// Classify a [`GeoError`], via the classifier shared with the native server
+/// (`packed_spatial_index_geo::classify_geo_error`).
 ///
-/// The default is a 500: a geo error that is not one of the cases below
-/// describes the artifact, not the request, so blaming the client would be
-/// wrong. The exceptions are the ones the client *can* act on — narrow the
-/// bbox, or ask for something the artifact supports.
+/// The default is a 500: a geo error that is not one of the classifier's
+/// named cases describes the artifact, not the request, so blaming the
+/// client would be wrong. The exceptions are the ones the client *can* act
+/// on — narrow the bbox, or ask for something the artifact supports.
 fn geo_err(e: GeoError) -> JsValue {
     let (status, code) = geo_error_class(&e);
     worker_err(status, code, e.to_string())
 }
 
 fn geo_error_class(e: &GeoError) -> (u16, &'static str) {
-    match e {
-        GeoError::Stream(StreamError::LimitExceeded) => (422, "query_too_large"),
-        GeoError::NonPlanarExactPredicate { .. } | GeoError::NonSphericalExactPredicate { .. } => {
-            (422, "unsupported_query")
-        }
-        GeoError::InvalidSphericalQuery(_) | GeoError::EmptyQueryPolygon => (400, "invalid_bbox"),
-        _ => (500, "artifact_error"),
-    }
+    let class = classify_geo_error(e);
+    (class.http_status(), class.code())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        FeatureRef, GeoArtifactManifest, GeoError, GeoMatch, GeoPayload, IdentityMode, PayloadMode,
-        PayloadPlan, ResultLevel, StreamError, bbox_arity_message, geo_error_class, level_for_plan,
-        match_record, needs_payload_bodies, object_identity, query_json, resolve_identity,
-        stores_feature_ids,
+        FeatureRef, GeoError, GeoMatch, GeoPayload, IdentityMode, PayloadMode, ResultLevel,
+        bbox_arity_message, geo_error_class, match_record, object_identity, query_json,
     };
-    use packed_spatial_index_geo::PropertyProjection;
-
-    fn feature_json_plan() -> PayloadPlan {
-        PayloadPlan::FeatureJson {
-            properties: PropertyProjection::AllNonGeometry,
-        }
-    }
-
-    #[test]
-    fn only_full_identity_reads_payload_bodies() {
-        assert!(needs_payload_bodies(PayloadMode::Full, IdentityMode::Ref));
-        assert!(needs_payload_bodies(
-            PayloadMode::Summary,
-            IdentityMode::Full
-        ));
-        assert!(!needs_payload_bodies(
-            PayloadMode::Summary,
-            IdentityMode::Ref
-        ));
-        assert!(!needs_payload_bodies(PayloadMode::None, IdentityMode::Ref));
-    }
-
-    /// A collection with no source id to give must not sell one: `full` there
-    /// would buy a page of body reads for a byte-identical answer.
-    #[test]
-    fn identity_resolves_down_where_no_id_is_stored() {
-        for payload in [PayloadMode::None, PayloadMode::Summary, PayloadMode::Full] {
-            for requested in [IdentityMode::Ref, IdentityMode::Full] {
-                assert_eq!(
-                    resolve_identity(false, payload, requested),
-                    IdentityMode::Ref,
-                    "{payload:?} {requested:?}"
-                );
-            }
-        }
-    }
-
-    /// `payload=full` reads the bodies anyway and returns the id inside the
-    /// GeoJSON feature, so withholding it from `featureRef` hides nothing.
-    #[test]
-    fn identity_resolves_up_where_the_bodies_are_read_anyway() {
-        assert_eq!(
-            resolve_identity(true, PayloadMode::Full, IdentityMode::Ref),
-            IdentityMode::Full
-        );
-        for payload in [PayloadMode::None, PayloadMode::Summary] {
-            assert_eq!(
-                resolve_identity(true, payload, IdentityMode::Ref),
-                IdentityMode::Ref,
-                "{payload:?}"
-            );
-            assert_eq!(
-                resolve_identity(true, payload, IdentityMode::Full),
-                IdentityMode::Full,
-                "{payload:?}"
-            );
-        }
-    }
-
-    /// The plan says where an id would live; the manifest flag says whether
-    /// one is there. An artifact predating the flag keeps the benefit of the
-    /// doubt, because its bodies may well carry ids.
-    #[test]
-    fn only_a_feature_json_artifact_that_kept_ids_stores_them() {
-        for (plan, expected) in [
-            (feature_json_plan(), [false, true, true]),
-            (PayloadPlan::RowWkb, [false, false, false]),
-            (PayloadPlan::RowRef, [false, false, false]),
-            (PayloadPlan::None, [false, false, false]),
-        ] {
-            for (flag, expected) in [Some(false), Some(true), None].into_iter().zip(expected) {
-                let manifest = manifest_with(plan.clone(), flag);
-                assert_eq!(stores_feature_ids(&manifest), expected, "{plan:?} {flag:?}");
-            }
-        }
-    }
-
-    fn manifest_with(
-        payload_plan: PayloadPlan,
-        stores_feature_ids: Option<bool>,
-    ) -> GeoArtifactManifest {
-        GeoArtifactManifest {
-            schema_version: 2,
-            source_format: "geojson".to_string(),
-            source_fingerprint: String::new(),
-            selected_column: "geometry".to_string(),
-            crs: packed_spatial_index_geo::CrsInfo::ImpliedDefault {
-                value: "OGC:CRS84".to_string(),
-            },
-            edges: packed_spatial_index_geo::EdgeModel::Planar,
-            encoding: packed_spatial_index_geo::GeometryEncoding::GeoJson,
-            dims: packed_spatial_index_geo::CoordinateDims::Xy,
-            storage_precision: packed_spatial_index_geo::StoragePrecision::F64,
-            null_policy: packed_spatial_index_geo::NullPolicy::Skip,
-            antimeridian_policy: packed_spatial_index_geo::AntimeridianPolicy::Reject,
-            payload_plan,
-            feature_count: 0,
-            index_entry_count: 0,
-            entries_may_duplicate_rows: false,
-            stores_feature_ids,
-        }
-    }
-
-    #[test]
-    fn the_collection_has_a_say_in_the_result_level() {
-        let json = feature_json_plan();
-        // Unspecified: feature level where refs exist, entry level where they
-        // cannot. A constant default cannot express that.
-        assert_eq!(level_for_plan(None, &json).unwrap(), ResultLevel::Feature);
-        assert_eq!(
-            level_for_plan(None, &PayloadPlan::None).unwrap(),
-            ResultLevel::Entry
-        );
-        // Explicit entry level is always available.
-        assert_eq!(
-            level_for_plan(Some(ResultLevel::Entry), &PayloadPlan::None).unwrap(),
-            ResultLevel::Entry
-        );
-        // Explicit feature level on a payload-less artifact is a request the
-        // collection cannot serve, not one to quietly reinterpret.
-        assert!(level_for_plan(Some(ResultLevel::Feature), &PayloadPlan::None).is_err());
-    }
+    use packed_spatial_index_geo::StreamError;
 
     #[test]
     fn identity_ref_withholds_the_source_id() {
@@ -1122,6 +879,15 @@ mod tests {
         assert_eq!(
             geo_error_class(&GeoError::InvalidSphericalQuery("bad".into())),
             (400, "invalid_bbox")
+        );
+        // This artifact never exposes predicate=intersects, so this case
+        // could not previously be exercised through this Worker's own
+        // classifier -- it silently fell through to the catch-all 500 below
+        // instead of the native server's 422 until it started delegating to
+        // the shared classifier.
+        assert_eq!(
+            geo_error_class(&GeoError::UnsupportedGeodeticGeometry("multipoint".into())),
+            (422, "unsupported_predicate")
         );
         // Everything else describes the artifact rather than the request, so
         // blaming the caller would be wrong.

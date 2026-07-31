@@ -169,3 +169,124 @@ pub enum GeoError {
         row_in_group: u32,
     },
 }
+
+/// Classification of a [`GeoError`] returned by a query, independent of any
+/// HTTP framework: whether it describes a problem in the query the caller can
+/// act on (and which one), or an artifact/server-side fault.
+///
+/// Shared by every artifact query frontend so a case handled by one is not
+/// silently missing from another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GeoErrorClass {
+    /// The query exceeded the caller's configured per-query cost limits.
+    QueryTooLarge,
+    /// An exact predicate was requested against a geometry model that cannot
+    /// support one (non-planar/non-spherical exact predicate).
+    UnsupportedQuery,
+    /// The query's bbox or polygon input is invalid.
+    InvalidBbox,
+    /// The requested predicate cannot be evaluated for this artifact's
+    /// geometry (spherical exact filtering against unsupported geometry).
+    UnsupportedPredicate,
+    /// Everything else: an artifact- or server-side fault, not a property of
+    /// the request.
+    ArtifactError,
+}
+
+impl GeoErrorClass {
+    /// Classify a [`GeoError`] returned by a query.
+    pub fn classify(err: &GeoError) -> Self {
+        use packed_spatial_index::StreamError;
+        match err {
+            GeoError::Stream(StreamError::LimitExceeded) => Self::QueryTooLarge,
+            GeoError::NonPlanarExactPredicate { .. }
+            | GeoError::NonSphericalExactPredicate { .. } => Self::UnsupportedQuery,
+            GeoError::InvalidSphericalQuery(_) | GeoError::EmptyQueryPolygon => Self::InvalidBbox,
+            GeoError::UnsupportedGeodeticGeometry(_) => Self::UnsupportedPredicate,
+            _ => Self::ArtifactError,
+        }
+    }
+
+    /// Suggested HTTP status code for this class.
+    pub fn http_status(self) -> u16 {
+        match self {
+            Self::QueryTooLarge | Self::UnsupportedQuery | Self::UnsupportedPredicate => 422,
+            Self::InvalidBbox => 400,
+            Self::ArtifactError => 500,
+        }
+    }
+
+    /// Stable machine-readable error code for this class.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::QueryTooLarge => "query_too_large",
+            Self::UnsupportedQuery => "unsupported_query",
+            Self::InvalidBbox => "invalid_bbox",
+            Self::UnsupportedPredicate => "unsupported_predicate",
+            Self::ArtifactError => "artifact_error",
+        }
+    }
+}
+
+/// Shorthand for [`GeoErrorClass::classify`].
+pub fn classify_geo_error(err: &GeoError) -> GeoErrorClass {
+    GeoErrorClass::classify(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_maps_every_known_case() {
+        use packed_spatial_index::StreamError;
+
+        assert_eq!(
+            GeoErrorClass::classify(&GeoError::Stream(StreamError::LimitExceeded)),
+            GeoErrorClass::QueryTooLarge
+        );
+        assert_eq!(
+            GeoErrorClass::classify(&GeoError::NonPlanarExactPredicate {
+                column: "geometry".to_string(),
+                edges: crate::EdgeModel::Planar,
+            }),
+            GeoErrorClass::UnsupportedQuery
+        );
+        assert_eq!(
+            GeoErrorClass::classify(&GeoError::InvalidSphericalQuery("bad".into())),
+            GeoErrorClass::InvalidBbox
+        );
+        assert_eq!(
+            GeoErrorClass::classify(&GeoError::EmptyQueryPolygon),
+            GeoErrorClass::InvalidBbox
+        );
+        // The regression case: the Worker demo's own copy of this
+        // classification used to fall through to a 500 here.
+        assert_eq!(
+            GeoErrorClass::classify(&GeoError::UnsupportedGeodeticGeometry("multipoint".into())),
+            GeoErrorClass::UnsupportedPredicate
+        );
+        assert_eq!(
+            GeoErrorClass::classify(&GeoError::MissingGeoManifest),
+            GeoErrorClass::ArtifactError
+        );
+    }
+
+    #[test]
+    fn class_status_and_code_are_stable() {
+        assert_eq!(GeoErrorClass::QueryTooLarge.http_status(), 422);
+        assert_eq!(GeoErrorClass::QueryTooLarge.code(), "query_too_large");
+        assert_eq!(GeoErrorClass::UnsupportedQuery.http_status(), 422);
+        assert_eq!(GeoErrorClass::UnsupportedQuery.code(), "unsupported_query");
+        assert_eq!(GeoErrorClass::InvalidBbox.http_status(), 400);
+        assert_eq!(GeoErrorClass::InvalidBbox.code(), "invalid_bbox");
+        assert_eq!(GeoErrorClass::UnsupportedPredicate.http_status(), 422);
+        assert_eq!(
+            GeoErrorClass::UnsupportedPredicate.code(),
+            "unsupported_predicate"
+        );
+        assert_eq!(GeoErrorClass::ArtifactError.http_status(), 500);
+        assert_eq!(GeoErrorClass::ArtifactError.code(), "artifact_error");
+    }
+}

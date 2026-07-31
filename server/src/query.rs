@@ -1,8 +1,10 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use packed_spatial_index_geo::{
-    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex,
-    GeoArtifactManifest, GeoMatch, GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery2D,
-    GeometryEncoding, NonPlanarExactPolicy, PayloadPlan, SpatialPredicate, StoragePrecision,
+    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex, GeoMatch,
+    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery2D, GeometryEncoding, IdentityMode,
+    LevelError, NonPlanarExactPolicy, PayloadMode, PayloadPlan, ResultLevel, SpatialPredicate,
+    StoragePrecision, needs_payload_bodies, public_feature_json, resolve_identity,
+    stores_feature_ids,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,39 +45,6 @@ pub struct SearchParams {
     pub identity: Option<String>,
 }
 
-/// Payload materialization mode for `/search`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PayloadMode {
-    /// Omit the payload object from each match.
-    None,
-    /// Return payload kind and cheap metadata only.
-    #[default]
-    Summary,
-    /// Return full payload values where the artifact stores them.
-    Full,
-}
-
-/// Source-identity detail returned for each match.
-///
-/// Index entries carry a fixed-width feature reference, but a source
-/// `featureId` lives inside the payload body, so returning one costs a body
-/// read. This mode makes that cost explicit instead of letting it depend on
-/// which internal path answered the query.
-///
-/// It is resolved against the collection and the rest of the request rather
-/// than taken literally — see [`resolve_identity`] — so responses echo the
-/// mode that applied.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IdentityMode {
-    /// Return the fixed-width feature reference only; omit `featureId`.
-    #[default]
-    Ref,
-    /// Read payload bodies for the returned page so `featureId` is included.
-    Full,
-}
-
 /// Spatial predicate applied by a search.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,16 +54,6 @@ pub enum QueryPredicate {
     Bbox,
     /// Exact geometry intersection refined from artifact payloads.
     Intersects,
-}
-
-/// Result granularity for `/search`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResultLevel {
-    /// One record per source feature; split index entries are deduplicated.
-    Feature,
-    /// One record per index entry, including split parts.
-    Entry,
 }
 
 /// Artifact payload kind in server wire vocabulary.
@@ -530,64 +489,27 @@ impl SearchOptions {
     }
 }
 
+/// Resolve `level` for a collection, naming the collection in the error when
+/// it asked for a level the artifact cannot serve.
+///
+/// The decision itself lives in [`packed_spatial_index_geo::resolve_level`],
+/// shared with every other artifact query frontend; this wrapper only adds
+/// the collection id to the message.
 fn resolve_level(
     collection: &Collection,
     requested: Option<ResultLevel>,
 ) -> Result<ResultLevel, ServerError> {
-    let has_feature_refs = !matches!(collection.manifest().payload_plan, PayloadPlan::None);
-    match requested {
-        None => Ok(if has_feature_refs {
-            ResultLevel::Feature
-        } else {
-            ResultLevel::Entry
-        }),
-        Some(ResultLevel::Feature) if !has_feature_refs => {
-            Err(ServerError::UnsupportedLevel(format!(
+    // `LevelError` is `#[non_exhaustive]`, so it cannot be destructured
+    // irrefutably here even though it has one variant today; only the
+    // collection id in the message is server-specific.
+    packed_spatial_index_geo::resolve_level(requested, &collection.manifest().payload_plan).map_err(
+        |_: LevelError| {
+            ServerError::UnsupportedLevel(format!(
                 "collection `{}` stores no feature references; use level=entry",
                 collection.id()
-            )))
-        }
-        Some(level) => Ok(level),
-    }
-}
-
-/// Whether this collection can produce a source feature id at all.
-///
-/// The payload plan answers a different question — `FeatureJson` says where an
-/// id would live, not whether one exists — and only a GeoJSON source ever
-/// supplies one, so the manifest has to say. An artifact written before it
-/// recorded that says nothing, and the benefit of the doubt goes to the
-/// client: assume ids are there until an artifact states otherwise.
-fn stores_feature_ids(manifest: &GeoArtifactManifest) -> bool {
-    matches!(manifest.payload_plan, PayloadPlan::FeatureJson { .. })
-        && manifest.stores_feature_ids.unwrap_or(true)
-}
-
-/// Pick the identity mode, which the collection and the rest of the request
-/// both have a say in.
-///
-/// `full` costs a page of body reads, so it must not be granted where it buys
-/// nothing and must not be withheld where it costs nothing:
-///
-/// - a collection storing no source id resolves to `ref` whatever was asked.
-///   Refusing instead would follow the `level` rule, but `level` changes what
-///   a record *is*, while `identity` only adds one optional field — and the
-///   echoed mode already tells the client which way it went.
-/// - `payload=full` reads the bodies regardless, and the id comes back in the
-///   returned GeoJSON `id` member anyway. Withholding it from `featureRef`
-///   there hides nothing and costs the client a second parameter.
-fn resolve_identity(
-    stores_feature_ids: bool,
-    payload: PayloadMode,
-    requested: IdentityMode,
-) -> IdentityMode {
-    if !stores_feature_ids {
-        IdentityMode::Ref
-    } else if payload == PayloadMode::Full {
-        IdentityMode::Full
-    } else {
-        requested
-    }
+            ))
+        },
+    )
 }
 
 /// Matched-and-paged search result: the pre-pagination match count plus the
@@ -612,14 +534,8 @@ struct RecordShape {
 
 impl RecordShape {
     /// Whether the requested shape needs payload bodies for the returned page.
-    ///
-    /// A body read serves two different needs: the payload value itself, and
-    /// the source `featureId`. `identity` here is the mode that survived
-    /// [`resolve_identity`], which is `Full` only where an id can actually be
-    /// recovered — so this does not have to re-examine the payload plan to
-    /// avoid buying a page of I/O for a byte-identical answer.
     fn needs_payload_bodies(&self) -> bool {
-        self.payload == PayloadMode::Full || self.identity == IdentityMode::Full
+        needs_payload_bodies(self.payload, self.identity)
     }
 
     /// Whether the artifact's paged header search can answer this shape.
@@ -939,13 +855,6 @@ fn match_record(
     }
 }
 
-fn public_feature_json(mut feature: serde_json::Value) -> serde_json::Value {
-    if let Some(object) = feature.as_object_mut() {
-        object.remove("feature_ref");
-    }
-    feature
-}
-
 fn match_payload_none(payload_mode: PayloadMode) -> Option<MatchPayload> {
     (payload_mode != PayloadMode::None).then_some(MatchPayload::None)
 }
@@ -1093,117 +1002,6 @@ mod tests {
             IdentityMode::Full
         );
         assert!(parse_identity_mode(Some("id")).is_err());
-    }
-
-    #[test]
-    fn only_full_identity_reads_payload_bodies() {
-        let summary = RecordShape {
-            payload: PayloadMode::Summary,
-            level: ResultLevel::Feature,
-            identity: IdentityMode::Ref,
-        };
-        assert!(!summary.needs_payload_bodies());
-        assert!(
-            RecordShape {
-                identity: IdentityMode::Full,
-                ..summary
-            }
-            .needs_payload_bodies()
-        );
-        assert!(
-            RecordShape {
-                payload: PayloadMode::Full,
-                ..summary
-            }
-            .needs_payload_bodies()
-        );
-    }
-
-    /// A collection with no source id to give must not sell one: `full` there
-    /// would buy a page of body reads for a byte-identical answer.
-    #[test]
-    fn identity_resolves_down_where_no_id_is_stored() {
-        for payload in [PayloadMode::None, PayloadMode::Summary, PayloadMode::Full] {
-            for requested in [IdentityMode::Ref, IdentityMode::Full] {
-                assert_eq!(
-                    resolve_identity(false, payload, requested),
-                    IdentityMode::Ref,
-                    "{payload:?} {requested:?}"
-                );
-            }
-        }
-    }
-
-    /// `payload=full` reads the bodies anyway and returns the id inside the
-    /// GeoJSON feature, so withholding it from `featureRef` hides nothing.
-    #[test]
-    fn identity_resolves_up_where_the_bodies_are_read_anyway() {
-        assert_eq!(
-            resolve_identity(true, PayloadMode::Full, IdentityMode::Ref),
-            IdentityMode::Full
-        );
-        for payload in [PayloadMode::None, PayloadMode::Summary] {
-            assert_eq!(
-                resolve_identity(true, payload, IdentityMode::Ref),
-                IdentityMode::Ref,
-                "{payload:?}"
-            );
-            assert_eq!(
-                resolve_identity(true, payload, IdentityMode::Full),
-                IdentityMode::Full,
-                "{payload:?}"
-            );
-        }
-    }
-
-    /// The plan says where an id would live; the manifest flag says whether
-    /// one is there. An artifact that predates the flag keeps the benefit of
-    /// the doubt.
-    #[test]
-    fn only_a_feature_json_artifact_that_kept_ids_stores_them() {
-        let plans = [
-            (
-                PayloadPlan::FeatureJson {
-                    properties: packed_spatial_index_geo::PropertyProjection::AllNonGeometry,
-                },
-                [false, true, true],
-            ),
-            (PayloadPlan::RowWkb, [false, false, false]),
-            (PayloadPlan::RowRef, [false, false, false]),
-            (PayloadPlan::None, [false, false, false]),
-        ];
-        for (plan, expected) in plans {
-            for (flag, expected) in [Some(false), Some(true), None].into_iter().zip(expected) {
-                let manifest = manifest_with(plan.clone(), flag);
-                assert_eq!(stores_feature_ids(&manifest), expected, "{plan:?} {flag:?}");
-            }
-        }
-    }
-
-    fn manifest_with(
-        payload_plan: PayloadPlan,
-        stores_feature_ids: Option<bool>,
-    ) -> GeoArtifactManifest {
-        GeoArtifactManifest {
-            schema_version: 2,
-            source_format: "geojson".to_string(),
-            source_fingerprint: String::new(),
-            selected_column: "geometry".to_string(),
-            crs: CrsInfo::ImpliedDefault {
-                value: "OGC:CRS84".to_string(),
-            },
-            edges: EdgeModel::Planar,
-            encoding: GeometryEncoding::GeoJson,
-            dims: CoordinateDims::Xy,
-            storage_precision: StoragePrecision::F64,
-            null_policy: packed_spatial_index_geo::NullPolicy::Skip,
-            antimeridian_policy: packed_spatial_index_geo::AntimeridianPolicy::Reject,
-            payload_plan,
-            feature_count: 0,
-            index_entry_count: 0,
-            entries_may_duplicate_rows: false,
-            stores_feature_ids,
-        }
     }
 
     #[test]

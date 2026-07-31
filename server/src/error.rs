@@ -100,23 +100,20 @@ impl ServerError {
     /// column with `predicate=intersects`, or a payload the artifact cannot
     /// decode, is a property of the request, not a server fault.
     pub(crate) fn from_geo(err: packed_spatial_index_geo::GeoError) -> Self {
-        use packed_spatial_index::StreamError;
-        use packed_spatial_index_geo::GeoError as G;
-        match err {
+        use packed_spatial_index_geo::GeoErrorClass as Class;
+        match packed_spatial_index_geo::classify_geo_error(&err) {
             // The artifact is fine and the server is fine; the query asked for
             // more work than the catalog allows.
-            G::Stream(StreamError::LimitExceeded) => Self::QueryTooLarge(
+            Class::QueryTooLarge => Self::QueryTooLarge(
                 "the query exceeded this server's per-query cost limits; narrow the bbox"
                     .to_string(),
             ),
-            G::NonPlanarExactPredicate { .. } | G::NonSphericalExactPredicate { .. } => {
-                Self::UnsupportedQuery(err.to_string())
-            }
-            G::InvalidSphericalQuery(_) | G::EmptyQueryPolygon => {
-                Self::InvalidBbox(err.to_string())
-            }
-            G::UnsupportedGeodeticGeometry(_) => Self::UnsupportedPredicate(err.to_string()),
-            other => Self::Geo(other),
+            Class::UnsupportedQuery => Self::UnsupportedQuery(err.to_string()),
+            Class::InvalidBbox => Self::InvalidBbox(err.to_string()),
+            Class::UnsupportedPredicate => Self::UnsupportedPredicate(err.to_string()),
+            // Covers `ArtifactError` and any class added later behind
+            // `GeoErrorClass`'s `#[non_exhaustive]`.
+            _ => Self::Geo(err),
         }
     }
 

@@ -88,9 +88,10 @@ on the same bytes that produced it.
 ### 4. Per-query cost limits
 
 Even a perfectly well-formed index can be expensive to serve: a broad query can
-read a lot and return a lot. `StreamLimits { max_reads, max_read_bytes,
-max_items }` (set via `open_with_limits`) bounds each query; exceeding any limit
-aborts it with `StreamError::LimitExceeded` rather than running unbounded. The
+read a lot and return a lot. `StreamLimits` — built from `Default` and assigned
+field by field, then passed to `open_with_limits` — bounds each query through
+`max_reads`, `max_read_bytes`, and `max_items`; exceeding any limit aborts it
+with `StreamError::LimitExceeded` rather than running unbounded. The
 limits are caller-supplied — the library provides the knob, the caller (which
 knows its environment, e.g. a Worker's subrequest and memory budgets) picks the
 values. Because read coalescing keeps the *read count* low even for wide queries,

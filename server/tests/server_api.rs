@@ -989,12 +989,30 @@ async fn payloadless_artifact_falls_back_to_entry_level() {
     assert_eq!(json["matches"][0]["payload"]["kind"], "none");
 
     let (status, json) = get_json(
-        app,
+        app.clone(),
         "/collections/places/search?bbox=-10,0,0,2&level=feature",
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json["error"]["code"], "unsupported_level");
+
+    // An exact predicate is refused for the reason that actually applies:
+    // there is no stored geometry to refine against, which is a different
+    // failure from an artifact whose payload simply cannot answer one.
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&predicate=intersects",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_predicate");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no geometry payload"),
+        "{json}"
+    );
 }
 
 #[tokio::test]

@@ -1,10 +1,10 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use packed_spatial_index_geo::{
-    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex, GeoMatch,
-    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery2D, GeometryEncoding, IdentityMode,
-    LevelError, NonPlanarExactPolicy, PayloadMode, PayloadPlan, ResultLevel, SpatialPredicate,
-    StoragePrecision, needs_payload_bodies, public_feature_json, resolve_identity,
-    stores_feature_ids,
+    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex,
+    GeoArtifactIndex2D, GeoArtifactIndex3D, GeoError, GeoMatch, GeoMatchHeader, GeoMatchHeaderPage,
+    GeoPayload, GeoQuery2D, GeometryEncoding, IdentityMode, LevelError, NonPlanarExactPolicy,
+    PayloadMode, PayloadPlan, RangeReader, ResultLevel, SpatialPredicate, StoragePrecision,
+    needs_payload_bodies, public_feature_json, resolve_identity, stores_feature_ids,
 };
 use serde::{Deserialize, Serialize};
 
@@ -550,6 +550,69 @@ impl RecordShape {
     }
 }
 
+/// The synchronous artifact methods a bbox search needs, in a shape that is
+/// the same for both dimensions.
+///
+/// The two search bodies differ only in the region type they search, so they
+/// are written once against this trait rather than duplicated per dimension —
+/// the shape the Worker demo's `AsyncGeoIndex` already takes for the async
+/// path. Exact filtering deliberately stays off it: only 2D has a query
+/// vocabulary to refine candidates against, so `GeoArtifactIndex2D` keeps that
+/// path to itself instead of every implementor carrying a method one of them
+/// cannot answer.
+trait SyncGeoIndex {
+    /// Region type this dimension searches.
+    type Query: Copy;
+
+    fn search_entry_ids(&self, query: Self::Query) -> Result<Vec<usize>, GeoError>;
+
+    fn search_match_headers(&self, query: Self::Query) -> Result<Vec<GeoMatchHeader>, GeoError>;
+
+    fn search_match_headers_page(
+        &self,
+        query: Self::Query,
+        offset: usize,
+        limit: usize,
+    ) -> Result<GeoMatchHeaderPage, GeoError>;
+
+    fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError>;
+}
+
+macro_rules! impl_sync_geo_index {
+    ($index:ident, $query:ty) => {
+        impl<R: RangeReader> SyncGeoIndex for $index<R> {
+            type Query = $query;
+
+            fn search_entry_ids(&self, query: Self::Query) -> Result<Vec<usize>, GeoError> {
+                <$index<R>>::search_entry_ids(self, query)
+            }
+
+            fn search_match_headers(
+                &self,
+                query: Self::Query,
+            ) -> Result<Vec<GeoMatchHeader>, GeoError> {
+                <$index<R>>::search_match_headers(self, query)
+            }
+
+            fn search_match_headers_page(
+                &self,
+                query: Self::Query,
+                offset: usize,
+                limit: usize,
+            ) -> Result<GeoMatchHeaderPage, GeoError> {
+                <$index<R>>::search_match_headers_page(self, query, offset, limit)
+            }
+
+            fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError> {
+                <$index<R>>::fetch_matches(self, headers)
+            }
+        }
+    };
+}
+
+impl_sync_geo_index!(GeoArtifactIndex2D, Box2D);
+impl_sync_geo_index!(GeoArtifactIndex3D, Box3D);
+
 fn search_records(
     collection: &Collection,
     bbox: &[f64],
@@ -559,8 +622,7 @@ fn search_records(
     limit: usize,
 ) -> Result<SearchOutcome, ServerError> {
     let exact = predicate == QueryPredicate::Intersects;
-    let index = collection.open_local_index()?;
-    match index {
+    match collection.open_local_index()? {
         GeoArtifactIndex::D2(index) => {
             if bbox.len() != 4 {
                 return Err(ServerError::InvalidBbox(format!(
@@ -569,66 +631,10 @@ fn search_records(
                 )));
             }
             let query = Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3]);
-            let payload_plan = &collection.manifest().payload_plan;
-            if matches!(payload_plan, PayloadPlan::None) {
-                if exact {
-                    return Err(ServerError::UnsupportedPredicate(format!(
-                        "collection `{}` cannot apply predicate=intersects because its artifact has no geometry payload",
-                        collection.id()
-                    )));
-                }
-                return Ok(id_outcome(
-                    index
-                        .search_entry_ids(query)
-                        .map_err(ServerError::from_geo)?,
-                    shape,
-                    offset,
-                    limit,
-                ));
-            }
-            if exact && !collection.supports_intersects_predicate() {
-                return Err(ServerError::UnsupportedPredicate(format!(
-                    "collection `{}` cannot apply predicate=intersects from its artifact payload",
-                    collection.id()
-                )));
-            }
-            // Header path: feature identity lives in the fixed payload
-            // prefix, so a bbox search sorts, dedupes, and pages without
-            // reading payload bodies — bodies are fetched for the page only.
-            // predicate=intersects needs every match's geometry up front.
-            if !exact
-                && matches!(
-                    payload_plan,
-                    PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
-                )
-            {
-                if shape.can_page_entries(collection) {
-                    let page = index
-                        .search_match_headers_page(query, offset, limit)
-                        .map_err(ServerError::from_geo)?;
-                    return page_outcome(page, shape, payload_plan, |page| {
-                        index.fetch_matches(page)
-                    });
-                }
-                let headers = index
-                    .search_match_headers(query)
-                    .map_err(ServerError::from_geo)?;
-                return header_outcome(headers, shape, offset, limit, payload_plan, |page| {
-                    index.fetch_matches(page)
-                });
-            }
-            let mut matches = index.search_matches(query).map_err(ServerError::from_geo)?;
             if exact {
-                matches = index
-                    .filter_matches(
-                        matches,
-                        GeoQuery2D::box2d(query),
-                        SpatialPredicate::Intersects,
-                        NonPlanarExactPolicy::Reject,
-                    )
-                    .map_err(ServerError::from_geo)?;
+                return exact_records(&index, query, collection, shape, offset, limit);
             }
-            Ok(match_outcome(matches, shape, offset, limit))
+            bbox_records(&index, query, collection, shape, offset, limit)
         }
         GeoArtifactIndex::D3(index) => {
             if bbox.len() != 6 {
@@ -637,6 +643,9 @@ fn search_records(
                     collection.id()
                 )));
             }
+            // The only thing 3D answers differently: `GeoQuery3D` has no
+            // polygon variant, so there is no exact phase to refine candidates
+            // with. Everything below this line is shared with 2D.
             if exact {
                 return Err(ServerError::UnsupportedPredicate(format!(
                     "collection `{}` is 3D; predicate=intersects is only supported for 2D artifacts in this server",
@@ -644,40 +653,85 @@ fn search_records(
                 )));
             }
             let query = Box3D::new(bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5]);
-            let payload_plan = &collection.manifest().payload_plan;
-            if matches!(payload_plan, PayloadPlan::None) {
-                return Ok(id_outcome(
-                    index
-                        .search_entry_ids(query)
-                        .map_err(ServerError::from_geo)?,
-                    shape,
-                    offset,
-                    limit,
-                ));
-            }
-            if matches!(
-                payload_plan,
-                PayloadPlan::RowRef | PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
-            ) {
-                if shape.can_page_entries(collection) {
-                    let page = index
-                        .search_match_headers_page(query, offset, limit)
-                        .map_err(ServerError::from_geo)?;
-                    return page_outcome(page, shape, payload_plan, |page| {
-                        index.fetch_matches(page)
-                    });
-                }
-                let headers = index
-                    .search_match_headers(query)
-                    .map_err(ServerError::from_geo)?;
-                return header_outcome(headers, shape, offset, limit, payload_plan, |page| {
-                    index.fetch_matches(page)
-                });
-            }
-            let matches = index.search_matches(query).map_err(ServerError::from_geo)?;
-            Ok(match_outcome(matches, shape, offset, limit))
+            bbox_records(&index, query, collection, shape, offset, limit)
         }
     }
+}
+
+/// Answer a bbox search — the path both dimensions take.
+///
+/// Feature identity lives in the fixed payload prefix, so this sorts, dedupes,
+/// and pages without reading payload bodies; bodies are fetched for the
+/// returned page only, and only when the requested shape needs them.
+fn bbox_records<I: SyncGeoIndex>(
+    index: &I,
+    query: I::Query,
+    collection: &Collection,
+    shape: RecordShape,
+    offset: usize,
+    limit: usize,
+) -> Result<SearchOutcome, ServerError> {
+    let payload_plan = &collection.manifest().payload_plan;
+    // No payload section means no feature refs to sort or group by, so entry
+    // ids are the whole answer.
+    if matches!(payload_plan, PayloadPlan::None) {
+        return Ok(id_outcome(
+            index
+                .search_entry_ids(query)
+                .map_err(ServerError::from_geo)?,
+            shape,
+            offset,
+            limit,
+        ));
+    }
+    if shape.can_page_entries(collection) {
+        let page = index
+            .search_match_headers_page(query, offset, limit)
+            .map_err(ServerError::from_geo)?;
+        return page_outcome(page, shape, payload_plan, |page| index.fetch_matches(page));
+    }
+    let headers = index
+        .search_match_headers(query)
+        .map_err(ServerError::from_geo)?;
+    header_outcome(headers, shape, offset, limit, payload_plan, |page| {
+        index.fetch_matches(page)
+    })
+}
+
+/// Answer `predicate=intersects`, which only 2D can serve.
+///
+/// The exact phase needs every match's geometry up front, so this materializes
+/// the whole match set instead of paging headers the way [`bbox_records`] can.
+fn exact_records<R: RangeReader>(
+    index: &GeoArtifactIndex2D<R>,
+    query: Box2D,
+    collection: &Collection,
+    shape: RecordShape,
+    offset: usize,
+    limit: usize,
+) -> Result<SearchOutcome, ServerError> {
+    if matches!(collection.manifest().payload_plan, PayloadPlan::None) {
+        return Err(ServerError::UnsupportedPredicate(format!(
+            "collection `{}` cannot apply predicate=intersects because its artifact has no geometry payload",
+            collection.id()
+        )));
+    }
+    if !collection.supports_intersects_predicate() {
+        return Err(ServerError::UnsupportedPredicate(format!(
+            "collection `{}` cannot apply predicate=intersects from its artifact payload",
+            collection.id()
+        )));
+    }
+    let matches = index.search_matches(query).map_err(ServerError::from_geo)?;
+    let matches = index
+        .filter_matches(
+            matches,
+            GeoQuery2D::box2d(query),
+            SpatialPredicate::Intersects,
+            NonPlanarExactPolicy::Reject,
+        )
+        .map_err(ServerError::from_geo)?;
+    Ok(match_outcome(matches, shape, offset, limit))
 }
 
 /// Page an id-only (payload-less) result set.

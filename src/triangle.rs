@@ -531,7 +531,7 @@ fn closest_f32_simd(
             | (u + v).simd_gt(one)
             | t.simd_lt(zero)
             | t.simd_gt(maxv);
-        let t = miss.blend(inf, t);
+        let t = miss.select(inf, t);
 
         let base = chunk_i * 8;
         for (l, &tl) in t.to_array().iter().enumerate() {

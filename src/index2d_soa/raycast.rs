@@ -83,14 +83,14 @@ impl SimdIndex2D {
         let pos_inf = f64x4::splat(f64::INFINITY);
         let neg_inf = f64x4::splat(f64::NEG_INFINITY);
         // See the 3D `raycast_closest_wide`: a zero-direction axis is handled with
-        // `blend` (inclusive inside-test) to stay NaN-safe at a box face.
+        // `select` (inclusive inside-test) to stay NaN-safe at a box face.
         let (zx, zy) = (ray.dir_x == 0.0, ray.dir_y == 0.0);
         let axis = |mn: f64x4, mx: f64x4, o: f64x4, inv: f64x4, degenerate: bool| {
             if degenerate {
                 let inside = mn.simd_le(o) & o.simd_le(mx);
                 (
-                    inside.blend(neg_inf, pos_inf),
-                    inside.blend(pos_inf, neg_inf),
+                    inside.select(neg_inf, pos_inf),
+                    inside.select(pos_inf, neg_inf),
                 )
             } else {
                 let t1 = (mn - o) * inv;
@@ -409,7 +409,7 @@ impl SimdIndex2D {
     /// Buffer-explicit raycast (mirrors `search_into_stack`). The per-node slab
     /// test is vectorized: AVX-512 (eight children at a time) for non-degenerate
     /// rays where available, otherwise `wide::f64x4`. Axis-parallel rays always
-    /// take the `wide` path, whose `blend` kernel is NaN-safe at box faces.
+    /// take the `wide` path, whose `select` kernel is NaN-safe at box faces.
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
         #[cfg(target_arch = "x86_64")]
@@ -473,15 +473,15 @@ impl SimdIndex2D {
         let neg_inf = f64x4::splat(f64::NEG_INFINITY);
         // A zero-direction axis imposes no `t` bound when the origin is inside
         // (inclusive, so a ray on a face still hits) and an empty interval
-        // otherwise, computed with `blend` to dodge the `0 * inf = NaN` of the
+        // otherwise, computed with `select` to dodge the `0 * inf = NaN` of the
         // multiply path.
         let (zx, zy) = (ray.dir_x == 0.0, ray.dir_y == 0.0);
         let axis = |mn: f64x4, mx: f64x4, o: f64x4, inv: f64x4, degenerate: bool| {
             if degenerate {
                 let inside = mn.simd_le(o) & o.simd_le(mx);
                 (
-                    inside.blend(neg_inf, pos_inf),
-                    inside.blend(pos_inf, neg_inf),
+                    inside.select(neg_inf, pos_inf),
+                    inside.select(pos_inf, neg_inf),
                 )
             } else {
                 let t1 = (mn - o) * inv;

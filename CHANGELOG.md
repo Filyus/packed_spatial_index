@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.26.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.25.0...psi-v0.26.0) - 2026-07-31
+
 ### API
 
 - **Breaking:** `StreamLimits` is now `#[non_exhaustive]`, so it is built from
@@ -19,6 +21,13 @@ All notable changes to this crate are documented here.
   additive — an older reader skips it and answers identically, just with more
   reads. It is not written for a fixed-width payload whose whole record is
   already the prefix.
+- Prefix scans now read that section where an artifact carries one, which is
+  what turns the chunk above into fewer reads rather than only fewer bytes on
+  disk: measured on 300 items with 512-byte bodies, 301 reads become 2 for the
+  same 9 608 bytes. The section rides on `StreamCoreParts`, so a directory
+  split off and reattached to a fresh reader keeps it — the warm-isolate case
+  the chunk exists for. An artifact without the section still uses the strided
+  blob path, and both answer byte for byte alike.
 - Added `StreamLimits::prefix_coalesce_gap_bytes`, the coalescing gap for
   payload-prefix visits. It defaulted — and still defaults — to `prefix_len`,
   which never merges once bodies exceed `2 * prefix_len`, so a prefix scan
@@ -27,6 +36,13 @@ All notable changes to this crate are documented here.
   the gap buys those requests back by reading the bodies in between. Measured
   over 100 000 items with 64-byte bodies and 1 001 matches: 1 011 reads for
   339 188 bytes become 11 reads for 379 188.
+
+### SIMD
+
+- The `simd` feature now requires `wide` 1.6, which deprecates the `.blend`
+  this crate called on `f64x4`/`f32x8` in favour of `.select`. Identical
+  semantics at every call site and the same `rust-version = 1.89`; the floor is
+  raised so the method resolves whatever a consumer's lockfile already pins.
 
 ## [0.25.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.24.1...psi-v0.25.0) - 2026-07-15
 

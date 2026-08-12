@@ -13,7 +13,7 @@ parallel rows run unpinned so the rayon workers can spread across cores.
 
 The benchmarks below compare against these crate versions:
 
-- [`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index) `2.0.0` by
+- [`static_aabb2d_index`](https://crates.io/crates/static_aabb2d_index) `2.1.0` by
   Jedidiah McCready — a Rust Flatbush port (build and search).
 - [FlatGeobuf](https://flatgeobuf.org/) (`flatgeobuf` `6.0.1`) by Pirmin Kalberer
   and Björn Harrtell — a Flatbush-inspired geospatial format (build, search,
@@ -96,6 +96,30 @@ showed opposite scalar ordering:
 | --- | ---: | ---: | ---: |
 | `flatgeobuf2d_bench`, seed `0xF6B` | 357.49 us | 460.81 us | 131.03 us |
 | `index2d_bench`, seed `0xB0B` | 666.90 us | 357.46 us | 130.80 us |
+
+### `static_aabb2d_index` 2.0.0 vs 2.1.0
+
+`2.1.0` replaced the comparison sort in its build with an in-place MSD radix sort
+that stops descending once a range falls inside a single tree node, and it skips
+sorting entirely when every Hilbert key is equal. On this crate's `index2d_bench`
+inputs (uniform random AABBs, `node_size = 16`), medians over three interleaved
+runs per version, both binaries pinned to the same four cores:
+
+| Benchmark | `2.0.0` | `2.1.0` | Change |
+| --- | ---: | ---: | ---: |
+| Build 1,000 | 16.67 ms | 10.86 ms | -35% |
+| Build 100,000 | 5.99 ms | 6.29 ms | +5% |
+| Build 1,000,000 | 73.06 ms | 76.20 ms | +4% |
+| Search batch, serial | 619.71 us | 605.08 us | -2% |
+
+So the new sort wins clearly at small `n`, where the node-boundary cutoff removes
+most of the work, and loses a few percent at 100k and above, where the MSD
+partition passes cost more than the old comparison sort on well-spread keys. The
+search path is unchanged within noise on this workload. Duplicate-heavy inputs
+(`build_degenerate` in `index2d_bench`, 100,000 boxes) move in both directions
+too: 64 distinct keys goes 4.92 ms → 3.76 ms, all-identical boxes 5.83 ms →
+6.55 ms. None of it changes the standing of this crate's build, which stays
+2.4–3.4× faster serial across all four of those shapes.
 
 ## 2D vs 3D
 

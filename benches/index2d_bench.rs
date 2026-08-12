@@ -488,10 +488,45 @@ fn bench_query_windows(c: &mut Criterion) {
     group.finish();
 }
 
+/// Duplicate-heavy inputs: every box collapses onto the same Hilbert key, or onto a handful of
+/// them. These are the shapes a comparison sort can degrade on, so they show whether the sort
+/// stays linear-ish when the keys stop being distinct.
+fn gen_degenerate(n: usize, distinct: usize) -> Vec<[f64; 4]> {
+    let mut rng = StdRng::seed_from_u64(0xDEAD);
+    (0..n)
+        .map(|i| {
+            // One box per `distinct` bucket, placed so the extents still span the full domain.
+            let slot = if distinct <= 1 { 0 } else { i % distinct };
+            let cx = (slot as f64) * (10_000.0 / distinct.max(1) as f64);
+            let cy = cx;
+            let w: f64 = rng.random_range(0.1..20.0);
+            [cx, cy, cx + w, cy + w]
+        })
+        .collect()
+}
+
+fn bench_build_degenerate(c: &mut Criterion) {
+    let mut group = c.benchmark_group("build_degenerate");
+    let n = 100_000usize;
+    for (name, distinct) in [("all_same", 1usize), ("few_distinct", 64)] {
+        let boxes = gen_degenerate(n, distinct);
+        group.bench_function(format!("crate_{name}"), |b| {
+            b.iter(|| build_reference(&boxes))
+        });
+        group.bench_function(format!("index_serial_{name}"), |b| {
+            b.iter(|| build_mine(&boxes, BuildMode::Serial))
+        });
+        group.bench_function(format!("index_parallel_auto_{name}"), |b| {
+            b.iter(|| build_mine(&boxes, BuildMode::ParallelAuto))
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = pin::criterion();
-    targets = bench_build, bench_query, bench_query_windows
+    targets = bench_build, bench_build_degenerate, bench_query, bench_query_windows
 }
 #[path = "support/pin.rs"]
 mod pin;

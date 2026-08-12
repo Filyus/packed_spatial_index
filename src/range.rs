@@ -78,7 +78,8 @@ pub(crate) fn collect_overlaps<T>(
     }
 
     let root = tree.tree_bounds(tree.tree_num_nodes() - 1);
-    if T::bounds_contain(query, root) {
+    // `bounds_overlap` first: see the same guard below in `visit_region`.
+    if T::bounds_overlap(root, query) && T::bounds_contain(query, root) {
         for pos in 0..tree.tree_num_items() {
             results.push(tree.tree_index(pos));
         }
@@ -118,7 +119,11 @@ where
     const LEVEL_MASK: usize = !CONTAINED_FLAG;
 
     let root = tree.tree_bounds(tree.tree_num_nodes() - 1);
-    if contains(root) {
+    // `overlaps` first, even though containment implies it for any well-formed box:
+    // a box built through the unchecked `Box2D::new` may have `min > max`, and such a
+    // box is contained by a query it does not overlap. Without this the shortcut
+    // answers "every item" where the per-item test answers "none".
+    if overlaps(root) && contains(root) {
         for pos in 0..tree.tree_num_items() {
             visitor(tree.tree_index(pos))?;
         }

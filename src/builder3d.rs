@@ -133,6 +133,19 @@ impl Index3DBuilder {
         self.items.push(item);
     }
 
+    /// Reject boxes no search path can answer consistently.
+    ///
+    /// See [`BuildError::InvalidItemBounds`]. One pass over the items, before any
+    /// of the packing work, so a rejected build costs nothing else.
+    fn check_item_bounds(&self) -> Result<(), BuildError> {
+        for (at, item) in self.items.iter().enumerate() {
+            if !(item.min_x <= item.max_x && item.min_y <= item.max_y && item.min_z <= item.max_z) {
+                return Err(BuildError::InvalidItemBounds { at });
+            }
+        }
+        Ok(())
+    }
+
     /// Pack the tree and return the finished 3D index.
     pub fn finish(self) -> Result<Index3D, BuildError> {
         if self.items.len() != self.num_items {
@@ -141,6 +154,7 @@ impl Index3DBuilder {
                 expected: self.num_items,
             });
         }
+        self.check_item_bounds()?;
         self.build()
     }
 
@@ -165,6 +179,7 @@ impl Index3DBuilder {
                 expected: self.num_items,
             });
         }
+        self.check_item_bounds()?;
         let config = self.config();
         crate::index3d_soa::build_simd_index_3d(config, self.items)
     }
@@ -207,6 +222,7 @@ impl Index3DBuilder {
                 expected: self.num_items,
             });
         }
+        self.check_item_bounds()?;
         let config = self.config();
         crate::index3d_f32::build_f32_3(config, self.items)
     }

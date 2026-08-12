@@ -625,3 +625,22 @@ fn axis_gap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
         0.0
     }
 }
+
+/// Whether `query` covers the whole tree rooted at `root`, so a search may emit
+/// every item without descending.
+///
+/// Containment alone would be wrong. A box with `min > max` — which the unchecked
+/// [`Box2D::new`] allows, and a loaded file may carry — covers no region, so it is
+/// contained by queries it does not overlap; taking the shortcut on containment
+/// alone answers "every item" where the per-item test answers "none". Requiring
+/// both costs nothing for well-formed boxes, where containment implies overlap.
+#[inline]
+pub(crate) fn query_covers_tree_2d(query: Box2D, root: Box2D) -> bool {
+    root.overlaps(query) && query.contains(root)
+}
+
+/// [`query_covers_tree_2d`], in three dimensions.
+#[inline]
+pub(crate) fn query_covers_tree_3d(query: Box3D, root: Box3D) -> bool {
+    root.overlaps(query) && query.contains(root)
+}

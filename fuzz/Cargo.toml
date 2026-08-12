@@ -1,0 +1,36 @@
+# A separate workspace on purpose: the repository root has no `[workspace]`
+# table, so a nested package without its own would be rejected as not a member,
+# and detaching keeps `libfuzzer-sys` out of this crate's own dependency graph.
+[workspace]
+
+[package]
+name = "packed-spatial-index-fuzz"
+version = "0.0.0"
+edition = "2024"
+description = "libFuzzer targets for the packed_spatial_index loaders and query paths"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+packed_spatial_index = { path = "..", features = ["simd", "f32-storage"] }
+
+[[bin]]
+name = "load"
+path = "fuzz_targets/load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "build_query"
+path = "fuzz_targets/build_query.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = true

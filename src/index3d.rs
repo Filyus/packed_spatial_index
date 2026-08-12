@@ -879,7 +879,9 @@ impl Index3D {
         }
 
         let root = self.entries[self.entries.len() - 1];
-        if query.contains(root) {
+        // See the same guard in `range.rs`: a box with `min > max`, which the unchecked
+        // `Box3D::new` allows, is contained by queries it does not overlap.
+        if root.overlaps(query) && query.contains(root) {
             stack.clear();
             results.extend_from_slice(&self.indices[..self.num_items]);
             return;

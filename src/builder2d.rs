@@ -130,6 +130,19 @@ impl Index2DBuilder {
         self.items.push(item);
     }
 
+    /// Reject boxes no search path can answer consistently.
+    ///
+    /// See [`BuildError::InvalidItemBounds`]. One pass over the items, before any
+    /// of the packing work, so a rejected build costs nothing else.
+    fn check_item_bounds(&self) -> Result<(), BuildError> {
+        for (at, item) in self.items.iter().enumerate() {
+            if !(item.min_x <= item.max_x && item.min_y <= item.max_y) {
+                return Err(BuildError::InvalidItemBounds { at });
+            }
+        }
+        Ok(())
+    }
+
     /// Pack the tree and return the finished index.
     pub fn finish(self) -> Result<Index2D, BuildError> {
         check_2d_item_capacity(self.num_items)?;
@@ -139,6 +152,7 @@ impl Index2DBuilder {
                 expected: self.num_items,
             });
         }
+        self.check_item_bounds()?;
         self.build()
     }
 
@@ -164,6 +178,7 @@ impl Index2DBuilder {
                 expected: self.num_items,
             });
         }
+        self.check_item_bounds()?;
         crate::index2d_soa::build_simd_index(self.config(), self.items)
     }
 
@@ -206,6 +221,7 @@ impl Index2DBuilder {
                 expected: self.num_items,
             });
         }
+        self.check_item_bounds()?;
         crate::index2d_f32::build_f32_2(self.config(), self.items)
     }
 

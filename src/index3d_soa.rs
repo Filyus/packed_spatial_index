@@ -18,7 +18,7 @@ use crate::{
     build::BuildError,
     builder3d::BuildConfig3D,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Box3D, Point3D},
+    geometry::{Box3D, Point3D, query_covers_tree_3d},
     join::{join_core, self_join_core},
     neighbors::{NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first},
     persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
@@ -745,7 +745,7 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_3d(query, self.root_box()) {
             for &index in &self.indices[..self.num_items] {
                 visitor(index)?;
             }
@@ -877,7 +877,7 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return;
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_3d(query, self.root_box()) {
             out.extend_from_slice(&self.indices[..self.num_items]);
             return;
         }
@@ -980,7 +980,7 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return;
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_3d(query, self.root_box()) {
             out.extend_from_slice(&self.indices[..self.num_items]);
             return;
         }
@@ -1072,7 +1072,7 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_3d(query, self.root_box()) {
             for &index in &self.indices[..self.num_items] {
                 visitor(index)?;
             }
@@ -1180,7 +1180,7 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_3d(query, self.root_box()) {
             for &index in &self.indices[..self.num_items] {
                 visitor(index)?;
             }
@@ -1332,7 +1332,7 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return;
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_3d(query, self.root_box()) {
             out.extend_from_slice(&self.indices[..self.num_items]);
             return;
         }
@@ -1471,7 +1471,7 @@ impl SimdIndex3D {
         if self.num_items == 0 {
             return;
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_3d(query, self.root_box()) {
             out.extend_from_slice(&self.indices[..self.num_items]);
             return;
         }
@@ -1893,7 +1893,7 @@ impl<'a> SimdIndex3DView<'a> {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        if query.contains(self.box_at(self.num_nodes - 1)) {
+        if query_covers_tree_3d(query, self.box_at(self.num_nodes - 1)) {
             for pos in 0..self.num_items {
                 visitor(self.index_at(pos))?;
             }

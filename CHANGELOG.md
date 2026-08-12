@@ -4,6 +4,40 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### API
+
+- **Breaking:** building an index from a box with `min > max` on any axis, or a
+  `NaN` bound, now fails with the new `BuildError::InvalidItemBounds { at }`
+  instead of producing an index. `Box2D::try_new` / `Box3D::try_new` already
+  rejected these; `new` does not, so they could reach a tree — where they answer
+  inconsistently, because a box that covers no region is still *contained* by
+  queries it does not overlap, and the whole-subtree shortcut tests containment.
+  The check is one pass over the items before any packing work: no measurable
+  cost at 100 000 items, about 3% of build time at 1 000 000.
+- **Breaking:** `BuildError` is now `#[non_exhaustive]`, so a future variant will
+  not break callers again. Exhaustive `match` needs a `_` arm.
+
+### Search
+
+- Every search path now agrees on an index that already carries such a box —
+  loading one from a file is still allowed, and is outside the builder's
+  guarantee. The whole-subtree shortcut in the owned indexes, the zero-copy
+  views, the SIMD layouts and the shared range traversal tests overlap before
+  containment; previously a query could get every item from one entry point and
+  none from another. Found by the new `fuzz/fuzz_targets/load.rs`.
+
+### Testing
+
+- Added `fuzz/`: `cargo-fuzz` targets for the loaders (`load`) and for build and
+  query against a brute-force oracle (`build_query`), plus a corpus seeder. Not
+  in CI — they need nightly and a fuzz run has no natural end.
+- Added `tests/unsafe_audit.rs`, which pins how many `unsafe` sites each source
+  file has, and corrected SAFETY.md's inventory, which had gone stale: it named
+  AVX-512 while AVX2 carries the SoA, f32 and raycast paths, and it did not
+  mention the left-pack writes into reserved slack.
+- Added `tests/flatbush_fixture.rs`: the canonical 100-box dataset every port of
+  this structure tests against, with expectations written as literals.
+
 ## [0.26.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.25.0...psi-v0.26.0) - 2026-07-31
 
 ### API

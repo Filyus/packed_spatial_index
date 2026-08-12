@@ -47,6 +47,15 @@ before any query can run. It rejects, with a `LoadError` that names the category
 Because the entire structure is checked up front, the traversal itself can then
 trust it. See [FORMAT.md](FORMAT.md#validation) for the field-level rules.
 
+What it deliberately does **not** check is box geometry: a loaded file may carry
+a box with `min > max`, and validating every box would cost a pass over the whole
+tree, which is exactly what the zero-copy view exists to avoid. Such a box covers
+no region while still being *contained* by queries it does not overlap, so it is a
+correctness question, not a memory-safety one — the coordinates are only ever
+compared, never used as an offset. The builder rejects these boxes
+(`BuildError::InvalidItemBounds`), and every search path agrees with every other
+on a file that carries one; `tests/degenerate_boxes.rs` holds both halves.
+
 ## Untrusted input — streaming reader (remote)
 
 The streaming reader (`StreamIndex2D` / `StreamIndex3D` over a `RangeReader` /

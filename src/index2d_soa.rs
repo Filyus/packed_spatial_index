@@ -17,7 +17,7 @@ use crate::{
     build::BuildError,
     builder2d::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Box2D, Point2D},
+    geometry::{Box2D, Point2D, query_covers_tree_2d},
     join::{join_core, self_join_core},
     neighbors::{NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first},
     persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
@@ -795,7 +795,7 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_2d(query, self.root_box()) {
             for &index in &self.indices[..self.num_items] {
                 visitor(index)?;
             }
@@ -915,7 +915,7 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return;
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_2d(query, self.root_box()) {
             out.extend_from_slice(&self.indices[..self.num_items]);
             return;
         }
@@ -972,7 +972,7 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return;
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_2d(query, self.root_box()) {
             out.extend_from_slice(&self.indices[..self.num_items]);
             return;
         }
@@ -1073,7 +1073,7 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_2d(query, self.root_box()) {
             for &index in &self.indices[..self.num_items] {
                 visitor(index)?;
             }
@@ -1188,7 +1188,7 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_2d(query, self.root_box()) {
             for &index in &self.indices[..self.num_items] {
                 visitor(index)?;
             }
@@ -1325,7 +1325,7 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return;
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_2d(query, self.root_box()) {
             out.extend_from_slice(&self.indices[..self.num_items]);
             return;
         }
@@ -1459,7 +1459,7 @@ impl SimdIndex2D {
         if self.num_items == 0 {
             return;
         }
-        if query.contains(self.root_box()) {
+        if query_covers_tree_2d(query, self.root_box()) {
             out.extend_from_slice(&self.indices[..self.num_items]);
             return;
         }
@@ -1837,7 +1837,7 @@ impl<'a> SimdIndex2DView<'a> {
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }
-        if query.contains(self.box_at(self.num_nodes - 1)) {
+        if query_covers_tree_2d(query, self.box_at(self.num_nodes - 1)) {
             for pos in 0..self.num_items {
                 visitor(self.index_at(pos))?;
             }

@@ -4,17 +4,21 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
-### Testing
+## [0.25.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.24.0...psi-geo-v0.25.0) - 2026-08-12
 
-- Checked this crate against the core's new rejection of boxes with `min > max`
-  (`BuildError::InvalidItemBounds`): no reader can reach it. A geometry with no
-  coordinates — an empty `LineString`, a null geometry member — is already
-  `GeoError::NullGeometry` at scan time, or dropped under `NullPolicy::Skip`, so
-  the crossed envelope that a `±INFINITY` accumulator would produce never gets
-  as far as a builder. The antimeridian split is the other place a crossed box
-  could appear, and it splits into two well-formed boxes precisely to avoid one.
-  The new variant still reaches callers through `GeoError::Build`, which is
-  `#[error(transparent)]` and needs no change.
+### API
+
+- Requires `packed_spatial_index` 0.27. That release rejects boxes with
+  `min > max` or a `NaN` bound at build time, so `GeoError::Build` can now carry
+  its new `BuildError::InvalidItemBounds`. No source in this crate can produce
+  one: a geometry with no coordinates — an empty `LineString`, a null geometry
+  member — is already `GeoError::NullGeometry` at scan time, or dropped under
+  `NullPolicy::Skip`, so the crossed envelope a `±INFINITY` accumulator would
+  otherwise yield never reaches a builder; and the antimeridian case splits into
+  two well-formed boxes precisely to avoid one. Callers that also depend on
+  `packed_spatial_index` directly must move to 0.27 together with this crate,
+  because the core types in this API — `Box2D`, `Index2D`, `BuildError` — come
+  from it.
 
 ## [0.24.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.23.0...psi-geo-v0.24.0) - 2026-07-31
 

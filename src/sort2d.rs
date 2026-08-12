@@ -242,3 +242,41 @@ fn radix_sort_u32(a: &mut [(u32, u32)], bits: u32) {
 pub(crate) fn normalize_radix_bits(bits: u32) -> u32 {
     bits.clamp(MIN_RADIX_BITS, MAX_RADIX_BITS)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::radix_sort_pairs;
+
+    /// Key shapes chosen so that whole digits come out constant, plus duplicate-heavy ones:
+    /// these are where a pass degenerates into a single bucket and where stability shows.
+    fn keys(kind: usize, i: u32, seed: &mut u32) -> u32 {
+        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        match kind {
+            0 => *seed,               // full width
+            1 => 0xABCD_1234,         // every key equal
+            2 => *seed & 0xFF,        // only the low digit varies
+            3 => *seed & 0xFF00_00FF, // low and high digits vary, middle constant
+            _ => i % 3,               // heavy duplicates, few distinct
+        }
+    }
+
+    #[test]
+    fn radix_sort_pairs_matches_a_stable_sort() {
+        for kind in 0..5 {
+            for &n in &[0usize, 1, 2, 385, 1000, 4096] {
+                for &bits in &[1u32, 4, 8, 11, 16] {
+                    let mut seed = 0x1234_5678u32;
+                    let mut data: Vec<(u32, u32)> = (0..n as u32)
+                        .map(|i| (keys(kind, i, &mut seed), i))
+                        .collect();
+                    let mut expected = data.clone();
+                    expected.sort_by_key(|&(k, _)| k);
+                    radix_sort_pairs(&mut data, bits);
+                    // Compares the indices too: the sort must stay stable, since equal
+                    // Hilbert keys otherwise reorder items between builds.
+                    assert_eq!(data, expected, "kind={kind} n={n} bits={bits}");
+                }
+            }
+        }
+    }
+}

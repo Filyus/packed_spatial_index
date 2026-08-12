@@ -4,47 +4,41 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.27.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.26.0...psi-v0.27.0) - 2026-08-12
+
 ### API
 
 - **Breaking:** building an index from a box with `min > max` on any axis, or a
-  `NaN` bound, now fails with the new `BuildError::InvalidItemBounds { at }`
-  instead of producing an index. `Box2D::try_new` / `Box3D::try_new` already
-  rejected these; `new` does not, so they could reach a tree — where they answer
-  inconsistently, because a box that covers no region is still *contained* by
-  queries it does not overlap, and the whole-subtree shortcut tests containment.
-  The check is one pass over the items before any packing work: no measurable
-  cost at 100 000 items, about 3% of build time at 1 000 000.
-- **Breaking:** `BuildError` is now `#[non_exhaustive]`, so a future variant will
-  not break callers again. Exhaustive `match` needs a `_` arm.
+  `NaN` bound, now fails with the new `BuildError::InvalidItemBounds { at }` —
+  naming the position the box was added at — instead of producing an index.
+  `Box2D::try_new` / `Box3D::try_new` already rejected these and `new` does not,
+  so they could reach a tree, where they were answered inconsistently: a box that
+  covers no region is still *contained* by queries it does not overlap, and the
+  whole-subtree search shortcut tested containment. The check is one pass over the
+  items before any packing work — no measurable cost at 100 000 items, about 3% of
+  build time at 1 000 000. Callers that fed boxes straight from an external source
+  should route them through `try_new`, or normalize with `min`/`max`, before
+  adding.
+- **Breaking:** `BuildError` is now `#[non_exhaustive]`, so the next variant will
+  not break callers again. An exhaustive `match` on it needs a `_` arm.
+
+### Safety
+
+- Corrected SAFETY.md's `unsafe` inventory, which had gone stale in silence: it
+  named AVX-512 while AVX2 carries the SoA, f32 and raycast search paths, and it
+  did not mention the SSE prefetch hint, the payload record casts, or the
+  left-packing of SIMD hits into a result buffer's reserved capacity — the
+  category an auditor would want to read first. The document now also states what
+  loading deliberately does not validate, and why that is a correctness question
+  rather than a memory-safety one.
 
 ### Search
 
-- Every search path now agrees on an index that already carries such a box —
-  loading one from a file is still allowed, and is outside the builder's
-  guarantee. The whole-subtree shortcut in the owned indexes, the zero-copy
-  views, the SIMD layouts and the shared range traversal tests overlap before
-  containment; previously a query could get every item from one entry point and
-  none from another. Found by the new `fuzz/fuzz_targets/load.rs`.
-
-### Testing
-
-- Added `fuzz/`: `cargo-fuzz` targets for the loaders (`load`) and for build and
-  query against a brute-force oracle (`build_query`), plus a corpus seeder. Not
-  in CI — they need nightly and a fuzz run has no natural end.
-- Added `tests/unsafe_audit.rs`, which pins how many `unsafe` sites each source
-  file has, and corrected SAFETY.md's inventory, which had gone stale: it named
-  AVX-512 while AVX2 carries the SoA, f32 and raycast paths, and it did not
-  mention the left-pack writes into reserved slack.
-- Added `tests/flatbush_fixture.rs`: the canonical 100-box dataset every port of
-  this structure tests against, with expectations written as literals.
-- Added `tests/mutate.py`, which breaks one named guard at a time and records
-  which test notices. Of twelve cases, seven are caught, five survive by design
-  (two performance dials, three equivalent mutants, each with its reason in the
-  file). It found one real hole: relaxing the leaf-index bound in the loader let
-  a file whose leaf index equals `num_items` load, and nothing in the suite
-  objected — the byte proptests asserted only that loading does not panic. They
-  now query what loaded and check every id, and
-  `tests/degenerate_boxes.rs` pins the exact case with a hand-patched buffer.
+- Every search entry point now agrees on an index that carries a crossed box,
+  which a loaded file may still do: the whole-subtree shortcut in the owned
+  indexes, the zero-copy views, the SIMD layouts and the shared range traversal
+  test overlap before containment. Previously one query could return every item
+  through `search` and none through `search_iter` on the same index.
 
 ## [0.26.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.25.0...psi-v0.26.0) - 2026-07-31
 

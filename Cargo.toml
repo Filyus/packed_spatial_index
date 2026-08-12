@@ -58,7 +58,9 @@ flatgeobuf = { version = "6.0.1", default-features = false }
 nalgebra = { version = "0.34.2", default-features = false, features = ["std"] }
 proptest = "1"
 rand = "0.10.2"
-static_aabb2d_index = "2"
+# 2.1 changed the build sort and the item ordering it produces; the numbers in
+# docs/performance.md are measured against it, so require it rather than any 2.x.
+static_aabb2d_index = "2.1"
 
 # Fair optimized-code measurements: one codegen unit + LTO.
 [profile.release]

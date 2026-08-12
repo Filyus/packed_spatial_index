@@ -51,7 +51,18 @@ jobs:
       - name: Build WASM demo
         working-directory: wasm-demo
         run: |
-          npm ci
+          # `wasm-pack`'s npm package fetches its binary from GitHub releases in a
+          # postinstall step, and that fetch has been hanging up mid-transfer often
+          # enough to fail four runs in a row while GitHub reported no incident.
+          # Only the install is retried: a compile or test failure must still fail
+          # on the first try, and three exhausted attempts still fail the job.
+          for attempt in 1 2 3; do
+            npm ci && installed=yes && break
+            echo "npm ci failed (attempt $attempt of 3); retrying" >&2
+            rm -rf node_modules
+            sleep 15
+          done
+          [ -n "${installed:-}" ] || { echo "npm ci failed three times" >&2; exit 1; }
           npm run build:pages
 
       - name: Upload Pages artifact

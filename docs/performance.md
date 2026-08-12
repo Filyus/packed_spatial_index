@@ -69,12 +69,12 @@ canonical byte format for 100,000 boxes.
 
 | Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: | ---: |
-| Full build | 47.57 ms | 6.25 ms | 2.33 ms serial / 2.21 ms parallel | - |
-| Search batch | 576.00 us | 357.49 us | 460.81 us | 131.03 us |
-| Serialize built tree (fresh buffer) | - | - | 421.18 us | 650.84 us |
-| Serialize built tree (reused buffer) | 152.65 us | - | 74.65 us | 181.56 us |
-| Load owned tree | 681.51 us | - | 525.93 us | 861.55 us |
-| Load zero-copy view | - | - | 36.40 us | n/a |
+| Full build | 46.82 ms | 6.31 ms | 2.23 ms serial / 1.73 ms parallel | - |
+| Search batch | 545.58 us | 440.86 us | 416.19 us | 115.32 us |
+| Serialize built tree (fresh buffer) | - | - | 399.11 us | 613.21 us |
+| Serialize built tree (reused buffer) | 131.28 us | - | 68.02 us | 160.86 us |
+| Load owned tree | 646.49 us | - | 372.24 us | 554.75 us |
+| Load zero-copy view | - | - | 34.96 us | n/a |
 
 `SimdIndex2D` searches faster than `Index2D` but **serializes and loads slower**
 (roughly 1.5–2.4× in a clean re-measure) — expected, not noise. The on-disk
@@ -83,39 +83,58 @@ interchangeable). `Index2D` stores AoS too, so `to_bytes` is close to a memcpy
 and `from_bytes` close to zero-copy; `SimdIndex2D` stores SoA (separate min/max
 columns, what makes its queries fast), so it gathers SoA→AoS to serialize and
 scatters AoS→SoA to load. The `reused buffer` row isolates this best:
-`Index2D` 74.65 us (≈memcpy) vs `SimdIndex2D` 181.56 us (the transpose). So
+`Index2D` 68.02 us (≈memcpy) vs `SimdIndex2D` 160.86 us (the transpose). So
 `SimdIndex2D` pays at serialize/load to win at query time — prefer it when you
 query far more than you persist, and load read-mostly bytes through the zero-copy
-`Index2DView` (36.40 us) rather than rebuilding an owned SoA index.
+`Index2DView` (34.96 us) rather than rebuilding an owned SoA index.
 
-Scalar `Index2D` search versus `static_aabb2d_index` is dataset-sensitive.
-Two search runs with the same item/query counts but different generated inputs
-showed opposite scalar ordering:
+Scalar `Index2D` search versus `static_aabb2d_index` is dataset-sensitive: the
+margin between them ranges from a few percent to 1.8× across two runs with the
+same item and query counts but different generated inputs — and on the `0xF6B`
+inputs the two were the other way round under `2.0.0` of the baseline crate (see
+below). Treat the ordering as a property of the data and the baseline version,
+not as a standing result:
 
 | Search batch | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: |
-| `flatgeobuf2d_bench`, seed `0xF6B` | 357.49 us | 460.81 us | 131.03 us |
-| `index2d_bench`, seed `0xB0B` | 666.90 us | 357.46 us | 130.80 us |
+| `flatgeobuf2d_bench`, seed `0xF6B` (`search_with`) | 440.86 us | 416.19 us | 115.32 us |
+| `index2d_bench`, seed `0xB0B` (`search_into_stack` / `search_simd`) | 604.86 us | 335.80 us | 221.17 us |
+
+The `SimdIndex2D` columns are not the same entry point: `search_with` picks a
+kernel for the query, while `search_simd` is the explicit wide-4 path, so read
+each row against itself rather than down the column.
 
 ### `static_aabb2d_index` 2.0.0 vs 2.1.0
 
 `2.1.0` replaced the comparison sort in its build with an in-place MSD radix sort
 that stops descending once a range falls inside a single tree node, and it skips
-sorting entirely when every Hilbert key is equal. On this crate's `index2d_bench`
-inputs (uniform random AABBs, `node_size = 16`), medians over three interleaved
-runs per version, both binaries pinned to the same four cores:
+sorting entirely when every Hilbert key is equal. Medians on this crate's
+benchmark inputs (uniform random AABBs, `node_size = 16`): the build and `0xB0B`
+search rows are over three interleaved runs per version with both binaries pinned
+to the same four cores; the `0xF6B` search row is a single pinned run of each
+binary, back to back.
 
 | Benchmark | `2.0.0` | `2.1.0` | Change |
 | --- | ---: | ---: | ---: |
 | Build 1,000 | 16.67 ms | 10.86 ms | -35% |
 | Build 100,000 | 5.99 ms | 6.29 ms | +5% |
 | Build 1,000,000 | 73.06 ms | 76.20 ms | +4% |
-| Search batch, serial | 619.71 us | 605.08 us | -2% |
+| Search batch, `index2d_bench` seed `0xB0B` | 619.71 us | 605.08 us | -2% |
+| Search batch, `flatgeobuf2d_bench` seed `0xF6B` | 319.35 us | 439.54 us | **+38%** |
 
 So the new sort wins clearly at small `n`, where the node-boundary cutoff removes
 most of the work, and loses a few percent at 100k and above, where the MSD
-partition passes cost more than the old comparison sort on well-spread keys. The
-search path is unchanged within noise on this workload. Duplicate-heavy inputs
+partition passes cost more than the old comparison sort on well-spread keys.
+
+Search moves with the dataset rather than uniformly. The `2.1.0` changelog notes
+that internal item ordering may differ, and on the `0xF6B` inputs that ordering
+costs the baseline 38% on the query batch, while on `0xB0B` it is unchanged
+within noise. The other three search rows of that suite move by 3% or less
+between the two runs, and downwards (FlatGeobuf 551.80 → 534.07 us, `Index2D`
+425.04 → 421.30 us, `SimdIndex2D` 117.30 → 117.43 us), so this is the baseline
+crate changing, not the machine.
+
+Duplicate-heavy build inputs
 (`build_degenerate` in `index2d_bench`, 100,000 boxes) move in both directions
 too: 64 distinct keys goes 4.92 ms → 3.76 ms, all-identical boxes 5.83 ms →
 6.55 ms. None of it changes the standing of this crate's build, which stays
@@ -144,16 +163,16 @@ with `node_size = 16`; search and KNN use 1,000 query boxes or points.
 
 | Persistence | `Index2D` | `Index3D` | 3D speed |
 | --- | ---: | ---: | ---: |
-| Serialize built tree (fresh buffer) | 422.31 us | 605.64 us | 0.70x |
-| Serialize built tree (reused buffer) | 74.39 us | 110.36 us | 0.67x |
-| Load owned tree | 518.71 us | 750.83 us | 0.69x |
-| Load zero-copy view | 37.53 us | 37.34 us | 1.01x |
+| Serialize built tree (fresh buffer) | 399.11 us | 558.86 us | 0.71x |
+| Serialize built tree (reused buffer) | 68.02 us | 96.21 us | 0.71x |
+| Load owned tree | 372.24 us | 520.90 us | 0.71x |
+| Load zero-copy view | 34.96 us | 36.26 us | 0.96x |
 
 | SIMD persistence | `SimdIndex2D` | `SimdIndex3D` | 3D speed |
 | --- | ---: | ---: | ---: |
-| Serialize built tree (fresh buffer) | 650.84 us | 983.96 us | 0.66x |
-| Serialize built tree (reused buffer) | 181.56 us | 312.28 us | 0.58x |
-| Load owned tree | 861.55 us | 1.2038 ms | 0.72x |
+| Serialize built tree (fresh buffer) | 613.21 us | 894.42 us | 0.69x |
+| Serialize built tree (reused buffer) | 160.86 us | 263.74 us | 0.61x |
+| Load owned tree | 554.75 us | 939.51 us | 0.59x |
 
 ## 3D SIMD
 

@@ -142,6 +142,30 @@ fn polygon_strategy() -> impl Strategy<Value = ConvexPolygon2D> {
     })
 }
 
+/// Accepting a buffer is a promise about what comes out of it: callers index their
+/// own arrays with the ids a search returns, so an id at or past `num_items` is a
+/// caller-side out-of-bounds that no caller care can prevent. Loading must either
+/// fail or answer in range — never neither.
+fn check_loaded_ids_are_in_range(bytes: &[u8]) {
+    let wide = Box2D::new(-1e30, -1e30, 1e30, 1e30);
+    if let Ok(index) = Index2D::from_bytes(bytes) {
+        for id in index.search(wide) {
+            assert!(id < index.num_items(), "Index2D returned id {id}");
+        }
+    }
+    if let Ok(view) = Index2DView::from_bytes(bytes) {
+        for id in view.search(wide) {
+            assert!(id < view.num_items(), "Index2DView returned id {id}");
+        }
+    }
+    #[cfg(feature = "simd")]
+    if let Ok(simd) = SimdIndex2D::from_bytes(bytes) {
+        for id in simd.search(wide) {
+            assert!(id < simd.num_items(), "SimdIndex2D returned id {id}");
+        }
+    }
+}
+
 proptest! {
     /// Scalar, view, and SIMD searches must all return exactly the brute-force set.
     #[test]
@@ -347,12 +371,7 @@ proptest! {
     /// Arbitrary bytes must yield `Err`, never a panic or out-of-bounds read.
     #[test]
     fn from_bytes_never_panics_on_arbitrary_bytes(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
-        let _ = Index2D::from_bytes(&bytes);
-        let _ = Index2DView::from_bytes(&bytes);
-        #[cfg(feature = "simd")]
-        {
-            let _ = SimdIndex2D::from_bytes(&bytes);
-        }
+        check_loaded_ids_are_in_range(&bytes);
     }
 
     /// Mutating a valid buffer must still be handled gracefully (Ok or Err, no panic).
@@ -372,11 +391,6 @@ proptest! {
             bytes.truncate(bytes.len() / 2);
         }
 
-        let _ = Index2D::from_bytes(&bytes);
-        let _ = Index2DView::from_bytes(&bytes);
-        #[cfg(feature = "simd")]
-        {
-            let _ = SimdIndex2D::from_bytes(&bytes);
-        }
+        check_loaded_ids_are_in_range(&bytes);
     }
 }

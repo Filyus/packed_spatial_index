@@ -18,7 +18,9 @@ crash mid-run would otherwise be indistinguishable from your own edits.
 code stays correct, only slower or differently shaped — and they are listed so
 that nobody re-derives that from scratch. Everything else must say "caught".
 
-Last run: 12 cases, 10 caught, 2 not caught, both expected.
+Last run: 12 cases, 7 caught, 5 not caught, all five expected. The one real
+hole it found — a leaf index one past the end being accepted, unnoticed by any
+test — is now closed by `check_loaded_ids_are_in_range` in tests/proptest_2d.rs.
 """
 
 import os

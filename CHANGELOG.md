@@ -37,6 +37,14 @@ All notable changes to this crate are documented here.
   mention the left-pack writes into reserved slack.
 - Added `tests/flatbush_fixture.rs`: the canonical 100-box dataset every port of
   this structure tests against, with expectations written as literals.
+- Added `tests/mutate.py`, which breaks one named guard at a time and records
+  which test notices. Of twelve cases, seven are caught, five survive by design
+  (two performance dials, three equivalent mutants, each with its reason in the
+  file). It found one real hole: relaxing the leaf-index bound in the loader let
+  a file whose leaf index equals `num_items` load, and nothing in the suite
+  objected — the byte proptests asserted only that loading does not panic. They
+  now query what loaded and check every id, and
+  `tests/degenerate_boxes.rs` pins the exact case with a hand-patched buffer.
 
 ## [0.26.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.25.0...psi-v0.26.0) - 2026-07-31
 

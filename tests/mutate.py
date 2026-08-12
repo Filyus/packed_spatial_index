@@ -94,28 +94,34 @@ CASES = [
         "node_size.min(MAX_NODE_SIZE)",
         "node_size 0 or 1 builds a tree that cannot converge",
     ),
+    # --- expected NOT CAUGHT, and why ---
     Case(
-        "simd-tail-block-skipped",
-        "src/index2d_soa.rs",
-        "while pos + 4 <= end {",
-        "while pos + 4 < end {",
-        "the last full SIMD block of a node is never tested",
+        "stack-drain-off-by-one",
+        "src/range.rs",
+        "        if stack.len() > 1 {\n            level = stack.pop().unwrap();",
+        "        if stack.len() > 0 {\n            level = stack.pop().unwrap();",
+        "nothing: the stack is pushed in (index, level) pairs, so its length is always"
+        " even and the two conditions cannot differ",
+        expect_caught=False,
     ),
     Case(
         "hilbert-coord-nan-arm",
         "src/sort2d.rs",
         "    if value.is_nan() {\n        0\n    } else if value > u16::MAX as f64 {",
         "    if value > u16::MAX as f64 {",
-        "a NaN centre casts to an arbitrary sort key instead of 0",
+        "nothing: Rust float-to-int casts saturate, so a NaN centre already becomes 0"
+        " without the arm — it is documentation rather than behaviour",
+        expect_caught=False,
     ),
     Case(
-        "stack-drain-off-by-one",
-        "src/range.rs",
-        "        if stack.len() > 1 {\n            level = stack.pop().unwrap();",
-        "        if stack.len() > 0 {\n            level = stack.pop().unwrap();",
-        "the traversal pops a node index as if it were a level",
+        "simd-tail-block-skipped",
+        "src/index2d_soa.rs",
+        "while pos + 4 <= end {",
+        "while pos + 4 < end {",
+        "the last full SIMD block falls to the scalar tail loop under it, which tests"
+        " the same items: slower, not wrong",
+        expect_caught=False,
     ),
-    # --- expected NOT CAUGHT, and why ---
     Case(
         "radix-sort-always-on",
         "src/sort2d.rs",

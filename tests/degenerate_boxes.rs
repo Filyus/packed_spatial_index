@@ -159,3 +159,47 @@ fn a_loaded_crossed_box_reads_the_same_through_every_path() {
         }
     }
 }
+
+/// A leaf index at `num_items` — one past the end — must be rejected at load.
+///
+/// It is the id a search would hand back for the caller to index their own array
+/// with, so accepting it turns a corrupt file into the caller's out-of-bounds.
+/// Written as a hand-patched buffer because random byte mutation almost never
+/// produces exactly this value: `tests/mutate.py` found that relaxing the guard
+/// from `>=` to `>` went unnoticed by the whole suite.
+#[test]
+fn a_leaf_index_one_past_the_end_is_rejected() {
+    let mut builder = Index2DBuilder::new(3);
+    for i in 0..3 {
+        let x = i as f64;
+        builder.add(Box2D::new(x, x, x + 1.0, x + 1.0));
+    }
+    let mut bytes = builder.finish().unwrap().to_bytes();
+    assert!(
+        Index2D::from_bytes(&bytes).is_ok(),
+        "the buffer starts valid"
+    );
+
+    // Chunk directory at offset 32, 24-byte entries of (id, offset, length).
+    let tree_offset = (0..)
+        .map(|i| 32 + i * 24)
+        .take_while(|&at| at + 24 <= bytes.len())
+        .find(|&at| &bytes[at..at + 4] == b"TREE")
+        .map(|at| u64::from_le_bytes(bytes[at + 8..at + 16].try_into().unwrap()) as usize)
+        .expect("a serialized index has a TREE chunk");
+
+    // Descriptor is 24 bytes, then `record` x `num_nodes` boxes, then the indices.
+    // Three items under the default node size is one leaf level plus a root, so
+    // `num_nodes` is 4 and the first index is the first leaf's.
+    let indices_offset = tree_offset + 24 + 32 * 4;
+    bytes[indices_offset..indices_offset + 8].copy_from_slice(&3u64.to_le_bytes());
+
+    assert!(
+        Index2D::from_bytes(&bytes).is_err(),
+        "a leaf index equal to num_items must not load"
+    );
+    assert!(
+        Index2DView::from_bytes(&bytes).is_err(),
+        "the zero-copy view must reject it too"
+    );
+}

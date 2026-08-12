@@ -4,6 +4,18 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### Testing
+
+- Checked this crate against the core's new rejection of boxes with `min > max`
+  (`BuildError::InvalidItemBounds`): no reader can reach it. A geometry with no
+  coordinates — an empty `LineString`, a null geometry member — is already
+  `GeoError::NullGeometry` at scan time, or dropped under `NullPolicy::Skip`, so
+  the crossed envelope that a `±INFINITY` accumulator would produce never gets
+  as far as a builder. The antimeridian split is the other place a crossed box
+  could appear, and it splits into two well-formed boxes precisely to avoid one.
+  The new variant still reaches callers through `GeoError::Build`, which is
+  `#[error(transparent)]` and needs no change.
+
 ## [0.24.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.23.0...psi-geo-v0.24.0) - 2026-07-31
 
 ### API

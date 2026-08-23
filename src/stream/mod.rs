@@ -168,7 +168,21 @@ impl<R: RangeReader> StreamIndex2D<R> {
             .visit_ids(|record| parse_box2d(record).overlaps(query), visitor)
     }
 
+    /// Return the number of items overlapping `query`.
+    ///
+    /// Counts during the traversal, so no result `Vec` is built; the tree reads
+    /// (and the read budget they charge) are the same as for `search`.
+    pub fn count(&self, query: Box2D) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit(query, |_| count += 1)?;
+        Ok(count)
+    }
+
     /// Stream the indices of every item whose box intersects `query`.
+    ///
+    /// Builds a `Vec` per call: to count the hits use [`count`](Self::count), to
+    /// reuse a buffer use [`search_into`](Self::search_into), and to stream them
+    /// without collecting use [`visit`](Self::visit).
     pub fn search(&self, query: Box2D) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
         self.search_into(query, &mut out)?;
@@ -227,6 +241,16 @@ impl<R: RangeReader> StreamIndex2D<R> {
         let mut out = Vec::new();
         self.visit_region(query, |index| out.push(index))?;
         Ok(out)
+    }
+
+    /// Return the number of items whose box overlaps the region `query`.
+    ///
+    /// The region counterpart of [`count`](Self::count): it counts inside the
+    /// traversal, so nothing is collected.
+    pub fn count_region<Q: Overlaps2D>(&self, query: &Q) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit_region(query, |_| count += 1)?;
+        Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
@@ -437,7 +461,21 @@ impl<R: RangeReader> StreamIndex3D<R> {
             .visit_ids(|record| parse_box3d(record).overlaps(query), visitor)
     }
 
+    /// Return the number of items overlapping `query`.
+    ///
+    /// Counts during the traversal, so no result `Vec` is built; the tree reads
+    /// (and the read budget they charge) are the same as for `search`.
+    pub fn count(&self, query: Box3D) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit(query, |_| count += 1)?;
+        Ok(count)
+    }
+
     /// Stream the indices of every item whose box intersects `query`.
+    ///
+    /// Builds a `Vec` per call: to count the hits use [`count`](Self::count), to
+    /// reuse a buffer use [`search_into`](Self::search_into), and to stream them
+    /// without collecting use [`visit`](Self::visit).
     pub fn search(&self, query: Box3D) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
         self.search_into(query, &mut out)?;
@@ -485,6 +523,16 @@ impl<R: RangeReader> StreamIndex3D<R> {
         let mut out = Vec::new();
         self.visit_region(query, |index| out.push(index))?;
         Ok(out)
+    }
+
+    /// Return the number of items whose box overlaps the region `query`.
+    ///
+    /// The region counterpart of [`count`](Self::count): it counts inside the
+    /// traversal, so nothing is collected.
+    pub fn count_region<Q: Overlaps3D>(&self, query: &Q) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit_region(query, |_| count += 1)?;
+        Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
@@ -675,7 +723,21 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
             .visit_ids(|r| parse_box2d_f32(r).overlaps(query), visitor)
     }
 
+    /// Return the number of items overlapping `query`.
+    ///
+    /// Counts during the traversal, so no result `Vec` is built; the tree reads
+    /// (and the read budget they charge) are the same as for `search`.
+    pub fn count(&self, query: Box2D) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit(query, |_| count += 1)?;
+        Ok(count)
+    }
+
     /// Stream the indices of every item whose (rounded) box intersects `query`.
+    ///
+    /// Builds a `Vec` per call: to count the hits use [`count`](Self::count), to
+    /// reuse a buffer use [`search_into`](Self::search_into), and to stream them
+    /// without collecting use [`visit`](Self::visit).
     pub fn search(&self, query: Box2D) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
         self.search_into(query, &mut out)?;
@@ -723,6 +785,16 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
         let mut out = Vec::new();
         self.visit_region(query, |index| out.push(index))?;
         Ok(out)
+    }
+
+    /// Return the number of items whose box overlaps the region `query`.
+    ///
+    /// The region counterpart of [`count`](Self::count): it counts inside the
+    /// traversal, so nothing is collected.
+    pub fn count_region<Q: Overlaps2D>(&self, query: &Q) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit_region(query, |_| count += 1)?;
+        Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
@@ -873,7 +945,21 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
             .visit_ids(|r| parse_box3d_f32(r).overlaps(query), visitor)
     }
 
+    /// Return the number of items overlapping `query`.
+    ///
+    /// Counts during the traversal, so no result `Vec` is built; the tree reads
+    /// (and the read budget they charge) are the same as for `search`.
+    pub fn count(&self, query: Box3D) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit(query, |_| count += 1)?;
+        Ok(count)
+    }
+
     /// Stream the indices of every item whose (rounded) box intersects `query`.
+    ///
+    /// Builds a `Vec` per call: to count the hits use [`count`](Self::count), to
+    /// reuse a buffer use [`search_into`](Self::search_into), and to stream them
+    /// without collecting use [`visit`](Self::visit).
     pub fn search(&self, query: Box3D) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
         self.search_into(query, &mut out)?;
@@ -921,6 +1007,16 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
         let mut out = Vec::new();
         self.visit_region(query, |index| out.push(index))?;
         Ok(out)
+    }
+
+    /// Return the number of items whose box overlaps the region `query`.
+    ///
+    /// The region counterpart of [`count`](Self::count): it counts inside the
+    /// traversal, so nothing is collected.
+    pub fn count_region<Q: Overlaps3D>(&self, query: &Q) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit_region(query, |_| count += 1)?;
+        Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the

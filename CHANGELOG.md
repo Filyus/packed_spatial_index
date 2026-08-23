@@ -4,6 +4,23 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Search
+
+- Added `count(query)`, which returns how many items overlap a query without
+  building a result `Vec`. It counts inside the traversal, so it costs a
+  `search` minus the collection; the shape it replaces — `search(query).len()` —
+  allocated a `Vec` only to read its length. Available on every frontend that
+  answers a range query: the owned `f64` indexes and their views (where it also
+  takes the region shapes, `Triangle2D` / `ConvexPolygon2D` / `Frustum3D`), the
+  SIMD indexes and views, the scalar and SIMD `f32` frontends (counting the same
+  conservative superset their `search` returns), and the streaming readers as
+  `count(query) -> Result<usize, StreamError>`, charging the same read budget as
+  `search`. The streaming readers also gained `count_region` for the shape
+  queries (and `count_async` / `count_region_async` under the `async` feature),
+  so counting is not the one query there that has no region form. The alternative was to keep pointing callers at `visit` with their
+  own counter; that is four lines and a `ControlFlow` import for the most common
+  aggregate over a query, which is how `search(..).len()` kept winning.
+
 ## [0.27.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.26.0...psi-v0.27.0) - 2026-08-12
 
 ### API

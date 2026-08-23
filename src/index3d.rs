@@ -216,6 +216,13 @@ impl Index3D {
     /// Accepts a [`Box3D`] by value or borrowed region geometry implementing
     /// [`Overlaps3D`], such as [`Frustum3D`](crate::Frustum3D).
     ///
+    /// Allocates a fresh `Vec` per call. For a boolean test use [`any`](Self::any)
+    /// rather than `search(..).is_empty()`; in a hot loop write into a buffer you
+    /// own with [`search_into`](Self::search_into) or
+    /// [`search_with`](Self::search_with); to count the hits use
+    /// [`count`](Self::count) and to fold over them use [`visit`](Self::visit); to
+    /// stop part-way through them use the lazy [`search_iter`](Self::search_iter).
+    ///
     /// # Example
     ///
     /// ```
@@ -281,6 +288,31 @@ impl Index3D {
     /// ```
     pub fn any<Q: SearchQuery3D>(&self, query: Q) -> bool {
         query.any_index(self)
+    }
+
+    /// Return the number of items overlapping `query`.
+    ///
+    /// Counts during the traversal, so nothing is collected — prefer it to
+    /// `search(query).len()`, which allocates a `Vec` to throw away.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use packed_spatial_index::{Index3DBuilder, Box3D};
+    /// # let mut builder = Index3DBuilder::new(2);
+    /// # builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// # builder.add(Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+    /// # let index = builder.finish().unwrap();
+    /// assert_eq!(index.count(Box3D::new(0.0, 0.0, 0.0, 2.0, 2.0, 2.0)), 1);
+    /// assert_eq!(index.count(Box3D::new(20.0, 20.0, 20.0, 21.0, 21.0, 21.0)), 0);
+    /// ```
+    pub fn count<Q: SearchQuery3D>(&self, query: Q) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit(query, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
     }
 
     /// Return one overlapping item, if any.
@@ -1124,6 +1156,12 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Return the indices of all items whose boxes overlap `query`.
+    ///
+    /// Allocates a fresh `Vec` per call. For a boolean test use [`any`](Self::any)
+    /// rather than `search(..).is_empty()`; in a hot loop write into a buffer you
+    /// own with [`search_into`](Self::search_into) or
+    /// [`search_with`](Self::search_with); to count the hits use
+    /// [`count`](Self::count) and to fold over them use [`visit`](Self::visit).
     pub fn search<Q: SearchQuery3D>(&self, query: Q) -> Vec<usize> {
         let mut results = Vec::new();
         self.search_into(query, &mut results);
@@ -1147,6 +1185,19 @@ impl<'a> Index3DView<'a> {
     /// Return `true` if at least one item overlaps `query`.
     pub fn any<Q: SearchQuery3D>(&self, query: Q) -> bool {
         query.any_view(self)
+    }
+
+    /// Return the number of items overlapping `query`.
+    ///
+    /// Counts during the traversal, so nothing is collected — prefer it to
+    /// `search(query).len()`, which allocates a `Vec` to throw away.
+    pub fn count<Q: SearchQuery3D>(&self, query: Q) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit(query, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
     }
 
     /// Return one overlapping item, if any.

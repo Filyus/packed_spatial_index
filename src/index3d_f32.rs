@@ -679,6 +679,12 @@ impl SimdIndex3DF32 {
     }
 
     /// Item indices whose rounded f32 box intersects `query`.
+    ///
+    /// Allocates a fresh `Vec` per call. For a boolean test use [`any`](Self::any)
+    /// rather than `search(..).is_empty()`; in a hot loop write into a buffer you
+    /// own with [`search_into`](Self::search_into) or
+    /// [`search_with`](Self::search_with); to count the hits use
+    /// [`count`](Self::count) and to fold over them use [`visit`](Self::visit).
     pub fn search(&self, query: Box3D) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_into(query, &mut out);
@@ -737,6 +743,20 @@ impl SimdIndex3DF32 {
     /// Return `true` if at least one rounded f32 box intersects `query`.
     pub fn any(&self, query: Box3D) -> bool {
         self.visit(query, |_| ControlFlow::Break(())).is_break()
+    }
+
+    /// Return the number of items whose stored box overlaps `query`.
+    ///
+    /// Counts during the traversal, so nothing is collected — prefer it to
+    /// `search(query).len()`, which allocates a `Vec` to throw away. Like
+    /// `search`, this counts a conservative superset of the exact answer.
+    pub fn count(&self, query: Box3D) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit(query, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
     }
 
     /// Return `true` if at least one caller-owned f64 box intersects `query`.
@@ -1671,6 +1691,12 @@ impl<'a> SimdIndex3DF32View<'a> {
     }
 
     /// Candidate item indices whose stored box intersects `query`.
+    ///
+    /// Allocates a fresh `Vec` per call. For a boolean test use [`any`](Self::any)
+    /// rather than `search(..).is_empty()`; in a hot loop write into a buffer you
+    /// own with [`search_into`](Self::search_into) or
+    /// [`search_with`](Self::search_with); to count the hits use
+    /// [`count`](Self::count) and to fold over them use [`visit`](Self::visit).
     pub fn search(&self, query: Box3D) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_into(query, &mut out);
@@ -1746,6 +1772,20 @@ impl<'a> SimdIndex3DF32View<'a> {
     /// Return `true` if at least one rounded f32 box intersects `query`.
     pub fn any(&self, query: Box3D) -> bool {
         self.visit(query, |_| ControlFlow::Break(())).is_break()
+    }
+
+    /// Return the number of items whose stored box overlaps `query`.
+    ///
+    /// Counts during the traversal, so nothing is collected — prefer it to
+    /// `search(query).len()`, which allocates a `Vec` to throw away. Like
+    /// `search`, this counts a conservative superset of the exact answer.
+    pub fn count(&self, query: Box3D) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit(query, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
     }
 
     /// Return `true` if at least one caller-owned f64 box intersects `query`.
@@ -2185,6 +2225,10 @@ impl Index3DF32 {
 
     /// Items whose (outward-rounded) box overlaps `query`. A conservative superset
     /// of [`Index3D::search`](crate::Index3D::search).
+    ///
+    /// Allocates a fresh `Vec` per call. For a boolean test use [`any`](Self::any)
+    /// rather than `search(..).is_empty()`; to count the hits use
+    /// [`count`](Self::count) and to fold over them use [`visit`](Self::visit).
     pub fn search(&self, query: Box3D) -> Vec<usize> {
         let q = Box3DF32::from_box3d_inward(query);
         let mut out = Vec::new();
@@ -2226,6 +2270,20 @@ impl Index3DF32 {
     /// Whether any item's (rounded) box overlaps `query` (early-exit).
     pub fn any(&self, query: Box3D) -> bool {
         self.visit(query, |_| ControlFlow::Break(())).is_break()
+    }
+
+    /// Return the number of items whose stored box overlaps `query`.
+    ///
+    /// Counts during the traversal, so nothing is collected — prefer it to
+    /// `search(query).len()`, which allocates a `Vec` to throw away. Like
+    /// `search`, this counts a conservative superset of the exact answer.
+    pub fn count(&self, query: Box3D) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit(query, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
     }
 
     /// Some item whose (rounded) box overlaps `query`, or `None`. Traversal order

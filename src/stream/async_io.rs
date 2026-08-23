@@ -1027,6 +1027,12 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
         Ok(out)
     }
 
+    /// Return the number of items overlapping `query`, counted without
+    /// collecting them.
+    pub async fn count_async(&self, query: Box2D) -> Result<usize, StreamError> {
+        self.count_region_async(&query).await
+    }
+
     /// Stream `(item index, payload blob)` for every item intersecting `query`.
     pub async fn search_payloads_async(
         &self,
@@ -1072,6 +1078,13 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
         self.visit_region_async(query, |index| out.push(index))
             .await?;
         Ok(out)
+    }
+
+    /// Return the number of items whose box overlaps the region `query`.
+    pub async fn count_region_async<Q: Overlaps2D>(&self, query: &Q) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit_region_async(query, |_| count += 1).await?;
+        Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
@@ -1191,6 +1204,12 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
         Ok(out)
     }
 
+    /// Return the number of items overlapping `query`, counted without
+    /// collecting them.
+    pub async fn count_async(&self, query: Box3D) -> Result<usize, StreamError> {
+        self.count_region_async(&query).await
+    }
+
     /// Stream `(item index, payload blob)` for every item intersecting `query`.
     pub async fn search_payloads_async(
         &self,
@@ -1236,6 +1255,13 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
         self.visit_region_async(query, |index| out.push(index))
             .await?;
         Ok(out)
+    }
+
+    /// Return the number of items whose box overlaps the region `query`.
+    pub async fn count_region_async<Q: Overlaps3D>(&self, query: &Q) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit_region_async(query, |_| count += 1).await?;
+        Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
@@ -1355,6 +1381,12 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
         Ok(out)
     }
 
+    /// Return the number of items overlapping `query`, counted without
+    /// collecting them.
+    pub async fn count_async(&self, query: Box2D) -> Result<usize, StreamError> {
+        self.count_region_async(&query).await
+    }
+
     /// Stream `(item index, payload blob)` for every item intersecting `query`.
     pub async fn search_payloads_async(
         &self,
@@ -1400,6 +1432,13 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
         self.visit_region_async(query, |index| out.push(index))
             .await?;
         Ok(out)
+    }
+
+    /// Return the number of items whose box overlaps the region `query`.
+    pub async fn count_region_async<Q: Overlaps2D>(&self, query: &Q) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit_region_async(query, |_| count += 1).await?;
+        Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose (rounded) box
@@ -1519,6 +1558,12 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
         Ok(out)
     }
 
+    /// Return the number of items overlapping `query`, counted without
+    /// collecting them.
+    pub async fn count_async(&self, query: Box3D) -> Result<usize, StreamError> {
+        self.count_region_async(&query).await
+    }
+
     /// Stream `(item index, payload blob)` for every item intersecting `query`.
     pub async fn search_payloads_async(
         &self,
@@ -1564,6 +1609,13 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
         self.visit_region_async(query, |index| out.push(index))
             .await?;
         Ok(out)
+    }
+
+    /// Return the number of items whose box overlaps the region `query`.
+    pub async fn count_region_async<Q: Overlaps3D>(&self, query: &Q) -> Result<usize, StreamError> {
+        let mut count = 0usize;
+        self.visit_region_async(query, |_| count += 1).await?;
+        Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose (rounded) box

@@ -294,6 +294,12 @@ impl SimdIndex3D {
     }
 
     /// Return the indices of all items whose boxes intersect `query`.
+    ///
+    /// Allocates a fresh `Vec` per call. For a boolean test use [`any`](Self::any)
+    /// rather than `search(..).is_empty()`; in a hot loop write into a buffer you
+    /// own with [`search_into`](Self::search_into) or
+    /// [`search_with`](Self::search_with); to count the hits use
+    /// [`count`](Self::count) and to fold over them use [`visit`](Self::visit).
     pub fn search(&self, query: Box3D) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_into(query, &mut out);
@@ -319,6 +325,19 @@ impl SimdIndex3D {
     /// Return `true` if at least one item intersects `query`.
     pub fn any(&self, query: Box3D) -> bool {
         self.visit(query, |_| ControlFlow::Break(())).is_break()
+    }
+
+    /// Return the number of items overlapping `query`.
+    ///
+    /// Counts during the traversal, so nothing is collected — prefer it to
+    /// `search(query).len()`, which allocates a `Vec` to throw away.
+    pub fn count(&self, query: Box3D) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit(query, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
     }
 
     /// Return one intersecting item, if any.
@@ -1790,6 +1809,12 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Return the indices of all items whose boxes intersect `query`.
+    ///
+    /// Allocates a fresh `Vec` per call. For a boolean test use [`any`](Self::any)
+    /// rather than `search(..).is_empty()`; in a hot loop write into a buffer you
+    /// own with [`search_into`](Self::search_into) or
+    /// [`search_with`](Self::search_with); to count the hits use
+    /// [`count`](Self::count) and to fold over them use [`visit`](Self::visit).
     pub fn search(&self, query: Box3D) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_into(query, &mut out);
@@ -1820,6 +1845,19 @@ impl<'a> SimdIndex3DView<'a> {
     /// Return `true` if at least one item intersects `query`.
     pub fn any(&self, query: Box3D) -> bool {
         self.visit(query, |_| ControlFlow::Break(())).is_break()
+    }
+
+    /// Return the number of items overlapping `query`.
+    ///
+    /// Counts during the traversal, so nothing is collected — prefer it to
+    /// `search(query).len()`, which allocates a `Vec` to throw away.
+    pub fn count(&self, query: Box3D) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit(query, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
     }
 
     /// Return one intersecting item, if any.

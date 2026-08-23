@@ -47,19 +47,36 @@ impl SimdIndex2D {
         let num_nodes = parsed.num_nodes;
         let level_bounds = parsed.level_bounds;
 
-        let mut min_xs = Vec::with_capacity(num_nodes);
-        let mut min_ys = Vec::with_capacity(num_nodes);
-        let mut max_xs = Vec::with_capacity(num_nodes);
-        let mut max_ys = Vec::with_capacity(num_nodes);
-        let mut indices = Vec::with_capacity(num_nodes);
-        for i in 0..num_nodes {
-            let off = i * 32; // four f64 per 2D box record
-            min_xs.push(read_f64_le_unchecked(parsed.entries, off));
-            min_ys.push(read_f64_le_unchecked(parsed.entries, off + 8));
-            max_xs.push(read_f64_le_unchecked(parsed.entries, off + 16));
-            max_ys.push(read_f64_le_unchecked(parsed.entries, off + 24));
-            indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
-        }
+        // One `collect` per column. Each is an exact-size allocation written
+        // through a pointer with no per-element capacity check, and each loop
+        // holds two live pointers instead of the seven a single zipped pass needs
+        // (which spilled: see the measurement in the commit message).
+        debug_assert_eq!(parsed.entries.len(), num_nodes * 32);
+        debug_assert_eq!(parsed.indices.len(), num_nodes * 8);
+        let records = parsed.entries.as_chunks::<32>().0;
+        let min_xs: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 0))
+            .collect();
+        let min_ys: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 8))
+            .collect();
+        let max_xs: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 16))
+            .collect();
+        let max_ys: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 24))
+            .collect();
+        let indices: Vec<usize> = parsed
+            .indices
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| read_u64_le_unchecked(b, 0) as usize)
+            .collect();
 
         Ok(SimdIndex2D {
             node_size: parsed.node_size,

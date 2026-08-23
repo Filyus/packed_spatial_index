@@ -242,11 +242,21 @@ impl<'a> ByteWriter<'a> {
         debug_assert_eq!(min_xs.len(), min_ys.len());
         debug_assert_eq!(min_xs.len(), max_xs.len());
         debug_assert_eq!(min_xs.len(), max_ys.len());
-        for i in 0..min_xs.len() {
-            self.write_f64(min_xs[i]);
-            self.write_f64(min_ys[i]);
-            self.write_f64(max_xs[i]);
-            self.write_f64(max_ys[i]);
+        // One append per record, not one per field. Each `write_f64` is its own
+        // `extend_from_slice`: a capacity branch and a store back to the `Vec`'s
+        // length for every 8 bytes. Staging the record in a register-sized array
+        // and appending it whole pays that once per node instead of four times,
+        // and zipping the columns drops the four per-element bounds checks (which
+        // are against four *different* slices, so the `debug_assert_eq!`s above
+        // buy nothing in release).
+        for (((&mnx, &mny), &mxx), &mxy) in min_xs.iter().zip(min_ys).zip(max_xs).zip(max_ys) {
+            let record = [
+                mnx.to_le_bytes(),
+                mny.to_le_bytes(),
+                mxx.to_le_bytes(),
+                mxy.to_le_bytes(),
+            ];
+            self.write_bytes(record.as_flattened());
         }
     }
 
@@ -269,13 +279,24 @@ impl<'a> ByteWriter<'a> {
         debug_assert_eq!(min_xs.len(), max_xs.len());
         debug_assert_eq!(min_xs.len(), max_ys.len());
         debug_assert_eq!(min_xs.len(), max_zs.len());
-        for i in 0..min_xs.len() {
-            self.write_f64(min_xs[i]);
-            self.write_f64(min_ys[i]);
-            self.write_f64(min_zs[i]);
-            self.write_f64(max_xs[i]);
-            self.write_f64(max_ys[i]);
-            self.write_f64(max_zs[i]);
+        // See `write_soa_boxes_2d`: one append per record rather than one per field.
+        for (((((&mnx, &mny), &mnz), &mxx), &mxy), &mxz) in min_xs
+            .iter()
+            .zip(min_ys)
+            .zip(min_zs)
+            .zip(max_xs)
+            .zip(max_ys)
+            .zip(max_zs)
+        {
+            let record = [
+                mnx.to_le_bytes(),
+                mny.to_le_bytes(),
+                mnz.to_le_bytes(),
+                mxx.to_le_bytes(),
+                mxy.to_le_bytes(),
+                mxz.to_le_bytes(),
+            ];
+            self.write_bytes(record.as_flattened());
         }
     }
 

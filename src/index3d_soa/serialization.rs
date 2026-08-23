@@ -52,23 +52,44 @@ impl SimdIndex3D {
         let num_nodes = parsed.num_nodes;
         let level_bounds = parsed.level_bounds;
 
-        let mut min_xs = Vec::with_capacity(num_nodes);
-        let mut min_ys = Vec::with_capacity(num_nodes);
-        let mut min_zs = Vec::with_capacity(num_nodes);
-        let mut max_xs = Vec::with_capacity(num_nodes);
-        let mut max_ys = Vec::with_capacity(num_nodes);
-        let mut max_zs = Vec::with_capacity(num_nodes);
-        let mut indices = Vec::with_capacity(num_nodes);
-        for i in 0..num_nodes {
-            let off = i * 48; // six f64 per 3D box record
-            min_xs.push(read_f64_le_unchecked(parsed.entries, off));
-            min_ys.push(read_f64_le_unchecked(parsed.entries, off + 8));
-            min_zs.push(read_f64_le_unchecked(parsed.entries, off + 16));
-            max_xs.push(read_f64_le_unchecked(parsed.entries, off + 24));
-            max_ys.push(read_f64_le_unchecked(parsed.entries, off + 32));
-            max_zs.push(read_f64_le_unchecked(parsed.entries, off + 40));
-            indices.push(read_u64_le_unchecked(parsed.indices, i * 8) as usize);
-        }
+        // One `collect` per column. Each is an exact-size allocation written
+        // through a pointer with no per-element capacity check, and each loop
+        // holds two live pointers instead of the seven a single zipped pass needs
+        // (which spilled: see the measurement in the commit message).
+        debug_assert_eq!(parsed.entries.len(), num_nodes * 48);
+        debug_assert_eq!(parsed.indices.len(), num_nodes * 8);
+        let records = parsed.entries.as_chunks::<48>().0;
+        let min_xs: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 0))
+            .collect();
+        let min_ys: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 8))
+            .collect();
+        let min_zs: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 16))
+            .collect();
+        let max_xs: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 24))
+            .collect();
+        let max_ys: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 32))
+            .collect();
+        let max_zs: Vec<f64> = records
+            .iter()
+            .map(|r| read_f64_le_unchecked(r, 40))
+            .collect();
+        let indices: Vec<usize> = parsed
+            .indices
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| read_u64_le_unchecked(b, 0) as usize)
+            .collect();
 
         Ok(SimdIndex3D {
             node_size: parsed.node_size,

@@ -35,7 +35,9 @@ const DATA: [f64; 400] = [
 ];
 
 fn boxes() -> Vec<Box2D> {
-    DATA.chunks_exact(4)
+    DATA.as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| Box2D::new(b[0], b[1], b[2], b[3]))
         .collect()
 }

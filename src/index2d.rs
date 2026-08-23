@@ -1917,7 +1917,7 @@ impl<'a> Index2DView<'a> {
         &self,
         query: Box2D,
         stack: &mut Vec<usize>,
-        mut visitor: F,
+        visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
@@ -1927,7 +1927,7 @@ impl<'a> Index2DView<'a> {
             stack,
             |bounds: Box2D| bounds.overlaps(query),
             |bounds: Box2D| query.contains(bounds),
-            |index| visitor(index),
+            visitor,
         )
     }
 

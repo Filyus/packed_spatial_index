@@ -1649,7 +1649,7 @@ impl<'a> Index3DView<'a> {
         &self,
         query: Box3D,
         stack: &mut Vec<usize>,
-        mut visitor: F,
+        visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
@@ -1659,7 +1659,7 @@ impl<'a> Index3DView<'a> {
             stack,
             |bounds: Box3D| bounds.overlaps(query),
             |bounds: Box3D| query.contains(bounds),
-            |index| visitor(index),
+            visitor,
         )
     }
 

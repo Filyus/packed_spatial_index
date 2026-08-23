@@ -32,7 +32,10 @@ pub use serializer::Serializer3DF32;
 use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
 #[cfg(feature = "simd")]
 use crate::persistence::read_u64_le_unchecked;
-use crate::{geometry::Point3D, neighbors::NeighborWorkspace};
+use crate::{
+    geometry::{Point3D, fold_max, fold_min},
+    neighbors::NeighborWorkspace,
+};
 
 // Imports used only by the SIMD query frontend (SimdIndex3DF32 + its view).
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
@@ -107,12 +110,12 @@ pub(crate) fn build_f32_3(
     let (mut emnx, mut emny, mut emnz) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
     let (mut emxx, mut emxy, mut emxz) = (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     for b in &items {
-        emnx = emnx.min(b.min_x);
-        emny = emny.min(b.min_y);
-        emnz = emnz.min(b.min_z);
-        emxx = emxx.max(b.max_x);
-        emxy = emxy.max(b.max_y);
-        emxz = emxz.max(b.max_z);
+        emnx = fold_min(emnx, b.min_x);
+        emny = fold_min(emny, b.min_y);
+        emnz = fold_min(emnz, b.min_z);
+        emxx = fold_max(emxx, b.max_x);
+        emxy = fold_max(emxy, b.max_y);
+        emxz = fold_max(emxz, b.max_z);
     }
     let extent = Box3D::new(emnx, emny, emnz, emxx, emxy, emxz);
 
@@ -144,12 +147,12 @@ pub(crate) fn build_f32_3(
                 (f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
             let mut j = 0;
             while j < node_size && read_pos < level_end {
-                nmnx = nmnx.min(min_xs[read_pos]);
-                nmny = nmny.min(min_ys[read_pos]);
-                nmnz = nmnz.min(min_zs[read_pos]);
-                nmxx = nmxx.max(max_xs[read_pos]);
-                nmxy = nmxy.max(max_ys[read_pos]);
-                nmxz = nmxz.max(max_zs[read_pos]);
+                nmnx = fold_min(nmnx, min_xs[read_pos]);
+                nmny = fold_min(nmny, min_ys[read_pos]);
+                nmnz = fold_min(nmnz, min_zs[read_pos]);
+                nmxx = fold_max(nmxx, max_xs[read_pos]);
+                nmxy = fold_max(nmxy, max_ys[read_pos]);
+                nmxz = fold_max(nmxz, max_zs[read_pos]);
                 read_pos += 1;
                 j += 1;
             }
@@ -205,12 +208,12 @@ fn build_single_node_3d_f32(
         max_zs.push(b.max_z);
         indices.push(idx);
 
-        rmnx = rmnx.min(b.min_x);
-        rmny = rmny.min(b.min_y);
-        rmnz = rmnz.min(b.min_z);
-        rmxx = rmxx.max(b.max_x);
-        rmxy = rmxy.max(b.max_y);
-        rmxz = rmxz.max(b.max_z);
+        rmnx = fold_min(rmnx, b.min_x);
+        rmny = fold_min(rmny, b.min_y);
+        rmnz = fold_min(rmnz, b.min_z);
+        rmxx = fold_max(rmxx, b.max_x);
+        rmxy = fold_max(rmxy, b.max_y);
+        rmxz = fold_max(rmxz, b.max_z);
     }
 
     min_xs.push(rmnx);

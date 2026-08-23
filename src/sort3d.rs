@@ -154,10 +154,13 @@ pub(crate) fn encode_sort_serial_3d<F>(
 where
     F: Fn(usize, &Box3D) -> (u64, usize),
 {
-    let mut order = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        order.push(encode(i, item));
-    }
+    // See `sort2d::encode_sort_serial`: `collect` allocates exactly once and writes
+    // through a pointer, where `push` re-read the capacity per item.
+    let mut order: Vec<(u64, usize)> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| encode(i, item))
+        .collect();
     if radix && items.len() >= RADIX_SORT_MIN_ITEMS_3D {
         radix_sort_pairs_u64_with_used_bits(&mut order, radix_bits, key_bits);
     } else {
@@ -265,13 +268,10 @@ fn axis_scale(extent_min: f64, extent_max: f64, axis_max: u32) -> f64 {
 #[inline]
 fn normalize_center(min: f64, max: f64, extent_min: f64, scale: f64, axis_max: u32) -> u32 {
     let normalized = (0.5 * (min + max) - extent_min) * scale;
-    if normalized.is_nan() || normalized <= 0.0 {
-        0
-    } else if normalized >= f64::from(axis_max) {
-        axis_max
-    } else {
-        normalized as u32
-    }
+    // See `sort2d::hilbert_coord`: clamp instead of branching. `axis_max` is a
+    // runtime value here but is never NaN (it is a `u32` widened to `f64`), so the
+    // same reasoning holds: NaN loses to `0.0`, and the cast truncates.
+    normalized.max(0.0).min(f64::from(axis_max)) as u32
 }
 
 #[doc(hidden)]

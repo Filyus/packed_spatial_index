@@ -3,7 +3,7 @@ use crate::config::DEFAULT_PARALLEL_MIN_ITEMS;
 use crate::{
     build::BuildError,
     config::DEFAULT_NODE_SIZE,
-    geometry::{Box2D, Num, empty_box2d, extend_box2d},
+    geometry::{Box2D, Num, empty_box2d, extend_box2d, fold_max, fold_min},
     index2d::Index2D,
     sort2d::{
         DEFAULT_RADIX_BITS, SortKey2D, SortKey2DStrategy, SortKeyContext, encode_sort_by_key,
@@ -279,10 +279,10 @@ impl Index2DBuilder {
         let mut max_x = Num::NEG_INFINITY;
         let mut max_y = Num::NEG_INFINITY;
         for b in items {
-            min_x = min_x.min(b.min_x);
-            min_y = min_y.min(b.min_y);
-            max_x = max_x.max(b.max_x);
-            max_y = max_y.max(b.max_y);
+            min_x = fold_min(min_x, b.min_x);
+            min_y = fold_min(min_y, b.min_y);
+            max_x = fold_max(max_x, b.max_x);
+            max_y = fold_max(max_y, b.max_y);
         }
 
         let scaled_width = u16::MAX as f64 / (max_x - min_x);

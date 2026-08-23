@@ -17,7 +17,7 @@ use crate::{
     build::BuildError,
     builder2d::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Box2D, Point2D, query_covers_tree_2d},
+    geometry::{Box2D, Point2D, fold_max, fold_min, query_covers_tree_2d},
     join::{join_core, self_join_core},
     neighbors::{NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first},
     persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
@@ -73,10 +73,10 @@ pub(crate) fn build_simd_index(
     let (mut e_min_x, mut e_min_y) = (f64::INFINITY, f64::INFINITY);
     let (mut e_max_x, mut e_max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     for b in &items {
-        e_min_x = e_min_x.min(b.min_x);
-        e_min_y = e_min_y.min(b.min_y);
-        e_max_x = e_max_x.max(b.max_x);
-        e_max_y = e_max_y.max(b.max_y);
+        e_min_x = fold_min(e_min_x, b.min_x);
+        e_min_y = fold_min(e_min_y, b.min_y);
+        e_max_x = fold_max(e_max_x, b.max_x);
+        e_max_y = fold_max(e_max_y, b.max_y);
     }
     let scaled_width = u16::MAX as f64 / (e_max_x - e_min_x);
     let scaled_height = u16::MAX as f64 / (e_max_y - e_min_y);
@@ -134,10 +134,10 @@ pub(crate) fn build_simd_index(
             let (mut nmxx, mut nmxy) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
             let mut j = 0;
             while j < node_size && read_pos < level_end {
-                nmnx = nmnx.min(min_xs[read_pos]);
-                nmny = nmny.min(min_ys[read_pos]);
-                nmxx = nmxx.max(max_xs[read_pos]);
-                nmxy = nmxy.max(max_ys[read_pos]);
+                nmnx = fold_min(nmnx, min_xs[read_pos]);
+                nmny = fold_min(nmny, min_ys[read_pos]);
+                nmxx = fold_max(nmxx, max_xs[read_pos]);
+                nmxy = fold_max(nmxy, max_ys[read_pos]);
                 read_pos += 1;
                 j += 1;
             }
@@ -183,10 +183,10 @@ fn build_single_node_soa(
         max_ys.push(b.max_y);
         indices.push(idx);
 
-        root_min_x = root_min_x.min(b.min_x);
-        root_min_y = root_min_y.min(b.min_y);
-        root_max_x = root_max_x.max(b.max_x);
-        root_max_y = root_max_y.max(b.max_y);
+        root_min_x = fold_min(root_min_x, b.min_x);
+        root_min_y = fold_min(root_min_y, b.min_y);
+        root_max_x = fold_max(root_max_x, b.max_x);
+        root_max_y = fold_max(root_max_y, b.max_y);
     }
 
     min_xs.push(root_min_x);

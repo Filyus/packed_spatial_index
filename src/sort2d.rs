@@ -63,10 +63,14 @@ pub(crate) fn encode_sort_serial<F>(
 where
     F: Fn(usize, &Box2D) -> (u32, u32),
 {
-    let mut order: Vec<(u32, u32)> = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        order.push(encode(i, item));
-    }
+    // `collect` over an ExactSizeIterator allocates exactly `items.len()` once and
+    // writes through a pointer, where the `push` loop re-read the capacity and
+    // stored the new length back on every item.
+    let mut order: Vec<(u32, u32)> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| encode(i, item))
+        .collect();
     if radix && items.len() >= RADIX_SORT_MIN_ITEMS {
         radix_sort_u32(&mut order, radix_bits);
     } else {
@@ -171,15 +175,13 @@ where
 #[inline]
 pub(crate) fn hilbert_coord(scaled: f64, lo: f64, hi: f64, extent_min: f64) -> u16 {
     let value = scaled * (0.5 * (lo + hi) - extent_min);
-    if value.is_nan() {
-        0
-    } else if value > u16::MAX as f64 {
-        u16::MAX
-    } else if value < 0.0 {
-        0
-    } else {
-        value as u16
-    }
+    // Saturate with `max`/`min` against constants rather than three data-dependent
+    // branch pairs. With a non-NaN constant operand LLVM emits a bare `maxsd`/
+    // `minsd` and no NaN fixup, and the clamp answers every case the branches did:
+    // NaN loses to `0.0` (`f64::max` returns the non-NaN operand), a value above
+    // the top saturates, a negative value floors at zero, and the final cast still
+    // truncates toward zero.
+    value.max(0.0).min(u16::MAX as f64) as u16
 }
 
 /// LSD radix sort for `(key_u32, index)` pairs, with configurable digit width.

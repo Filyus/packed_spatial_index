@@ -572,12 +572,35 @@ pub(crate) const fn empty_box2d() -> Box2D {
     )
 }
 
+/// Branch-free accumulator minimum for the build-time bounds folds.
+///
+/// `f64::min` is `llvm.minnum`; its baseline x86-64 lowering is `minsd`/`minpd`
+/// *plus* a four-instruction NaN fixup (`cmpunordpd`/`andpd`/`andnpd`/`orpd`), and
+/// the fixup also blocks the natural lane assignment, so an AoS row has to be
+/// deinterleaved before it can be folded. `if value < acc { value } else { acc }`
+/// is exactly one `minsd`.
+///
+/// It differs from `acc.min(value)` only when `acc` is NaN, which no caller can
+/// reach: every fold starts at `INFINITY` and every folded value comes from an
+/// item that `check_item_bounds` already accepted, and that check rejects NaN
+/// coordinates because `!(min <= max)` holds for NaN.
+#[inline(always)]
+pub(crate) fn fold_min<T: Copy + PartialOrd>(acc: T, value: T) -> T {
+    if value < acc { value } else { acc }
+}
+
+/// Branch-free accumulator maximum. See [`fold_min`].
+#[inline(always)]
+pub(crate) fn fold_max<T: Copy + PartialOrd>(acc: T, value: T) -> T {
+    if value > acc { value } else { acc }
+}
+
 #[inline(always)]
 pub(crate) fn extend_box2d(bounds: &mut Box2D, other: Box2D) {
-    bounds.min_x = bounds.min_x.min(other.min_x);
-    bounds.min_y = bounds.min_y.min(other.min_y);
-    bounds.max_x = bounds.max_x.max(other.max_x);
-    bounds.max_y = bounds.max_y.max(other.max_y);
+    bounds.min_x = fold_min(bounds.min_x, other.min_x);
+    bounds.min_y = fold_min(bounds.min_y, other.min_y);
+    bounds.max_x = fold_max(bounds.max_x, other.max_x);
+    bounds.max_y = fold_max(bounds.max_y, other.max_y);
 }
 
 #[inline(always)]
@@ -594,12 +617,12 @@ pub(crate) const fn empty_box3d() -> Box3D {
 
 #[inline(always)]
 pub(crate) fn extend_box3d(bounds: &mut Box3D, other: Box3D) {
-    bounds.min_x = bounds.min_x.min(other.min_x);
-    bounds.min_y = bounds.min_y.min(other.min_y);
-    bounds.min_z = bounds.min_z.min(other.min_z);
-    bounds.max_x = bounds.max_x.max(other.max_x);
-    bounds.max_y = bounds.max_y.max(other.max_y);
-    bounds.max_z = bounds.max_z.max(other.max_z);
+    bounds.min_x = fold_min(bounds.min_x, other.min_x);
+    bounds.min_y = fold_min(bounds.min_y, other.min_y);
+    bounds.min_z = fold_min(bounds.min_z, other.min_z);
+    bounds.max_x = fold_max(bounds.max_x, other.max_x);
+    bounds.max_y = fold_max(bounds.max_y, other.max_y);
+    bounds.max_z = fold_max(bounds.max_z, other.max_z);
 }
 
 #[inline]

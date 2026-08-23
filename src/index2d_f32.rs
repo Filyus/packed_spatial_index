@@ -33,7 +33,10 @@ pub use serializer::Serializer2DF32;
 use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
 #[cfg(feature = "simd")]
 use crate::persistence::read_u64_le_unchecked;
-use crate::{geometry::Point2D, neighbors::NeighborWorkspace};
+use crate::{
+    geometry::{Point2D, fold_max, fold_min},
+    neighbors::NeighborWorkspace,
+};
 
 // Imports used only by the SIMD query frontend (SimdIndex2DF32 + its view).
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
@@ -102,10 +105,10 @@ pub(crate) fn build_f32_2(
     let (mut e_min_x, mut e_min_y) = (f64::INFINITY, f64::INFINITY);
     let (mut e_max_x, mut e_max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     for b in &items {
-        e_min_x = e_min_x.min(b.min_x);
-        e_min_y = e_min_y.min(b.min_y);
-        e_max_x = e_max_x.max(b.max_x);
-        e_max_y = e_max_y.max(b.max_y);
+        e_min_x = fold_min(e_min_x, b.min_x);
+        e_min_y = fold_min(e_min_y, b.min_y);
+        e_max_x = fold_max(e_max_x, b.max_x);
+        e_max_y = fold_max(e_max_y, b.max_y);
     }
     let scaled_width = u16::MAX as f64 / (e_max_x - e_min_x);
     let scaled_height = u16::MAX as f64 / (e_max_y - e_min_y);
@@ -143,10 +146,10 @@ pub(crate) fn build_f32_2(
             let (mut nmxx, mut nmxy) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
             let mut j = 0;
             while j < node_size && read_pos < level_end {
-                nmnx = nmnx.min(min_xs[read_pos]);
-                nmny = nmny.min(min_ys[read_pos]);
-                nmxx = nmxx.max(max_xs[read_pos]);
-                nmxy = nmxy.max(max_ys[read_pos]);
+                nmnx = fold_min(nmnx, min_xs[read_pos]);
+                nmny = fold_min(nmny, min_ys[read_pos]);
+                nmxx = fold_max(nmxx, max_xs[read_pos]);
+                nmxy = fold_max(nmxy, max_ys[read_pos]);
                 read_pos += 1;
                 j += 1;
             }
@@ -193,10 +196,10 @@ fn build_single_node_soa_f32(
         max_ys.push(b.max_y);
         indices.push(idx);
 
-        rmnx = rmnx.min(b.min_x);
-        rmny = rmny.min(b.min_y);
-        rmxx = rmxx.max(b.max_x);
-        rmxy = rmxy.max(b.max_y);
+        rmnx = fold_min(rmnx, b.min_x);
+        rmny = fold_min(rmny, b.min_y);
+        rmxx = fold_max(rmxx, b.max_x);
+        rmxy = fold_max(rmxy, b.max_y);
     }
 
     min_xs.push(rmnx);

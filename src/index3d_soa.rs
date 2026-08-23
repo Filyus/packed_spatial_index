@@ -18,7 +18,7 @@ use crate::{
     build::BuildError,
     builder3d::BuildConfig3D,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Box3D, Point3D, query_covers_tree_3d},
+    geometry::{Box3D, Point3D, fold_max, fold_min, query_covers_tree_3d},
     join::{join_core, self_join_core},
     neighbors::{NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first},
     persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
@@ -117,12 +117,12 @@ pub(crate) fn build_simd_index_3d(
                 (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
             let mut j = 0;
             while j < node_size && read_pos < level_end {
-                nmnx = nmnx.min(min_xs[read_pos]);
-                nmny = nmny.min(min_ys[read_pos]);
-                nmnz = nmnz.min(min_zs[read_pos]);
-                nmxx = nmxx.max(max_xs[read_pos]);
-                nmxy = nmxy.max(max_ys[read_pos]);
-                nmxz = nmxz.max(max_zs[read_pos]);
+                nmnx = fold_min(nmnx, min_xs[read_pos]);
+                nmny = fold_min(nmny, min_ys[read_pos]);
+                nmnz = fold_min(nmnz, min_zs[read_pos]);
+                nmxx = fold_max(nmxx, max_xs[read_pos]);
+                nmxy = fold_max(nmxy, max_ys[read_pos]);
+                nmxz = fold_max(nmxz, max_zs[read_pos]);
                 read_pos += 1;
                 j += 1;
             }
@@ -176,12 +176,12 @@ fn build_single_node_soa_3d(
         max_zs.push(b.max_z);
         indices.push(idx);
 
-        rmnx = rmnx.min(b.min_x);
-        rmny = rmny.min(b.min_y);
-        rmnz = rmnz.min(b.min_z);
-        rmxx = rmxx.max(b.max_x);
-        rmxy = rmxy.max(b.max_y);
-        rmxz = rmxz.max(b.max_z);
+        rmnx = fold_min(rmnx, b.min_x);
+        rmny = fold_min(rmny, b.min_y);
+        rmnz = fold_min(rmnz, b.min_z);
+        rmxx = fold_max(rmxx, b.max_x);
+        rmxy = fold_max(rmxy, b.max_y);
+        rmxz = fold_max(rmxz, b.max_z);
     }
 
     min_xs.push(rmnx);
@@ -210,12 +210,12 @@ fn extent_3d(items: &[Box3D]) -> Box3D {
     let (mut mnx, mut mny, mut mnz) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
     let (mut mxx, mut mxy, mut mxz) = (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     for b in items {
-        mnx = mnx.min(b.min_x);
-        mny = mny.min(b.min_y);
-        mnz = mnz.min(b.min_z);
-        mxx = mxx.max(b.max_x);
-        mxy = mxy.max(b.max_y);
-        mxz = mxz.max(b.max_z);
+        mnx = fold_min(mnx, b.min_x);
+        mny = fold_min(mny, b.min_y);
+        mnz = fold_min(mnz, b.min_z);
+        mxx = fold_max(mxx, b.max_x);
+        mxy = fold_max(mxy, b.max_y);
+        mxz = fold_max(mxz, b.max_z);
     }
     Box3D::new(mnx, mny, mnz, mxx, mxy, mxz)
 }

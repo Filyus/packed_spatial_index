@@ -952,6 +952,19 @@ impl SimdIndex3D {
     }
 
     /// True when `query` fully contains the box stored at `pos`.
+    ///
+    /// The AVX2 and AVX-512 kernels below fold this into a second lane mask off the
+    /// vectors the overlap test already loaded, and the portable `wide::f64x4`
+    /// kernels deliberately do **not**. Porting the mask here was tried and
+    /// measured worse: callgrind, 1000 queries over 100k boxes, `search_simd`,
+    /// +9.9% instructions and +8.6% data refs in 2D, +13.7% / +8.3% in 3D. Four
+    /// (2D) or six (3D) `f64x4` column vectors plus the query splats do not fit
+    /// baseline SSE2's sixteen `xmm` registers once they have to stay live across
+    /// the lane-extraction loop, and the extra data refs are the spills. The
+    /// scalar test below is only reached for a hit *internal* child and
+    /// short-circuits on the first failing axis, so it is the cheaper shape here.
+    /// The intrinsic kernels do not have the problem because they run 256/512-bit
+    /// lanes, one register per column.
     #[inline]
     fn query_contains_node(&self, query: Box3D, pos: usize) -> bool {
         query.min_x <= self.min_xs[pos]
@@ -1030,21 +1043,26 @@ impl SimdIndex3D {
                         & load4(&self.min_zs, pos).simd_le(qmxz_v)
                         & load4(&self.max_zs, pos).simd_ge(qmnz_v);
                     let bits = mask.to_bitmask();
-                    if bits != 0 {
-                        for k in 0..4 {
-                            if bits & (1 << k) != 0 {
-                                let p = pos + k;
-                                let index = self.indices[p];
-                                if is_leaf {
-                                    out.push(index);
-                                } else {
-                                    stack.push(index);
-                                    stack.push(encode_level(
-                                        child_level,
-                                        self.query_contains_node(query, p),
-                                    ));
-                                }
-                            }
+                    // Drain the set bits instead of testing all four lanes. This kernel
+                    // always processes every hit, so the `tzcnt` never lands on a critical
+                    // path — unlike `visit_simd_impl`, whose visitor may break, where the
+                    // same rewrite measured 11% SLOWER on `index3d_simd_search/
+                    // uniform_simd_any_wide4` despite fewer instructions, branches and
+                    // mispredicts. Leave that one on the four-lane form.
+                    let mut rest = bits;
+                    while rest != 0 {
+                        let k = rest.trailing_zeros() as usize;
+                        rest &= rest - 1;
+                        let p = pos + k;
+                        let index = self.indices[p];
+                        if is_leaf {
+                            out.push(index);
+                        } else {
+                            stack.push(index);
+                            stack.push(encode_level(
+                                child_level,
+                                self.query_contains_node(query, p),
+                            ));
                         }
                     }
                     pos += 4;
@@ -1601,7 +1619,10 @@ impl SimdIndex3D {
 
 #[inline]
 fn load4(a: &[f64], p: usize) -> f64x4 {
-    f64x4::from([a[p], a[p + 1], a[p + 2], a[p + 3]])
+    // One range check, not four: `a[p..p + 4]` gives LLVM a length it can see, and
+    // the array conversion below cannot fail because that length is exactly four.
+    let four: [f64; 4] = a[p..p + 4].try_into().unwrap();
+    f64x4::from(four)
 }
 
 /// High bit of the stacked level word, set when the query fully contains a node so

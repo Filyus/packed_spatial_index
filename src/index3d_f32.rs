@@ -884,17 +884,12 @@ impl SimdIndex3DF32 {
         let qmxz_v = f32x8::splat(q.max_z);
         let qmnz_v = f32x8::splat(q.min_z);
 
+        // One range check, not eight: `a[p..p + 8]` gives LLVM a length it can see,
+        // and the array conversion below cannot fail because that length is exactly
+        // eight. See `load4` in `index2d_soa.rs` for the measurement.
         let load8 = |a: &[f32], p: usize| -> f32x8 {
-            f32x8::from([
-                a[p],
-                a[p + 1],
-                a[p + 2],
-                a[p + 3],
-                a[p + 4],
-                a[p + 5],
-                a[p + 6],
-                a[p + 7],
-            ])
+            let eight: [f32; 8] = a[p..p + 8].try_into().unwrap();
+            f32x8::from(eight)
         };
 
         let mut node_index = self.min_xs.len() - 1;
@@ -998,17 +993,12 @@ impl SimdIndex3DF32 {
         let qmxz_v = f32x8::splat(q.max_z);
         let qmnz_v = f32x8::splat(q.min_z);
 
+        // One range check, not eight: `a[p..p + 8]` gives LLVM a length it can see,
+        // and the array conversion below cannot fail because that length is exactly
+        // eight. See `load4` in `index2d_soa.rs` for the measurement.
         let load8 = |a: &[f32], p: usize| -> f32x8 {
-            f32x8::from([
-                a[p],
-                a[p + 1],
-                a[p + 2],
-                a[p + 3],
-                a[p + 4],
-                a[p + 5],
-                a[p + 6],
-                a[p + 7],
-            ])
+            let eight: [f32; 8] = a[p..p + 8].try_into().unwrap();
+            f32x8::from(eight)
         };
 
         let mut node_index = self.min_xs.len() - 1;

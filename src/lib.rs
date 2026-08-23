@@ -15,12 +15,25 @@
 //! helpers such as [`haversine_distance_2d`]. Range and ray results are item
 //! indices in insertion order.
 //!
+//! Each query below comes in several forms, and the one you reach for first is
+//! usually not [`search`](Index2D::search): it returns an owned `Vec`, so a
+//! boolean test wants [`any`](Index2D::any) (stops at the first hit, allocates
+//! nothing) rather than `search(..).is_empty()`, a hot loop wants
+//! `search_into` / `search_with` (reused buffers), a hit count wants
+//! [`count`](Index2D::count) rather than `search(..).len()`, a fold wants
+//! [`visit`](Index2D::visit), and an early exit wants
+//! [`search_iter`](Index2D::search_iter). Each of those ends the traversal
+//! early or writes into a buffer you own, so none of them is `search` with a
+//! filter on top.
+//!
 //! * **Range / overlap** — [`search`](Index2D::search) (plus `search_into`
 //!   / `search_with` / lazy [`search_iter`](Index2D::search_iter)),
-//!   [`any`](Index2D::any), [`first`](Index2D::first), and
+//!   [`any`](Index2D::any), [`first`](Index2D::first),
+//!   [`count`](Index2D::count), and
 //!   [`visit`](Index2D::visit) accept `Box2D` / `Box3D` and borrowed region
 //!   geometry implementing [`Overlaps2D`] or [`Overlaps3D`] (`Triangle2D`,
-//!   `ConvexPolygon2D`, `Frustum3D`).
+//!   `ConvexPolygon2D`, `Frustum3D` — the last one narrowed to the pixels around
+//!   a cursor turns the same query into 3D picking, see [`Frustum3D`]).
 //! * **Nearest neighbors** — from a point [`neighbors`](Index2D::neighbors)
 //!   (plus `_within` / `_into` / `_with` /
 //!   [`visit_neighbors`](Index2D::visit_neighbors)) or from a box

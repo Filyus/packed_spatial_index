@@ -1,4 +1,6 @@
-//! A 3D view frustum: six inward-pointing planes for conservative culling.
+//! A 3D view frustum: six inward-pointing planes for conservative culling — and,
+//! narrowed to the pixels around a cursor, for picking and rubber-band selection
+//! (see [`Frustum3D`]).
 //!
 //! [`Frustum3D`] can be queried with [`Index3D::search`](crate::Index3D::search). The query is *conservative*: it returns every item whose box
 //! overlaps the frustum, and may include a few boxes that lie just outside an
@@ -35,6 +37,65 @@ pub enum ClipSpaceZ {
 /// `a*p.x + b*p.y + c*p.z + d >= 0`, and inside the frustum when it is inside all
 /// six. The planes need not be normalized — only the sign of the plane equation
 /// is used.
+///
+/// # Picking a click, not just culling a camera
+///
+/// A frustum does not have to be the camera's. Narrow one to the few pixels
+/// around the cursor and the same query becomes 3D picking: every object whose
+/// box could be under the click, found by tree traversal instead of a scan over
+/// the scene. A dragged rectangle (rubber-band selection) is the same
+/// construction with a bigger rectangle.
+///
+/// Scale the view-projection so the clicked NDC rectangle fills the clip cube —
+/// the classic pick matrix — then read the planes off that:
+///
+/// ```
+/// use packed_spatial_index::{Box3D, ClipSpaceZ, Frustum3D, Index3DBuilder};
+///
+/// # let mut b = Index3DBuilder::new(2);
+/// # b.add(Box3D::new(-0.1, -0.1, -0.5, 0.1, 0.1, 0.5)); // under the cursor
+/// # b.add(Box3D::new(5.0, 5.0, 0.0, 6.0, 6.0, 1.0)); // far off to one side
+/// # let index = b.finish().unwrap();
+/// // The camera's view-projection, row-major (transpose a column-major one).
+/// let vp = [
+///     [1.0, 0.0, 0.0, 0.0],
+///     [0.0, 1.0, 0.0, 0.0],
+///     [0.0, 0.0, 1.0, 0.0],
+///     [0.0, 0.0, 0.0, 1.0],
+/// ];
+///
+/// // The clicked rectangle in NDC — here a small tolerance around the cursor.
+/// let (x0, x1, y0, y1) = (-0.05, 0.05, -0.05, 0.05);
+/// let (sx, sy) = (2.0 / (x1 - x0), 2.0 / (y1 - y0));
+/// let (tx, ty) = (-(x1 + x0) / (x1 - x0), -(y1 + y0) / (y1 - y0));
+///
+/// // pick = S * vp, where S maps that rectangle onto the whole clip cube.
+/// let blend = |r: [f64; 4], s: f64, t: f64| {
+///     let w = vp[3];
+///     [r[0] * s + w[0] * t, r[1] * s + w[1] * t, r[2] * s + w[2] * t, r[3] * s + w[3] * t]
+/// };
+/// let pick = [blend(vp[0], sx, tx), blend(vp[1], sy, ty), vp[2], vp[3]];
+///
+/// let under_cursor = Frustum3D::from_view_projection(pick, ClipSpaceZ::NegOneToOne);
+/// assert_eq!(index.search(&under_cursor), vec![0]);
+/// ```
+///
+/// Two things this gives you and one it does not. It gives the **candidate
+/// set** — conservatively, so an object just outside the tolerance may be in it,
+/// and none that should be there is missing — and it gives it in
+/// insertion-order ids, cheaply, without touching the rest of the scene. It does
+/// **not** give you the winner: results are bounding boxes in unspecified order,
+/// so "nearest to the camera" is a second step. Resolve it with
+/// [`Index3D::raycast_closest`](crate::Index3D::raycast_closest) along the
+/// cursor ray, which returns the first box the ray enters and the distance to
+/// it, or by testing the candidates against your real geometry — the boxes are
+/// a broad phase, and a click that lands inside an object's box but beside the
+/// object itself is a hit here and a miss there.
+///
+/// For a single-pixel pick with no tolerance, the ray alone is the more direct
+/// tool; reach for the frustum when the click has a radius, when the selection
+/// is a dragged rectangle, or when you want every candidate rather than the
+/// nearest one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frustum3D {
     planes: [[f64; 4]; 6],

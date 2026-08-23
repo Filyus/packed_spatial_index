@@ -5,18 +5,56 @@ Practical recipes and configuration. For the per-method API reference, see
 
 ## Choosing a query method
 
-- "Is there any overlap?" use `any`. It returns a `bool`, stops at the first hit,
-  and allocates nothing. Prefer it to `search(..).is_empty()`, which builds the
-  whole result `Vec` first. Use `first` for one hit, `visit` to fold over hits
-  without collecting.
-- `search` returns an owned `Vec`. In a hot loop reuse a buffer with `search_into`
-  (a caller `Vec`) or `search_with` / `neighbors_with` (a reusable `SearchWorkspace`
-  / `NeighborWorkspace`), or skip the `Vec` entirely with `visit` / `any` / `first`.
-- `search_iter` (owned `f64` indexes) is a lazy iterator: it descends on demand,
-  so `.next()` / `.take(k)` / `.find(..)` stop the traversal early with no result
-  `Vec`.
-- Use `Index2DView` / `Index3DView` to query persisted bytes without allocating
-  an owned index.
+Start from the answer you want, not from the query shape. The table below names
+the method for each need; the notes after it explain the reasoning.
+
+| I need | Use | Instead of |
+| --- | --- | --- |
+| A `bool` — "is anything in this box?" | `any(query)` — stops at the first hit, allocates nothing | `!search(query).is_empty()`, which collects every hit first |
+| Any one hit | `first(query) -> Option<usize>` | `search(query).first().copied()` |
+| Just how many hits there are | `count(query)` — counts during the traversal, allocates nothing | `search(query).len()`, which builds a `Vec` to throw away |
+| Every hit, one call, simplest code | `search(query) -> Vec<usize>` | — |
+| Every hit in a hot loop, no reallocation | `search_into(query, &mut vec)` (your `Vec`, cleared per call) or `search_with(query, &mut workspace)` (a reusable `SearchWorkspace`, returns a `&[usize]`) | `search`, which allocates a fresh `Vec` per query |
+| To stop part-way through the hits | `search_iter(query)` on the owned `f64` indexes — a lazy iterator, so `.take(k)` / `.find(..)` end the traversal — or `visit` returning `ControlFlow::Break` | collecting everything and then breaking |
+| To fold or aggregate hits (sum, min, push elsewhere) | `visit(query, ..)` | `search` followed by a loop |
+| The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `visit_neighbors` — same alloc-vs-buffer choice as above | sorting search results by distance |
+| The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
+| The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
+| Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
+| All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
+| To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
+| To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
+| The per-item blob back, not just the id | `payload(id)` / `search_payloads(query)` on a view, or `search_payloads` on a streaming reader | a side table keyed by id |
+| Exact answers from an `f32` index | `search_exact` / `neighbors_exact`, passing your own `f64` boxes | trusting the conservative superset |
+| To index fewer than ~100 boxes, or query fewer than ~50 times | a plain loop over your own `Box2D`s | building an index — see the crossovers below |
+
+`any`, `first`, `count`, `search_into`, `search_with` and `visit` all exist on the `f64`
+frontends — owned, SIMD and the zero-copy views alike — so a tight loop there
+never has to fall back to `search`. Two exceptions: `search_iter` is on the owned
+`f64` `Index2D` / `Index3D` only, and the scalar `Index2DF32` / `Index3DF32`
+carry `any` / `first` / `count` / `visit` but not the buffer-reusing
+`search_into` / `search_with` (the `SimdIndex*F32` frontends have those). The
+streaming readers carry `count` too, as `count(query) -> Result<usize, _>`,
+alongside `count_region` for the shape queries (and the `_async` twins under the
+`async` feature).
+
+Why the distinctions matter:
+
+- **`search` allocates; the alternatives do not.** Every `search` call returns a
+  fresh `Vec`, so a query in a hot loop pays an allocation per call even when the
+  result is one number or a `bool`. `search_into` reuses a `Vec` you own,
+  `search_with` / `neighbors_with` reuse a `SearchWorkspace` / `NeighborWorkspace`,
+  and `any` / `first` / `count` / `visit` never build a result buffer at all.
+- **Short-circuiting is a traversal property, not a filter.** `any`, `first`,
+  `visit`-with-`Break` and `search_iter` end the descent early, so they skip the
+  subtrees a collected result would have walked. Collecting first and then
+  breaking out of a loop over the results saves nothing.
+- **`search_iter` is genuinely lazy.** It holds an O(depth) stack and descends on
+  demand, so `.next()` / `.take(k)` / `.find(..)` stop mid-traversal with no
+  result `Vec`. Unlike the others it is only on the owned `f64` indexes.
+- **`count` is not `search(..).len()`.** It counts inside the traversal, so no
+  result buffer is built; on a streaming reader it is fallible like every other
+  query there, and it charges the same read budget as `search`.
 - Use `search_exact` / `neighbors_exact` on the `f32` indexes for exact results
   from compact storage; prefer the `f64` indexes for exact queries with many
   hits.
@@ -189,6 +227,38 @@ internal nodes, and subtrees fully inside the frustum are accepted whole). It is
 also *more* correct than a hand-rolled bounding-box-plus-filter, which can miss
 boxes the conservative test accepts just outside the frustum's tight bbox. The
 same generic overlap methods are on the zero-copy `Index3DView`.
+
+### Picking (3D)
+
+The frustum need not be the camera's. Narrowed to the few pixels around the
+cursor it answers "what is under the click", and widened to a dragged rectangle
+it answers rubber-band selection — both by tree traversal, without scanning the
+scene. Build the narrowed matrix the way `gluPickMatrix` did, by scaling the
+view-projection so the clicked NDC rectangle fills the clip cube, then read the
+planes off it with `Frustum3D::from_view_projection`; there is a complete,
+compiled example on [`Frustum3D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Frustum3D.html).
+
+What that gives you is the **candidate set**, conservatively: an object just
+outside the tolerance may be included, none that belongs is dropped. What it
+does not give you is the winner. Results are boxes, in unspecified order, so
+picking has a second step and the second step is where the accuracy lives:
+
+- **Nearest along the cursor ray** — `raycast_closest` returns the first box the
+  ray enters and the distance to it. For a single-pixel pick with no tolerance
+  this is the whole job and the frustum is unnecessary; for a click with a
+  radius, the frustum narrows the set and the ray orders it.
+- **Nearest to a point in space** — `neighbors` (or `neighbors_metric` for your
+  own distance) over the candidates' region, when "closest to where the user
+  clicked in world space" is the question rather than "first along the ray".
+- **Exact geometry** — the index stores bounding boxes, so a click inside an
+  object's box but beside the object itself is a hit here and a miss against the
+  real mesh. Any exact test is yours to run over the candidates; for triangle
+  meshes `Ray3D::closest_triangle` does it, and the payload can carry the
+  triangles (see [Keep payloads outside the index](#keep-payloads-outside-the-index)).
+
+The practical shape is: frustum to narrow, ray or exact test to decide. The
+frustum's job is to turn "test every object" into "test the handful the click
+could possibly touch".
 
 ## Find boxes that contain a point
 

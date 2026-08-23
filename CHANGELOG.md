@@ -21,6 +21,31 @@ All notable changes to this crate are documented here.
   own counter; that is four lines and a `ControlFlow` import for the most common
   aggregate over a query, which is how `search(..).len()` kept winning.
 
+### Documentation
+
+- The guide's "Choosing a query method" section now opens with an "I need … →
+  use …" table keyed by the answer you want — a `bool`, one hit, a count, every
+  hit, an early exit, a payload — rather than by the query shape, and the notes
+  under it explain why short-circuiting is a property of the traversal and not a
+  filter over collected results. A production consumer asked for methods that
+  already existed (`any`, `search_into`, allocation-free counting) because
+  nothing pointed at them from where they were looking.
+- `Frustum3D` now documents picking, which it could always do and nothing said
+  so: narrowed to the pixels around a cursor the same query answers "what is
+  under the click", and widened to a dragged rectangle it answers rubber-band
+  selection. The type carries a compiled pick-matrix example (scale the
+  view-projection so the clicked NDC rectangle fills the clip cube), and both it
+  and the guide are explicit about the half the index does not do — results are
+  conservative bounding-box candidates in unspecified order, so the winner comes
+  from a second step: `raycast_closest` along the cursor ray, `neighbors` for
+  nearest-in-world-space, or an exact test against real geometry. For a
+  single-pixel pick the ray alone remains the more direct tool.
+
+- Every `search` method now says in its own rustdoc that it allocates a fresh
+  `Vec` per call and names the cheaper sibling for a boolean test, a hot loop,
+  or a fold — `search` is where a reader lands first, so the alternatives are
+  documented there rather than only in the guide. No API change.
+
 ## [0.27.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.26.0...psi-v0.27.0) - 2026-08-12
 
 ### API

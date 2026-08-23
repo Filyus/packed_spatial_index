@@ -15,9 +15,11 @@ of every kind:
   metric — including **great-circle distance** for lon/lat data
 - **ray casts** (all hits or the closest)
 - **spatial joins** between two indexes
-- **region / culling** — 2D triangle / convex-polygon and 3D view-frustum queries
-  that prune to the true shape: **~1.5–7× fewer hits and ~2–14× faster** than the
-  bounding-box workaround (synthetic 200k-box bench)
+- **region / culling / picking** — 2D triangle / convex-polygon and 3D
+  view-frustum queries that prune to the true shape: **~1.5–7× fewer hits and
+  ~2–14× faster** than the bounding-box workaround (synthetic 200k-box bench).
+  A frustum narrowed to the pixels around the cursor turns the same query into
+  3D picking or rubber-band selection
 
 Queries run on **runtime-dispatched SIMD** — the widest kernel your CPU offers is
 chosen at load time (`AVX-512 → AVX2 → SSE2`), no special build flags. Range
@@ -84,13 +86,15 @@ the [coverage matrix](docs/guide.md#coverage-matrix)). Range/ray results are ite
 insertion order; result order is unspecified. For a boolean "any overlap?" reach
 for `any` (no allocation, stops at the first hit) rather than
 `search(..).is_empty()`; `search` returns an owned `Vec`, so in hot loops reuse a
-buffer (`search_into` / `search_with`) or fold with `visit`. See the
-[guide](docs/guide.md#choosing-a-query-method) and
-[docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
+buffer (`search_into` / `search_with`), count with `count`, or fold with
+`visit`. The guide's
+[I need … → use …](docs/guide.md#choosing-a-query-method) table maps each need
+onto its method — start there rather than reaching for `search` by default, and
+see [docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
 
 | Query | Methods |
 | --- | --- |
-| Range / overlap | [`search`][search], [`search_iter`][search_iter], [`search_into`][search_into], [`search_with`][search_with], [`any`][any], [`first`][first], [`visit`][visit] |
+| Range / overlap | [`search`][search], [`search_iter`][search_iter], [`search_into`][search_into], [`search_with`][search_with], [`any`][any], [`first`][first], [`count`][count], [`visit`][visit] |
 | Nearest neighbors (point) | [`neighbors`][neighbors], [`neighbors_within`][neighbors_within], [`neighbors_into`][neighbors_into], [`neighbors_with`][neighbors_with], [`visit_neighbors`][visit_neighbors] |
 | Nearest neighbors (box) | [`neighbors_of_box`][neighbors_of_box], [`neighbors_of_box_within`][neighbors_of_box_within], [`neighbors_of_box_into`][neighbors_of_box_into], [`neighbors_of_box_with`][neighbors_of_box_with], [`visit_neighbors_of_box`][visit_neighbors_of_box] |
 | Geographic / custom-metric kNN | [`neighbors_metric`][neighbors_metric], [`neighbors_metric_into`][neighbors_metric_into], [`visit_neighbors_metric`][visit_neighbors_metric] — pass a `\|box\| -> f64` distance (e.g. [`haversine_distance_2d`][haversine_distance_2d] for lon/lat) |
@@ -273,6 +277,7 @@ Licensed under the Apache License, Version 2.0.
 [search_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_with
 [any]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any
 [first]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.first
+[count]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.count
 [visit]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit
 [neighbors]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors
 [neighbors_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_within

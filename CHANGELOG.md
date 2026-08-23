@@ -6,6 +6,45 @@ All notable changes to this crate are documented here.
 
 ### Performance
 
+- The SoA indexes' serialize and load paths now move a whole box record at a
+  time. `SimdIndex*::to_bytes` wrote one `f64` per `extend_from_slice` — a
+  capacity branch and a length store-back for every eight bytes, four or six
+  times per node — and `from_bytes` pushed the same way into `with_capacity`
+  columns. Staging the record and appending it whole, and filling one column per
+  exact-size `collect`, takes `simd_to_bytes_into` to 0.69x at 100 000 boxes and
+  0.84x at 1 000 000 (2D; 0.68x / 0.84x in 3D) and `simd_from_bytes_owned` to
+  0.89x at 1 000 000 2D. This is the SoA<->AoS transpose the persistence table
+  in `docs/performance.md` prices as the reason the SIMD index costs more to
+  persist than the scalar one. The 3D 1 000 000 load did not resolve — at 48 MB
+  it is bandwidth-bound, not instruction-bound. Measured interleaved on a pinned
+  performance core over 7 rounds, against the scalar `from_bytes_owned`
+  benchmarks as controls (0.995 and 0.999).
+- The portable `wide` SIMD kernels — the tier the runtime dispatch falls back
+  to without AVX2, which is also the wasm32 `simd128` path — assembled each lane
+  vector from four (or eight) separately indexed elements, so every load carried
+  that many bounds checks; `end` comes from a different `Vec` than the columns,
+  so LLVM could not fold them. Slicing once gives it a length it can see. The
+  collecting kernels also drain the set bits rather than testing all four lanes.
+  `query/simd_simd_serial` runs at 0.80x, `index3d_simd_search/
+  uniform_simd_any_wide4` at 0.90x, `query/simd_any_wide4_serial` at 0.92x,
+  against controls at 1.005 and 0.997. The AVX-512 and AVX2 tiers are untouched,
+  so machines that reach them see no change to range search.
+- Build-time bounds folds and coordinate clamps are branch-free. `f64::min` and
+  `f64::max` carry a four-instruction NaN fixup on baseline x86-64 that also
+  forces an AoS row to be deinterleaved before it can fold; the inputs here are
+  already proven NaN-free by `check_item_bounds`, so a compare-select is exact
+  and compiles to one instruction. With the saturating clamps in `hilbert_coord`
+  / `normalize_center` and an exact-size `collect` for the sort-key vector, a
+  100 000-box build executes 0.86x the instructions (0.88x in 3D). Counted with
+  callgrind rather than clocked: the build is dominated by the radix sort and
+  the reorder gather, both memory-bound, and the wall-clock effect sits under
+  this machine's layout floor.
+- `count(query)` now answers a fully contained subtree from its leaf range
+  instead of testing every item inside it, so a wide window costs node pops
+  rather than item tests. On 1 000 queries covering 4-12% of the extent over
+  100 000 boxes it executes 0.73x the instructions with 0.87x the branch
+  mispredictions. Region queries keep the traversal they had.
+
 - The zero-copy views' range search now takes the contained-subtree fast path.
   `Index2DView` / `Index3DView` had a root-contains shortcut and nothing below
   it, so a query covering a whole subtree still parsed every one of its boxes

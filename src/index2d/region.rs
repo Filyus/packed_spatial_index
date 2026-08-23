@@ -26,6 +26,18 @@ pub trait SearchQuery2D: Sized {
     fn visit_index<B, F>(self, index: &Index2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>;
+
+    /// Count overlapping items. The default counts through [`visit_index`], which is
+    /// right for region queries; `Box2D` overrides it with a traversal that answers a
+    /// fully contained subtree from its leaf range.
+    fn count_index(self, index: &Index2D) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_index(index, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
     fn search_iter_index<'a>(self, index: &'a Index2D) -> Self::Iter<'a>
     where
         Self: 'a;
@@ -41,10 +53,25 @@ pub trait SearchQuery2D: Sized {
     fn visit_view<B, F>(self, view: &Index2DView<'_>, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>;
+
+    /// Count overlapping items in a view. See [`count_index`](Self::count_index).
+    fn count_view(self, view: &Index2DView<'_>) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_view(view, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
 }
 
 impl SearchQuery2D for Box2D {
     type Iter<'a> = Search2DIter<'a>;
+
+    #[inline]
+    fn count_index(self, index: &Index2D) -> usize {
+        index.count_overlaps(self)
+    }
 
     #[inline]
     fn search_into_index(self, index: &Index2D, out: &mut Vec<usize>) {

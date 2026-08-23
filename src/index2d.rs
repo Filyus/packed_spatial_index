@@ -364,12 +364,7 @@ impl Index2D {
     /// assert_eq!(index.count(Box2D::new(20.0, 20.0, 21.0, 21.0)), 0);
     /// ```
     pub fn count<Q: SearchQuery2D>(&self, query: Q) -> usize {
-        let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit(query, |_| {
-            count += 1;
-            ControlFlow::Continue(())
-        });
-        count
+        query.count_index(self)
     }
 
     /// Return one overlapping item, if any.
@@ -1091,6 +1086,74 @@ impl Index2D {
                 node_index = stack.pop().unwrap();
             } else {
                 return;
+            }
+        }
+    }
+
+    /// Count items overlapping `query`, answering a fully contained subtree from
+    /// its leaf range instead of testing the items inside it.
+    ///
+    /// This is the counting twin of `search_into_stack_contained_impl`: same
+    /// traversal, same `CONTAINED_FLAG` encoding, but a contained node contributes
+    /// `end - start` and never touches an entry. `count` used to run the plain
+    /// visitor traversal, which tests every item under a contained subtree and
+    /// calls a closure for each hit, so a window covering a fraction `f` of an
+    /// `N`-item index cost `O(f * N)` where it now costs `O(f * N / node_size)`
+    /// node pops.
+    fn count_overlaps(&self, query: Box2D) -> usize {
+        if self.num_items == 0 {
+            return 0;
+        }
+
+        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
+        const LEVEL_MASK: usize = !CONTAINED_FLAG;
+
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut total = 0usize;
+        let mut node_index = self.entries.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let node_entries = &self.entries[node_index..end];
+
+            if contained {
+                let (start, leaf_end) = leaf_group_range(self, node_index, end, level);
+                total += leaf_end - start;
+            } else if is_leaf {
+                // Branch-free over the slice: LLVM vectorizes the per-node test, and
+                // a count has nothing to do per hit but add one.
+                let mut hits = 0usize;
+                for b in node_entries {
+                    hits += usize::from(b.overlaps(query));
+                }
+                total += hits;
+            } else {
+                let child_level = level - 1;
+                let node_indices = &self.indices[node_index..end];
+                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                    if !b.overlaps(query) {
+                        continue;
+                    }
+                    stack.push(index);
+                    let encoded_level = if query.contains(*b) {
+                        child_level | CONTAINED_FLAG
+                    } else {
+                        child_level
+                    };
+                    stack.push(encoded_level);
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded_level = stack.pop().unwrap();
+                level = encoded_level & LEVEL_MASK;
+                contained = (encoded_level & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return total;
             }
         }
     }

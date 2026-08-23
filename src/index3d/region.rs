@@ -114,13 +114,14 @@ impl SearchQuery3D for Box3D {
     #[inline]
     fn any_view(self, view: &Index3DView<'_>) -> bool {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        view.visit_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
+        view.visit_overlaps_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     #[inline]
     fn first_view(self, view: &Index3DView<'_>) -> Option<usize> {
-        match self.visit_view(view, ControlFlow::Break) {
+        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        match view.visit_overlaps_with_stack(self, &mut stack, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }

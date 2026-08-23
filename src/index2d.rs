@@ -31,7 +31,7 @@ use crate::persistence::{
     LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, payload_slice,
     read_f64_le_unchecked, read_u64_le_unchecked,
 };
-use crate::range::{collect_overlaps, visit_overlaps};
+use crate::range::{visit_overlaps, visit_region};
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 use crate::tree_access::{TreeAccess, leaf_group_range};
 use crate::triangle::{Triangle2, blobs_as_records};
@@ -1878,6 +1878,13 @@ impl<'a> Index2DView<'a> {
         )
     }
 
+    /// Range search over the byte layout, with the contained-subtree fast path.
+    ///
+    /// The shared region traversal, not the overlaps-only one: a subtree the
+    /// query fully contains is emitted whole, so its items are never parsed out
+    /// of the buffer or tested one by one. `any` / `first` deliberately keep the
+    /// overlaps-only path -- they stop at the first hit, so a containment test
+    /// per node could only add work.
     #[doc(hidden)]
     pub fn search_into_stack(
         &self,
@@ -1885,11 +1892,48 @@ impl<'a> Index2DView<'a> {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        collect_overlaps(self, query, results, stack);
+        results.clear();
+        let _: ControlFlow<()> = visit_region(
+            self,
+            stack,
+            |bounds: Box2D| bounds.overlaps(query),
+            |bounds: Box2D| query.contains(bounds),
+            |index| {
+                results.push(index);
+                ControlFlow::Continue(())
+            },
+        );
     }
 
+    /// Range search over the byte layout, with the contained-subtree fast path.
+    ///
+    /// The shared region traversal, not the overlaps-only one: a subtree the
+    /// query fully contains is emitted whole, so its items are never parsed out
+    /// of the buffer or tested one by one. `any` / `first` deliberately keep the
+    /// overlaps-only path -- they stop at the first hit, so a containment test
+    /// per node could only add work.
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
+        &self,
+        query: Box2D,
+        stack: &mut Vec<usize>,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region(
+            self,
+            stack,
+            |bounds: Box2D| bounds.overlaps(query),
+            |bounds: Box2D| query.contains(bounds),
+            |index| visitor(index),
+        )
+    }
+
+    /// Overlaps-only traversal, for the short-circuiting entry points.
+    #[doc(hidden)]
+    pub fn visit_overlaps_with_stack<B, F>(
         &self,
         query: Box2D,
         stack: &mut Vec<usize>,

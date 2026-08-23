@@ -4,6 +4,27 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Performance
+
+- The zero-copy views' range search now takes the contained-subtree fast path.
+  `Index2DView` / `Index3DView` had a root-contains shortcut and nothing below
+  it, so a query covering a whole subtree still parsed every one of its boxes
+  out of the byte buffer and tested it — the one search path in the crate that
+  did, since the owned indexes and the views' own region queries already share
+  that traversal. Routing `search` / `search_into` / `search_with` / `visit`
+  through it removes the per-item work: on 200 000 clustered boxes the bounds
+  parses for a 15% window drop 5 414 → 1 070 and the query runs at 0.65× the
+  time, a 40% window 35 254 → 2 358 at 0.48×, a whole-extent-ish window
+  213 337 → 2 997 at 0.34×; at 1 000 000 boxes the same cells read 0.48×, 0.35×
+  and 0.21×. Small windows are unchanged — a window that contains no whole node
+  has nothing to skip, and those cells measured inside the harness's own floor.
+  `any` and `first` deliberately keep the overlaps-only traversal: they stop at
+  the first hit, so a containment test per node could only add work. Measured
+  with both traversals in one binary (paired, interleaved, order-alternating),
+  against a sliver-window control where the mechanism cannot fire and an
+  extent-covering control where both arms take the root shortcut; both read
+  1.00 ± 0.03.
+
 ### Search
 
 - Added `count(query)`, which returns how many items overlap a query without

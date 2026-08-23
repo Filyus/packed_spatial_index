@@ -58,40 +58,6 @@ where
     }
 }
 
-/// Collect every leaf item whose bounds overlap `query`.
-///
-/// The root-contained fast path mirrors existing view traversal: if the query
-/// contains the whole tree extent, every leaf id is emitted without descending.
-#[inline]
-pub(crate) fn collect_overlaps<T>(
-    tree: &T,
-    query: T::Bounds,
-    results: &mut Vec<usize>,
-    stack: &mut Vec<usize>,
-) where
-    T: TreeAccess,
-{
-    results.clear();
-    stack.clear();
-    if tree.tree_num_items() == 0 {
-        return;
-    }
-
-    let root = tree.tree_bounds(tree.tree_num_nodes() - 1);
-    // `bounds_overlap` first: see the same guard below in `visit_region`.
-    if T::bounds_overlap(root, query) && T::bounds_contain(query, root) {
-        for pos in 0..tree.tree_num_items() {
-            results.push(tree.tree_index(pos));
-        }
-        return;
-    }
-
-    let _: ControlFlow<()> = visit_overlaps(tree, query, stack, |index| {
-        results.push(index);
-        ControlFlow::Continue(())
-    });
-}
-
 /// Visit every item whose bounds overlap an arbitrary region predicate.
 ///
 /// `overlaps` decides whether a node must be descended or a leaf item emitted;

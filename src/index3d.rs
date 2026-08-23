@@ -18,7 +18,7 @@ use crate::{
         LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, payload_slice,
         read_f64_le_unchecked, read_u64_le_unchecked,
     },
-    range::{collect_overlaps, visit_overlaps},
+    range::{visit_overlaps, visit_region},
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree_access::TreeAccess,
     triangle::{Triangle3, blobs_as_records},
@@ -1610,6 +1610,13 @@ impl<'a> Index3DView<'a> {
         )
     }
 
+    /// Range search over the byte layout, with the contained-subtree fast path.
+    ///
+    /// The shared region traversal, not the overlaps-only one: a subtree the
+    /// query fully contains is emitted whole, so its items are never parsed out
+    /// of the buffer or tested one by one. `any` / `first` deliberately keep the
+    /// overlaps-only path -- they stop at the first hit, so a containment test
+    /// per node could only add work.
     #[doc(hidden)]
     pub fn search_into_stack(
         &self,
@@ -1617,11 +1624,48 @@ impl<'a> Index3DView<'a> {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        collect_overlaps(self, query, results, stack);
+        results.clear();
+        let _: ControlFlow<()> = visit_region(
+            self,
+            stack,
+            |bounds: Box3D| bounds.overlaps(query),
+            |bounds: Box3D| query.contains(bounds),
+            |index| {
+                results.push(index);
+                ControlFlow::Continue(())
+            },
+        );
     }
 
+    /// Range search over the byte layout, with the contained-subtree fast path.
+    ///
+    /// The shared region traversal, not the overlaps-only one: a subtree the
+    /// query fully contains is emitted whole, so its items are never parsed out
+    /// of the buffer or tested one by one. `any` / `first` deliberately keep the
+    /// overlaps-only path -- they stop at the first hit, so a containment test
+    /// per node could only add work.
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region(
+            self,
+            stack,
+            |bounds: Box3D| bounds.overlaps(query),
+            |bounds: Box3D| query.contains(bounds),
+            |index| visitor(index),
+        )
+    }
+
+    /// Overlaps-only traversal, for the short-circuiting entry points.
+    #[doc(hidden)]
+    pub fn visit_overlaps_with_stack<B, F>(
         &self,
         query: Box3D,
         stack: &mut Vec<usize>,

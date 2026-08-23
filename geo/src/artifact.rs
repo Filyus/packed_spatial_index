@@ -636,25 +636,24 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
     /// ```
     pub fn count_entries<Q: Into<GeoQuery2D>>(&self, query: Q) -> Result<usize, GeoError> {
         let query = query.into();
-        let mut count = 0usize;
         if let GeoQuery2D::Polygon(multi_polygon) = &query {
             ensure_polygon_query_not_empty(multi_polygon)?;
             let region = PolygonRegion(multi_polygon);
-            match &self.index {
-                GeoStreamIndex2D::F64(index) => index.visit_region(&region, |_| count += 1)?,
-                GeoStreamIndex2D::F32(index) => index.visit_region(&region, |_| count += 1)?,
-            }
-            return Ok(count);
+            return Ok(match &self.index {
+                GeoStreamIndex2D::F64(index) => index.count_region(&region)?,
+                GeoStreamIndex2D::F32(index) => index.count_region(&region)?,
+            });
         }
         let boxes = query.candidate_boxes_2d()?;
         if boxes.len() > 1 {
             return Ok(self.search_entry_ids(query)?.len());
         }
+        let mut count = 0usize;
         for bbox in boxes {
-            match &self.index {
-                GeoStreamIndex2D::F64(index) => index.visit(bbox, |_| count += 1)?,
-                GeoStreamIndex2D::F32(index) => index.visit(bbox, |_| count += 1)?,
-            }
+            count += match &self.index {
+                GeoStreamIndex2D::F64(index) => index.count(bbox)?,
+                GeoStreamIndex2D::F32(index) => index.count(bbox)?,
+            };
         }
         Ok(count)
     }
@@ -1085,35 +1084,24 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
         query: Q,
     ) -> Result<usize, GeoError> {
         let query = query.into();
-        let mut count = 0usize;
         if let GeoQuery2D::Polygon(multi_polygon) = &query {
             ensure_polygon_query_not_empty(multi_polygon)?;
             let region = PolygonRegion(multi_polygon);
-            match &self.index {
-                GeoStreamIndex2D::F64(index) => {
-                    index.visit_region_async(&region, |_| count += 1).await?
-                }
-                GeoStreamIndex2D::F32(index) => {
-                    index.visit_region_async(&region, |_| count += 1).await?
-                }
-            }
-            return Ok(count);
+            return Ok(match &self.index {
+                GeoStreamIndex2D::F64(index) => index.count_region_async(&region).await?,
+                GeoStreamIndex2D::F32(index) => index.count_region_async(&region).await?,
+            });
         }
         let boxes = query.candidate_boxes_2d()?;
         if boxes.len() > 1 {
             return Ok(self.search_entry_ids_async(query).await?.len());
         }
-        // A `Box2D` is its own region, so the box case rides the same visitor
-        // rather than needing a box-shaped async twin in core.
+        let mut count = 0usize;
         for bbox in boxes {
-            match &self.index {
-                GeoStreamIndex2D::F64(index) => {
-                    index.visit_region_async(&bbox, |_| count += 1).await?
-                }
-                GeoStreamIndex2D::F32(index) => {
-                    index.visit_region_async(&bbox, |_| count += 1).await?
-                }
-            }
+            count += match &self.index {
+                GeoStreamIndex2D::F64(index) => index.count_async(bbox).await?,
+                GeoStreamIndex2D::F32(index) => index.count_async(bbox).await?,
+            };
         }
         Ok(count)
     }
@@ -1903,18 +1891,16 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn count_entries<Q: Into<GeoQuery3D>>(&self, query: Q) -> Result<usize, GeoError> {
-        let mut count = 0usize;
-        match query.into() {
+        Ok(match query.into() {
             GeoQuery3D::Box3D(bbox) => match &self.index {
-                GeoStreamIndex3D::F64(index) => index.visit(bbox, |_| count += 1)?,
-                GeoStreamIndex3D::F32(index) => index.visit(bbox, |_| count += 1)?,
+                GeoStreamIndex3D::F64(index) => index.count(bbox)?,
+                GeoStreamIndex3D::F32(index) => index.count(bbox)?,
             },
             GeoQuery3D::Frustum3D(frustum) => match &self.index {
-                GeoStreamIndex3D::F64(index) => index.visit_region(&frustum, |_| count += 1)?,
-                GeoStreamIndex3D::F32(index) => index.visit_region(&frustum, |_| count += 1)?,
+                GeoStreamIndex3D::F64(index) => index.count_region(&frustum)?,
+                GeoStreamIndex3D::F32(index) => index.count_region(&frustum)?,
             },
-        }
-        Ok(count)
+        })
     }
 
     /// Search and return one deduplicated [`FeatureRef`] per matched source
@@ -2342,27 +2328,16 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
         &self,
         query: Q,
     ) -> Result<usize, GeoError> {
-        let mut count = 0usize;
-        match query.into() {
-            // A `Box3D` is its own region, as in the 2D counterpart.
+        Ok(match query.into() {
             GeoQuery3D::Box3D(bbox) => match &self.index {
-                GeoStreamIndex3D::F64(index) => {
-                    index.visit_region_async(&bbox, |_| count += 1).await?
-                }
-                GeoStreamIndex3D::F32(index) => {
-                    index.visit_region_async(&bbox, |_| count += 1).await?
-                }
+                GeoStreamIndex3D::F64(index) => index.count_async(bbox).await?,
+                GeoStreamIndex3D::F32(index) => index.count_async(bbox).await?,
             },
             GeoQuery3D::Frustum3D(frustum) => match &self.index {
-                GeoStreamIndex3D::F64(index) => {
-                    index.visit_region_async(&frustum, |_| count += 1).await?
-                }
-                GeoStreamIndex3D::F32(index) => {
-                    index.visit_region_async(&frustum, |_| count += 1).await?
-                }
+                GeoStreamIndex3D::F64(index) => index.count_region_async(&frustum).await?,
+                GeoStreamIndex3D::F32(index) => index.count_region_async(&frustum).await?,
             },
-        }
-        Ok(count)
+        })
     }
 
     /// Search headers over async range I/O; the 3D counterpart of

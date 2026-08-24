@@ -30,6 +30,14 @@ pub struct SearchParams {
     /// planes `a,b,c,d`. Mutually exclusive with `bbox`.
     #[serde(default)]
     pub frustum: Option<String>,
+    /// Spherical point-radius query as `lon,lat,metres`, in degrees and metres.
+    /// Mutually exclusive with `bbox` and `frustum`.
+    #[serde(default)]
+    pub radius: Option<String>,
+    /// What exact filtering does when the artifact's edge model does not match
+    /// the query: `reject` (default) or `treat_as_planar`.
+    #[serde(default)]
+    pub nonplanar: Option<String>,
     /// Maximum returned records.
     #[serde(default)]
     pub limit: Option<String>,
@@ -67,6 +75,34 @@ pub enum CountMode {
     Records,
     /// Return `numberMatched` only, with an empty `matches` array.
     Only,
+}
+
+/// What exact filtering does when the artifact's declared edge model cannot
+/// answer the query it was given.
+///
+/// A spherical radius over a column declaring planar edges is the case that
+/// matters: GeoJSON and GeoParquet without an `edges` member declare planar,
+/// which is most real data, so rejecting is right by default -- the answer
+/// would silently be to a different question -- and useless as the only
+/// option. `gp2psindex query` exposes the same choice as
+/// `--treat-nonplanar-as-planar`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NonPlanarMode {
+    /// Refuse the query rather than answer a different one.
+    #[default]
+    Reject,
+    /// Read the stored coordinates as planar XY for the predicate.
+    TreatAsPlanar,
+}
+
+impl From<NonPlanarMode> for NonPlanarExactPolicy {
+    fn from(mode: NonPlanarMode) -> Self {
+        match mode {
+            NonPlanarMode::Reject => NonPlanarExactPolicy::Reject,
+            NonPlanarMode::TreatAsPlanar => NonPlanarExactPolicy::TreatAsPlanar,
+        }
+    }
 }
 
 /// Spatial predicate applied by a search.
@@ -118,6 +154,9 @@ pub struct QueryInfo {
     /// Parsed frustum planes; absent when the query was a bbox.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frustum: Option<[[f64; 4]; 6]>,
+    /// Parsed radius query as `[lon, lat, metres]`; absent for other shapes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub radius: Option<[f64; 3]>,
     /// Applied spatial predicate.
     pub predicate: QueryPredicate,
     /// Applied result level; `/items` responses omit it (always feature).
@@ -132,6 +171,10 @@ pub struct QueryInfo {
     /// Applied count mode; `/items` responses omit it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<CountMode>,
+    /// Applied non-planar policy. Only meaningful for an exact query, so it is
+    /// reported only when one ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonplanar: Option<NonPlanarMode>,
     /// Applied limit.
     pub limit: usize,
     /// Applied offset.
@@ -167,6 +210,9 @@ pub enum QueryShapeKind {
     Bbox,
     /// Six inward-pointing planes. 3D artifacts only.
     Frustum,
+    /// A spherical cap around a lon/lat point. 2D artifacts whose payload can
+    /// be filtered exactly, since the cap is always narrowed after the index.
+    Radius,
 }
 
 /// Collection summary returned by list/detail endpoints.
@@ -392,12 +438,15 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
     } else {
         vec![CountMode::Records, CountMode::Only]
     };
-    // A frustum is a 3D region; a 2D artifact has no z to test it against.
-    let query_shapes = if matches!(collection.manifest().dims, CoordinateDims::Xyz) {
-        vec![QueryShapeKind::Bbox, QueryShapeKind::Frustum]
-    } else {
-        vec![QueryShapeKind::Bbox]
-    };
+    // A frustum is a 3D region; a 2D artifact has no z to test it against. A
+    // radius is the other way round -- it is a lon/lat cap narrowed against
+    // source geometry, so it needs what exact filtering needs.
+    let mut query_shapes = vec![QueryShapeKind::Bbox];
+    if matches!(collection.manifest().dims, CoordinateDims::Xyz) {
+        query_shapes.push(QueryShapeKind::Frustum);
+    } else if collection.supports_intersects_predicate() {
+        query_shapes.push(QueryShapeKind::Radius);
+    }
     Capabilities {
         items: payload_kind == PayloadKind::FeatureJson,
         predicates,
@@ -434,6 +483,7 @@ pub fn search_response(
             collection,
             &options.shape,
             options.predicate,
+            options.nonplanar,
             shape,
             options.offset,
             options.limit,
@@ -444,11 +494,14 @@ pub fn search_response(
         query: QueryInfo {
             bbox: options.bbox(),
             frustum: options.frustum(),
+            radius: options.radius(),
             predicate: options.predicate,
             level: Some(shape.level),
             payload: Some(shape.payload),
             identity: Some(shape.identity),
             count: Some(count_mode),
+            nonplanar: (options.predicate == QueryPredicate::Intersects || options.is_exact())
+                .then_some(options.nonplanar),
             limit: options.limit,
             offset: options.offset,
         },
@@ -503,6 +556,7 @@ pub fn items_response(
         collection,
         &options.shape,
         options.predicate,
+        options.nonplanar,
         RecordShape {
             payload: PayloadMode::Full,
             level: ResultLevel::Feature,
@@ -540,11 +594,14 @@ pub fn items_response(
         query: QueryInfo {
             bbox: options.bbox(),
             frustum: options.frustum(),
+            radius: options.radius(),
             predicate: options.predicate,
             level: None,
             payload: None,
             identity: None,
             count: None,
+            nonplanar: (options.predicate == QueryPredicate::Intersects || options.is_exact())
+                .then_some(options.nonplanar),
             limit: options.limit,
             offset: options.offset,
         },
@@ -565,6 +622,14 @@ pub fn items_response(
 enum QueryShape {
     Bbox(Vec<f64>),
     Frustum(Frustum3D),
+    /// A spherical cap around a lon/lat point. Always exact: the index answers
+    /// with the candidate boxes covering the cap, and the real distance test
+    /// happens against source geometry afterwards.
+    Radius {
+        lon: f64,
+        lat: f64,
+        metres: f64,
+    },
 }
 
 struct SearchOptions {
@@ -572,26 +637,45 @@ struct SearchOptions {
     limit: usize,
     offset: usize,
     predicate: QueryPredicate,
+    nonplanar: NonPlanarMode,
 }
 
 impl SearchOptions {
     fn from_params(params: &SearchParams) -> Result<Self, ServerError> {
-        let shape = match (params.bbox.as_deref(), params.frustum.as_deref()) {
-            (Some(_), Some(_)) => {
-                return Err(ServerError::InvalidQuery(
-                    "bbox and frustum are mutually exclusive".to_string(),
-                ));
-            }
-            (_, Some(raw)) => QueryShape::Frustum(parse_frustum(raw)?),
-            (raw, None) => QueryShape::Bbox(parse_bbox(raw)?),
+        let given = [
+            ("bbox", params.bbox.as_deref()),
+            ("frustum", params.frustum.as_deref()),
+            ("radius", params.radius.as_deref()),
+        ];
+        let named: Vec<&str> = given
+            .iter()
+            .filter(|(_, value)| value.is_some())
+            .map(|(name, _)| *name)
+            .collect();
+        if named.len() > 1 {
+            return Err(ServerError::InvalidQuery(format!(
+                "a search takes one query shape; got {}",
+                named.join(" and ")
+            )));
+        }
+        let shape = match (
+            params.frustum.as_deref(),
+            params.radius.as_deref(),
+            params.bbox.as_deref(),
+        ) {
+            (Some(raw), _, _) => QueryShape::Frustum(parse_frustum(raw)?),
+            (_, Some(raw), _) => parse_radius(raw)?,
+            (_, _, raw) => QueryShape::Bbox(parse_bbox(raw)?),
         };
         let (limit, offset) = limit_offset(params.limit.as_deref(), params.offset.as_deref())?;
         let predicate = parse_predicate(params.predicate.as_deref())?;
+        let nonplanar = parse_nonplanar(params.nonplanar.as_deref())?;
         Ok(Self {
             shape,
             limit,
             offset,
             predicate,
+            nonplanar,
         })
     }
 
@@ -599,16 +683,34 @@ impl SearchOptions {
     fn bbox(&self) -> Option<Vec<f64>> {
         match &self.shape {
             QueryShape::Bbox(bbox) => Some(bbox.clone()),
-            QueryShape::Frustum(_) => None,
+            _ => None,
         }
     }
 
     /// The frustum planes to echo back, if the query was one.
     fn frustum(&self) -> Option<[[f64; 4]; 6]> {
         match &self.shape {
-            QueryShape::Bbox(_) => None,
             QueryShape::Frustum(frustum) => Some(*frustum.planes()),
+            _ => None,
         }
+    }
+
+    /// The radius to echo back, if the query was one.
+    fn radius(&self) -> Option<[f64; 3]> {
+        match &self.shape {
+            QueryShape::Radius { lon, lat, metres } => Some([*lon, *lat, *metres]),
+            _ => None,
+        }
+    }
+
+    /// Whether this shape narrows its own results against source geometry.
+    ///
+    /// A radius does, always: the index can only answer with the boxes covering
+    /// the cap, so the distance test runs afterwards. That makes it behave like
+    /// `predicate=intersects` whether or not the caller asked for it -- which is
+    /// exactly how `gp2psindex query --radius` behaves.
+    fn is_exact(&self) -> bool {
+        matches!(self.shape, QueryShape::Radius { .. })
     }
 }
 
@@ -685,7 +787,9 @@ impl RecordShape {
 /// cannot answer.
 trait SyncGeoIndex {
     /// Region type this dimension searches.
-    type Query: Copy;
+    ///
+    /// `Clone`, not `Copy`: `GeoQuery2D`'s polygon variant owns its rings.
+    type Query: Clone;
 
     fn search_entry_ids(&self, query: Self::Query) -> Result<Vec<usize>, GeoError>;
 
@@ -733,7 +837,7 @@ macro_rules! impl_sync_geo_index {
     };
 }
 
-impl_sync_geo_index!(GeoArtifactIndex2D, Box2D);
+impl_sync_geo_index!(GeoArtifactIndex2D, GeoQuery2D);
 impl_sync_geo_index!(GeoArtifactIndex3D, GeoQuery3D);
 
 /// Answer `count=only`: how many index entries match, without materializing
@@ -753,9 +857,9 @@ fn count_only_outcome(
     predicate: QueryPredicate,
     shape: RecordShape,
 ) -> Result<SearchOutcome, ServerError> {
-    if predicate == QueryPredicate::Intersects {
+    if predicate == QueryPredicate::Intersects || matches!(query_shape, QueryShape::Radius { .. }) {
         return Err(ServerError::UnsupportedQuery(
-            "count=only counts index matches, which predicate=intersects narrows afterwards;              drop one of them"
+            "count=only counts index matches, which predicate=intersects narrows afterwards              (and a radius query is always exact); drop one of them"
                 .to_string(),
         ));
     }
@@ -783,20 +887,28 @@ fn search_records(
     collection: &Collection,
     query_shape: &QueryShape,
     predicate: QueryPredicate,
+    nonplanar: NonPlanarMode,
     shape: RecordShape,
     offset: usize,
     limit: usize,
 ) -> Result<SearchOutcome, ServerError> {
-    let exact = predicate == QueryPredicate::Intersects;
+    // A radius narrows its own candidates whatever the predicate says.
+    let exact =
+        predicate == QueryPredicate::Intersects || matches!(query_shape, QueryShape::Radius { .. });
     match collection.open_local_index()? {
         GeoArtifactIndex::D2(index) => {
             let query = query_2d(query_shape, collection)?;
             if exact {
-                return exact_records(&index, query, collection, shape, offset, limit);
+                return exact_records(&index, query, collection, nonplanar, shape, offset, limit);
             }
             bbox_records(&index, query, collection, shape, offset, limit)
         }
         GeoArtifactIndex::D3(index) => {
+            // Resolve the shape first: a radius against a 3D artifact is a
+            // wrong-dimension query, and saying so is more use than the
+            // predicate complaint it would otherwise trip over -- the caller
+            // never asked for exact filtering, the radius implies it.
+            let query = query_3d(query_shape, collection)?;
             // The only thing 3D answers differently: `GeoQuery3D` has no
             // polygon variant, so there is no exact phase to refine candidates
             // with -- and a frustum has no narrow phase in this crate at all.
@@ -807,28 +919,24 @@ fn search_records(
                     collection.id()
                 )));
             }
-            bbox_records(
-                &index,
-                query_3d(query_shape, collection)?,
-                collection,
-                shape,
-                offset,
-                limit,
-            )
+            bbox_records(&index, query, collection, shape, offset, limit)
         }
     }
 }
 
 /// The 2D query a shape resolves to, or why it cannot be one.
-fn query_2d(shape: &QueryShape, collection: &Collection) -> Result<Box2D, ServerError> {
+fn query_2d(shape: &QueryShape, collection: &Collection) -> Result<GeoQuery2D, ServerError> {
     match shape {
-        QueryShape::Bbox(bbox) if bbox.len() == 4 => {
-            Ok(Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3]))
-        }
+        QueryShape::Bbox(bbox) if bbox.len() == 4 => Ok(GeoQuery2D::box2d(Box2D::new(
+            bbox[0], bbox[1], bbox[2], bbox[3],
+        ))),
         QueryShape::Bbox(_) => Err(ServerError::InvalidBbox(format!(
             "2D collection `{}` expects bbox=minx,miny,maxx,maxy",
             collection.id()
         ))),
+        QueryShape::Radius { lon, lat, metres } => {
+            Ok(GeoQuery2D::spherical_radius(*lon, *lat, *metres))
+        }
         QueryShape::Frustum(_) => Err(ServerError::UnsupportedQuery(format!(
             "collection `{}` is 2D; a frustum query needs a 3D artifact -- use bbox",
             collection.id()
@@ -847,6 +955,10 @@ fn query_3d(shape: &QueryShape, collection: &Collection) -> Result<GeoQuery3D, S
             collection.id()
         ))),
         QueryShape::Frustum(frustum) => Ok(GeoQuery3D::from(*frustum)),
+        QueryShape::Radius { .. } => Err(ServerError::UnsupportedQuery(format!(
+            "collection `{}` is 3D; a spherical radius is a 2D query -- use bbox or frustum",
+            collection.id()
+        ))),
     }
 }
 
@@ -896,8 +1008,9 @@ fn bbox_records<I: SyncGeoIndex>(
 /// the whole match set instead of paging headers the way [`bbox_records`] can.
 fn exact_records<R: RangeReader>(
     index: &GeoArtifactIndex2D<R>,
-    query: Box2D,
+    query: GeoQuery2D,
     collection: &Collection,
+    nonplanar: NonPlanarMode,
     shape: RecordShape,
     offset: usize,
     limit: usize,
@@ -914,13 +1027,15 @@ fn exact_records<R: RangeReader>(
             collection.id()
         )));
     }
-    let matches = index.search_matches(query).map_err(ServerError::from_geo)?;
+    let matches = index
+        .search_matches(query.clone())
+        .map_err(ServerError::from_geo)?;
     let matches = index
         .filter_matches(
             matches,
-            GeoQuery2D::box2d(query),
+            query,
             SpatialPredicate::Intersects,
-            NonPlanarExactPolicy::Reject,
+            nonplanar.into(),
         )
         .map_err(ServerError::from_geo)?;
     Ok(match_outcome(matches, shape, offset, limit))
@@ -1149,6 +1264,46 @@ fn parse_frustum(raw: &str) -> Result<Frustum3D, ServerError> {
     Ok(Frustum3D::from_planes(planes))
 }
 
+/// Parse `lon,lat,metres`.
+///
+/// The values are geographic: degrees on a sphere, metres on its surface. The
+/// artifact's own coordinates are whatever its source used, so a projected
+/// artifact will answer a radius query with nonsense rather than an error --
+/// the same contract `gp2psindex query --radius` has, and the reason the
+/// parameter is documented as lon/lat rather than as "a circle".
+fn parse_radius(raw: &str) -> Result<QueryShape, ServerError> {
+    let mut values = Vec::with_capacity(3);
+    for part in raw.split(',') {
+        let value = part.trim().parse::<f64>().map_err(|_| {
+            ServerError::InvalidRadius(format!("radius value `{}` is not a number", part.trim()))
+        })?;
+        if !value.is_finite() {
+            return Err(ServerError::InvalidRadius(format!(
+                "radius value `{}` is not finite",
+                part.trim()
+            )));
+        }
+        values.push(value);
+    }
+    if values.len() != 3 {
+        return Err(ServerError::InvalidRadius(
+            "radius must be lon,lat,metres".to_string(),
+        ));
+    }
+    let (lon, lat, metres) = (values[0], values[1], values[2]);
+    if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
+        return Err(ServerError::InvalidRadius(
+            "radius centre must be lon in [-180, 180] and lat in [-90, 90] degrees".to_string(),
+        ));
+    }
+    if metres <= 0.0 {
+        return Err(ServerError::InvalidRadius(
+            "radius metres must be greater than zero".to_string(),
+        ));
+    }
+    Ok(QueryShape::Radius { lon, lat, metres })
+}
+
 fn parse_bbox(raw: Option<&str>) -> Result<Vec<f64>, ServerError> {
     let raw = raw.ok_or_else(|| ServerError::InvalidBbox("bbox is required".to_string()))?;
     let mut values = Vec::new();
@@ -1222,6 +1377,16 @@ fn parse_level(raw: Option<&str>) -> Result<Option<ResultLevel>, ServerError> {
         Some("entry") => Ok(Some(ResultLevel::Entry)),
         Some(_) => Err(ServerError::InvalidLevel(
             "level must be feature or entry".to_string(),
+        )),
+    }
+}
+
+fn parse_nonplanar(raw: Option<&str>) -> Result<NonPlanarMode, ServerError> {
+    match raw {
+        None | Some("") | Some("reject") => Ok(NonPlanarMode::Reject),
+        Some("treat_as_planar") => Ok(NonPlanarMode::TreatAsPlanar),
+        Some(_) => Err(ServerError::InvalidQuery(
+            "nonplanar must be reject or treat_as_planar".to_string(),
         )),
     }
 }

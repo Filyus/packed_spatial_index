@@ -53,6 +53,9 @@ pub enum ServerError {
     /// The client supplied invalid frustum planes.
     #[error("invalid frustum: {0}")]
     InvalidFrustum(String),
+    /// The client supplied an invalid radius query.
+    #[error("invalid radius: {0}")]
+    InvalidRadius(String),
     /// The client supplied a query the artifact's edge/encoding model rejects.
     /// 422, not 500: these describe a client request that cannot be satisfied
     /// by this collection, not a server-side fault.
@@ -134,7 +137,8 @@ impl ServerError {
             | ServerError::InvalidPayload(_)
             | ServerError::InvalidIdentity(_)
             | ServerError::InvalidCount(_)
-            | ServerError::InvalidFrustum(_) => StatusCode::BAD_REQUEST,
+            | ServerError::InvalidFrustum(_)
+            | ServerError::InvalidRadius(_) => StatusCode::BAD_REQUEST,
             ServerError::CollectionNotFound(_) | ServerError::RouteNotFound(_) => {
                 StatusCode::NOT_FOUND
             }
@@ -166,6 +170,7 @@ impl ServerError {
             ServerError::InvalidIdentity(_) => "invalid_identity",
             ServerError::InvalidCount(_) => "invalid_count",
             ServerError::InvalidFrustum(_) => "invalid_frustum",
+            ServerError::InvalidRadius(_) => "invalid_radius",
             ServerError::CollectionNotFound(_) => "collection_not_found",
             ServerError::RouteNotFound(_) => "not_found",
             ServerError::MethodNotAllowed(_) => "method_not_allowed",

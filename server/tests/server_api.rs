@@ -774,6 +774,173 @@ async fn count_is_rejected_on_items() {
     assert_eq!(json["error"]["code"], "invalid_count");
 }
 
+/// The sample places are ~3300 km apart (lon -5 and lon 25 near the equator),
+/// so a radius can tell them apart without the test depending on a precise
+/// geodesic.
+#[tokio::test]
+async fn a_radius_query_selects_by_distance() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+
+    // The sample source declares planar edges, as GeoJSON without an `edges`
+    // member does -- which is most real data -- so a spherical radius has to be
+    // opted in. The refusal without it is asserted below.
+    let near_west = "radius=-5,1,100000&nonplanar=treat_as_planar";
+    let both = "radius=-5,1,5000000&nonplanar=treat_as_planar";
+    let nowhere = "radius=100,50,1000&nonplanar=treat_as_planar";
+
+    let (status, json) = get_json(
+        app.clone(),
+        &format!("/collections/places/search?{near_west}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["numberMatched"], 1);
+    assert_eq!(json["matches"][0]["featureRef"]["rowNumber"], 0);
+    // The echoed query names the shape that applied, and only that one.
+    assert_contract(&json["query"]["radius"], json!([-5.0, 1.0, 100_000.0]));
+    assert!(json["query"]["bbox"].is_null());
+
+    let (status, json) = get_json(app.clone(), &format!("/collections/places/search?{both}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["numberMatched"], 2);
+
+    let (status, json) = get_json(
+        app.clone(),
+        &format!("/collections/places/search?{nowhere}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["numberMatched"], 0);
+
+    // It really narrows: a box covering both features keeps both, the small cap
+    // around one of them keeps one.
+    let (status, boxed) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-180,-90,180,90",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(boxed["numberMatched"], 2);
+
+    // /items is the GeoJSON view of the same search, and a radius is exactly
+    // the kind of query it should answer.
+    let (status, json) = get_json(app, &format!("/collections/places/items?{near_west}")).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["numberMatched"], 1);
+    assert_eq!(json["features"][0]["properties"]["name"], "west");
+}
+
+/// A radius narrows its candidates against source geometry whatever the
+/// predicate says, so the shapes that describe only index matches must refuse
+/// it -- the rule `gp2psindex query` already enforces for `--count --radius`.
+#[tokio::test]
+async fn a_radius_query_is_always_exact() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?radius=-5,1,100000&count=only",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+
+    // A spherical query against a column declaring planar edges is a different
+    // question, so it is refused rather than quietly answered -- unless the
+    // caller says to read the coordinates as planar.
+    let (status, json) =
+        get_json(app.clone(), "/collections/places/search?radius=-5,1,100000").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("spherical"),
+        "{json}"
+    );
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?radius=-5,1,100000&nonplanar=treat_as_planar",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["query"]["nonplanar"], "treat_as_planar");
+
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?radius=-5,1,100000&nonplanar=maybe",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_query");
+
+    // An artifact with no geometry to filter against cannot answer one at all,
+    // and its capabilities say so rather than letting the request find out.
+    let ref_only = router(state_with_payload(PayloadPlan::RowRef));
+    let (status, json) = get_json(ref_only.clone(), "/collections/places").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_contract(&json["capabilities"]["queryShapes"], json!(["bbox"]));
+    let (status, json) = get_json(ref_only, "/collections/places/search?radius=-5,1,100000").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_predicate");
+
+    let geometry = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (status, json) = get_json(geometry, "/collections/places").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_contract(
+        &json["capabilities"]["queryShapes"],
+        json!(["bbox", "radius"]),
+    );
+}
+
+#[tokio::test]
+async fn radius_queries_are_refused_where_they_cannot_apply() {
+    // A spherical cap is a 2D query; a 3D artifact takes bbox or frustum.
+    let three_d = router(grid_3d_state());
+    let (status, json) = get_json(three_d, "/collections/places/search?radius=1,1,1000").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+
+    // One shape per query.
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-10,0,0,2&radius=-5,1,1000",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_query");
+
+    for raw in [
+        "1,2",         // wrong arity
+        "1,2,3,4",     // wrong arity
+        "x,1,1000",    // not a number
+        "inf,1,1000",  // not finite
+        "-200,1,1000", // lon out of range
+        "1,100,1000",  // lat out of range
+        "1,1,0",       // a zero radius selects nothing by construction
+        "1,1,-5",      // negative
+    ] {
+        let (status, json) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?radius={raw}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "raw {raw}: {json}");
+        assert_eq!(json["error"]["code"], "invalid_radius", "raw {raw}");
+    }
+}
+
 fn grid_3d_state() -> ServerState {
     state_with_geojson_request(
         ConvertRequest {

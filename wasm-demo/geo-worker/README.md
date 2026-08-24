@@ -70,6 +70,13 @@ client-side with `Frustum3D::from_view_projection` and send the result. The test
 is a conservative superset with no exact narrow phase, so refine the candidates
 yourself. A 2D artifact refuses it with `422 unsupported_query`.
 
+`radius=` is **not** served here, and says so with `422 unsupported_query`
+rather than failing as an unknown parameter. A spherical cap is always an exact
+query — the index answers with the boxes covering it and the distance test runs
+against source geometry — and this demo deliberately stops at the index, as the
+milestone note above says. The native server takes it. `capabilities.queryShapes`
+never offers it, so a client can tell before asking.
+
 `count=only` answers `numberMatched` with an empty `matches` array, counting
 the matches in the artifact instead of materializing them -- the cheapest form
 of "how many are in this bbox", and the one that shows up directly in the

@@ -13,8 +13,10 @@ use js_sys::{Function, Promise, Uint8Array};
 use packed_spatial_index_geo::{
     AsyncRangeReader, Box2D, Box3D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoError, GeoMatch,
-    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery3D, Frustum3D, IdentityMode,
-    PayloadMode, PayloadPlan, ResultLevel, StreamLimits, classify_geo_error, needs_payload_bodies,
+    CoordinateDims, GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery3D, Frustum3D,
+    IdentityMode,
+    PayloadMode, PayloadPlan, ResultLevel, StreamLimits, classify_geo_error,
+    needs_payload_bodies,
     open_geo_index_with_limits_async, public_feature_json, resolve_identity, stores_feature_ids,
 };
 use serde_json::{Map, Value, json};
@@ -613,6 +615,21 @@ fn collection_summary(manifest: &GeoArtifactManifest, entry_count: usize) -> Val
                 json!(["ref", "full"])
             } else {
                 json!(["ref"])
+            },
+            // Counting entries is exact where an entry cannot duplicate a
+            // source row; where it can, a feature-level count would have to
+            // read the matches that `count=only` exists to skip.
+            "countModes": if manifest.entries_may_duplicate_rows {
+                json!(["records"])
+            } else {
+                json!(["records", "only"])
+            },
+            // A frustum is a 3D region. `radius` is absent everywhere: it is
+            // always exact, and this demo answers from the index alone.
+            "queryShapes": if matches!(manifest.dims, CoordinateDims::Xyz) {
+                json!(["bbox", "frustum"])
+            } else {
+                json!(["bbox"])
             },
         },
     })

@@ -66,7 +66,7 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections`
 - `GET /collections/{id}`
 - `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=`
-- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=&limit=&offset=&predicate=&level=&payload=&identity=&count=`
+- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=|radius=&limit=&offset=&predicate=&nonplanar=&level=&payload=&identity=&count=`
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
@@ -158,13 +158,35 @@ Query parameters:
     to features means reading the matches, which is the work this mode exists
     to skip; `level=entry` counts fine there. Where entries never duplicate a
     row, feature and entry counts are the same number and both are allowed.
+- `radius=lon,lat,metres` — `/search` and `/items`, **2D artifacts only**, one
+  query shape per request. A spherical cap: degrees on a sphere and metres on
+  its surface. The artifact's coordinates are whatever its source used, so this
+  is meaningful for lon/lat data and nonsense for a projected artifact — the
+  same contract `gp2psindex query --radius` has.
+
+  A radius is **always exact**. The index can only answer with the boxes
+  covering the cap, so the distance test runs against source geometry
+  afterwards, exactly as `predicate=intersects` does — which is why it needs an
+  artifact with a geometry payload (`capabilities.queryShapes` lists `radius`
+  only where that holds), and why `count=only` refuses it: the index count
+  would not be the number the caller sees.
+- `nonplanar=reject|treat_as_planar` — default `reject`. What exact filtering
+  does when the artifact's declared edge model cannot answer the query it was
+  given. The case that matters: a spherical radius against a column declaring
+  **planar** edges, which is what GeoJSON and GeoParquet without an `edges`
+  member declare — that is most real data. Rejecting is right by default, since
+  the answer would be to a different question, and useless as the only option,
+  so `treat_as_planar` reads the stored coordinates as planar XY for the
+  predicate. `gp2psindex query` exposes the same choice as
+  `--treat-nonplanar-as-planar`. Only an exact query consults it, and responses
+  echo it only when one ran.
 - `limit`, `offset` — pagination over the matched set. They do not change
   `numberMatched`, so they have no effect under `count=only`.
 
 Responses echo the effective query (after defaults and collection-dependent
 resolution) under `query`, so a client can always see which `level`,
 `identity`, `count`, and `predicate` actually applied, and `query` carries
-`bbox` or `frustum` — whichever shape the search used, never both. `numberMatched`
+exactly one of `bbox`, `frustum` or `radius` — the shape the search used. `numberMatched`
 counts matches before pagination and `numberReturned` after. Each match
 carries `entryId` (index entry ordinal in the artifact; stable per artifact
 build, not across rebuilds) and, when the payload stores one, a `featureRef`

@@ -108,6 +108,18 @@ async function route(req: Request, env: Env): Promise<Response> {
     // inward-pointing planes; see parseFrustum for why not a matrix.
     const frustum = parseFrustum(url);
     const bbox = frustum.length > 0 ? [] : parseBbox(url);
+    // A spherical radius is always an exact query -- the index answers with the
+    // boxes covering the cap and the distance test runs against source geometry
+    // afterwards. This demo deliberately stops at the index (see the README's
+    // milestone note), so it names the reason instead of failing as an unknown
+    // parameter, and `capabilities.queryShapes` never offers it.
+    if (url.searchParams.get("radius") !== null) {
+      throw new HttpError(
+        422,
+        "unsupported_query",
+        "radius is always an exact query and this Worker reads no source geometry; use bbox here, or the native server for radius",
+      );
+    }
     const limit = parseIntParam(url, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT);
     const offset = parseIntParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
     const payload = parseEnum(url, "payload", "summary", ["none", "summary", "full"]);
@@ -123,6 +135,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     rejectUnsupportedSearchParams(url, [
       "bbox",
       "frustum",
+      "radius",
       "limit",
       "offset",
       "payload",

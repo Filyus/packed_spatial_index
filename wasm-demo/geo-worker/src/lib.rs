@@ -13,8 +13,8 @@ use js_sys::{Function, Promise, Uint8Array};
 use packed_spatial_index_geo::{
     AsyncRangeReader, Box2D, Box3D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoError, GeoMatch,
-    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, IdentityMode, PayloadMode, PayloadPlan,
-    ResultLevel, StreamLimits, classify_geo_error, needs_payload_bodies,
+    GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery3D, Frustum3D, IdentityMode,
+    PayloadMode, PayloadPlan, ResultLevel, StreamLimits, classify_geo_error, needs_payload_bodies,
     open_geo_index_with_limits_async, public_feature_json, resolve_identity, stores_feature_ids,
 };
 use serde_json::{Map, Value, json};
@@ -129,6 +129,7 @@ pub async fn search(
     level: String,
     identity: String,
     count: String,
+    frustum: Vec<f64>,
     max_reads: f64,
 ) -> Result<String, JsValue> {
     let index = open_index(read_range, file_len, object_etag, max_reads).await?;
@@ -156,12 +157,41 @@ pub async fn search(
         ));
     }
 
+    if !frustum.is_empty() {
+        let planes = parse_frustum(&frustum)?;
+        return match index {
+            GeoArtifactIndex::D3(index) => {
+                search_impl(
+                    index,
+                    GeoQuery3D::from(planes),
+                    &[],
+                    Some(*planes.planes()),
+                    limit,
+                    offset,
+                    payload_mode,
+                    result_level,
+                    identity_mode,
+                    count_only,
+                )
+                .await
+            }
+            // A frustum is a 3D region; a 2D artifact has no z to test it
+            // against. The native server refuses this the same way.
+            GeoArtifactIndex::D2(_) => Err(worker_err(
+                422,
+                "unsupported_query",
+                "this artifact is 2D; a frustum query needs a 3D artifact -- use bbox",
+            )),
+        };
+    }
+
     match (index, bbox.len()) {
         (GeoArtifactIndex::D2(index), 4) => {
             search_impl(
                 index,
                 box_2d(&bbox),
                 &bbox,
+                None,
                 limit,
                 offset,
                 payload_mode,
@@ -174,8 +204,9 @@ pub async fn search(
         (GeoArtifactIndex::D3(index), 6) => {
             search_impl(
                 index,
-                box_3d(&bbox),
+                GeoQuery3D::from(box_3d(&bbox)),
                 &bbox,
+                None,
                 limit,
                 offset,
                 payload_mode,
@@ -194,6 +225,7 @@ async fn search_impl<I: AsyncGeoIndex>(
     index: I,
     query: I::Query,
     bbox: &[f64],
+    frustum: Option<[[f64; 4]; 6]>,
     limit: usize,
     offset: usize,
     payload_mode: PayloadMode,
@@ -237,6 +269,7 @@ async fn search_impl<I: AsyncGeoIndex>(
         "collectionId": COLLECTION_ID,
         "query": query_json(
             bbox,
+            frustum,
             limit,
             offset,
             payload_mode,
@@ -283,7 +316,7 @@ pub async fn items(
             items_impl(index, box_2d(&bbox), &bbox, limit, offset).await
         }
         (GeoArtifactIndex::D3(index), 6) => {
-            items_impl(index, box_3d(&bbox), &bbox, limit, offset).await
+            items_impl(index, GeoQuery3D::from(box_3d(&bbox)), &bbox, limit, offset).await
         }
         (index, len) => Err(bbox_arity_error(artifact_dims(&index), len)),
     }
@@ -443,7 +476,7 @@ macro_rules! impl_async_geo_index {
 }
 
 impl_async_geo_index!(GeoArtifactIndex2D<R2Reader>, Box2D);
-impl_async_geo_index!(GeoArtifactIndex3D<R2Reader>, Box3D);
+impl_async_geo_index!(GeoArtifactIndex3D<R2Reader>, GeoQuery3D);
 
 fn box_2d(bbox: &[f64]) -> Box2D {
     Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3])
@@ -587,6 +620,7 @@ fn collection_summary(manifest: &GeoArtifactManifest, entry_count: usize) -> Val
 
 fn query_json(
     bbox: &[f64],
+    frustum: Option<[[f64; 4]; 6]>,
     limit: usize,
     offset: usize,
     payload: PayloadMode,
@@ -594,8 +628,9 @@ fn query_json(
     identity: IdentityMode,
     count_only: bool,
 ) -> Value {
-    json!({
-        "bbox": bbox,
+    // The echoed query names the shape that applied, and only that one --
+    // the native server omits the other key rather than sending it empty.
+    let mut query = json!({
         "predicate": "bbox",
         "level": level.as_str(),
         "payload": payload.as_str(),
@@ -603,7 +638,12 @@ fn query_json(
         "count": if count_only { "only" } else { "records" },
         "limit": limit,
         "offset": offset,
-    })
+    });
+    match frustum {
+        Some(planes) => query["frustum"] = json!(planes),
+        None => query["bbox"] = json!(bbox),
+    }
+    query
 }
 
 fn match_record(
@@ -726,6 +766,44 @@ fn parse_identity_mode(value: &str) -> Result<IdentityMode, JsValue> {
             "identity must be ref or full",
         )),
     }
+}
+
+/// Six inward-pointing planes, as 24 numbers.
+///
+/// Planes rather than a view-projection matrix, for the reason the native
+/// server states: a matrix carries a clip-space depth convention and a
+/// row/column-major convention that the wire cannot recover, and either one
+/// wrong moves the near plane without failing.
+fn parse_frustum(values: &[f64]) -> Result<Frustum3D, JsValue> {
+    if values.len() != 24 {
+        return Err(worker_err(
+            400,
+            "invalid_frustum",
+            "frustum must contain 24 numbers (six planes of a,b,c,d)",
+        ));
+    }
+    if values.iter().any(|v| !v.is_finite()) {
+        return Err(worker_err(
+            400,
+            "invalid_frustum",
+            "frustum values must be finite",
+        ));
+    }
+    let mut planes = [[0.0f64; 4]; 6];
+    for (plane, chunk) in planes.iter_mut().zip(values.as_chunks::<4>().0) {
+        plane.copy_from_slice(chunk);
+    }
+    if planes
+        .iter()
+        .any(|p| p[0] == 0.0 && p[1] == 0.0 && p[2] == 0.0)
+    {
+        return Err(worker_err(
+            400,
+            "invalid_frustum",
+            "a frustum plane with a zero normal constrains nothing",
+        ));
+    }
+    Ok(Frustum3D::from_planes(planes))
 }
 
 fn parse_count_only(value: &str) -> Result<bool, JsValue> {

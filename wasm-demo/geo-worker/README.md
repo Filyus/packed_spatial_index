@@ -29,7 +29,7 @@ demo.
 - `GET /health`
 - `GET /collections`
 - `GET /collections/synthetic-points`
-- `GET /collections/synthetic-points/search?bbox=&limit=&offset=&payload=none|summary|full&level=entry|feature&identity=ref|full&count=records|only`
+- `GET /collections/synthetic-points/search?bbox=|frustum=&limit=&offset=&payload=none|summary|full&level=entry|feature&identity=ref|full&count=records|only`
 - `GET /collections/synthetic-points/items?bbox=&limit=&offset=`
 
 `bbox` is `minx,miny,maxx,maxy` for a 2D artifact and
@@ -57,6 +57,18 @@ so an artifact built from Parquet or FlatGeobuf lands here too. `payload=full`
 resolves to `full`, because the bodies are read regardless and the returned
 GeoJSON feature carries its own `id` anyway. `full` stays accepted everywhere,
 and `capabilities.identityModes` lists it only where it can add something.
+
+`frustum=` takes six inward-pointing planes as 24 numbers (`a,b,c,d` each,
+inside where `a*x + b*y + c*z + d >= 0`) and replaces `bbox` for a 3D artifact.
+That is what a tilted view should send: the axis-aligned box around a frustum is
+much larger than the frustum, so a bbox client fetches geometry it will never
+draw -- and over R2 that difference lands directly in the `reads` counter below.
+Planes rather than a view-projection matrix because a matrix carries a
+clip-space depth convention and a row/column-major convention that the wire
+cannot recover, either one wrong moving the near plane silently; resolve them
+client-side with `Frustum3D::from_view_projection` and send the result. The test
+is a conservative superset with no exact narrow phase, so refine the candidates
+yourself. A 2D artifact refuses it with `422 unsupported_query`.
 
 `count=only` answers `numberMatched` with an empty `matches` array, counting
 the matches in the artifact instead of materializing them -- the cheapest form
@@ -100,12 +112,13 @@ the other without special cases:
 | 400 | `invalid_bbox` | missing, malformed, inverted, or the wrong length for this artifact |
 | 400 | `invalid_limit` / `invalid_offset` | not an integer in range (`limit` is 1-1000 here) |
 | 400 | `invalid_payload` / `invalid_level` / `invalid_identity` / `invalid_count` | not one of the accepted values |
+| 400 | `invalid_frustum` | not 24 finite numbers, or a plane with a zero normal |
 | 400 | `invalid_query` | any other parameter out of range |
 | 404 | `artifact_not_found` | the R2 object is missing; seed and upload it |
 | 404 | `collection_not_found` / `not_found` | unknown collection or route |
 | 405 | `method_not_allowed` | only GET is served |
 | 409 | `artifact_changed` | the object changed between HEAD and a conditional range GET |
-| 422 | `unsupported_query` | a parameter this endpoint does not take, such as `identity` on `/items`, or `count=only` at `level=feature` where entries can duplicate a row |
+| 422 | `unsupported_query` | a parameter this endpoint does not take, such as `identity` on `/items`, or `count=only` at `level=feature` where entries can duplicate a row, or `frustum` against a 2D artifact |
 | 422 | `unsupported_payload` | `/items` against an artifact without `feature-json` payloads |
 | 422 | `unsupported_level` | `level=feature` on an artifact that stores no feature references |
 | 422 | `query_too_large` | the query exceeded `maxReads` or the built-in budgets |

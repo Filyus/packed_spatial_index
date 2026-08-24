@@ -35,6 +35,44 @@ export function parseBbox(url: URL): number[] {
 }
 
 /**
+ * Six inward-pointing planes as 24 numbers, or `[]` when no frustum was asked
+ * for.
+ *
+ * Planes rather than a view-projection matrix on purpose: a matrix carries a
+ * clip-space depth convention (`ClipSpaceZ`, which the library refuses to
+ * default silently) and a row/column-major convention, neither recoverable
+ * from the numbers, and either one wrong moves the near plane without failing.
+ * A client resolves both locally -- `Frustum3D::from_view_projection` is right
+ * there -- and sends the result.
+ */
+export function parseFrustum(url: URL): number[] {
+  const raw = url.searchParams.get("frustum");
+  if (raw === null || raw === "") return [];
+  if (url.searchParams.get("bbox") !== null) {
+    throw new HttpError(400, "invalid_query", "bbox and frustum are mutually exclusive");
+  }
+  const values = raw.split(",").map((part) => Number(part.trim()));
+  if (values.length !== 24 || values.some((value) => !Number.isFinite(value))) {
+    throw new HttpError(
+      400,
+      "invalid_frustum",
+      "frustum must contain 24 finite numbers (six planes of a,b,c,d)",
+    );
+  }
+  for (let plane = 0; plane < 6; plane += 1) {
+    const [a, b, c] = values.slice(plane * 4, plane * 4 + 3);
+    if (a === 0 && b === 0 && c === 0) {
+      throw new HttpError(
+        400,
+        "invalid_frustum",
+        `frustum plane ${plane} has a zero normal, so it constrains nothing`,
+      );
+    }
+  }
+  return values;
+}
+
+/**
  * The error code for a bad value of `key`.
  *
  * The server names the parameter in the code — `invalid_limit`, not a blanket
@@ -57,6 +95,8 @@ export function invalidCode(key: string): string {
       return "invalid_identity";
     case "count":
       return "invalid_count";
+    case "frustum":
+      return "invalid_frustum";
     default:
       return "invalid_query";
   }

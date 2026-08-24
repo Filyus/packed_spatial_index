@@ -1,10 +1,11 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use packed_spatial_index_geo::{
-    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, GeoArtifactIndex,
+    Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, Frustum3D, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoError, GeoMatch, GeoMatchHeader, GeoMatchHeaderPage,
-    GeoPayload, GeoQuery2D, GeometryEncoding, IdentityMode, LevelError, NonPlanarExactPolicy,
-    PayloadMode, PayloadPlan, RangeReader, ResultLevel, SpatialPredicate, StoragePrecision,
-    needs_payload_bodies, public_feature_json, resolve_identity, stores_feature_ids,
+    GeoPayload, GeoQuery2D, GeoQuery3D, GeometryEncoding, IdentityMode, LevelError,
+    NonPlanarExactPolicy, PayloadMode, PayloadPlan, RangeReader, ResultLevel, SpatialPredicate,
+    StoragePrecision, needs_payload_bodies, public_feature_json, resolve_identity,
+    stores_feature_ids,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +26,10 @@ pub struct SearchParams {
     /// Query bbox as comma-separated numbers.
     #[serde(default)]
     pub bbox: Option<String>,
+    /// Query view frustum as 24 comma-separated numbers: six inward-pointing
+    /// planes `a,b,c,d`. Mutually exclusive with `bbox`.
+    #[serde(default)]
+    pub frustum: Option<String>,
     /// Maximum returned records.
     #[serde(default)]
     pub limit: Option<String>,
@@ -107,8 +112,12 @@ impl From<&PayloadPlan> for PayloadKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryInfo {
-    /// Parsed query bbox.
-    pub bbox: Vec<f64>,
+    /// Parsed query bbox; absent when the query was a frustum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bbox: Option<Vec<f64>>,
+    /// Parsed frustum planes; absent when the query was a bbox.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frustum: Option<[[f64; 4]; 6]>,
     /// Applied spatial predicate.
     pub predicate: QueryPredicate,
     /// Applied result level; `/items` responses omit it (always feature).
@@ -146,6 +155,18 @@ pub struct Capabilities {
     /// Count modes accepted by `/search`. `only` is absent when this
     /// collection cannot answer a count without materializing matches.
     pub count_modes: Vec<CountMode>,
+    /// Query shapes accepted by `/search`. `frustum` needs a 3D artifact.
+    pub query_shapes: Vec<QueryShapeKind>,
+}
+
+/// A query shape a collection accepts, for [`Capabilities`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryShapeKind {
+    /// An axis-aligned window, 4 numbers for 2D and 6 for 3D.
+    Bbox,
+    /// Six inward-pointing planes. 3D artifacts only.
+    Frustum,
 }
 
 /// Collection summary returned by list/detail endpoints.
@@ -371,6 +392,12 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
     } else {
         vec![CountMode::Records, CountMode::Only]
     };
+    // A frustum is a 3D region; a 2D artifact has no z to test it against.
+    let query_shapes = if matches!(collection.manifest().dims, CoordinateDims::Xyz) {
+        vec![QueryShapeKind::Bbox, QueryShapeKind::Frustum]
+    } else {
+        vec![QueryShapeKind::Bbox]
+    };
     Capabilities {
         items: payload_kind == PayloadKind::FeatureJson,
         predicates,
@@ -378,6 +405,7 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
         payload_modes: vec![PayloadMode::None, PayloadMode::Summary, PayloadMode::Full],
         identity_modes,
         count_modes,
+        query_shapes,
     }
 }
 
@@ -400,11 +428,11 @@ pub fn search_response(
     let payload_kind = PayloadKind::from(&collection.manifest().payload_plan);
     let count_mode = parse_count_mode(params.count.as_deref())?;
     let outcome = if count_mode == CountMode::Only {
-        count_only_outcome(collection, &options.bbox, options.predicate, shape)?
+        count_only_outcome(collection, &options.shape, options.predicate, shape)?
     } else {
         search_records(
             collection,
-            &options.bbox,
+            &options.shape,
             options.predicate,
             shape,
             options.offset,
@@ -414,7 +442,8 @@ pub fn search_response(
     Ok(SearchResponse {
         collection_id: collection.id().to_owned(),
         query: QueryInfo {
-            bbox: options.bbox,
+            bbox: options.bbox(),
+            frustum: options.frustum(),
             predicate: options.predicate,
             level: Some(shape.level),
             payload: Some(shape.payload),
@@ -455,6 +484,11 @@ pub fn items_response(
             "count is only supported on /search".to_string(),
         ));
     }
+    if params.frustum.is_some() {
+        return Err(ServerError::UnsupportedQuery(
+            "frustum is only supported on /search".to_string(),
+        ));
+    }
     if !matches!(
         collection.manifest().payload_plan,
         PayloadPlan::FeatureJson { .. }
@@ -467,7 +501,7 @@ pub fn items_response(
     let options = SearchOptions::from_params(&params)?;
     let outcome = search_records(
         collection,
-        &options.bbox,
+        &options.shape,
         options.predicate,
         RecordShape {
             payload: PayloadMode::Full,
@@ -504,7 +538,8 @@ pub fn items_response(
         number_matched,
         number_returned: features.len(),
         query: QueryInfo {
-            bbox: options.bbox,
+            bbox: options.bbox(),
+            frustum: options.frustum(),
             predicate: options.predicate,
             level: None,
             payload: None,
@@ -517,8 +552,23 @@ pub fn items_response(
     })
 }
 
+/// The region a search was asked for.
+///
+/// A frustum arrives as six planes rather than as a view-projection matrix on
+/// purpose. A matrix carries two conventions the wire cannot recover -- the
+/// clip-space depth range (`ClipSpaceZ`, which this project refuses to default
+/// silently because it is not derivable from the matrix) and row- versus
+/// column-major storage -- and getting either wrong moves the near plane
+/// without failing. Planes have no conventions left in them: the client
+/// resolves both locally, where it knows the answer, and sends the result.
+/// `Frustum3D::from_view_projection` is right there for it to use.
+enum QueryShape {
+    Bbox(Vec<f64>),
+    Frustum(Frustum3D),
+}
+
 struct SearchOptions {
-    bbox: Vec<f64>,
+    shape: QueryShape,
     limit: usize,
     offset: usize,
     predicate: QueryPredicate,
@@ -526,15 +576,39 @@ struct SearchOptions {
 
 impl SearchOptions {
     fn from_params(params: &SearchParams) -> Result<Self, ServerError> {
-        let bbox = parse_bbox(params.bbox.as_deref())?;
+        let shape = match (params.bbox.as_deref(), params.frustum.as_deref()) {
+            (Some(_), Some(_)) => {
+                return Err(ServerError::InvalidQuery(
+                    "bbox and frustum are mutually exclusive".to_string(),
+                ));
+            }
+            (_, Some(raw)) => QueryShape::Frustum(parse_frustum(raw)?),
+            (raw, None) => QueryShape::Bbox(parse_bbox(raw)?),
+        };
         let (limit, offset) = limit_offset(params.limit.as_deref(), params.offset.as_deref())?;
         let predicate = parse_predicate(params.predicate.as_deref())?;
         Ok(Self {
-            bbox,
+            shape,
             limit,
             offset,
             predicate,
         })
+    }
+
+    /// The bbox to echo back, if the query was one.
+    fn bbox(&self) -> Option<Vec<f64>> {
+        match &self.shape {
+            QueryShape::Bbox(bbox) => Some(bbox.clone()),
+            QueryShape::Frustum(_) => None,
+        }
+    }
+
+    /// The frustum planes to echo back, if the query was one.
+    fn frustum(&self) -> Option<[[f64; 4]; 6]> {
+        match &self.shape {
+            QueryShape::Bbox(_) => None,
+            QueryShape::Frustum(frustum) => Some(*frustum.planes()),
+        }
     }
 }
 
@@ -660,7 +734,7 @@ macro_rules! impl_sync_geo_index {
 }
 
 impl_sync_geo_index!(GeoArtifactIndex2D, Box2D);
-impl_sync_geo_index!(GeoArtifactIndex3D, Box3D);
+impl_sync_geo_index!(GeoArtifactIndex3D, GeoQuery3D);
 
 /// Answer `count=only`: how many index entries match, without materializing
 /// one of them.
@@ -675,7 +749,7 @@ impl_sync_geo_index!(GeoArtifactIndex3D, Box3D);
 ///   the work this mode exists to skip. Entry level counts fine there.
 fn count_only_outcome(
     collection: &Collection,
-    bbox: &[f64],
+    query_shape: &QueryShape,
     predicate: QueryPredicate,
     shape: RecordShape,
 ) -> Result<SearchOutcome, ServerError> {
@@ -692,30 +766,12 @@ fn count_only_outcome(
         )));
     }
     let number_matched = match collection.open_local_index()? {
-        GeoArtifactIndex::D2(index) => {
-            if bbox.len() != 4 {
-                return Err(ServerError::InvalidBbox(format!(
-                    "2D collection `{}` expects bbox=minx,miny,maxx,maxy",
-                    collection.id()
-                )));
-            }
-            index
-                .count_entries(Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3]))
-                .map_err(ServerError::from_geo)?
-        }
-        GeoArtifactIndex::D3(index) => {
-            if bbox.len() != 6 {
-                return Err(ServerError::InvalidBbox(format!(
-                    "3D collection `{}` expects bbox=minx,miny,minz,maxx,maxy,maxz",
-                    collection.id()
-                )));
-            }
-            index
-                .count_entries(Box3D::new(
-                    bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5],
-                ))
-                .map_err(ServerError::from_geo)?
-        }
+        GeoArtifactIndex::D2(index) => index
+            .count_entries(query_2d(query_shape, collection)?)
+            .map_err(ServerError::from_geo)?,
+        GeoArtifactIndex::D3(index) => index
+            .count_entries(query_3d(query_shape, collection)?)
+            .map_err(ServerError::from_geo)?,
     };
     Ok(SearchOutcome {
         number_matched,
@@ -725,7 +781,7 @@ fn count_only_outcome(
 
 fn search_records(
     collection: &Collection,
-    bbox: &[f64],
+    query_shape: &QueryShape,
     predicate: QueryPredicate,
     shape: RecordShape,
     offset: usize,
@@ -734,37 +790,63 @@ fn search_records(
     let exact = predicate == QueryPredicate::Intersects;
     match collection.open_local_index()? {
         GeoArtifactIndex::D2(index) => {
-            if bbox.len() != 4 {
-                return Err(ServerError::InvalidBbox(format!(
-                    "2D collection `{}` expects bbox=minx,miny,maxx,maxy",
-                    collection.id()
-                )));
-            }
-            let query = Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3]);
+            let query = query_2d(query_shape, collection)?;
             if exact {
                 return exact_records(&index, query, collection, shape, offset, limit);
             }
             bbox_records(&index, query, collection, shape, offset, limit)
         }
         GeoArtifactIndex::D3(index) => {
-            if bbox.len() != 6 {
-                return Err(ServerError::InvalidBbox(format!(
-                    "3D collection `{}` expects bbox=minx,miny,minz,maxx,maxy,maxz",
-                    collection.id()
-                )));
-            }
             // The only thing 3D answers differently: `GeoQuery3D` has no
             // polygon variant, so there is no exact phase to refine candidates
-            // with. Everything below this line is shared with 2D.
+            // with -- and a frustum has no narrow phase in this crate at all.
+            // Everything below this line is shared with 2D.
             if exact {
                 return Err(ServerError::UnsupportedPredicate(format!(
                     "collection `{}` is 3D; predicate=intersects is only supported for 2D artifacts in this server",
                     collection.id()
                 )));
             }
-            let query = Box3D::new(bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5]);
-            bbox_records(&index, query, collection, shape, offset, limit)
+            bbox_records(
+                &index,
+                query_3d(query_shape, collection)?,
+                collection,
+                shape,
+                offset,
+                limit,
+            )
         }
+    }
+}
+
+/// The 2D query a shape resolves to, or why it cannot be one.
+fn query_2d(shape: &QueryShape, collection: &Collection) -> Result<Box2D, ServerError> {
+    match shape {
+        QueryShape::Bbox(bbox) if bbox.len() == 4 => {
+            Ok(Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3]))
+        }
+        QueryShape::Bbox(_) => Err(ServerError::InvalidBbox(format!(
+            "2D collection `{}` expects bbox=minx,miny,maxx,maxy",
+            collection.id()
+        ))),
+        QueryShape::Frustum(_) => Err(ServerError::UnsupportedQuery(format!(
+            "collection `{}` is 2D; a frustum query needs a 3D artifact -- use bbox",
+            collection.id()
+        ))),
+    }
+}
+
+/// The 3D query a shape resolves to, or why it cannot be one.
+fn query_3d(shape: &QueryShape, collection: &Collection) -> Result<GeoQuery3D, ServerError> {
+    match shape {
+        QueryShape::Bbox(bbox) if bbox.len() == 6 => Ok(GeoQuery3D::from(Box3D::new(
+            bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5],
+        ))),
+        QueryShape::Bbox(_) => Err(ServerError::InvalidBbox(format!(
+            "3D collection `{}` expects bbox=minx,miny,minz,maxx,maxy,maxz",
+            collection.id()
+        ))),
+        QueryShape::Frustum(frustum) => Ok(GeoQuery3D::from(*frustum)),
     }
 }
 
@@ -1021,6 +1103,50 @@ fn match_record(
 
 fn match_payload_none(payload_mode: PayloadMode) -> Option<MatchPayload> {
     (payload_mode != PayloadMode::None).then_some(MatchPayload::None)
+}
+
+/// Parse six inward-pointing planes from 24 comma-separated numbers.
+///
+/// A plane is `a,b,c,d` with a point inside when `a*x + b*y + c*z + d >= 0`;
+/// the planes need not be normalized, since only the sign is used. Order is
+/// the frustum's own (left, right, bottom, top, near, far), which only matters
+/// to a reader -- the test is against all six.
+fn parse_frustum(raw: &str) -> Result<Frustum3D, ServerError> {
+    let mut values = Vec::with_capacity(24);
+    for part in raw.split(',') {
+        let value = part.trim().parse::<f64>().map_err(|_| {
+            ServerError::InvalidFrustum(format!("frustum value `{}` is not a number", part.trim()))
+        })?;
+        if !value.is_finite() {
+            return Err(ServerError::InvalidFrustum(format!(
+                "frustum value `{}` is not finite",
+                part.trim()
+            )));
+        }
+        values.push(value);
+    }
+    if values.len() != 24 {
+        return Err(ServerError::InvalidFrustum(format!(
+            "frustum must contain 24 numbers (six planes of a,b,c,d), got {}",
+            values.len()
+        )));
+    }
+    let mut planes = [[0.0f64; 4]; 6];
+    for (plane, chunk) in planes.iter_mut().zip(values.as_chunks::<4>().0) {
+        plane.copy_from_slice(chunk);
+    }
+    // A plane whose normal is zero tests nothing: `0*x + 0*y + 0*z + d` is a
+    // constant, so the frustum silently becomes a half-open region instead of
+    // failing. Cheaper to refuse than to explain.
+    if let Some(index) = planes
+        .iter()
+        .position(|p| p[0] == 0.0 && p[1] == 0.0 && p[2] == 0.0)
+    {
+        return Err(ServerError::InvalidFrustum(format!(
+            "frustum plane {index} has a zero normal, so it constrains nothing"
+        )));
+    }
+    Ok(Frustum3D::from_planes(planes))
 }
 
 fn parse_bbox(raw: Option<&str>) -> Result<Vec<f64>, ServerError> {

@@ -66,14 +66,14 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections`
 - `GET /collections/{id}`
 - `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=`
-- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=&level=&payload=&identity=&count=`
+- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=&limit=&offset=&predicate=&level=&payload=&identity=&count=`
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
 a `matches` array. `/items` is the GeoJSON view: it returns a
 `FeatureCollection` and requires a `feature_json` payload; other artifacts get
 a 422 pointing at `/search`. `/items` also rejects `/search`-only options
-(`level`, `payload`, `identity`, `count`) with `unsupported_query`.
+(`level`, `payload`, `identity`, `count`, `frustum`) with `unsupported_query`.
 
 Failures are reported as `{"error":{"code","message"}}`; the two Cloudflare
 Worker demos under `wasm-demo/` use the same envelope and code vocabulary, so a
@@ -88,7 +88,33 @@ rather than refusing an incidental `?f=json`.
 
 Query parameters:
 
-- `bbox` — required; 4 numbers for 2D artifacts, 6 for 3D.
+- `bbox` — 4 numbers for 2D artifacts, 6 for 3D. Required unless `frustum`
+  is given.
+- `frustum=a,b,c,d,...` — `/search` only, **3D artifacts only**, mutually
+  exclusive with `bbox`. Six inward-pointing planes as 24 numbers: a point is
+  inside a plane when `a*x + b*y + c*z + d >= 0`, and inside the frustum when it
+  is inside all six. The planes need not be normalized — only the sign is used.
+
+  This is what a tilted or perspective view should send. The axis-aligned box
+  around a frustum is far larger than the frustum, so a client that can only
+  send a `bbox` pays reads for geometry it will never draw; measured on 200k
+  boxes, the frustum returns 1.7–4x fewer candidates and answers 3.2–13.6x
+  faster than the corner-box workaround.
+
+  Planes rather than a view-projection matrix, deliberately. A matrix carries
+  two conventions the wire cannot recover — the clip-space depth range (which
+  this project refuses to default silently, because it is not derivable from the
+  matrix) and row- versus column-major storage — and getting either wrong moves
+  the near plane without failing anywhere. A client resolves both locally, where
+  it knows the answer, with `Frustum3D::from_view_projection`, and sends the
+  planes.
+
+  The query is a **conservative superset**: it returns every box overlapping the
+  frustum and may include a few just past an edge or corner (the standard
+  p-vertex test), and it never drops a visible one. There is no exact narrow
+  phase for a frustum in this crate, so `predicate=intersects` is refused with
+  it; do the precise test on the returned candidates. `count=only` works.
+
 - `predicate=bbox|intersects` — `bbox` (default) intersects stored envelopes
   only; `intersects` refines candidates with exact geometry intersection from
   artifact payloads. Unsupported combinations (3D, payload without geometry)
@@ -137,7 +163,8 @@ Query parameters:
 
 Responses echo the effective query (after defaults and collection-dependent
 resolution) under `query`, so a client can always see which `level`,
-`identity`, `count`, and `predicate` actually applied. `numberMatched`
+`identity`, `count`, and `predicate` actually applied, and `query` carries
+`bbox` or `frustum` — whichever shape the search used, never both. `numberMatched`
 counts matches before pagination and `numberReturned` after. Each match
 carries `entryId` (index entry ordinal in the artifact; stable per artifact
 build, not across rebuilds) and, when the payload stores one, a `featureRef`

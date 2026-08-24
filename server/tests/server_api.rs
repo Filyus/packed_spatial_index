@@ -87,6 +87,50 @@ fn elevations_geojson() -> &'static [u8] {
     }"#
 }
 
+/// A 5x5x5 grid of 3D points at x,y,z in {0, 10, 20, 30, 40}.
+///
+/// `elevations_geojson` has two features, which cannot show a frustum being
+/// more selective than the box around it -- and that selectivity is the whole
+/// reason to send a frustum over the wire instead of its corner bbox.
+fn grid_3d_geojson() -> String {
+    let mut features = Vec::new();
+    for x in 0..5 {
+        for y in 0..5 {
+            for z in 0..5 {
+                let (fx, fy, fz) = (x as f64 * 10.0, y as f64 * 10.0, z as f64 * 10.0);
+                features.push(format!(
+                    r#"{{"type":"Feature","id":"p{x}{y}{z}","geometry":{{"type":"Point","coordinates":[{fx},{fy},{fz}]}},"properties":{{}}}}"#
+                ));
+            }
+        }
+    }
+    format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    )
+}
+
+/// Six inward-pointing planes describing an axis-aligned box.
+///
+/// A frustum this shape must answer exactly like the same box sent as `bbox`,
+/// which is the cleanest correctness check the wire format has.
+fn box_planes(min: [f64; 3], max: [f64; 3]) -> String {
+    let planes = [
+        [1.0, 0.0, 0.0, -min[0]],
+        [-1.0, 0.0, 0.0, max[0]],
+        [0.0, 1.0, 0.0, -min[1]],
+        [0.0, -1.0, 0.0, max[1]],
+        [0.0, 0.0, 1.0, -min[2]],
+        [0.0, 0.0, -1.0, max[2]],
+    ];
+    planes
+        .iter()
+        .flat_map(|p| p.iter())
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn write_artifact_with_request(path: &Path, req: ConvertRequest, doc: &[u8]) {
     let mut source = open_geojson_slice(doc).unwrap();
     let bytes = source.convert(req).unwrap();
@@ -209,7 +253,8 @@ async fn contract_collections_summary_shape() {
                     "levels": ["feature", "entry"],
                     "payloadModes": ["none", "summary", "full"],
                     "identityModes": ["ref"],
-                    "countModes": ["records", "only"]
+                    "countModes": ["records", "only"],
+                    "queryShapes": ["bbox"]
                 }
             }
         ]),
@@ -727,6 +772,208 @@ async fn count_is_rejected_on_items() {
     let (status, json) = get_json(app, "/collections/places/search?bbox=-10,0,0,2&count=all").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"]["code"], "invalid_count");
+}
+
+fn grid_3d_state() -> ServerState {
+    state_with_geojson_request(
+        ConvertRequest {
+            payload: PayloadPlan::RowWkb,
+            ..ConvertRequest::default()
+        },
+        grid_3d_geojson().as_bytes(),
+    )
+}
+
+/// A frustum whose six planes describe an axis-aligned box must answer exactly
+/// like that box sent as `bbox`. Anything else means the planes are being read
+/// with the wrong sign, order, or arity.
+#[tokio::test]
+async fn an_axis_aligned_frustum_answers_like_the_same_box() {
+    let app = router(grid_3d_state());
+    for (min, max) in [
+        ([-1.0, -1.0, -1.0], [41.0, 41.0, 41.0]),
+        ([-1.0, -1.0, -1.0], [11.0, 11.0, 11.0]),
+        ([9.0, 9.0, 9.0], [21.0, 21.0, 21.0]),
+        ([100.0, 100.0, 100.0], [200.0, 200.0, 200.0]),
+    ] {
+        let bbox = format!(
+            "bbox={},{},{},{},{},{}",
+            min[0], min[1], min[2], max[0], max[1], max[2]
+        );
+        let frustum = format!("frustum={}", box_planes(min, max));
+        let (status, by_box) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?{bbox}&limit=1000"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, by_frustum) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?{frustum}&limit=1000"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{by_frustum}");
+
+        assert_eq!(
+            by_frustum["numberMatched"], by_box["numberMatched"],
+            "planes {min:?}..{max:?}"
+        );
+        assert_contract(&by_frustum["matches"], by_box["matches"].clone());
+        // The echoed query reports the shape that applied, and only that one.
+        assert!(by_frustum["query"]["bbox"].is_null());
+        assert_eq!(by_frustum["query"]["frustum"].as_array().unwrap().len(), 6);
+        assert!(by_box["query"]["frustum"].is_null());
+    }
+}
+
+/// The reason a frustum travels over the wire at all: a tilted view selects far
+/// less than the box around it, so a client that can only send a bbox pays for
+/// everything it will never draw.
+#[tokio::test]
+async fn a_tilted_frustum_selects_less_than_its_corner_box() {
+    let app = router(grid_3d_state());
+    // A diagonal slab: |x - y| <= 5, clipped to the grid. Its corner bbox is
+    // the whole grid, but it keeps only the diagonal.
+    let planes = [
+        [1.0, -1.0, 0.0, 5.0],
+        [-1.0, 1.0, 0.0, 5.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [-1.0, 0.0, 0.0, 41.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [0.0, 0.0, -1.0, 41.0],
+    ];
+    let frustum = planes
+        .iter()
+        .flat_map(|p| p.iter())
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let (status, tilted) = get_json(
+        app.clone(),
+        &format!("/collections/places/search?frustum={frustum}&count=only"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tilted}");
+    let (status, corner_box) = get_json(
+        app,
+        "/collections/places/search?bbox=-1,-1,-1,41,41,41&count=only",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let tilted = tilted["numberMatched"].as_u64().unwrap();
+    let whole = corner_box["numberMatched"].as_u64().unwrap();
+    assert_eq!(whole, 125, "the corner box is the whole grid");
+    assert!(
+        tilted > 0 && tilted < whole / 2,
+        "frustum matched {tilted} of {whole}: it is not pruning"
+    );
+}
+
+/// `count=only` over a frustum is what closes the loop with the core's
+/// `count_region`: counting a shape query without materializing it.
+#[tokio::test]
+async fn count_only_works_over_a_frustum() {
+    let app = router(grid_3d_state());
+    let frustum = box_planes([9.0, 9.0, 9.0], [21.0, 21.0, 21.0]);
+    let (status, counted) = get_json(
+        app.clone(),
+        &format!("/collections/places/search?frustum={frustum}&count=only"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, full) = get_json(
+        app,
+        &format!("/collections/places/search?frustum={frustum}&limit=1000"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(counted["numberMatched"], full["numberMatched"]);
+    assert_eq!(counted["numberReturned"], 0);
+}
+
+#[tokio::test]
+async fn frustum_queries_are_refused_where_they_cannot_apply() {
+    let three_d = router(grid_3d_state());
+    let planes = box_planes([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+
+    // A 2D artifact has no z for a frustum to test against, and its
+    // capabilities say so before the request is made.
+    let two_d = router(state_with_payload(PayloadPlan::RowRef));
+    let (status, json) = get_json(two_d.clone(), "/collections/places").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_contract(&json["capabilities"]["queryShapes"], json!(["bbox"]));
+    let (status, json) = get_json(
+        two_d,
+        &format!("/collections/places/search?frustum={planes}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+
+    let (status, json) = get_json(three_d.clone(), "/collections/places").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_contract(
+        &json["capabilities"]["queryShapes"],
+        json!(["bbox", "frustum"]),
+    );
+
+    // No narrow phase exists for a frustum, so exact filtering cannot apply.
+    let (status, json) = get_json(
+        three_d.clone(),
+        &format!("/collections/places/search?frustum={planes}&predicate=intersects"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_predicate");
+
+    // One shape per query.
+    let (status, json) = get_json(
+        three_d.clone(),
+        &format!("/collections/places/search?bbox=0,0,0,1,1,1&frustum={planes}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_query");
+
+    // /items is the GeoJSON view; the frustum belongs to /search.
+    let geojson = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (status, json) = get_json(
+        geojson,
+        &format!("/collections/places/items?frustum={planes}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+}
+
+/// A malformed frustum is named as such rather than folded into invalid_query.
+#[tokio::test]
+async fn malformed_frustum_planes_are_rejected() {
+    let app = router(grid_3d_state());
+    let twenty_three = vec!["1"; 23].join(",");
+    for raw in [
+        // wrong arity
+        "1,2,3",
+        &twenty_three,
+        // not a number, then not finite
+        "a,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0",
+        "inf,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0",
+        // A zero normal constrains nothing, which would silently widen the
+        // frustum instead of failing.
+        "0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1",
+    ] {
+        let (status, json) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?frustum={raw}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "raw {raw}: {json}");
+        assert_eq!(json["error"]["code"], "invalid_frustum", "raw {raw}");
+    }
 }
 
 /// `search_records` has a whole 3D branch that no test reached: the server

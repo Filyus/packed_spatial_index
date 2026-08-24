@@ -14,6 +14,7 @@ import {
   maxReads,
   parseBbox,
   parseEnum,
+  parseFrustum,
   parseIntParam,
   rejectUnsupportedSearchParams,
 } from "./query";
@@ -103,7 +104,10 @@ async function route(req: Request, env: Env): Promise<Response> {
   }
 
   if (path === `${collectionPrefix}/search`) {
-    const bbox = parseBbox(url);
+    // One shape per query: a bbox or a frustum, never both. The frustum is six
+    // inward-pointing planes; see parseFrustum for why not a matrix.
+    const frustum = parseFrustum(url);
+    const bbox = frustum.length > 0 ? [] : parseBbox(url);
     const limit = parseIntParam(url, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT);
     const offset = parseIntParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
     const payload = parseEnum(url, "payload", "summary", ["none", "summary", "full"]);
@@ -118,6 +122,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     // 422 rather than a silently ignored parameter.
     rejectUnsupportedSearchParams(url, [
       "bbox",
+      "frustum",
       "limit",
       "offset",
       "payload",
@@ -142,6 +147,7 @@ async function route(req: Request, env: Env): Promise<Response> {
           level,
           identity,
           count,
+          Float64Array.from(frustum),
           maxReads(url),
         );
         return JSON.parse(json);

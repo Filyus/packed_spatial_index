@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HttpError } from "../src/artifact.ts";
-import { parseBbox, parseEnum, parseIntParam } from "../src/query.ts";
+import { parseBbox, parseEnum, parseFrustum, parseIntParam } from "../src/query.ts";
 
 function bbox(raw) {
   return parseBbox(new URL(`https://example.test/search?bbox=${raw}`));
@@ -88,5 +88,58 @@ test("names the parameter in the error code, as the server does", () => {
         10,
       ),
     (error) => error instanceof HttpError && error.code === "invalid_query",
+  );
+});
+
+function frustum(query) {
+  return parseFrustum(new URL(`https://example.test/search?${query}`));
+}
+
+const SIX_PLANES = [
+  [1, 0, 0, 0],
+  [-1, 0, 0, 40],
+  [0, 1, 0, 0],
+  [0, -1, 0, 40],
+  [0, 0, 1, 0],
+  [0, 0, -1, 40],
+]
+  .flat()
+  .join(",");
+
+test("a frustum is six planes of four numbers, or nothing at all", () => {
+  assert.deepEqual(frustum("bbox=0,0,1,1"), []);
+  assert.equal(frustum(`frustum=${SIX_PLANES}`).length, 24);
+});
+
+test("a malformed frustum is named, not folded into invalid_query", () => {
+  const bad = (raw) =>
+    expectHttpError(() => frustum(`frustum=${raw}`), 400, "invalid_frustum", /frustum/);
+
+  bad("1,2,3");
+  bad(Array(23).fill(1).join(","));
+  bad(Array(24).fill("x").join(","));
+  bad(["inf", ...Array(23).fill(1)].join(","));
+  // A plane with a zero normal constrains nothing, so it would silently widen
+  // the frustum rather than fail.
+  bad(
+    [
+      [0, 0, 0, 1],
+      [1, 0, 0, 0],
+      [0, 1, 0, 0],
+      [0, -1, 0, 40],
+      [0, 0, 1, 0],
+      [0, 0, -1, 40],
+    ]
+      .flat()
+      .join(","),
+  );
+});
+
+test("one shape per query, as the native server requires", () => {
+  expectHttpError(
+    () => frustum(`bbox=0,0,0,1,1,1&frustum=${SIX_PLANES}`),
+    400,
+    "invalid_query",
+    /mutually exclusive/,
   );
 });

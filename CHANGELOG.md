@@ -35,10 +35,27 @@ All notable changes to this crate are documented here.
   already proven NaN-free by `check_item_bounds`, so a compare-select is exact
   and compiles to one instruction. With the saturating clamps in `hilbert_coord`
   / `normalize_center` and an exact-size `collect` for the sort-key vector, a
-  100 000-box build executes 0.86x the instructions (0.88x in 3D). Counted with
-  callgrind rather than clocked: the build is dominated by the radix sort and
-  the reorder gather, both memory-bound, and the wall-clock effect sits under
-  this machine's layout floor.
+  100 000-box build executes 0.86x the instructions (0.88x in 3D).
+
+  Clocked by isolating the commit and building each side twice, because a single
+  pair of binaries could not separate the effect from code layout:
+
+  | `build/index_serial` | build 1 | build 2 | spread b/h    |
+  | ---                  | ---:    | ---:    | ---           |
+  | 16                   | 0.905   | 0.907   | 0.7-2.6%      |
+  | 1 000                | 0.878   | 0.954   | 1.6-3.7%      |
+  | 100 000              | 0.922   | 1.003   | 10-16%        |
+
+  `build/crate` — the `static_aabb2d_index` baseline, identical code in every
+  binary — stayed inside 1.003 in both pairs, and two builds of the *unchanged*
+  source read 0.998-1.007 at the two small sizes. So the small-size wins are
+  real; the 1 000 figure is layout-sensitive and is honestly a 5-12% band rather
+  than the 12% one build alone would have claimed.
+
+  The 100 000 row does not resolve, and the size sweep is why: the instruction
+  saving is in the encode, extent and pack stages, while at that size the build
+  is dominated by the radix sort and the reorder gather, which are memory-bound.
+  The win is largest where the working set stays in cache.
 - The owned indexes' `count(query)` now answers a fully contained subtree from
   its leaf range instead of testing every item inside it, so a wide window costs
   node pops rather than item tests. The new `count_windows` benchmark group

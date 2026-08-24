@@ -104,14 +104,21 @@ All notable changes to this crate are documented here.
   parses for a 15% window drop 5 414 → 1 070 and the query runs at 0.65× the
   time, a 40% window 35 254 → 2 358 at 0.48×, a whole-extent-ish window
   213 337 → 2 997 at 0.34×; at 1 000 000 boxes the same cells read 0.48×, 0.35×
-  and 0.21×. Small windows are unchanged — a window that contains no whole node
-  has nothing to skip, and those cells measured inside the harness's own floor.
+  and 0.21×. 3D behaves the same way and goes further at depth: at 200 000 boxes
+  a 40%-per-axis window drops 14 926 → 3 317 parses at 0.68×, an 80% one
+  115 911 → 12 421 at 0.52×, whole-extent 213 337 → 5 942 at 0.32×; at
+  1 000 000 those run 0.49×, 0.30× and 0.18×.
+  Windows too small to contain a whole node pay a few percent instead — one
+  containment test per visited node with nothing to skip, tens of nanoseconds on
+  a sub-microsecond query — which is the price of the rest.
   `any` and `first` deliberately keep the overlaps-only traversal: they stop at
   the first hit, so a containment test per node could only add work. Measured
   with both traversals in one binary (paired, interleaved, order-alternating),
   against a sliver-window control where the mechanism cannot fire and an
   extent-covering control where both arms take the root shortcut; both read
-  1.00 ± 0.03.
+  1.00 ± 0.03, and an arm-against-itself floor reads 0.97-1.00. The SIMD views
+  were never affected: they carry their own traversal, which has had the
+  contained fast path all along.
 
 ### Search
 

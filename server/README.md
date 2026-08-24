@@ -65,7 +65,7 @@ Windows) shuts down after in-flight requests finish.
 - `GET /health`
 - `GET /collections`
 - `GET /collections/{id}`
-- `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=`
+- `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy|radius=|polygon=&limit=&offset=&predicate=`
 - `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=|radius=|polygon=&limit=&offset=&predicate=&nonplanar=&level=&payload=&identity=&count=`
 - `POST /collections/{id}/search` — the same search as a JSON body
 
@@ -89,8 +89,8 @@ rather than refusing an incidental `?f=json`.
 
 Query parameters:
 
-- `bbox` — 4 numbers for 2D artifacts, 6 for 3D. Required unless `frustum`
-  is given.
+- `bbox` — 4 numbers for 2D artifacts, 6 for 3D. Required unless another
+  query shape (`frustum`, `radius`, `polygon`) is given.
 - `frustum=a,b,c,d,...` — `/search` only, **3D artifacts only**, mutually
   exclusive with `bbox`. Six inward-pointing planes as 24 numbers: a point is
   inside a plane when `a*x + b*y + c*z + d >= 0`, and inside the frustum when it

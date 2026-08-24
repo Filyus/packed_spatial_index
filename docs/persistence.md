@@ -131,11 +131,14 @@ the `async` feature and implement `AsyncRangeReader` the same way; `open_async`,
 issue a level's reads concurrently.
 
 **What streams today:** 2D and 3D range search (`search` / `search_into` /
-`visit`), optionally returning a stored blob per hit (`search_payloads`, when the
-file was written with `to_bytes_with_payloads`), sync or async. Streaming
-readers also support region queries (`search_region` / `visit_region` /
-`search_payloads_region` and their async counterparts) such as 2D convex
-polygons and 3D frustums. All of these use optional per-query cost limits
+`visit` / `count`), optionally returning a stored blob per hit
+(`search_payloads`, when the file was written with `to_bytes_with_payloads`),
+sync or async. Streaming readers also support region queries (`search_region` /
+`visit_region` / `count_region` / `search_payloads_region` and their async
+counterparts) such as 2D convex polygons and 3D frustums. `count` and
+`count_region` answer how many items match without materializing one, at the
+same read cost as the search they replace — the shape a "how many are in this
+box" caller wants over a remote file. All of these use optional per-query cost limits
 (`open_with_limits` + `StreamLimits` —
 bound reads, bytes, and items so a broad query cannot run unbounded). For a
 remote-tuned layout, `to_bytes_interleaved` stores each node's box and child
@@ -179,8 +182,8 @@ body sizes at which it flips.
 
 **Compact `f32` streaming:** `StreamIndex2DF32` / `StreamIndex3DF32` stream a
 compact `f32`-box file for half the box bytes over the wire, with the same
-sync and async `search` / `search_payloads` / `search_region` /
-`search_payloads_region` API. The stored boxes are
+sync and async `search` / `count` / `search_payloads` / `search_region` /
+`count_region` / `search_payloads_region` API. The stored boxes are
 rounded outward, so results are a conservative superset (filter against your own
 `f64` boxes for exact). Write the file with the scalar `Index3DF32` or the SIMD
 `SimdIndex3DF32`; `.interleaved()` on its `serialize()` builder enables the

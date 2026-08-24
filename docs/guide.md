@@ -95,14 +95,18 @@ file; `search_iter` is the lazy iterator form of range search.
 | `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
 
+`count` has no column because it would be a column of `✓`: every row above
+answers `count(query)`, including the streaming readers, where it is fallible
+like their other queries (`count(query) -> Result<usize, _>`).
+
 The same overlap machinery also accepts 2D triangle and convex-polygon queries
 on `Index2D` / `Index2DView`, and 3D frustum queries on `Index3D` /
 `Index3DView`. Streaming readers expose the same pruning through
-`search_region` / `visit_region` / `search_payloads_region` (including compact
-`...F32` readers, conservatively over rounded boxes); with the `async` feature,
-the same coverage is available through the matching `*_async` methods. These
-shape queries are not available on SIMD frontends or on the owned scalar
-`Index*F32` search APIs.
+`search_region` / `visit_region` / `count_region` / `search_payloads_region`
+(including compact `...F32` readers, conservatively over rounded boxes); with
+the `async` feature, the same coverage is available through the matching
+`*_async` methods. These shape queries are not available on SIMD frontends or
+on the owned scalar `Index*F32` search APIs.
 
 The empty cells are intentional, not gaps to fill:
 

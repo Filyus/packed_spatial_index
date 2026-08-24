@@ -1087,6 +1087,16 @@ async fn a_polygon_selects_less_than_its_bounding_box() {
         4
     );
 
+    // The GeoJSON view answers the same shape -- the README says `/items` takes
+    // a polygon, so something has to hold it to that.
+    let (status, items) = get_json(
+        app.clone(),
+        &format!("/collections/places/items?polygon={triangle}&limit=1000"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{items}");
+    assert_eq!(items["numberMatched"], polygon_hits);
+
     // Counting takes the same traversal -- no payload is read for either.
     let (status, counted) = get_json(
         app,

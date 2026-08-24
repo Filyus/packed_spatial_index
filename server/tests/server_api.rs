@@ -208,7 +208,8 @@ async fn contract_collections_summary_shape() {
                     "predicates": ["bbox"],
                     "levels": ["feature", "entry"],
                     "payloadModes": ["none", "summary", "full"],
-                    "identityModes": ["ref"]
+                    "identityModes": ["ref"],
+                    "countModes": ["records", "only"]
                 }
             }
         ]),
@@ -230,6 +231,7 @@ async fn contract_search_summary_shape() {
                 "level": "feature",
                 "payload": "summary",
                 "identity": "ref",
+                "count": "records",
                 "limit": 100,
                 "offset": 0
             },
@@ -272,6 +274,7 @@ async fn contract_search_feature_json_full_shape() {
                 // `payload=full` reads the body, which is where the id is, so
                 // withholding it from `featureRef` would hide nothing.
                 "identity": "full",
+                "count": "records",
                 "limit": 100,
                 "offset": 0
             },
@@ -320,6 +323,7 @@ async fn contract_search_feature_json_summary_shape() {
                 "level": "feature",
                 "payload": "summary",
                 "identity": "ref",
+                "count": "records",
                 "limit": 100,
                 "offset": 0
             },
@@ -585,6 +589,144 @@ async fn paged_and_grouped_searches_agree() {
             );
         }
     }
+}
+
+/// `count=only` must return the number a full search would have reported —
+/// that is the whole contract, and the cheap path is only worth having if it
+/// cannot disagree with the expensive one.
+#[tokio::test]
+async fn count_only_agrees_with_a_full_search() {
+    let app = router(state_with_payload(PayloadPlan::RowRef));
+    for bbox in ["-10,0,0,2", "-180,-90,180,90", "100,100,101,101"] {
+        let (status, full) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?bbox={bbox}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, counted) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?bbox={bbox}&count=only"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        assert_eq!(
+            counted["numberMatched"], full["numberMatched"],
+            "bbox {bbox}"
+        );
+        // The point of the mode: nothing is materialized.
+        assert_eq!(counted["numberReturned"], 0);
+        assert_contract(&counted["matches"], json!([]));
+        assert_eq!(counted["query"]["count"], "only");
+    }
+}
+
+/// A 3D collection counts through the same path with a six-number bbox.
+#[tokio::test]
+async fn count_only_serves_three_dimensional_collections() {
+    let app = router(state_with_geojson_request(
+        ConvertRequest {
+            payload: PayloadPlan::RowWkb,
+            ..ConvertRequest::default()
+        },
+        elevations_geojson(),
+    ));
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=0,0,0,3,3,50&count=only",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["numberMatched"], 1);
+    assert_eq!(json["numberReturned"], 0);
+
+    // Still a 3D collection: a four-number bbox is refused before counting.
+    let (status, json) = get_json(app, "/collections/places/search?bbox=0,0,3,3&count=only").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_bbox");
+}
+
+/// The two cases where the index's own count is not the number asked for are
+/// refused rather than answered approximately.
+#[tokio::test]
+async fn count_only_refuses_what_it_cannot_answer_from_the_index() {
+    // Exact filtering narrows the match set after the index answers.
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (status, json) = get_json(
+        app,
+        "/collections/places/search?bbox=-10,0,0,2&predicate=intersects&count=only",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+
+    // A split feature is several entries, so an entry count is not a feature
+    // count. Entry level still counts; feature level is refused, and the
+    // capabilities say so before the request is made.
+    let split = router(state_with_geojson_request(
+        ConvertRequest {
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            payload: PayloadPlan::RowWkb,
+            ..ConvertRequest::default()
+        },
+        antimeridian_geojson(),
+    ));
+    let (status, json) = get_json(split.clone(), "/collections/places").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_contract(&json["capabilities"]["countModes"], json!(["records"]));
+
+    let bbox = "bbox=-180,-90,180,90";
+    let (status, json) = get_json(
+        split.clone(),
+        &format!("/collections/places/search?{bbox}&count=only"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+
+    let (status, counted) = get_json(
+        split.clone(),
+        &format!("/collections/places/search?{bbox}&level=entry&count=only"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, full) = get_json(
+        split,
+        &format!("/collections/places/search?{bbox}&level=entry"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(counted["numberMatched"], full["numberMatched"]);
+    // Two index entries for one source feature is exactly the case the
+    // feature-level refusal exists for.
+    assert_eq!(counted["numberMatched"], 2);
+}
+
+/// `count` is a /search knob, like payload, level and identity.
+#[tokio::test]
+async fn count_is_rejected_on_items() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/items?bbox=-10,0,0,2&count=only",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+
+    // An unknown value is a malformed request, named like its siblings
+    // (`invalid_level`, `invalid_payload`) rather than a shape this collection
+    // cannot serve -- that distinction is what the 422s above are for.
+    let (status, json) = get_json(app, "/collections/places/search?bbox=-10,0,0,2&count=all").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_count");
 }
 
 /// `search_records` has a whole 3D branch that no test reached: the server

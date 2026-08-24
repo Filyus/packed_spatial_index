@@ -111,6 +111,9 @@ async function route(req: Request, env: Env): Promise<Response> {
     // is even available, so the default is resolved on the other side.
     const level = parseEnum(url, "level", "", ["entry", "feature"]);
     const identity = parseEnum(url, "identity", "ref", ["ref", "full"]);
+    // `only` returns numberMatched with an empty matches array: the artifact
+    // counts the matches instead of materializing them.
+    const count = parseEnum(url, "count", "records", ["records", "only"]);
     // `/items` deliberately keeps its own shorter list, so `identity` there is a
     // 422 rather than a silently ignored parameter.
     rejectUnsupportedSearchParams(url, [
@@ -120,6 +123,7 @@ async function route(req: Request, env: Env): Promise<Response> {
       "payload",
       "level",
       "identity",
+      "count",
       "maxReads",
     ]);
 
@@ -137,6 +141,7 @@ async function route(req: Request, env: Env): Promise<Response> {
           payload,
           level,
           identity,
+          count,
           maxReads(url),
         );
         return JSON.parse(json);

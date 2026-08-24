@@ -128,6 +128,7 @@ pub async fn search(
     payload: String,
     level: String,
     identity: String,
+    count: String,
     max_reads: f64,
 ) -> Result<String, JsValue> {
     let index = open_index(read_range, file_len, object_etag, max_reads).await?;
@@ -140,6 +141,20 @@ pub async fn search(
         payload_mode,
         parse_identity_mode(&identity)?,
     );
+    let count_only = parse_count_only(&count)?;
+    // Same refusal the native server makes, for the same reason: the index
+    // counts entries, and where an entry can duplicate a source row a
+    // feature-level count would have to read the matches this mode skips.
+    if count_only
+        && result_level == ResultLevel::Feature
+        && index.manifest().entries_may_duplicate_rows
+    {
+        return Err(worker_err(
+            422,
+            "unsupported_query",
+            "this artifact can store one source feature as several index entries, so a              feature-level count has to read the matches; use count=only with level=entry,              or drop count=only",
+        ));
+    }
 
     match (index, bbox.len()) {
         (GeoArtifactIndex::D2(index), 4) => {
@@ -152,6 +167,7 @@ pub async fn search(
                 payload_mode,
                 result_level,
                 identity_mode,
+                count_only,
             )
             .await
         }
@@ -165,6 +181,7 @@ pub async fn search(
                 payload_mode,
                 result_level,
                 identity_mode,
+                count_only,
             )
             .await
         }
@@ -182,11 +199,19 @@ async fn search_impl<I: AsyncGeoIndex>(
     payload_mode: PayloadMode,
     result_level: ResultLevel,
     identity_mode: IdentityMode,
+    count_only: bool,
 ) -> Result<String, JsValue> {
-    let (number_matched, page_headers) = header_page(&index, query, result_level, offset, limit)
-        .await
-        .map_err(geo_err)?;
-    let records: Vec<Value> = if needs_payload_bodies(payload_mode, identity_mode) {
+    // The whole point of the mode: no header page, no bodies, no records.
+    let (number_matched, page_headers) = if count_only {
+        (index.count_entries(query).await.map_err(geo_err)?, Vec::new())
+    } else {
+        header_page(&index, query, result_level, offset, limit)
+            .await
+            .map_err(geo_err)?
+    };
+    let records: Vec<Value> = if count_only {
+        Vec::new()
+    } else if needs_payload_bodies(payload_mode, identity_mode) {
         index
             .fetch_matches(&page_headers)
             .await
@@ -210,7 +235,15 @@ async fn search_impl<I: AsyncGeoIndex>(
 
     let body = json!({
         "collectionId": COLLECTION_ID,
-        "query": query_json(bbox, limit, offset, payload_mode, result_level, identity_mode),
+        "query": query_json(
+            bbox,
+            limit,
+            offset,
+            payload_mode,
+            result_level,
+            identity_mode,
+            count_only,
+        ),
         "payloadKind": payload_kind(&index.manifest().payload_plan),
         "numberMatched": number_matched,
         "numberReturned": records.len(),
@@ -364,6 +397,8 @@ trait AsyncGeoIndex {
         query: Self::Query,
     ) -> Result<Vec<GeoMatchHeader>, GeoError>;
 
+    async fn count_entries(&self, query: Self::Query) -> Result<usize, GeoError>;
+
     async fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError>;
 }
 
@@ -391,6 +426,10 @@ macro_rules! impl_async_geo_index {
                 query: Self::Query,
             ) -> Result<Vec<GeoMatchHeader>, GeoError> {
                 self.search_match_headers_async(query).await
+            }
+
+            async fn count_entries(&self, query: Self::Query) -> Result<usize, GeoError> {
+                self.count_entries_async(query).await
             }
 
             async fn fetch_matches(
@@ -553,6 +592,7 @@ fn query_json(
     payload: PayloadMode,
     level: ResultLevel,
     identity: IdentityMode,
+    count_only: bool,
 ) -> Value {
     json!({
         "bbox": bbox,
@@ -560,6 +600,7 @@ fn query_json(
         "level": level.as_str(),
         "payload": payload.as_str(),
         "identity": identity.as_str(),
+        "count": if count_only { "only" } else { "records" },
         "limit": limit,
         "offset": offset,
     })
@@ -683,6 +724,18 @@ fn parse_identity_mode(value: &str) -> Result<IdentityMode, JsValue> {
             400,
             "invalid_identity",
             "identity must be ref or full",
+        )),
+    }
+}
+
+fn parse_count_only(value: &str) -> Result<bool, JsValue> {
+    match value {
+        "" | "records" => Ok(false),
+        "only" => Ok(true),
+        _ => Err(worker_err(
+            400,
+            "invalid_count",
+            "count must be records or only",
         )),
     }
 }

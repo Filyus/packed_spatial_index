@@ -55,6 +55,8 @@ export function invalidCode(key: string): string {
       return "invalid_level";
     case "identity":
       return "invalid_identity";
+    case "count":
+      return "invalid_count";
     default:
       return "invalid_query";
   }

@@ -57,6 +57,7 @@ test("names the parameter in the error code, as the server does", () => {
         parseEnum(url, "payload", "summary", ["none", "summary", "full"]);
         parseEnum(url, "level", "feature", ["entry", "feature"]);
         parseEnum(url, "identity", "ref", ["ref", "full"]);
+        parseEnum(url, "count", "records", ["records", "only"]);
         parseIntParam(url, "limit", 100, 1, 1000);
         parseIntParam(url, "offset", 0, 0, 1e6);
       },
@@ -69,6 +70,8 @@ test("names the parameter in the error code, as the server does", () => {
   bad("level=deep");
   expected = "invalid_identity";
   bad("identity=maybe");
+  expected = "invalid_count";
+  bad("count=all");
   expected = "invalid_limit";
   bad("limit=0");
   expected = "invalid_offset";

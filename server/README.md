@@ -66,14 +66,14 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections`
 - `GET /collections/{id}`
 - `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=`
-- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=&level=&payload=&identity=`
+- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=&level=&payload=&identity=&count=`
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
 a `matches` array. `/items` is the GeoJSON view: it returns a
 `FeatureCollection` and requires a `feature_json` payload; other artifacts get
 a 422 pointing at `/search`. `/items` also rejects `/search`-only options
-(`level`, `payload`, `identity`) with `unsupported_query`.
+(`level`, `payload`, `identity`, `count`) with `unsupported_query`.
 
 Failures are reported as `{"error":{"code","message"}}`; the two Cloudflare
 Worker demos under `wasm-demo/` use the same envelope and code vocabulary, so a
@@ -119,11 +119,25 @@ Query parameters:
   - `payload=full` resolves to `full`, because the bodies are read regardless
     and the returned GeoJSON feature carries its own `id` anyway. Withholding
     it from `featureRef` there would hide nothing.
-- `limit`, `offset` — pagination over the matched set.
+- `count=records|only` — `/search` only; default `records`. `only` answers
+  `numberMatched` and nothing else: `matches` is empty, `numberReturned` is 0,
+  and the index counts the matches without materializing one of them, which is
+  what a "how many are in this bbox" caller actually wants. Two cases are
+  refused with `unsupported_query` rather than answered with a number that
+  means something else, and `capabilities.countModes` says so in advance:
+  - `predicate=intersects`, because exact filtering narrows the match set
+    *after* the index answers, so the index count is an upper bound.
+  - `level=feature` on a collection whose entries can duplicate a source row
+    (a split antimeridian geometry, a multi-part feature). Collapsing entries
+    to features means reading the matches, which is the work this mode exists
+    to skip; `level=entry` counts fine there. Where entries never duplicate a
+    row, feature and entry counts are the same number and both are allowed.
+- `limit`, `offset` — pagination over the matched set. They do not change
+  `numberMatched`, so they have no effect under `count=only`.
 
 Responses echo the effective query (after defaults and collection-dependent
 resolution) under `query`, so a client can always see which `level`,
-`identity`, and `predicate` actually applied. `numberMatched`
+`identity`, `count`, and `predicate` actually applied. `numberMatched`
 counts matches before pagination and `numberReturned` after. Each match
 carries `entryId` (index entry ordinal in the artifact; stable per artifact
 build, not across rebuilds) and, when the payload stores one, a `featureRef`

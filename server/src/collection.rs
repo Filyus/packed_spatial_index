@@ -287,6 +287,50 @@ mod tests {
         assert!(reads.load(Ordering::SeqCst) > 0);
     }
 
+    /// `count=only` is only worth a query parameter if counting really is
+    /// cheaper than the search it replaces. The response shape cannot show
+    /// that -- an empty `matches` array proves nothing about what was read --
+    /// so compare the reads the artifact actually issues.
+    #[test]
+    fn counting_reads_less_than_materializing_the_same_matches() {
+        let dir = tempdir().unwrap();
+        let artifact = dir.path().join("places.psindex");
+        let bytes = write_artifact(&artifact);
+        let query = Box2D::new(0.0, 0.0, 2.0, 2.0);
+
+        let counted_reads = Arc::new(AtomicUsize::new(0));
+        let index = open_geo_index(CountingReader::new(
+            bytes.clone(),
+            Arc::clone(&counted_reads),
+        ))
+        .unwrap();
+        let GeoArtifactIndex::D2(index) = index else {
+            panic!("expected 2D artifact");
+        };
+        let opened = counted_reads.load(Ordering::SeqCst);
+        let counted = index.count_entries(query).unwrap();
+        let count_only = counted_reads.load(Ordering::SeqCst) - opened;
+
+        let header_reads = Arc::new(AtomicUsize::new(0));
+        let index = open_geo_index(CountingReader::new(bytes, Arc::clone(&header_reads))).unwrap();
+        let GeoArtifactIndex::D2(index) = index else {
+            panic!("expected 2D artifact");
+        };
+        let opened = header_reads.load(Ordering::SeqCst);
+        let headers = index.search_match_headers(query).unwrap();
+        let materialized = header_reads.load(Ordering::SeqCst) - opened;
+
+        assert_eq!(
+            counted,
+            headers.len(),
+            "the two paths must agree on the count"
+        );
+        assert!(
+            count_only < materialized,
+            "counting issued {count_only} reads, materializing {materialized}:              count=only is not buying anything"
+        );
+    }
+
     #[test]
     fn open_geo_index_would_read_the_counting_reader() {
         let dir = tempdir().unwrap();

@@ -43,6 +43,25 @@ pub struct SearchParams {
     /// Source-identity mode for `/search`.
     #[serde(default)]
     pub identity: Option<String>,
+    /// Set to `only` to return `numberMatched` without any records.
+    #[serde(default)]
+    pub count: Option<String>,
+}
+
+/// How much of a search a caller wants back.
+///
+/// `Records` is the default: match the query, page it, return the records.
+/// `Only` answers just `numberMatched`, which the index can count without
+/// materializing a single record — the shape a "how many are in this bbox"
+/// caller actually wants, and the one that previously cost a full header list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CountMode {
+    /// Return the matched page, with `numberMatched` alongside it.
+    #[default]
+    Records,
+    /// Return `numberMatched` only, with an empty `matches` array.
+    Only,
 }
 
 /// Spatial predicate applied by a search.
@@ -101,6 +120,9 @@ pub struct QueryInfo {
     /// Applied identity mode; `/items` responses omit it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<IdentityMode>,
+    /// Applied count mode; `/items` responses omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<CountMode>,
     /// Applied limit.
     pub limit: usize,
     /// Applied offset.
@@ -121,6 +143,9 @@ pub struct Capabilities {
     pub payload_modes: Vec<PayloadMode>,
     /// Identity modes accepted by `/search`.
     pub identity_modes: Vec<IdentityMode>,
+    /// Count modes accepted by `/search`. `only` is absent when this
+    /// collection cannot answer a count without materializing matches.
+    pub count_modes: Vec<CountMode>,
 }
 
 /// Collection summary returned by list/detail endpoints.
@@ -335,12 +360,24 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
     } else {
         vec![IdentityMode::Ref]
     };
+    // The index counts entries. Where an entry can duplicate a source row --
+    // a geometry split across the antimeridian, a multi-part feature -- that
+    // is not the feature count, and collapsing to features means materializing
+    // the matches after all. Such a collection advertises `only` for
+    // `level=entry` and refuses it for `level=feature`; advertising it
+    // unconditionally would promise a number the server has to reject.
+    let count_modes = if collection.entries_may_duplicate_rows() {
+        vec![CountMode::Records]
+    } else {
+        vec![CountMode::Records, CountMode::Only]
+    };
     Capabilities {
         items: payload_kind == PayloadKind::FeatureJson,
         predicates,
         levels,
         payload_modes: vec![PayloadMode::None, PayloadMode::Summary, PayloadMode::Full],
         identity_modes,
+        count_modes,
     }
 }
 
@@ -361,14 +398,19 @@ pub fn search_response(
         ),
     };
     let payload_kind = PayloadKind::from(&collection.manifest().payload_plan);
-    let outcome = search_records(
-        collection,
-        &options.bbox,
-        options.predicate,
-        shape,
-        options.offset,
-        options.limit,
-    )?;
+    let count_mode = parse_count_mode(params.count.as_deref())?;
+    let outcome = if count_mode == CountMode::Only {
+        count_only_outcome(collection, &options.bbox, options.predicate, shape)?
+    } else {
+        search_records(
+            collection,
+            &options.bbox,
+            options.predicate,
+            shape,
+            options.offset,
+            options.limit,
+        )?
+    };
     Ok(SearchResponse {
         collection_id: collection.id().to_owned(),
         query: QueryInfo {
@@ -377,6 +419,7 @@ pub fn search_response(
             level: Some(shape.level),
             payload: Some(shape.payload),
             identity: Some(shape.identity),
+            count: Some(count_mode),
             limit: options.limit,
             offset: options.offset,
         },
@@ -405,6 +448,11 @@ pub fn items_response(
     if params.identity.is_some() {
         return Err(ServerError::UnsupportedQuery(
             "identity is only supported on /search".to_string(),
+        ));
+    }
+    if params.count.is_some() {
+        return Err(ServerError::UnsupportedQuery(
+            "count is only supported on /search".to_string(),
         ));
     }
     if !matches!(
@@ -461,6 +509,7 @@ pub fn items_response(
             level: None,
             payload: None,
             identity: None,
+            count: None,
             limit: options.limit,
             offset: options.offset,
         },
@@ -515,10 +564,10 @@ fn resolve_level(
 /// Matched-and-paged search result: the pre-pagination match count plus the
 /// records of the requested page only.
 ///
-/// `numberMatched` still comes from the materialized header/id list because
-/// every record needs its identity anyway. A future count-only query
-/// parameter (for example `count=only`) would skip that list entirely via
-/// geo's `count_entries`.
+/// `numberMatched` comes from the materialized header/id list because every
+/// returned record needs its identity anyway. A caller that wants only the
+/// number asks for `count=only`, which skips the list entirely through geo's
+/// `count_entries`.
 struct SearchOutcome {
     number_matched: usize,
     records: Vec<MatchRecord>,
@@ -612,6 +661,67 @@ macro_rules! impl_sync_geo_index {
 
 impl_sync_geo_index!(GeoArtifactIndex2D, Box2D);
 impl_sync_geo_index!(GeoArtifactIndex3D, Box3D);
+
+/// Answer `count=only`: how many index entries match, without materializing
+/// one of them.
+///
+/// Refused rather than approximated in the two cases where the index's own
+/// count is not the number the caller asked for:
+///
+/// * `predicate=intersects` narrows candidates by exact geometry *after* the
+///   index answers, so the index count is an upper bound, not the answer.
+/// * `level=feature` on a collection whose entries can duplicate a source row
+///   needs those rows collapsed, which means reading the matches -- exactly
+///   the work this mode exists to skip. Entry level counts fine there.
+fn count_only_outcome(
+    collection: &Collection,
+    bbox: &[f64],
+    predicate: QueryPredicate,
+    shape: RecordShape,
+) -> Result<SearchOutcome, ServerError> {
+    if predicate == QueryPredicate::Intersects {
+        return Err(ServerError::UnsupportedQuery(
+            "count=only counts index matches, which predicate=intersects narrows afterwards;              drop one of them"
+                .to_string(),
+        ));
+    }
+    if shape.level == ResultLevel::Feature && collection.entries_may_duplicate_rows() {
+        return Err(ServerError::UnsupportedQuery(format!(
+            "collection `{}` can store one source feature as several index entries, so a              feature-level count has to read the matches; use count=only with level=entry,              or drop count=only",
+            collection.id()
+        )));
+    }
+    let number_matched = match collection.open_local_index()? {
+        GeoArtifactIndex::D2(index) => {
+            if bbox.len() != 4 {
+                return Err(ServerError::InvalidBbox(format!(
+                    "2D collection `{}` expects bbox=minx,miny,maxx,maxy",
+                    collection.id()
+                )));
+            }
+            index
+                .count_entries(Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3]))
+                .map_err(ServerError::from_geo)?
+        }
+        GeoArtifactIndex::D3(index) => {
+            if bbox.len() != 6 {
+                return Err(ServerError::InvalidBbox(format!(
+                    "3D collection `{}` expects bbox=minx,miny,minz,maxx,maxy,maxz",
+                    collection.id()
+                )));
+            }
+            index
+                .count_entries(Box3D::new(
+                    bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5],
+                ))
+                .map_err(ServerError::from_geo)?
+        }
+    };
+    Ok(SearchOutcome {
+        number_matched,
+        records: Vec::new(),
+    })
+}
 
 fn search_records(
     collection: &Collection,
@@ -986,6 +1096,16 @@ fn parse_level(raw: Option<&str>) -> Result<Option<ResultLevel>, ServerError> {
         Some("entry") => Ok(Some(ResultLevel::Entry)),
         Some(_) => Err(ServerError::InvalidLevel(
             "level must be feature or entry".to_string(),
+        )),
+    }
+}
+
+fn parse_count_mode(raw: Option<&str>) -> Result<CountMode, ServerError> {
+    match raw {
+        None | Some("") | Some("records") => Ok(CountMode::Records),
+        Some("only") => Ok(CountMode::Only),
+        Some(_) => Err(ServerError::InvalidCount(
+            "count must be records or only".to_string(),
         )),
     }
 }

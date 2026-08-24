@@ -39,11 +39,31 @@ All notable changes to this crate are documented here.
   callgrind rather than clocked: the build is dominated by the radix sort and
   the reorder gather, both memory-bound, and the wall-clock effect sits under
   this machine's layout floor.
-- `count(query)` now answers a fully contained subtree from its leaf range
-  instead of testing every item inside it, so a wide window costs node pops
-  rather than item tests. On 1 000 queries covering 4-12% of the extent over
-  100 000 boxes it executes 0.73x the instructions with 0.87x the branch
-  mispredictions. Region queries keep the traversal they had.
+- The owned indexes' `count(query)` now answers a fully contained subtree from
+  its leaf range instead of testing every item inside it, so a wide window costs
+  node pops rather than item tests. The new `count_windows` benchmark group
+  measures it against a `search_into_stack` baseline that reuses both buffers,
+  over 1 000 queries and 100 000 boxes:
+
+  | window        | before     | after    | ratio    |
+  | ---           | ---:       | ---:     | ---:     |
+  | `full_extent` | 61.84 ms   | 24.26 us | 0.0004   |
+  | `large`       | 7.166 ms   | 2.955 ms | 0.41     |
+  | `wide_sliver` | 1.375 ms   | 1.266 ms | 0.92     |
+  | `small`       | 229.9 us   | 238.2 us | **1.04** |
+
+  Small windows pay 3.6% more, reproduced across two runs while eleven control
+  arms in the same group stayed inside 1.005: nothing is contained at that size,
+  so the per-child containment test is pure overhead there. That is the same
+  trade `search` already makes — its contained traversal runs the identical test
+  — so `count` is now consistent with it rather than cheaper on the small case
+  and dramatically worse on every larger one. `wide_sliver` is the designed
+  control: a long thin window contains no whole node, and it moved least.
+
+  Region queries (`&Triangle2D` / `&ConvexPolygon2D` / `&Frustum3D`) keep the
+  traversal they had. The views and the SIMD frontends were already effectively
+  contained-aware here — their counting enumeration collapses to an add because
+  the closure ignores the item index — and are unchanged.
 
 - The zero-copy views' range search now takes the contained-subtree fast path.
   `Index2DView` / `Index3DView` had a root-contains shortcut and nothing below

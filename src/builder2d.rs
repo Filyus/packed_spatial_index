@@ -11,6 +11,7 @@ use crate::{
     },
     tree::{TreeLayout, normalize_node_size, try_compute_tree_layout},
 };
+use crate::{config::GATHER_PREFETCH_DISTANCE, traversal::prefetch_read};
 
 /// Builder for [`Index2D`] and, with the `simd` feature, `SimdIndex2D`.
 ///
@@ -364,6 +365,9 @@ fn reorder_serial(
     items: &[Box2D],
 ) {
     for (slot, &(_, orig)) in order.iter().enumerate() {
+        if let Some(&(_, ahead)) = order.get(slot + GATHER_PREFETCH_DISTANCE) {
+            prefetch_read(items.as_ptr().wrapping_add(ahead as usize));
+        }
         entries[slot] = items[orig as usize];
         indices[slot] = orig as usize;
     }

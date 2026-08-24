@@ -42,6 +42,7 @@ use crate::{
 use crate::leftpack::leftpack4;
 #[cfg(feature = "simd")]
 use crate::{config::DEFAULT_SEARCH_STACK_CAPACITY, traversal::SearchWorkspace};
+use crate::{config::GATHER_PREFETCH_DISTANCE, traversal::prefetch_read};
 use std::ops::ControlFlow;
 
 /// Build the canonical scalar f32 storage from already-decoded SoA columns.
@@ -127,6 +128,9 @@ pub(crate) fn build_f32_3(
     let order = encode_sort_by_key_3d(&items, config.sort_key, context);
 
     for (slot, &(_, orig)) in order.iter().enumerate() {
+        if let Some(&(_, ahead)) = order.get(slot + GATHER_PREFETCH_DISTANCE) {
+            prefetch_read(items.as_ptr().wrapping_add(ahead));
+        }
         let b = Box3DF32::from_box3d_outward(items[orig]);
         min_xs[slot] = b.min_x;
         min_ys[slot] = b.min_y;

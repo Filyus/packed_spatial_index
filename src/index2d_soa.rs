@@ -11,6 +11,7 @@ use wide::f64x4;
 mod raycast;
 mod serialization;
 
+use crate::config::GATHER_PREFETCH_DISTANCE;
 #[cfg(target_arch = "x86_64")]
 use crate::leftpack::leftpack4;
 use crate::{
@@ -116,6 +117,9 @@ pub(crate) fn build_simd_index(
 
     if !scattered_in_parallel {
         for (slot, &(_, orig)) in order.iter().enumerate() {
+            if let Some(&(_, ahead)) = order.get(slot + GATHER_PREFETCH_DISTANCE) {
+                prefetch_read(items.as_ptr().wrapping_add(ahead as usize));
+            }
             let b = items[orig as usize];
             min_xs[slot] = b.min_x;
             min_ys[slot] = b.min_y;

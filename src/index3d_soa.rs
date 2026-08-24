@@ -28,6 +28,7 @@ use crate::{
     tree::{TreeLayout, try_compute_tree_layout},
     tree_access::TreeAccess,
 };
+use crate::{config::GATHER_PREFETCH_DISTANCE, traversal::prefetch_read};
 
 type Num = f64;
 
@@ -96,6 +97,9 @@ pub(crate) fn build_simd_index_3d(
 
     if !scattered_in_parallel {
         for (slot, &(_, orig)) in order.iter().enumerate() {
+            if let Some(&(_, ahead)) = order.get(slot + GATHER_PREFETCH_DISTANCE) {
+                prefetch_read(items.as_ptr().wrapping_add(ahead));
+            }
             let b = items[orig];
             min_xs[slot] = b.min_x;
             min_ys[slot] = b.min_y;

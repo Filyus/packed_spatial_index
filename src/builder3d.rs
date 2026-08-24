@@ -11,6 +11,7 @@ use crate::{
     },
     tree::{TreeLayout, normalize_node_size, try_compute_tree_layout},
 };
+use crate::{config::GATHER_PREFETCH_DISTANCE, traversal::prefetch_read};
 
 /// Build parameters passed to the SoA/SIMD 3D builder.
 #[cfg(any(feature = "simd", feature = "f32-storage"))]
@@ -336,6 +337,9 @@ fn reorder_serial_3d(
     items: &[Box3D],
 ) {
     for (slot, &(_, original)) in order.iter().enumerate() {
+        if let Some(&(_, ahead)) = order.get(slot + GATHER_PREFETCH_DISTANCE) {
+            prefetch_read(items.as_ptr().wrapping_add(ahead));
+        }
         entries[slot] = items[original];
         indices[slot] = original;
     }

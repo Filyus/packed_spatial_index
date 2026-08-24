@@ -1,5 +1,24 @@
 use crate::{geometry::Box2D, hilbert2d as hilbert};
 
+/// LSD digit width, i.e. `ceil(32 / bits)` passes over the key.
+///
+/// Eight looks arbitrary next to the 32-bit Hilbert key — three passes of 11
+/// bits would touch the pair array once less — so it was swept end to end
+/// through [`Index2DBuilder::radix_sort_bits`], median of 7 interleaved rounds,
+/// pinned, on a full build:
+///
+/// | bits | passes | 100k  | 1M    |
+/// | ---: | ---:   | ---:  | ---:  |
+/// | 8    | 4      | 1.000 | 1.000 |
+/// | 10   | 4      | 1.001 | 1.016 |
+/// | 11   | 3      | 0.965 | 1.053 |
+/// | 12   | 3      | 0.977 | 1.062 |
+/// | 16   | 2      | 1.020 | 1.051 |
+///
+/// Fewer passes wins only while the histogram and the scatter's working set
+/// stay in cache. At a million items, spraying into 2048 buckets costs more
+/// than the pass it saves, and the 100k figure sits inside that measurement's
+/// own 6% spread. Eight stays.
 pub(crate) const DEFAULT_RADIX_BITS: u32 = 8;
 // Measured crossover: below this, comparison sort beats radix's scratch
 // allocation and multi-pass fixed cost for full 2D builds.

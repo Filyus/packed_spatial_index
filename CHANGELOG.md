@@ -6,6 +6,18 @@ All notable changes to this crate are documented here.
 
 ### Performance
 
+- The build's reorder gather is prefetched. Profiling a 100 000-box build put
+  60.9% of all L1 read misses in one place — `finish` reading `items` in Hilbert
+  order while writing its output sequentially — and every address it needs is
+  already sitting in the sort's `order` array, so the loads can be started
+  early. A 1 000 000-box build runs at 0.92x and 0.91x across two independently
+  built binaries (spreads 0.9-2.8%, untouched baseline control at 1.004), and
+  `index3d_simd_build/finish_simd_serial` at 0.967. Smaller builds do not
+  resolve and change sign between builds: at a thousand items the gather fits in
+  cache and there is nothing to hide. The distance (64) is swept rather than
+  guessed — short distances measure *worse* than no prefetch at all, because the
+  hint lands too late to help and still costs an instruction per item.
+
 - The SoA indexes' serialize and load paths now move a whole box record at a
   time. `SimdIndex*::to_bytes` wrote one `f64` per `extend_from_slice` — a
   capacity branch and a length store-back for every eight bytes, four or six

@@ -73,6 +73,25 @@ export function parseFrustum(url: URL): number[] {
 }
 
 /**
+ * The polygon parameter, passed through as text.
+ *
+ * The coordinates are parsed on the wasm side, by the same code that would
+ * read them out of a POST body -- keeping one parser rather than two that can
+ * disagree. This checks only what belongs to the query string: that a polygon
+ * is not asked for alongside another shape.
+ */
+export function parsePolygon(url: URL): string {
+  const raw = url.searchParams.get("polygon");
+  if (raw === null || raw === "") return "";
+  for (const other of ["bbox", "frustum"]) {
+    if (url.searchParams.get(other) !== null) {
+      throw new HttpError(400, "invalid_query", `polygon and ${other} are mutually exclusive`);
+    }
+  }
+  return raw;
+}
+
+/**
  * The error code for a bad value of `key`.
  *
  * The server names the parameter in the code — `invalid_limit`, not a blanket
@@ -97,6 +116,8 @@ export function invalidCode(key: string): string {
       return "invalid_count";
     case "frustum":
       return "invalid_frustum";
+    case "polygon":
+      return "invalid_polygon";
     default:
       return "invalid_query";
   }

@@ -66,7 +66,8 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections`
 - `GET /collections/{id}`
 - `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy&limit=&offset=&predicate=`
-- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=|radius=&limit=&offset=&predicate=&nonplanar=&level=&payload=&identity=&count=`
+- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=|radius=|polygon=&limit=&offset=&predicate=&nonplanar=&level=&payload=&identity=&count=`
+- `POST /collections/{id}/search` — the same search as a JSON body
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
@@ -170,6 +171,17 @@ Query parameters:
   artifact with a geometry payload (`capabilities.queryShapes` lists `radius`
   only where that holds), and why `count=only` refuses it: the index count
   would not be the number the caller sees.
+- `polygon=[[[[x, y], ...], ...], ...]` — `/search` and `/items`, **2D
+  artifacts only**, one query shape per request. GeoJSON MultiPolygon
+  coordinates: ring 0 of each polygon is its exterior, the rest are holes. It
+  is the array this crate's own `GeoQuery2D` serializes, so a client sends its
+  geometry's `coordinates` member verbatim.
+
+  Unlike a radius, a polygon is **not** an exact query: the polygon drives the
+  index traversal itself, pruning subtrees that fall outside it rather than
+  fetching everything in its bounding box. So it needs no payload, every 2D
+  artifact takes one, and `count=only` works over it. `predicate=intersects`
+  still refines the surviving candidates against real source geometry.
 - `nonplanar=reject|treat_as_planar` — default `reject`. What exact filtering
   does when the artifact's declared edge model cannot answer the query it was
   given. The case that matters: a spherical radius against a column declaring
@@ -183,10 +195,36 @@ Query parameters:
 - `limit`, `offset` — pagination over the matched set. They do not change
   `numberMatched`, so they have no effect under `count=only`.
 
+### POST /search
+
+A polygon large enough to outgrow a URL goes in a body instead:
+
+```
+POST /collections/places/search
+Content-Type: application/json
+
+{"polygon": [[[[-1,-1],[41,-1],[-1,41],[-1,-1]]]], "limit": 100, "level": "entry"}
+```
+
+The field names are the query parameters, typed rather than stringly (`bbox` is
+an array of numbers, `limit` a number). The body converts into the same
+parameters and takes the identical path from there, so what a search *means*
+has one implementation and cannot drift between the two transports.
+
+GET stays the canonical form because it is the cacheable one — a query in a URL
+is served by a CDN, bookmarked, logged whole — which is the point of putting a
+static artifact behind one. POST is the escape hatch, not the upgrade.
+
+On POST the body is the whole request and **the query string must be empty**
+(`invalid_query` otherwise). Merging the two would mean deciding which side
+wins per parameter, and every parameter added later would inherit that
+question. Unknown fields are refused like unknown parameters.
+
 Responses echo the effective query (after defaults and collection-dependent
 resolution) under `query`, so a client can always see which `level`,
 `identity`, `count`, and `predicate` actually applied, and `query` carries
-exactly one of `bbox`, `frustum` or `radius` — the shape the search used. `numberMatched`
+exactly one of `bbox`, `frustum`, `radius` or `polygon` — the shape the search
+used. `numberMatched`
 counts matches before pagination and `numberReturned` after. Each match
 carries `entryId` (index entry ordinal in the artifact; stable per artifact
 build, not across rebuilds) and, when the payload stores one, a `featureRef`

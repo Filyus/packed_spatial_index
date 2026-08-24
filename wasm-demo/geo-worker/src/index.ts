@@ -15,6 +15,7 @@ import {
   parseBbox,
   parseEnum,
   parseFrustum,
+  parsePolygon,
   parseIntParam,
   rejectUnsupportedSearchParams,
 } from "./query";
@@ -107,7 +108,8 @@ async function route(req: Request, env: Env): Promise<Response> {
     // One shape per query: a bbox or a frustum, never both. The frustum is six
     // inward-pointing planes; see parseFrustum for why not a matrix.
     const frustum = parseFrustum(url);
-    const bbox = frustum.length > 0 ? [] : parseBbox(url);
+    const polygon = parsePolygon(url);
+    const bbox = frustum.length > 0 || polygon !== "" ? [] : parseBbox(url);
     // A spherical radius is always an exact query -- the index answers with the
     // boxes covering the cap and the distance test runs against source geometry
     // afterwards. This demo deliberately stops at the index (see the README's
@@ -135,6 +137,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     rejectUnsupportedSearchParams(url, [
       "bbox",
       "frustum",
+      "polygon",
       "radius",
       "limit",
       "offset",
@@ -161,6 +164,7 @@ async function route(req: Request, env: Env): Promise<Response> {
           identity,
           count,
           Float64Array.from(frustum),
+          polygon,
           maxReads(url),
         );
         return JSON.parse(json);

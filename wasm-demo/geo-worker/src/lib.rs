@@ -10,11 +10,14 @@ use std::cell::RefCell;
 use std::io;
 
 use js_sys::{Function, Promise, Uint8Array};
+use packed_spatial_index_geo::geo_types::{
+    Coord, LineString, MultiPolygon, Polygon as GeoPolygon,
+};
 use packed_spatial_index_geo::{
     AsyncRangeReader, Box2D, Box3D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoError, GeoMatch,
-    CoordinateDims, GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery3D, Frustum3D,
-    IdentityMode,
+    CoordinateDims, Frustum3D, GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery2D,
+    GeoQuery3D, IdentityMode,
     PayloadMode, PayloadPlan, ResultLevel, StreamLimits, classify_geo_error,
     needs_payload_bodies,
     open_geo_index_with_limits_async, public_feature_json, resolve_identity, stores_feature_ids,
@@ -132,6 +135,7 @@ pub async fn search(
     identity: String,
     count: String,
     frustum: Vec<f64>,
+    polygon: String,
     max_reads: f64,
 ) -> Result<String, JsValue> {
     let index = open_index(read_range, file_len, object_etag, max_reads).await?;
@@ -159,6 +163,33 @@ pub async fn search(
         ));
     }
 
+    if !polygon.is_empty() {
+        let multi = parse_polygon(&polygon)?;
+        return match index {
+            GeoArtifactIndex::D2(index) => {
+                search_impl(
+                    index,
+                    GeoQuery2D::multi_polygon(multi.clone()),
+                    &[],
+                    None,
+                    Some(multi_polygon_rings(&multi)),
+                    limit,
+                    offset,
+                    payload_mode,
+                    result_level,
+                    identity_mode,
+                    count_only,
+                )
+                .await
+            }
+            GeoArtifactIndex::D3(_) => Err(worker_err(
+                422,
+                "unsupported_query",
+                "this artifact is 3D; a polygon is a 2D query -- use bbox or frustum",
+            )),
+        };
+    }
+
     if !frustum.is_empty() {
         let planes = parse_frustum(&frustum)?;
         return match index {
@@ -168,6 +199,7 @@ pub async fn search(
                     GeoQuery3D::from(planes),
                     &[],
                     Some(*planes.planes()),
+                    None,
                     limit,
                     offset,
                     payload_mode,
@@ -191,8 +223,9 @@ pub async fn search(
         (GeoArtifactIndex::D2(index), 4) => {
             search_impl(
                 index,
-                box_2d(&bbox),
+                GeoQuery2D::box2d(box_2d(&bbox)),
                 &bbox,
+                None,
                 None,
                 limit,
                 offset,
@@ -208,6 +241,7 @@ pub async fn search(
                 index,
                 GeoQuery3D::from(box_3d(&bbox)),
                 &bbox,
+                None,
                 None,
                 limit,
                 offset,
@@ -228,6 +262,7 @@ async fn search_impl<I: AsyncGeoIndex>(
     query: I::Query,
     bbox: &[f64],
     frustum: Option<[[f64; 4]; 6]>,
+    polygon: Option<Vec<Vec<Vec<[f64; 2]>>>>,
     limit: usize,
     offset: usize,
     payload_mode: PayloadMode,
@@ -272,6 +307,7 @@ async fn search_impl<I: AsyncGeoIndex>(
         "query": query_json(
             bbox,
             frustum,
+            polygon,
             limit,
             offset,
             payload_mode,
@@ -315,7 +351,7 @@ pub async fn items(
 
     match (index, bbox.len()) {
         (GeoArtifactIndex::D2(index), 4) => {
-            items_impl(index, box_2d(&bbox), &bbox, limit, offset).await
+            items_impl(index, GeoQuery2D::box2d(box_2d(&bbox)), &bbox, limit, offset).await
         }
         (GeoArtifactIndex::D3(index), 6) => {
             items_impl(index, GeoQuery3D::from(box_3d(&bbox)), &bbox, limit, offset).await
@@ -477,7 +513,7 @@ macro_rules! impl_async_geo_index {
     };
 }
 
-impl_async_geo_index!(GeoArtifactIndex2D<R2Reader>, Box2D);
+impl_async_geo_index!(GeoArtifactIndex2D<R2Reader>, GeoQuery2D);
 impl_async_geo_index!(GeoArtifactIndex3D<R2Reader>, GeoQuery3D);
 
 fn box_2d(bbox: &[f64]) -> Box2D {
@@ -629,7 +665,7 @@ fn collection_summary(manifest: &GeoArtifactManifest, entry_count: usize) -> Val
             "queryShapes": if matches!(manifest.dims, CoordinateDims::Xyz) {
                 json!(["bbox", "frustum"])
             } else {
-                json!(["bbox"])
+                json!(["bbox", "polygon"])
             },
         },
     })
@@ -638,6 +674,7 @@ fn collection_summary(manifest: &GeoArtifactManifest, entry_count: usize) -> Val
 fn query_json(
     bbox: &[f64],
     frustum: Option<[[f64; 4]; 6]>,
+    polygon: Option<Vec<Vec<Vec<[f64; 2]>>>>,
     limit: usize,
     offset: usize,
     payload: PayloadMode,
@@ -656,9 +693,10 @@ fn query_json(
         "limit": limit,
         "offset": offset,
     });
-    match frustum {
-        Some(planes) => query["frustum"] = json!(planes),
-        None => query["bbox"] = json!(bbox),
+    match (frustum, polygon) {
+        (Some(planes), _) => query["frustum"] = json!(planes),
+        (_, Some(rings)) => query["polygon"] = json!(rings),
+        _ => query["bbox"] = json!(bbox),
     }
     query
 }
@@ -821,6 +859,74 @@ fn parse_frustum(values: &[f64]) -> Result<Frustum3D, JsValue> {
         ));
     }
     Ok(Frustum3D::from_planes(planes))
+}
+
+/// GeoJSON MultiPolygon coordinates, as the native server takes them.
+fn parse_polygon(raw: &str) -> Result<MultiPolygon<f64>, JsValue> {
+    let rings: Vec<Vec<Vec<[f64; 2]>>> = serde_json::from_str(raw).map_err(|err| {
+        worker_err(
+            400,
+            "invalid_polygon",
+            format!("polygon must be GeoJSON MultiPolygon coordinates: {err}"),
+        )
+    })?;
+    if rings.is_empty() {
+        return Err(worker_err(
+            400,
+            "invalid_polygon",
+            "polygon must contain at least one polygon",
+        ));
+    }
+    for polygon in &rings {
+        match polygon.first() {
+            // Three corners is the least that bounds an area; less would match
+            // nothing while looking like a region query that found nothing.
+            Some(exterior) if exterior.len() >= 3 => {}
+            _ => {
+                return Err(worker_err(
+                    400,
+                    "invalid_polygon",
+                    "each polygon needs an exterior ring of at least 3 points",
+                ));
+            }
+        }
+        if polygon
+            .iter()
+            .flatten()
+            .any(|[x, y]| !x.is_finite() || !y.is_finite())
+        {
+            return Err(worker_err(
+                400,
+                "invalid_polygon",
+                "polygon coordinates must be finite",
+            ));
+        }
+    }
+    Ok(MultiPolygon::new(
+        rings
+            .into_iter()
+            .map(|rings| {
+                let mut rings = rings.into_iter().map(|coords| {
+                    LineString::new(coords.into_iter().map(|[x, y]| Coord { x, y }).collect())
+                });
+                let exterior = rings.next().unwrap_or_else(|| LineString::new(Vec::new()));
+                GeoPolygon::new(exterior, rings.collect())
+            })
+            .collect(),
+    ))
+}
+
+fn multi_polygon_rings(multi: &MultiPolygon<f64>) -> Vec<Vec<Vec<[f64; 2]>>> {
+    multi
+        .iter()
+        .map(|polygon| {
+            let ring =
+                |line: &LineString<f64>| -> Vec<[f64; 2]> { line.coords().map(|c| [c.x, c.y]).collect() };
+            let mut rings = vec![ring(polygon.exterior())];
+            rings.extend(polygon.interiors().iter().map(ring));
+            rings
+        })
+        .collect()
 }
 
 fn parse_count_only(value: &str) -> Result<bool, JsValue> {

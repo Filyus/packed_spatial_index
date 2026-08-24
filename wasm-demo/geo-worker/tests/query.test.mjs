@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HttpError } from "../src/artifact.ts";
-import { parseBbox, parseEnum, parseFrustum, parseIntParam } from "../src/query.ts";
+import {
+  parseBbox,
+  parseEnum,
+  parseFrustum,
+  parseIntParam,
+  parsePolygon,
+} from "../src/query.ts";
 
 function bbox(raw) {
   return parseBbox(new URL(`https://example.test/search?bbox=${raw}`));
@@ -138,6 +144,24 @@ test("a malformed frustum is named, not folded into invalid_query", () => {
 test("one shape per query, as the native server requires", () => {
   expectHttpError(
     () => frustum(`bbox=0,0,0,1,1,1&frustum=${SIX_PLANES}`),
+    400,
+    "invalid_query",
+    /mutually exclusive/,
+  );
+});
+
+function polygon(query) {
+  return parsePolygon(new URL(`https://example.test/search?${query}`));
+}
+
+test("a polygon travels as text, and only alone", () => {
+  assert.equal(polygon("bbox=0,0,1,1"), "");
+  assert.equal(polygon("polygon=[[[[0,0],[1,0],[1,1],[0,0]]]]"), "[[[[0,0],[1,0],[1,1],[0,0]]]]");
+
+  // The coordinates themselves are checked on the wasm side, by the same code
+  // a POST body would go through; the query string only owns this rule.
+  expectHttpError(
+    () => polygon("bbox=0,0,1,1&polygon=[[[[0,0],[1,0],[1,1],[0,0]]]]"),
     400,
     "invalid_query",
     /mutually exclusive/,

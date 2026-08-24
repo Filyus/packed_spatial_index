@@ -29,7 +29,7 @@ demo.
 - `GET /health`
 - `GET /collections`
 - `GET /collections/synthetic-points`
-- `GET /collections/synthetic-points/search?bbox=|frustum=&limit=&offset=&payload=none|summary|full&level=entry|feature&identity=ref|full&count=records|only`
+- `GET /collections/synthetic-points/search?bbox=|frustum=|polygon=&limit=&offset=&payload=none|summary|full&level=entry|feature&identity=ref|full&count=records|only`
 - `GET /collections/synthetic-points/items?bbox=&limit=&offset=`
 
 `bbox` is `minx,miny,maxx,maxy` for a 2D artifact and
@@ -69,6 +69,13 @@ cannot recover, either one wrong moving the near plane silently; resolve them
 client-side with `Frustum3D::from_view_projection` and send the result. The test
 is a conservative superset with no exact narrow phase, so refine the candidates
 yourself. A 2D artifact refuses it with `422 unsupported_query`.
+
+`polygon=` takes GeoJSON MultiPolygon coordinates (`[[[[x, y], ...], ...], ...]`,
+ring 0 exterior) and replaces `bbox` for a 2D artifact. It prunes the traversal
+by the polygon itself rather than by its bounding box, so it needs no payload
+and shows up in the `reads` counter as fewer reads than the box around it. The
+native server additionally accepts one in a POST body, for polygons past what a
+URL holds; this demo stays GET-only, so a very large polygon belongs there.
 
 `radius=` is **not** served here, and says so with `422 unsupported_query`
 rather than failing as an unknown parameter. A spherical cap is always an exact
@@ -120,6 +127,7 @@ the other without special cases:
 | 400 | `invalid_limit` / `invalid_offset` | not an integer in range (`limit` is 1-1000 here) |
 | 400 | `invalid_payload` / `invalid_level` / `invalid_identity` / `invalid_count` | not one of the accepted values |
 | 400 | `invalid_frustum` | not 24 finite numbers, or a plane with a zero normal |
+| 400 | `invalid_polygon` | not MultiPolygon coordinates, or a ring too small to bound an area |
 | 400 | `invalid_query` | any other parameter out of range |
 | 404 | `artifact_not_found` | the R2 object is missing; seed and upload it |
 | 404 | `collection_not_found` / `not_found` | unknown collection or route |

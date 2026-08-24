@@ -941,6 +941,65 @@ async fn radius_queries_are_refused_where_they_cannot_apply() {
     }
 }
 
+/// Two points around the origin, chosen so that a 100 km cap tells them apart
+/// *and* its bounding box does not:
+///
+/// * `inside` at 0.5 deg east is ~55 km away -- inside the cap;
+/// * `corner` at (0.7, 0.7) is ~110 km away -- outside the cap, but well
+///   inside the +-0.9 deg box that covers it.
+///
+/// Without that second point a radius query passes while doing no distance
+/// test at all, which is exactly what a probe showed.
+fn cap_corner_geojson() -> &'static [u8] {
+    br#"{
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "id": "inside",
+                "geometry": {"type": "Point", "coordinates": [0.5, 0.0]},
+                "properties": {"name": "inside"}
+            },
+            {
+                "type": "Feature",
+                "id": "corner",
+                "geometry": {"type": "Point", "coordinates": [0.7, 0.7]},
+                "properties": {"name": "corner"}
+            }
+        ]
+    }"#
+}
+
+/// A radius must reject what only its bounding box would accept.
+#[tokio::test]
+async fn a_radius_excludes_the_corners_of_its_own_bounding_box() {
+    let app = router(state_with_geojson(
+        PayloadPlan::FeatureJson {
+            properties: PropertyProjection::AllNonGeometry,
+        },
+        cap_corner_geojson(),
+    ));
+
+    // The box that covers a 100 km cap at the equator keeps both points.
+    let (status, boxed) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-0.9,-0.9,0.9,0.9",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(boxed["numberMatched"], 2);
+
+    // The cap itself keeps only the point actually within 100 km.
+    let (status, capped) = get_json(
+        app,
+        "/collections/places/search?radius=0,0,100000&nonplanar=treat_as_planar",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{capped}");
+    assert_eq!(capped["numberMatched"], 1, "{capped}");
+    assert_eq!(capped["matches"][0]["featureRef"]["rowNumber"], 0);
+}
+
 fn grid_3d_state() -> ServerState {
     state_with_geojson_request(
         ConvertRequest {

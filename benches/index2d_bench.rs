@@ -11,7 +11,7 @@ use std::{hint::black_box, ops::ControlFlow};
 
 use criterion::{BenchmarkId, Criterion, criterion_group};
 use packed_spatial_index::benchmark_support::SortKey2DStrategy;
-use packed_spatial_index::{Box2D, Index2D, Index2DBuilder};
+use packed_spatial_index::{Box2D, Index2D, Index2DBuilder, Index2DView};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
@@ -523,10 +523,122 @@ fn bench_build_degenerate(c: &mut Criterion) {
     group.finish();
 }
 
+/// `count(query)` against the shape it replaces, over the same four window sizes
+/// as `query_windows`.
+///
+/// The `*_search_len_*` arms are the *generous* baseline: they reuse a result
+/// buffer and a traversal stack, so they never pay an allocation. The shape the
+/// docs actually tell callers to stop writing — `search(query).len()` — allocates
+/// a `Vec` per query on top of that, so anything `count` wins here it wins by
+/// more against the real alternative.
+///
+/// The window sizes are the experiment, not decoration. `count` skips the items
+/// under a node the query fully contains, so:
+///
+///  * `wide_sliver` is a control — a long thin window contains no whole node, so
+///    the shortcut cannot fire and the arms should read the same;
+///  * `full_extent` is the opposite control, where the root shortcut answers the
+///    whole query and both arms take it;
+///  * `large` is where the mechanism actually lives.
+fn bench_count_windows(c: &mut Criterion) {
+    let n = 100_000usize;
+    let boxes = gen_boxes(n, 0xB0B);
+
+    let mut mb = Index2DBuilder::new(n)
+        .node_size(NODE_SIZE)
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
+    for r in &boxes {
+        mb.add(Box2D::new(r[0], r[1], r[2], r[3]));
+    }
+    let packed: Index2D = mb.finish().unwrap();
+
+    let mut sb = Index2DBuilder::new(n)
+        .node_size(NODE_SIZE)
+        .sort_key_strategy(SortKey2DStrategy::HilbertLut);
+    for r in &boxes {
+        sb.add(Box2D::new(r[0], r[1], r[2], r[3]));
+    }
+    let simd = sb.finish_simd().unwrap();
+
+    let bytes = packed.to_bytes();
+    let view = Index2DView::from_bytes(&bytes).unwrap();
+
+    let small_queries = make_queries_with_size(1_000, 0x51A11, 10.0..200.0);
+    let large_queries = make_queries_with_size(1_000, 0x1A96E, 2_000.0..5_000.0);
+    let sliver_queries = make_queries_with_ranges(1_000, 0x5111E, 3_000.0..7_000.0, 10.0..40.0);
+    let extent = packed.extent().unwrap();
+    let full_extent_queries = vec![[extent.min_x, extent.min_y, extent.max_x, extent.max_y]; 1_000];
+
+    let mut group = c.benchmark_group("count_windows");
+    for (name, queries) in [
+        ("small", &small_queries),
+        ("large", &large_queries),
+        ("wide_sliver", &sliver_queries),
+        ("full_extent", &full_extent_queries),
+    ] {
+        // `black_box` the query slice, not the index or the result: `count` is a
+        // pure function of the query, and `full_extent` deliberately repeats one
+        // box 1000 times, so without this LLVM hoists the whole loop and the
+        // arm measures a single call. The `search_*` arms do not need it — they
+        // mutate a buffer — but they get the same barrier so both sides of the
+        // comparison are hindered equally.
+        group.bench_function(format!("index_search_len_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in black_box(&queries[..]) {
+                    packed.search_into_stack(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_count_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in black_box(&queries[..]) {
+                    total += packed.count(to_bounds(q));
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("view_search_len_{name}"), |b| {
+            let mut buf = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in black_box(&queries[..]) {
+                    view.search_into(to_bounds(q), &mut buf);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("view_count_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in black_box(&queries[..]) {
+                    total += view.count(to_bounds(q));
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_count_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in black_box(&queries[..]) {
+                    total += simd.count(to_bounds(q));
+                }
+                black_box(total)
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = pin::criterion();
-    targets = bench_build, bench_build_degenerate, bench_query, bench_query_windows
+    targets = bench_build, bench_build_degenerate, bench_query, bench_query_windows, bench_count_windows
 }
 #[path = "support/pin.rs"]
 mod pin;

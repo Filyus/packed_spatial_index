@@ -1,4 +1,5 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use packed_spatial_index_geo::geo_types::{Coord, LineString, MultiPolygon, Polygon};
 use packed_spatial_index_geo::{
     Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, Frustum3D, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoError, GeoMatch, GeoMatchHeader, GeoMatchHeaderPage,
@@ -34,6 +35,11 @@ pub struct SearchParams {
     /// Mutually exclusive with `bbox` and `frustum`.
     #[serde(default)]
     pub radius: Option<String>,
+    /// Polygon query as GeoJSON MultiPolygon coordinates:
+    /// `[[[[x, y], ...], ...], ...]`, ring 0 of each polygon being its
+    /// exterior. One query shape per request.
+    #[serde(default)]
+    pub polygon: Option<String>,
     /// What exact filtering does when the artifact's edge model does not match
     /// the query: `reject` (default) or `treat_as_planar`.
     #[serde(default)]
@@ -105,6 +111,88 @@ impl From<NonPlanarMode> for NonPlanarExactPolicy {
     }
 }
 
+/// A `/search` request sent as a JSON body instead of a query string.
+///
+/// Same names, same meanings, typed rather than stringly: a polygon of any
+/// size fits here, where a URL eventually stops. The body converts into
+/// [`SearchParams`] and takes the identical path from there -- one
+/// implementation of what a search *means*, two ways to say it. Formatting a
+/// float with `{}` round-trips exactly in Rust, so nothing is lost on the way
+/// through.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SearchBody {
+    /// Query bbox: 4 numbers for a 2D artifact, 6 for a 3D one.
+    #[serde(default)]
+    pub bbox: Option<Vec<f64>>,
+    /// Six inward-pointing planes `[a, b, c, d]`.
+    #[serde(default)]
+    pub frustum: Option<[[f64; 4]; 6]>,
+    /// `[lon, lat, metres]`.
+    #[serde(default)]
+    pub radius: Option<[f64; 3]>,
+    /// GeoJSON MultiPolygon coordinates: `[[[[x, y], ...], ...], ...]`.
+    #[serde(default)]
+    pub polygon: Option<Vec<Vec<Vec<[f64; 2]>>>>,
+    /// Maximum returned records.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Number of matched records to skip.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Spatial predicate: `bbox` or `intersects`.
+    #[serde(default)]
+    pub predicate: Option<String>,
+    /// Edge-model policy for exact filtering.
+    #[serde(default)]
+    pub nonplanar: Option<String>,
+    /// Result level: `feature` or `entry`.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Payload materialization mode.
+    #[serde(default)]
+    pub payload: Option<String>,
+    /// Source-identity mode.
+    #[serde(default)]
+    pub identity: Option<String>,
+    /// `only` to return `numberMatched` without records.
+    #[serde(default)]
+    pub count: Option<String>,
+}
+
+impl From<SearchBody> for SearchParams {
+    fn from(body: SearchBody) -> Self {
+        fn numbers(values: &[f64]) -> String {
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+
+        Self {
+            bbox: body.bbox.as_deref().map(numbers),
+            frustum: body
+                .frustum
+                .map(|planes| numbers(&planes.into_iter().flatten().collect::<Vec<_>>())),
+            radius: body.radius.map(|radius| numbers(&radius)),
+            // Straight back to JSON: the parameter parser is the only place
+            // that reads a polygon, so the body cannot drift from it.
+            polygon: body
+                .polygon
+                .map(|rings| serde_json::to_string(&rings).expect("rings serialize")),
+            limit: body.limit.map(|limit| limit.to_string()),
+            offset: body.offset.map(|offset| offset.to_string()),
+            predicate: body.predicate,
+            nonplanar: body.nonplanar,
+            level: body.level,
+            payload: body.payload,
+            identity: body.identity,
+            count: body.count,
+        }
+    }
+}
+
 /// Spatial predicate applied by a search.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -157,6 +245,9 @@ pub struct QueryInfo {
     /// Parsed radius query as `[lon, lat, metres]`; absent for other shapes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub radius: Option<[f64; 3]>,
+    /// Parsed polygon rings; absent for other shapes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polygon: Option<Vec<Vec<Vec<[f64; 2]>>>>,
     /// Applied spatial predicate.
     pub predicate: QueryPredicate,
     /// Applied result level; `/items` responses omit it (always feature).
@@ -213,6 +304,9 @@ pub enum QueryShapeKind {
     /// A spherical cap around a lon/lat point. 2D artifacts whose payload can
     /// be filtered exactly, since the cap is always narrowed after the index.
     Radius,
+    /// A polygon or multipolygon. 2D artifacts; needs no payload, since the
+    /// polygon drives the index traversal itself.
+    Polygon,
 }
 
 /// Collection summary returned by list/detail endpoints.
@@ -444,8 +538,14 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
     let mut query_shapes = vec![QueryShapeKind::Bbox];
     if matches!(collection.manifest().dims, CoordinateDims::Xyz) {
         query_shapes.push(QueryShapeKind::Frustum);
-    } else if collection.supports_intersects_predicate() {
-        query_shapes.push(QueryShapeKind::Radius);
+    } else {
+        // A polygon prunes the traversal by itself, so any 2D artifact takes
+        // one; a radius is narrowed against source geometry afterwards, so it
+        // needs an artifact that can be filtered exactly.
+        query_shapes.push(QueryShapeKind::Polygon);
+        if collection.supports_intersects_predicate() {
+            query_shapes.push(QueryShapeKind::Radius);
+        }
     }
     Capabilities {
         items: payload_kind == PayloadKind::FeatureJson,
@@ -495,6 +595,7 @@ pub fn search_response(
             bbox: options.bbox(),
             frustum: options.frustum(),
             radius: options.radius(),
+            polygon: options.polygon(),
             predicate: options.predicate,
             level: Some(shape.level),
             payload: Some(shape.payload),
@@ -595,6 +696,7 @@ pub fn items_response(
             bbox: options.bbox(),
             frustum: options.frustum(),
             radius: options.radius(),
+            polygon: options.polygon(),
             predicate: options.predicate,
             level: None,
             payload: None,
@@ -630,6 +732,12 @@ enum QueryShape {
         lat: f64,
         metres: f64,
     },
+    /// A polygon or multipolygon. Unlike a radius this is *not* inherently
+    /// exact: geo drives the index traversal with the polygon itself, pruning
+    /// subtrees that fall outside it rather than fetching its bounding box, so
+    /// it needs no payload. `predicate=intersects` still refines the
+    /// candidates that survive against real source geometry.
+    Polygon(MultiPolygon<f64>),
 }
 
 struct SearchOptions {
@@ -646,6 +754,7 @@ impl SearchOptions {
             ("bbox", params.bbox.as_deref()),
             ("frustum", params.frustum.as_deref()),
             ("radius", params.radius.as_deref()),
+            ("polygon", params.polygon.as_deref()),
         ];
         let named: Vec<&str> = given
             .iter()
@@ -661,11 +770,13 @@ impl SearchOptions {
         let shape = match (
             params.frustum.as_deref(),
             params.radius.as_deref(),
+            params.polygon.as_deref(),
             params.bbox.as_deref(),
         ) {
-            (Some(raw), _, _) => QueryShape::Frustum(parse_frustum(raw)?),
-            (_, Some(raw), _) => parse_radius(raw)?,
-            (_, _, raw) => QueryShape::Bbox(parse_bbox(raw)?),
+            (Some(raw), _, _, _) => QueryShape::Frustum(parse_frustum(raw)?),
+            (_, Some(raw), _, _) => parse_radius(raw)?,
+            (_, _, Some(raw), _) => QueryShape::Polygon(parse_polygon(raw)?),
+            (_, _, _, raw) => QueryShape::Bbox(parse_bbox(raw)?),
         };
         let (limit, offset) = limit_offset(params.limit.as_deref(), params.offset.as_deref())?;
         let predicate = parse_predicate(params.predicate.as_deref())?;
@@ -699,6 +810,14 @@ impl SearchOptions {
     fn radius(&self) -> Option<[f64; 3]> {
         match &self.shape {
             QueryShape::Radius { lon, lat, metres } => Some([*lon, *lat, *metres]),
+            _ => None,
+        }
+    }
+
+    /// The polygon rings to echo back, if the query was one.
+    fn polygon(&self) -> Option<Vec<Vec<Vec<[f64; 2]>>>> {
+        match &self.shape {
+            QueryShape::Polygon(multi) => Some(multi_polygon_rings(multi)),
             _ => None,
         }
     }
@@ -937,6 +1056,7 @@ fn query_2d(shape: &QueryShape, collection: &Collection) -> Result<GeoQuery2D, S
         QueryShape::Radius { lon, lat, metres } => {
             Ok(GeoQuery2D::spherical_radius(*lon, *lat, *metres))
         }
+        QueryShape::Polygon(multi) => Ok(GeoQuery2D::multi_polygon(multi.clone())),
         QueryShape::Frustum(_) => Err(ServerError::UnsupportedQuery(format!(
             "collection `{}` is 2D; a frustum query needs a 3D artifact -- use bbox",
             collection.id()
@@ -957,6 +1077,10 @@ fn query_3d(shape: &QueryShape, collection: &Collection) -> Result<GeoQuery3D, S
         QueryShape::Frustum(frustum) => Ok(GeoQuery3D::from(*frustum)),
         QueryShape::Radius { .. } => Err(ServerError::UnsupportedQuery(format!(
             "collection `{}` is 3D; a spherical radius is a 2D query -- use bbox or frustum",
+            collection.id()
+        ))),
+        QueryShape::Polygon(_) => Err(ServerError::UnsupportedQuery(format!(
+            "collection `{}` is 3D; a polygon is a 2D query -- use bbox or frustum",
             collection.id()
         ))),
     }
@@ -1262,6 +1386,80 @@ fn parse_frustum(raw: &str) -> Result<Frustum3D, ServerError> {
         )));
     }
     Ok(Frustum3D::from_planes(planes))
+}
+
+/// Parse GeoJSON MultiPolygon coordinates: `[[[[x, y], ...], ...], ...]`.
+///
+/// The same array the crate's own `GeoQuery2D` serializes, so a client that
+/// already has a GeoJSON geometry sends its `coordinates` verbatim -- no new
+/// wire format, and no new dependency to read one.
+fn parse_polygon(raw: &str) -> Result<MultiPolygon<f64>, ServerError> {
+    let rings: Vec<Vec<Vec<[f64; 2]>>> = serde_json::from_str(raw).map_err(|err| {
+        ServerError::InvalidPolygon(format!(
+            "polygon must be GeoJSON MultiPolygon coordinates [[[[x, y], ...]]]: {err}"
+        ))
+    })?;
+    if rings.is_empty() {
+        return Err(ServerError::InvalidPolygon(
+            "polygon must contain at least one polygon".to_string(),
+        ));
+    }
+    for (index, polygon) in rings.iter().enumerate() {
+        let exterior = polygon.first().ok_or_else(|| {
+            ServerError::InvalidPolygon(format!("polygon {index} has no exterior ring"))
+        })?;
+        // Three distinct corners is the least that bounds any area; anything
+        // smaller is a line or a point, which would match nothing while looking
+        // like a region query that simply found nothing.
+        if exterior.len() < 3 {
+            return Err(ServerError::InvalidPolygon(format!(
+                "polygon {index} has an exterior ring of {} points; at least 3 are needed to \
+                 bound an area",
+                exterior.len()
+            )));
+        }
+        if polygon
+            .iter()
+            .flatten()
+            .any(|[x, y]| !x.is_finite() || !y.is_finite())
+        {
+            return Err(ServerError::InvalidPolygon(format!(
+                "polygon {index} has a non-finite coordinate"
+            )));
+        }
+    }
+    Ok(rings_to_multi_polygon(rings))
+}
+
+/// Rebuild a `MultiPolygon` from `[polygon][ring][x, y]` arrays.
+fn rings_to_multi_polygon(polygons: Vec<Vec<Vec<[f64; 2]>>>) -> MultiPolygon<f64> {
+    MultiPolygon::new(
+        polygons
+            .into_iter()
+            .map(|rings| {
+                let mut rings = rings.into_iter().map(|coords| {
+                    LineString::new(coords.into_iter().map(|[x, y]| Coord { x, y }).collect())
+                });
+                let exterior = rings.next().unwrap_or_else(|| LineString::new(Vec::new()));
+                Polygon::new(exterior, rings.collect())
+            })
+            .collect(),
+    )
+}
+
+/// The inverse, for echoing the applied query back.
+fn multi_polygon_rings(multi: &MultiPolygon<f64>) -> Vec<Vec<Vec<[f64; 2]>>> {
+    multi
+        .iter()
+        .map(|polygon| {
+            let ring = |line: &LineString<f64>| -> Vec<[f64; 2]> {
+                line.coords().map(|c| [c.x, c.y]).collect()
+            };
+            let mut rings = vec![ring(polygon.exterior())];
+            rings.extend(polygon.interiors().iter().map(ring));
+            rings
+        })
+        .collect()
 }
 
 /// Parse `lon,lat,metres`.

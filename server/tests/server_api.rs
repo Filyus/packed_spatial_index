@@ -196,6 +196,24 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
+/// POST a JSON body and read the JSON answer.
+async fn post_json(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
 async fn request_json(
     app: axum::Router,
     method: &str,
@@ -254,7 +272,7 @@ async fn contract_collections_summary_shape() {
                     "payloadModes": ["none", "summary", "full"],
                     "identityModes": ["ref"],
                     "countModes": ["records", "only"],
-                    "queryShapes": ["bbox"]
+                    "queryShapes": ["bbox", "polygon"]
                 }
             }
         ]),
@@ -884,7 +902,10 @@ async fn a_radius_query_is_always_exact() {
     let ref_only = router(state_with_payload(PayloadPlan::RowRef));
     let (status, json) = get_json(ref_only.clone(), "/collections/places").await;
     assert_eq!(status, StatusCode::OK);
-    assert_contract(&json["capabilities"]["queryShapes"], json!(["bbox"]));
+    assert_contract(
+        &json["capabilities"]["queryShapes"],
+        json!(["bbox", "polygon"]),
+    );
     let (status, json) = get_json(ref_only, "/collections/places/search?radius=-5,1,100000").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json["error"]["code"], "unsupported_predicate");
@@ -896,7 +917,7 @@ async fn a_radius_query_is_always_exact() {
     assert_eq!(status, StatusCode::OK);
     assert_contract(
         &json["capabilities"]["queryShapes"],
-        json!(["bbox", "radius"]),
+        json!(["bbox", "polygon", "radius"]),
     );
 }
 
@@ -998,6 +1019,206 @@ async fn a_radius_excludes_the_corners_of_its_own_bounding_box() {
     assert_eq!(status, StatusCode::OK, "{capped}");
     assert_eq!(capped["numberMatched"], 1, "{capped}");
     assert_eq!(capped["matches"][0]["featureRef"]["rowNumber"], 0);
+}
+
+/// A 5x5 grid of points at x,y in {0, 10, 20, 30, 40}, so a polygon has
+/// something to cut diagonally through.
+fn grid_2d_geojson() -> String {
+    let mut features = Vec::new();
+    for x in 0..5 {
+        for y in 0..5 {
+            let (fx, fy) = (x as f64 * 10.0, y as f64 * 10.0);
+            features.push(format!(
+                r#"{{"type":"Feature","id":"p{x}{y}","geometry":{{"type":"Point","coordinates":[{fx},{fy}]}},"properties":{{}}}}"#
+            ));
+        }
+    }
+    format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    )
+}
+
+fn grid_2d_state() -> ServerState {
+    state_with_geojson(
+        PayloadPlan::FeatureJson {
+            properties: PropertyProjection::AllNonGeometry,
+        },
+        grid_2d_geojson().as_bytes(),
+    )
+}
+
+/// A polygon prunes the traversal by itself, so it must return less than the
+/// box around it -- otherwise it is being answered by its own bounding box.
+#[tokio::test]
+async fn a_polygon_selects_less_than_its_bounding_box() {
+    let app = router(grid_2d_state());
+
+    // A triangle over the lower-left corner of the grid. Its bounding box is
+    // the whole 0..40 square; the triangle keeps only the lower-left half.
+    let triangle = "[[[[-1,-1],[41,-1],[-1,41],[-1,-1]]]]";
+    let (status, by_polygon) = get_json(
+        app.clone(),
+        &format!("/collections/places/search?polygon={triangle}&limit=1000"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{by_polygon}");
+
+    let (status, by_box) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=-1,-1,41,41&limit=1000",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let polygon_hits = by_polygon["numberMatched"].as_u64().unwrap();
+    let box_hits = by_box["numberMatched"].as_u64().unwrap();
+    assert_eq!(box_hits, 25, "the bounding box is the whole grid");
+    // The diagonal x + y <= 40 keeps 15 of the 25 grid points.
+    assert_eq!(polygon_hits, 15, "{by_polygon}");
+
+    // The echoed query names the shape that applied, and only that one.
+    assert!(by_polygon["query"]["bbox"].is_null());
+    assert_eq!(
+        by_polygon["query"]["polygon"][0][0]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+
+    // Counting takes the same traversal -- no payload is read for either.
+    let (status, counted) = get_json(
+        app,
+        &format!("/collections/places/search?polygon={triangle}&count=only"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{counted}");
+    assert_eq!(counted["numberMatched"], polygon_hits);
+    assert_eq!(counted["numberReturned"], 0);
+}
+
+/// A polygon needs no payload: it drives the index traversal rather than
+/// filtering fetched geometry, so even a payload-less artifact answers one.
+#[tokio::test]
+async fn a_polygon_needs_no_payload() {
+    let app = router(state_with_payload(PayloadPlan::None));
+    let (status, json) = get_json(app.clone(), "/collections/places").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_contract(
+        &json["capabilities"]["queryShapes"],
+        json!(["bbox", "polygon"]),
+    );
+
+    let square = "[[[[-10,-10],[30,-10],[30,10],[-10,10],[-10,-10]]]]";
+    let (status, json) = get_json(
+        app,
+        &format!("/collections/places/search?polygon={square}&level=entry"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert!(json["numberMatched"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn malformed_polygons_are_rejected() {
+    let app = router(grid_2d_state());
+    for raw in [
+        "notjson",
+        "[]",                               // no polygons
+        "[[]]",                             // no exterior ring
+        "[[[[0,0],[1,1]]]]",                // a line, not an area
+        "[[[[0,0],[1,0],[1,1],[null,0]]]]", // not a number
+    ] {
+        let (status, json) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?polygon={raw}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "raw {raw}: {json}");
+        assert_eq!(json["error"]["code"], "invalid_polygon", "raw {raw}");
+    }
+
+    // A polygon is 2D; a 3D artifact takes bbox or frustum.
+    let three_d = router(grid_3d_state());
+    let (status, json) = get_json(
+        three_d,
+        "/collections/places/search?polygon=[[[[0,0],[1,0],[1,1],[0,0]]]]",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["error"]["code"], "unsupported_query");
+}
+
+/// The same search, sent as a body. A polygon of any size fits here, and the
+/// answer has to be the one the query string gives for the same request --
+/// otherwise there are two implementations of what a search means.
+#[tokio::test]
+async fn a_posted_search_answers_exactly_like_the_query_string() {
+    let app = router(grid_2d_state());
+    let triangle = "[[[[-1,-1],[41,-1],[-1,41],[-1,-1]]]]";
+
+    let (status, by_get) = get_json(
+        app.clone(),
+        &format!("/collections/places/search?polygon={triangle}&limit=3&offset=1&level=entry"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, by_post) = post_json(
+        app.clone(),
+        "/collections/places/search",
+        json!({
+            "polygon": [[[[-1,-1],[41,-1],[-1,41],[-1,-1]]]],
+            "limit": 3,
+            "offset": 1,
+            "level": "entry"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{by_post}");
+    assert_contract(&by_post, by_get.clone());
+
+    // Every shape travels either way.
+    let (status, by_post_bbox) = post_json(
+        app.clone(),
+        "/collections/places/search",
+        json!({"bbox": [-1, -1, 41, 41], "level": "entry"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(by_post_bbox["numberMatched"], 25);
+}
+
+#[tokio::test]
+async fn a_posted_search_refuses_a_split_request() {
+    let app = router(grid_2d_state());
+
+    // The body is the whole request: no merge rules, so no question about
+    // which side wins per parameter.
+    let (status, json) = post_json(
+        app.clone(),
+        "/collections/places/search?limit=2",
+        json!({"bbox": [-1, -1, 41, 41]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_query");
+
+    // A misspelled field fails loudly, as a misspelled parameter does.
+    let (status, json) = post_json(
+        app.clone(),
+        "/collections/places/search",
+        json!({"bbox": [-1, -1, 41, 41], "limitt": 2}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_query");
+
+    // And so does a body that is not a search at all.
+    let (status, json) = post_json(app, "/collections/places/search", json!([1, 2, 3])).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"]["code"], "invalid_query");
 }
 
 fn grid_3d_state() -> ServerState {
@@ -1129,7 +1350,10 @@ async fn frustum_queries_are_refused_where_they_cannot_apply() {
     let two_d = router(state_with_payload(PayloadPlan::RowRef));
     let (status, json) = get_json(two_d.clone(), "/collections/places").await;
     assert_eq!(status, StatusCode::OK);
-    assert_contract(&json["capabilities"]["queryShapes"], json!(["bbox"]));
+    assert_contract(
+        &json["capabilities"]["queryShapes"],
+        json!(["bbox", "polygon"]),
+    );
     let (status, json) = get_json(
         two_d,
         &format!("/collections/places/search?frustum={planes}"),

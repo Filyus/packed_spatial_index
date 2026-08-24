@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{FromRequestParts, Path, Query, State},
+    extract::{FromRequestParts, Path, Query, RawQuery, State, rejection::JsonRejection},
     http::{HeaderValue, Method, Uri, request::Parts},
     routing::get,
 };
@@ -39,7 +39,10 @@ pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router
         .route("/collections", get(collections))
         .route("/collections/{id}", get(collection))
         .route("/collections/{id}/items", get(items))
-        .route("/collections/{id}/search", get(search))
+        // POST carries the same search as a JSON body, for a polygon too
+        // large for a URL. See `search_post` for why the query string must
+        // be empty there.
+        .route("/collections/{id}/search", get(search).post(search_post))
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(route_not_found)
         // Layered outside the fallbacks so a 404 or 405 is logged too.
@@ -216,6 +219,33 @@ async fn search(
     let collection = state
         .collection(&id)
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
+    Ok(Json(
+        query_blocking(move || search_response(&collection, params)).await?,
+    ))
+}
+
+/// `POST /collections/{id}/search` -- the same search, sent as a body.
+///
+/// The body is the whole request and the query string must be empty. Merging
+/// the two would mean deciding which wins per parameter, and every future
+/// parameter would inherit that question; refusing costs one check and leaves
+/// exactly one source of truth per request.
+async fn search_post(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    RawQuery(query): RawQuery,
+    body: Result<Json<crate::query::SearchBody>, JsonRejection>,
+) -> Result<Json<crate::query::SearchResponse>, ServerError> {
+    if query.is_some_and(|query| !query.is_empty()) {
+        return Err(ServerError::InvalidQuery(
+            "a POST search is described by its body; send no query string".to_string(),
+        ));
+    }
+    let Json(body) = body.map_err(|rejection| ServerError::InvalidQuery(rejection.body_text()))?;
+    let collection = state
+        .collection(&id)
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
+    let params = SearchParams::from(body);
     Ok(Json(
         query_blocking(move || search_response(&collection, params)).await?,
     ))

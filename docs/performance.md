@@ -212,25 +212,13 @@ better.
 | thin slab | 3.51 ms | 1.27 ms |
 | full extent | 11.65 ms | 11.62 ms |
 
-The zero-copy views take the same path. They used to stop at a root-contains
-shortcut, so a window covering a subtree still parsed every box in it out of the
-byte buffer; routing their range search through the shared contained traversal
-removes that. Measured with both traversals in one binary on 200,000 clustered
-boxes (bounds parses per query, and the paired wall-clock ratio):
-
-| Window | 2D reads | 2D time | 3D reads | 3D time |
-| --- | ---: | ---: | ---: | ---: |
-| 15% per axis | 5,414 → 1,070 | 0.65x | 350 → 254 | 0.80x |
-| 40% per axis | 35,254 → 2,358 | 0.48x | 14,926 → 3,317 | 0.68x |
-| whole extent | 213,337 → 2,997 | 0.34x | 213,337 → 5,942 | 0.32x |
-
-At 1,000,000 boxes the same windows run 0.48x / 0.35x / 0.21x in 2D and
-0.49x / 0.30x / 0.18x in 3D — a deeper tree holds larger fully contained
-subtrees. Windows too small to contain a whole node instead pay a few percent
-for a containment test that skips nothing, which is the trade the owned indexes
-already make. Note the two dimensions are not comparable row for row: a side
-fraction squares in 2D and cubes in 3D, so "15% per axis" is 2.25% of the area
-and 0.34% of the volume.
+The zero-copy views take this path too: a window that covers a node collects its
+leaf range out of the byte buffer instead of parsing and testing each box in it,
+so a view's range search scales with window size the way the owned indexes do
+rather than with the number of items covered. The gain grows with the tree's
+depth, since a deeper tree holds larger fully contained subtrees, and a window
+too small to contain any whole node pays a containment test that skips nothing —
+the same trade the owned indexes make.
 
 ## Closest-hit raycast vs the `bvh` crate
 

@@ -4,19 +4,53 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
-### Performance
+## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 
-- The build's reorder gather is prefetched. Profiling a 100 000-box build put
-  60.9% of all L1 read misses in one place — `finish` reading `items` in Hilbert
-  order while writing its output sequentially — and every address it needs is
-  already sitting in the sort's `order` array, so the loads can be started
-  early. A 1 000 000-box build runs at 0.92x and 0.91x across two independently
-  built binaries (spreads 0.9-2.8%, untouched baseline control at 1.004), and
-  `index3d_simd_build/finish_simd_serial` at 0.967. Smaller builds do not
-  resolve and change sign between builds: at a thousand items the gather fits in
-  cache and there is nothing to hide. The distance (64) is swept rather than
-  guessed — short distances measure *worse* than no prefetch at all, because the
-  hint lands too late to help and still costs an instruction per item.
+### Search
+
+- Added `count(query)`, which returns how many items overlap a query without
+  building a result `Vec`. It counts inside the traversal, so it costs a
+  `search` minus the collection; the shape it replaces — `search(query).len()` —
+  allocated a `Vec` only to read its length. Available on every frontend that
+  answers a range query: the owned `f64` indexes and their views (where it also
+  takes the region shapes, `Triangle2D` / `ConvexPolygon2D` / `Frustum3D`), the
+  SIMD indexes and views, the scalar and SIMD `f32` frontends (counting the same
+  conservative superset their `search` returns), and the streaming readers as
+  `count(query) -> Result<usize, StreamError>`, charging the same read budget as
+  `search`. The streaming readers also gained `count_region` for the shape
+  queries (and `count_async` / `count_region_async` under the `async` feature),
+  so counting is not the one query there that has no region form. The
+  alternative was to keep pointing callers at `visit` with their own counter;
+  that is four lines and a `ControlFlow` import for the most common aggregate
+  over a query, which is how `search(..).len()` kept winning.
+
+- The owned indexes' `count(query)` now answers a fully contained subtree from
+  its leaf range instead of testing every item inside it, so a wide window costs
+  node pops rather than item tests. The new `count_windows` benchmark group
+  measures it against a `search_into_stack` baseline that reuses both buffers,
+  over 1 000 queries and 100 000 boxes:
+
+  | window        | before     | after    | ratio    |
+  | ---           | ---:       | ---:     | ---:     |
+  | `full_extent` | 61.84 ms   | 24.26 us | 0.0004   |
+  | `large`       | 7.166 ms   | 2.955 ms | 0.41     |
+  | `wide_sliver` | 1.375 ms   | 1.266 ms | 0.92     |
+  | `small`       | 229.9 us   | 238.2 us | 1.04     |
+
+  Small windows pay 3.6% more, reproduced across two runs while eleven control
+  arms in the same group stayed inside 1.005: nothing is contained at that size,
+  so the per-child containment test is pure overhead there. That is the same
+  trade `search` already makes — its contained traversal runs the identical test
+  — so `count` is now consistent with it rather than cheaper on the small case
+  and dramatically worse on every larger one. `wide_sliver` is the designed
+  control: a long thin window contains no whole node, and it moved least.
+
+  Region queries (`&Triangle2D` / `&ConvexPolygon2D` / `&Frustum3D`) keep the
+  traversal they had. The views and the SIMD frontends were already effectively
+  contained-aware here — their counting enumeration collapses to an add because
+  the closure ignores the item index — and are unchanged.
+
+### Persistence
 
 - The SoA indexes' serialize and load paths now move a whole box record at a
   time. `SimdIndex*::to_bytes` wrote one `f64` per `extend_from_slice` — a
@@ -31,6 +65,21 @@ All notable changes to this crate are documented here.
   it is bandwidth-bound, not instruction-bound. Measured interleaved on a pinned
   performance core over 7 rounds, against the scalar `from_bytes_owned`
   benchmarks as controls (0.995 and 0.999).
+
+### Performance
+
+- The build's reorder gather is prefetched. Profiling a 100 000-box build put
+  60.9% of all L1 read misses in one place — `finish` reading `items` in Hilbert
+  order while writing its output sequentially — and every address it needs is
+  already sitting in the sort's `order` array, so the loads can be started
+  early. A 1 000 000-box build runs at 0.92x and 0.91x across two independently
+  built binaries (spreads 0.9-2.8%, untouched baseline control at 1.004), and
+  `index3d_simd_build/finish_simd_serial` at 0.967. Smaller builds do not
+  resolve and change sign between builds: at a thousand items the gather fits in
+  cache and there is nothing to hide. The distance (64) is swept rather than
+  guessed — short distances measure *worse* than no prefetch at all, because the
+  hint lands too late to help and still costs an instruction per item.
+
 - The portable `wide` SIMD kernels — the tier the runtime dispatch falls back
   to without AVX2, which is also the wasm32 `simd128` path — assembled each lane
   vector from four (or eight) separately indexed elements, so every load carried
@@ -41,6 +90,7 @@ All notable changes to this crate are documented here.
   uniform_simd_any_wide4` at 0.90x, `query/simd_any_wide4_serial` at 0.92x,
   against controls at 1.005 and 0.997. The AVX-512 and AVX2 tiers are untouched,
   so machines that reach them see no change to range search.
+
 - Build-time bounds folds and coordinate clamps are branch-free. `f64::min` and
   `f64::max` carry a four-instruction NaN fixup on baseline x86-64 that also
   forces an AoS row to be deinterleaved before it can fold; the inputs here are
@@ -68,74 +118,40 @@ All notable changes to this crate are documented here.
   saving is in the encode, extent and pack stages, while at that size the build
   is dominated by the radix sort and the reorder gather, which are memory-bound.
   The win is largest where the working set stays in cache.
-- The owned indexes' `count(query)` now answers a fully contained subtree from
-  its leaf range instead of testing every item inside it, so a wide window costs
-  node pops rather than item tests. The new `count_windows` benchmark group
-  measures it against a `search_into_stack` baseline that reuses both buffers,
-  over 1 000 queries and 100 000 boxes:
-
-  | window        | before     | after    | ratio    |
-  | ---           | ---:       | ---:     | ---:     |
-  | `full_extent` | 61.84 ms   | 24.26 us | 0.0004   |
-  | `large`       | 7.166 ms   | 2.955 ms | 0.41     |
-  | `wide_sliver` | 1.375 ms   | 1.266 ms | 0.92     |
-  | `small`       | 229.9 us   | 238.2 us | **1.04** |
-
-  Small windows pay 3.6% more, reproduced across two runs while eleven control
-  arms in the same group stayed inside 1.005: nothing is contained at that size,
-  so the per-child containment test is pure overhead there. That is the same
-  trade `search` already makes — its contained traversal runs the identical test
-  — so `count` is now consistent with it rather than cheaper on the small case
-  and dramatically worse on every larger one. `wide_sliver` is the designed
-  control: a long thin window contains no whole node, and it moved least.
-
-  Region queries (`&Triangle2D` / `&ConvexPolygon2D` / `&Frustum3D`) keep the
-  traversal they had. The views and the SIMD frontends were already effectively
-  contained-aware here — their counting enumeration collapses to an add because
-  the closure ignores the item index — and are unchanged.
 
 - The zero-copy views' range search now takes the contained-subtree fast path.
   `Index2DView` / `Index3DView` had a root-contains shortcut and nothing below
   it, so a query covering a whole subtree still parsed every one of its boxes
-  out of the byte buffer and tested it — the one search path in the crate that
-  did, since the owned indexes and the views' own region queries already share
-  that traversal. Routing `search` / `search_into` / `search_with` / `visit`
-  through it removes the per-item work: on 200 000 clustered boxes the bounds
-  parses for a 15% window drop 5 414 → 1 070 and the query runs at 0.65× the
-  time, a 40% window 35 254 → 2 358 at 0.48×, a whole-extent-ish window
-  213 337 → 2 997 at 0.34×; at 1 000 000 boxes the same cells read 0.48×, 0.35×
-  and 0.21×. 3D behaves the same way and goes further at depth: at 200 000 boxes
-  a 40%-per-axis window drops 14 926 → 3 317 parses at 0.68×, an 80% one
-  115 911 → 12 421 at 0.52×, whole-extent 213 337 → 5 942 at 0.32×; at
-  1 000 000 those run 0.49×, 0.30× and 0.18×.
-  Windows too small to contain a whole node pay a few percent instead — one
+  out of the byte buffer and tested it one by one — the last search path in the
+  crate that did, since the owned indexes and the views' own region queries
+  already share that traversal. `search` / `search_into` / `search_with` /
+  `visit` now route through it. A query spanning the extent of 200 000 boxes
+  parses 2 997 of them where it used to parse 213 337, and the rest scales the
+  same way (share of the work left, so lower is better):
+
+  | window        | 2D parses | 2D time | 3D parses | 3D time |
+  | ---           | ---:      | ---:    | ---:      | ---:    |
+  | 15% per axis  | 0.20      | 0.65    | 0.73      | 0.80    |
+  | 40% per axis  | 0.07      | 0.48    | 0.22      | 0.68    |
+  | spans extent  | 0.014     | 0.34    | 0.028     | 0.32    |
+
+  At 1 000 000 boxes the same windows run 0.48 / 0.35 / 0.21 in 2D and
+  0.49 / 0.30 / 0.18 in 3D: a deeper tree holds larger contained subtrees. The
+  two dimensions are not comparable row for row — a side fraction squares in 2D
+  and cubes in 3D, so "15% per axis" is 2.25% of the area against 0.34% of the
+  volume.
+
+  A window too small to contain a whole node pays a few percent instead: one
   containment test per visited node with nothing to skip, tens of nanoseconds on
-  a sub-microsecond query — which is the price of the rest.
-  `any` and `first` deliberately keep the overlaps-only traversal: they stop at
-  the first hit, so a containment test per node could only add work. Measured
-  with both traversals in one binary (paired, interleaved, order-alternating),
-  against a sliver-window control where the mechanism cannot fire and an
-  extent-covering control where both arms take the root shortcut; both read
-  1.00 ± 0.03, and an arm-against-itself floor reads 0.97-1.00. The SIMD views
-  were never affected: they carry their own traversal, which has had the
-  contained fast path all along.
+  a sub-microsecond query. `any` and `first` therefore keep the overlaps-only
+  traversal — they stop at the first hit, so that test could only add work.
 
-### Search
-
-- Added `count(query)`, which returns how many items overlap a query without
-  building a result `Vec`. It counts inside the traversal, so it costs a
-  `search` minus the collection; the shape it replaces — `search(query).len()` —
-  allocated a `Vec` only to read its length. Available on every frontend that
-  answers a range query: the owned `f64` indexes and their views (where it also
-  takes the region shapes, `Triangle2D` / `ConvexPolygon2D` / `Frustum3D`), the
-  SIMD indexes and views, the scalar and SIMD `f32` frontends (counting the same
-  conservative superset their `search` returns), and the streaming readers as
-  `count(query) -> Result<usize, StreamError>`, charging the same read budget as
-  `search`. The streaming readers also gained `count_region` for the shape
-  queries (and `count_async` / `count_region_async` under the `async` feature),
-  so counting is not the one query there that has no region form. The alternative was to keep pointing callers at `visit` with their
-  own counter; that is four lines and a `ControlFlow` import for the most common
-  aggregate over a query, which is how `search(..).len()` kept winning.
+  Measured with both traversals in one binary, paired and interleaved with the
+  order alternating per round, against a sliver-window control where the
+  mechanism cannot fire and an extent-covering control where both arms take the
+  root shortcut; both read 1.00 ± 0.03, and an arm timed against itself reads
+  0.97-1.00. The SIMD views were never affected — they carry their own
+  traversal, which has had the fast path all along.
 
 ### Documentation
 
@@ -146,6 +162,7 @@ All notable changes to this crate are documented here.
   filter over collected results. A production consumer asked for methods that
   already existed (`any`, `search_into`, allocation-free counting) because
   nothing pointed at them from where they were looking.
+
 - `Frustum3D` now documents picking, which it could always do and nothing said
   so: narrowed to the pixels around a cursor the same query answers "what is
   under the click", and widened to a dragged rectangle it answers rubber-band
@@ -161,7 +178,6 @@ All notable changes to this crate are documented here.
   `Vec` per call and names the cheaper sibling for a boolean test, a hot loop,
   or a fold — `search` is where a reader lands first, so the alternatives are
   documented there rather than only in the guide. No API change.
-
 ## [0.27.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.26.0...psi-v0.27.0) - 2026-08-12
 
 ### API

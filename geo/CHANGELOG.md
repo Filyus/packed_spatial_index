@@ -4,6 +4,28 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.26.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.25.0...psi-geo-v0.26.0) - 2026-08-25
+
+### API
+
+- Requires `packed_spatial_index` 0.28. That release adds `count(query)` to
+  every frontend that answers a range query, including the streaming readers
+  this crate reads artifacts through, plus `count_region` for their shape
+  queries. Callers that also depend on `packed_spatial_index` directly must move
+  to 0.28 together with this crate, because the core types in this API —
+  `Box2D`, `Index2D`, `BuildError` — come from it.
+
+### Performance
+
+- `count_entries` and `count_entries_async` now count inside the core's
+  traversal instead of running their own visitor over it, for every query shape
+  they accept: a bbox, a polygon, and in 3D a frustum. The answers and the reads
+  are unchanged — this is the same walk with the counting moved one layer down —
+  but it is no longer four lines of visitor per call site, and it inherits
+  whatever the core does to that traversal. The 0.28 core also answers a fully
+  contained subtree from its leaf range rather than testing every item in it,
+  which is what a wide `count_entries` over a dense artifact spends its time on.
+
 ## [0.25.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.24.0...psi-geo-v0.25.0) - 2026-08-12
 
 ### API

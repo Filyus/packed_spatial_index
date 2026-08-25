@@ -272,31 +272,28 @@ boxes cover 5%. KNN rows use 200 query points with top-8 results.
 
 Quick selector:
 
-- `SimdIndex2D`: 32-byte f64 boxes. Use for exact range queries with many hits
-  and fastest exact KNN.
-- `SimdIndex2DF32::search`: 16-byte rounded f32 boxes, SIMD-batched. In the
-  AVX-512 runs above it is also the **fastest** range path — ~1.2–1.45× over the
-  f64 `SimdIndex2D` (half the box bytes plus 16 boxes per SIMD chunk to f64's 8),
-  so it wins on speed *and* memory, not just memory — at the cost of a few
-  near-boundary false positives from the outward-rounded boxes. Returns the same
-  hits as the scalar `Index2DF32` (both round the query inward onto the f32 grid).
-  Use it when those extra hits are OK, or as a compact first-pass filter.
-- `SimdIndex2DF32::*_exact`: 16-byte f32 index plus source f64 boxes. Use when
-  exact range queries return few hits and compact storage matters. Exact KNN is
-  available, but f64 is faster in these runs.
-- `Index2DF32` / `Index3DF32`: the same 16/24-byte f32 boxes, scalar (no `simd`).
-  Identical range hits to `SimdIndex2DF32` (a conservative superset from the
-  outward-rounded boxes) plus `search_exact`; pick it for the half memory
-  without the SIMD dependency, or to stream a compact file with
-  `StreamIndex2DF32` / `StreamIndex3DF32` (half the box bytes over the wire).
-  Scalar f32 trades speed for memory: a 1M-box spot check ran range queries
-  about 30% slower than `Index3D` and `search_exact` about 45% slower. The query
-  is rounded once onto the f32 grid so each node compares f32-vs-f32 with no
-  per-node widen (and bit-identical hits to the f64 test); the residual gap is
-  the few extra conservative candidates from the outward-rounded boxes, and a
-  build about 1.7x slower from that rounding. Reach for it when you want half the
-  memory without a SIMD dependency, not for raw query speed (use
-  `SimdIndex2DF32` for that).
+- **Exact answers, most hits, fastest KNN** — `SimdIndex2D`. 32-byte `f64`
+  boxes; nothing else is faster on an exact range query with many hits.
+- **Fastest range search, and the smallest** — `SimdIndex2DF32::search`.
+  16-byte outward-rounded `f32` boxes, 16 to a SIMD chunk against `f64`'s 8, so
+  on AVX-512 it beats even `SimdIndex2D` on the range rows above. It wins on
+  speed *and* memory rather than trading one for the other; the price is a few
+  near-boundary false positives. Its hits match the scalar `Index2DF32`
+  exactly — both round the query inward onto the same grid.
+- **Compact storage, exact answers, few hits** — `SimdIndex2DF32::*_exact`, the
+  `f32` index plus your own `f64` boxes. Exact KNN works here too, but plain
+  `f64` is faster at it in these runs.
+- **Half the memory without a SIMD dependency** — `Index2DF32` / `Index3DF32`,
+  the same 16/24-byte boxes with no `simd` feature, and the file that
+  `StreamIndex2DF32` / `StreamIndex3DF32` streams at half the box bytes over the
+  wire. Same hits as `SimdIndex2DF32`, plus `search_exact`.
+
+  It is the memory choice, not the speed one: on a 1M-box spot check range
+  queries ran ~30% slower than `Index3D`, `search_exact` ~45% slower, and the
+  build ~1.7x slower from the rounding. The gap is not per-node widening — the
+  query is rounded onto the `f32` grid once, so each node compares `f32` to
+  `f32` and the hits are bit-identical to the `f64` test — it is the extra
+  conservative candidates the outward-rounded boxes admit.
 
 | Range query | Items | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: | ---: |

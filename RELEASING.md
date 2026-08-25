@@ -72,7 +72,16 @@ Prepare the bump and changelog by hand, following
 | `packed_spatial_index` | `Cargo.toml` | `CHANGELOG.md` | `README.md`, only if the install pin changes |
 | `packed_spatial_index_geo` | `geo/Cargo.toml` | `geo/CHANGELOG.md` | `geo/README.md`, only if the install pin changes |
 
-The release commit should normally change only that crate's manifest,
+The release commit also carries every **dependency pin that names the crate
+being released**, because the crates depend on each other by `path` plus an
+exact `version`: bumping one manifest makes every dependent unresolvable until
+its pin follows. Releasing `packed_spatial_index` moves `geo/Cargo.toml`,
+`server/Cargo.toml` and `server/Cargo.lock`; releasing `packed_spatial_index_geo`
+moves `server/Cargo.toml` (two entries) and `server/Cargo.lock`. Leaving them
+for later means a red `CI: Rust checks` on the release commit, which preflight
+then refuses.
+
+Apart from those, the release commit should change only that crate's manifest,
 changelog, and necessary release-facing docs. Show the maintainer the diff before
 committing:
 

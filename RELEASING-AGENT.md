@@ -118,9 +118,10 @@ Manifest paths:
 - `packed_spatial_index`: `Cargo.toml`;
 - `packed_spatial_index_geo`: `geo/Cargo.toml`.
 
-If geo should pick up a newly released core, update the
-`packed_spatial_index` dependency pin in `geo/Cargo.toml` as part of the geo
-release, after the core version is published.
+Raising the pin in a dependent so it *requires* a newly released core is part
+of that dependent's own release — it is an API-visible change and wants a
+changelog line. That is separate from step 4, which keeps the pins resolvable
+and happens in every release commit regardless.
 
 ### 3. Build or promote the changelog section
 
@@ -161,7 +162,45 @@ noise: tests only, lint, CI/workflow only, benchmark-only, demo-only, and
 When the wording is ready, promote the selected crate's `Unreleased` content to
 the dated version section. Leave `## [Unreleased]` present above it and empty.
 
-### 4. Version-facing docs
+### 4. Bump every pin that names this crate
+
+The crates in this repository depend on each other by `path` **and** an exact
+`version`. The path makes the build local; the version is what crates.io will
+see. So the moment a manifest version changes, every dependent's requirement
+stops matching the local crate and `cargo` refuses to resolve it — the whole
+lane fails with `failed to select a version for the requirement ...`, and it
+fails for the *dependent*, which is a job nobody is looking at during a release
+of something else.
+
+Those pins belong in the release commit, not in a follow-up. They are not
+"other docs" under step 5: without them `CI: Rust checks` is red on the release
+commit, and preflight requires a green one.
+
+| Releasing | Also bump |
+|---|---|
+| `packed_spatial_index` | `geo/Cargo.toml`; `server/Cargo.toml`; `server/Cargo.lock` |
+| `packed_spatial_index_geo` | `server/Cargo.toml` (**two** entries — default and `geojson`); `server/Cargo.lock` |
+
+Find them rather than trusting the table, since a new dependent will not be in
+it. Only a pin that carries a `version` can break — a `path`-only dependency
+(the fuzz target, the wasm demos, `benches/tools`) resolves whatever the
+manifest says and needs nothing:
+
+```sh
+grep -rn "<crate> = {.*version" --include=Cargo.toml . | grep -v "/target/"
+```
+
+Refresh each lockfile with `cargo update -p <crate> --manifest-path
+<dependent>/Cargo.toml`; editing the version by hand leaves the lockfile's
+checksum entry stale.
+
+A dependent's pin may name a version that is not on crates.io yet — that is
+normal and correct between the two releases. The `path` satisfies it locally,
+so CI is green, while publishing the dependent stays blocked until the
+dependency is actually published. Preflight checks exactly that, which is why
+the dependent's release is a separate one that comes second.
+
+### 5. Version-facing docs
 
 If the minor changed, update install snippets in the relevant README:
 
@@ -171,18 +210,25 @@ If the minor changed, update install snippets in the relevant README:
 Touch no other docs in the release commit unless they must mention the new
 version.
 
-### 5. Run the checks that fail on code
+### 6. Run the checks that fail on code
 
 Run these before there is a release commit to protect. Preflight runs them too,
 but by then the commit is pushed and has to stay at the head of `main`, so a
 failure costs a rewrite of a shared branch:
 
 ```sh
-rustup update nightly   # which rustdoc lints fire changes with the toolchain
+rustup update nightly            # which rustdoc lints fire changes with the toolchain
+cargo install cargo-semver-checks --locked   # its rustdoc JSON support lags nightly
 RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc \
   --manifest-path <manifest> --no-deps --all-features
 cargo semver-checks --manifest-path <manifest>
 ```
+
+Update both, and in that order. `cargo-semver-checks` reads rustdoc's JSON,
+whose format version moves with nightly, so a fresh nightly against a
+months-old `cargo-semver-checks` fails with `unsupported rustdoc format vNN`
+before it checks anything. CI installs the tool fresh on every run and never
+sees this; only a local check does.
 
 Neither is covered by `CI: Rust checks`. Its `lint & docs` lane builds docs on
 **stable** and without `--cfg docsrs`, so a lint that only exists on nightly —
@@ -190,7 +236,7 @@ Neither is covered by `CI: Rust checks`. Its `lint & docs` lane builds docs on
 Semver compatibility is checked nowhere but preflight. Update nightly first: a
 stale local toolchain passes what the runner rejects.
 
-### 6. Show the diff and pause
+### 7. Show the diff and pause
 
 ```sh
 git diff -- Cargo.toml CHANGELOG.md README.md geo/Cargo.toml geo/CHANGELOG.md geo/README.md
@@ -208,7 +254,7 @@ It is also the **only** pause in the release. Everything after it is mechanical
 and reversible until the `release` environment gate, which no amount of asking
 can pass on the maintainer's behalf.
 
-### 7. Commit and push after approval
+### 8. Commit and push after approval
 
 Commit exactly the release files that changed for release prep with the exact
 subject:
@@ -223,9 +269,9 @@ publish workflow refuses to publish. The changelog prose may have landed in an
 earlier feature commit, but this release commit's `HEAD` must contain a
 non-empty `## [X.Y.Z]` section for the selected crate.
 
-### 8. Start the publish workflow after CI passes
+### 9. Start the publish workflow after CI passes
 
-Without asking — step 6 already covered it.
+Without asking — step 7 already covered it.
 
 ```sh
 gh workflow run publish.yml --ref main -f crate=<crate>
@@ -238,7 +284,7 @@ WASM demo` also runs on the push and is not a gate — it deploys the demo, and
 preflight neither waits for it nor should. This only starts the pipeline; it
 gates at the `release` environment for the maintainer.
 
-### 9. If preflight fails
+### 10. If preflight fails
 
 The subject check reads the head of `main`, so the repair is a normal commit and
 a *new* release commit:
@@ -255,7 +301,7 @@ a *new* release commit:
 - the rewrite discards the working tree. Commit or copy aside anything
   uncommitted first — `git reset --hard` takes unrelated drafts with it.
 
-### 10. Wait at the gate, then confirm the release happened
+### 11. Wait at the gate, then confirm the release happened
 
 Do not publish, tag, create releases, or approve the `release` environment. The
 pipeline does the first three itself once the maintainer presses approve, and the

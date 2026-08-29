@@ -114,12 +114,19 @@ answer is the same conservative superset those types return everywhere else.
 
 The empty cells are intentional, not gaps to fill:
 
-- Streaming covers range and region search (with payloads). kNN, raycast and the
-  ordered region query use a best-first traversal that jumps around the tree, so
-  adjacent reads do not coalesce; streaming them would be one read per node,
-  where the level-by-level descent takes about two per level for the whole
-  frontier. Load those with a view or an in-memory index. (The in-memory and
-  `f32` indexes serialize the files that `StreamIndex*` reads.)
+- Streaming covers range and region search (with payloads). kNN, raycast and
+  `search_ordered` use a best-first traversal, and what rules it out is **round
+  trips, not bytes**. The level-order descent fetches a whole level at once and
+  the async path issues that level's reads concurrently, so a query costs a
+  handful of *dependent* waves however many reads it makes; a heap cannot name
+  the node to open next until the previous node's boxes have arrived, so each of
+  its reads is its own wave. Measured on 1M boxes with a frustum holding ~160k of
+  them: the region query is 313 reads in 4 waves, while a best-first descent
+  budgeted to 100 items is ~132 reads in ~132 waves — a tenth of the bytes and
+  thirty times the latency. Load those with a view or an in-memory index. (The
+  in-memory and `f32` indexes serialize the files that `StreamIndex*` reads.) An
+  ordered *result* is still available over a stream, just not through a heap —
+  see [top-k over a stream](#top-k-over-a-stream).
 - The ordered region query is a scalar descent on every frontend, SIMD included:
   a heap yields one node at a time, so there is nothing for a wide kernel to
   test in parallel. It is on the SIMD and `f32` types so the query is available
@@ -324,8 +331,51 @@ when you genuinely need every hit ordered.
 `visit_ordered` gives the same sequence through a visitor that receives the key
 alongside the id, so a renderer can accumulate until its budget is spent and
 break. Every f64 and `f32` in-memory frontend answers it, SIMD included, though
-the descent is scalar everywhere (a heap pops one node at a time). Streaming does
-not: see the [coverage matrix](#coverage-matrix).
+the descent is scalar everywhere (a heap pops one node at a time). Streaming
+readers do not carry the method — a heap costs one round trip per node it opens
+— but they can still answer the question it is usually asked for; see below.
+
+### Top-k over a stream
+
+There is no `search_ordered` on `StreamIndex2D` / `StreamIndex3D`, and adding one
+would be a mistake: a best-first descent turns a query that costs four dependent
+round trips into one that costs a hundred. But "the nearest k in this region" does
+not need a heap. Cap the region at a key threshold and the ordinary
+level-by-level `search_region` answers it, because the cap prunes internal nodes
+for the same reason the region does — a child box lies inside its parent, so its
+key is no smaller:
+
+```rust
+use packed_spatial_index::{Box3D, Frustum3D, Overlaps3D, view_depth_3d};
+
+struct DepthCapped {
+    frustum: Frustum3D,
+    eye: [f64; 3],
+    direction: [f64; 3],
+    max_depth: f64,
+}
+
+impl Overlaps3D for DepthCapped {
+    fn overlaps_box(&self, b: Box3D) -> bool {
+        view_depth_3d(self.eye, self.direction, b) <= self.max_depth
+            && self.frustum.overlaps_box(b)
+    }
+}
+```
+
+Pass that to `search_region` and sort the (few) results by the same key. Measured
+on the same 1M-box scene, `max_depth` set to the true 100th-nearest key: **75
+reads / 0.26 MB in 4 waves**, against 313 reads / 12.5 MB for the uncapped region
+query — cheaper on every axis than the region query that ships, and cheaper in
+latency than a heap by thirty times.
+
+The one thing this asks of you is the threshold. Start from an estimate and
+iterate: run the capped query, and if fewer than *k* items came back, raise the
+cap and run it again — each round is another four waves, and one or two rounds is
+typical. A useful first estimate costs no I/O at all, since `open` caches the
+upper levels: a node's *far*-corner depth is an upper bound on the nearest depth
+of anything inside it. Widen generously rather than tightly — an over-large cap
+costs bytes, an over-small one costs a whole extra round.
 
 ## Find boxes that contain a point
 

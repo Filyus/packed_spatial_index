@@ -22,10 +22,15 @@ All notable changes to this crate are documented here.
   early. Measured on 1M boxes: a budget of 100 is ~186x faster than
   search-then-sort, 10 000 still ~10x, while ordering the whole result is ~1.8x
   slower. The query is on every in-memory frontend, SIMD and `f32` included,
-  though the descent is scalar everywhere (a heap pops one node at a time);
-  streaming does not carry it, because a best-first descent reads one node per
-  pop where the level-by-level descent coalesces a whole frontier — the same
-  reason kNN and raycast are not streamed.
+  though the descent is scalar everywhere (a heap pops one node at a time).
+  Streaming readers do not carry it, for the reason kNN and raycast are not
+  streamed: a heap cannot name the next node before the last one's boxes arrive,
+  so its reads are *dependent* where a level-order descent issues a whole level's
+  reads at once — measured, 4 waves against ~132 for a budget of 100. Bytes are
+  not the problem; latency is. A streamed top-k is still available without a
+  heap, by capping the region at a key threshold and sorting the few results —
+  the guide's "top-k over a stream" shows the recipe and measures it at 75 reads
+  against the 313 of the uncapped region query.
 
 - The SIMD and `f32` frontends answer region shapes. Triangles, convex polygons
   and frusta used to be an `Index2D` / `Index3D` privilege: every SIMD and `f32`

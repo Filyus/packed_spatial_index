@@ -148,7 +148,12 @@ impl Index3D {
         self.serialize().payloads(payloads).to_bytes_into(out)
     }
 
-    /// Serialize in the **interleaved** layout (streaming-tuned). Shorthand for
+    /// Serialize in the **interleaved** layout (each node's box followed by its
+    /// index), which halves a streaming descent's round-trip depth: a level costs
+    /// one fetch instead of two dependent ones, since a node's index arrives with
+    /// its box instead of being requested after the box tests pick the survivors.
+    /// See [`Index2D::to_bytes_interleaved`](crate::Index2D::to_bytes_interleaved)
+    /// for the measured effect. Shorthand for
     /// [`serialize().interleaved()`](Self::serialize); available with `stream`.
     #[cfg(feature = "stream")]
     pub fn to_bytes_interleaved(&self) -> Vec<u8> {

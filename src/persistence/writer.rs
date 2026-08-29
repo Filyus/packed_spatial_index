@@ -154,7 +154,8 @@ impl<'a> ByteWriter<'a> {
     /// record immediately followed by its `u64` index entry. `entries` and
     /// `indices` have one element per node (same length). Produces the node data
     /// of an interleaved-layout `TREE` chunk, trading the bulk box memcpy for a
-    /// layout a streaming reader fetches in one read per level.
+    /// layout whose streaming descent spends one fetch per level instead of two
+    /// dependent ones.
     #[cfg(feature = "stream")]
     pub(crate) fn write_interleaved_2d(&mut self, entries: &[Box2D], indices: &[usize]) {
         debug_assert_eq!(entries.len(), indices.len());

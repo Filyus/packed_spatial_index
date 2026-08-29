@@ -39,8 +39,10 @@ pub(crate) struct StreamCore<R> {
     /// index). The box of node `n` is always its first `record` bytes.
     pub(crate) box_stride: usize,
     /// Whether the node section is interleaved (box + index per node). When set,
-    /// a node's index is read from its own record, so no separate index gather is
-    /// issued — one coalesced read per level instead of two.
+    /// a node's index is read from its own record, so `traverse` issues no second
+    /// index gather. That gather is *dependent* — its positions are the survivors
+    /// of the box tests — so dropping it halves the descent's round-trip depth,
+    /// not its read count.
     pub(crate) interleaved: bool,
     /// Byte offset of the box / node section.
     pub(crate) box0: u64,

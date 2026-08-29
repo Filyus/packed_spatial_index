@@ -39,8 +39,11 @@ impl<'a> Serializer3DF32<'a> {
     }
 
     /// Use the streaming-tuned interleaved node layout (box and index adjacent
-    /// per node), so [`StreamIndex3DF32`](crate::StreamIndex3DF32) fetches each
-    /// level in one coalesced read instead of two. Same file size.
+    /// per node), so a [`StreamIndex3DF32`](crate::StreamIndex3DF32) descent
+    /// spends one fetch per level instead of two *dependent* ones (boxes, then the
+    /// survivors' indices). Same file size and about the same number of reads —
+    /// what halves is the round-trip depth, which is what a remote source charges
+    /// for.
     #[cfg(feature = "stream")]
     pub fn interleaved(mut self) -> Self {
         self.interleaved = true;

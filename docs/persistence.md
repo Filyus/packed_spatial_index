@@ -142,8 +142,12 @@ box" caller wants over a remote file. All of these use optional per-query cost l
 (`open_with_limits` + `StreamLimits` —
 bound reads, bytes, and items so a broad query cannot run unbounded). For a
 remote-tuned layout, `to_bytes_interleaved` stores each node's box and child
-pointer together so the descent fetches them in one read per level instead of
-two.
+pointer together, so a level costs one fetch instead of two *dependent* ones: in
+the default layout the survivors' indices cannot be requested until the box tests
+have picked them. Reads within one fetch go out concurrently, so this halves the
+round-trip depth rather than the read count — measured on a 1M-item index and a
+160k-hit query, 313 reads in 4 dependent waves against 340 reads in 2. It is a
+win on a remote source and nothing on a local file.
 
 **Cost in practice.** A query streams only the byte ranges its traversal
 touches. Cost scales with the result rather than the file size, and the read

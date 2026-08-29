@@ -189,10 +189,20 @@ impl Index2D {
     }
 
     /// Serialize in the **interleaved** layout (each node's box followed by its
-    /// index), a streaming-tuned layout a [`StreamIndex2D`] fetches in one read
-    /// per level instead of two. The in-memory loaders and SIMD views read the
-    /// default layout only. Shorthand for
-    /// [`serialize().interleaved()`](Self::serialize); available with `stream`.
+    /// index), a streaming-tuned layout that halves a [`StreamIndex2D`] descent's
+    /// **round-trip depth**. In the default layout a level costs two *dependent*
+    /// fetches — the boxes, then the surviving nodes' indices, which cannot be
+    /// requested until the box tests have picked the survivors. Interleaved, a
+    /// node's index arrives with its box, so a level is one fetch. That is
+    /// latency, not volume: the reads inside one fetch are issued concurrently on
+    /// the async path, so the file size and the number of reads barely move
+    /// (measured on a 1M-item index and a 160k-hit query: 313 reads in 4 waves
+    /// against 340 reads in 2). Worth it on a remote source, pointless on a local
+    /// file.
+    ///
+    /// The in-memory loaders and SIMD views read the default layout only.
+    /// Shorthand for [`serialize().interleaved()`](Self::serialize); available
+    /// with `stream`.
     ///
     /// [`StreamIndex2D`]: crate::StreamIndex2D
     #[cfg(feature = "stream")]

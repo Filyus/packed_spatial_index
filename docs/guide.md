@@ -126,7 +126,10 @@ The empty cells are intentional, not gaps to fill:
   thirty times the latency. Load those with a view or an in-memory index. (The
   in-memory and `f32` indexes serialize the files that `StreamIndex*` reads.) An
   ordered *result* is still available over a stream, just not through a heap —
-  see [top-k over a stream](#top-k-over-a-stream).
+  see [top-k over a stream](#top-k-over-a-stream). Waves are also what
+  `serialize().interleaved()` buys: it puts each node's child pointer in the box
+  record, so a level costs one fetch instead of two dependent ones (4 waves -> 2
+  for the query above), at the same read count and file size.
 - The ordered region query is a scalar descent on every frontend, SIMD included:
   a heap yields one node at a time, so there is nothing for a wide kernel to
   test in parallel. It is on the SIMD and `f32` types so the query is available

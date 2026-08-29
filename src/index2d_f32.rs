@@ -14,11 +14,13 @@ use crate::{
     build::BuildError,
     builder2d::BuildConfig,
     f32_storage::{Box2DF32, F32Columns2D, columns2d_from_parsed},
-    geometry::Box2D,
+    geometry::{Box2D, Overlaps2D},
     persistence::{LoadError, parse_index},
+    range::visit_region,
     ray::Ray2D,
     sort2d::{SortKeyContext, encode_sort_by_key},
     tree::{TreeLayout, try_compute_tree_layout},
+    tree_access::TreeAccess,
     triangle::Triangle2,
 };
 
@@ -39,10 +41,11 @@ use crate::{
 };
 
 // Imports used only by the SIMD query frontend (SimdIndex2DF32 + its view).
+use crate::config::DEFAULT_SEARCH_STACK_CAPACITY;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use crate::leftpack::leftpack4;
 #[cfg(feature = "simd")]
-use crate::{config::DEFAULT_SEARCH_STACK_CAPACITY, traversal::SearchWorkspace};
+use crate::traversal::SearchWorkspace;
 use crate::{config::GATHER_PREFETCH_DISTANCE, traversal::prefetch_read};
 use std::ops::ControlFlow;
 
@@ -638,6 +641,75 @@ impl crate::neighbors::PointKnn for SimdIndex2DF32 {
 
 #[cfg(feature = "simd")]
 impl SimdIndex2DF32 {
+    /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
+    /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
+    /// or a [`Box2D`].
+    ///
+    /// Boxes are tested after widening the stored `f32` back to `f64`; since they were
+    /// rounded outward, the result is the same conservative superset the other
+    /// queries here return.
+    ///
+    /// The `Box2D` [`search`](Self::search) stays the fast path; this walks the
+    /// tree one node at a time against your shape, so reach for it when the shape
+    /// is what you mean.
+    ///
+    /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
+    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    pub fn search_region<Q: Overlaps2D>(&self, region: Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_region_into(region, &mut out);
+        out
+    }
+
+    /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
+    pub fn search_region_into<Q: Overlaps2D>(&self, region: Q, out: &mut Vec<usize>) {
+        out.clear();
+        let _: ControlFlow<()> = self.visit_region(region, |index| {
+            out.push(index);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Visit every item overlapping `region`; the visitor may return
+    /// [`ControlFlow::Break`] to stop early.
+    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        visit_region(
+            self,
+            &mut stack,
+            |b| region.overlaps_box(b),
+            |b| region.contains_box(b),
+            visitor,
+        )
+    }
+
+    /// Return `true` if at least one item overlaps `region`.
+    pub fn any_region<Q: Overlaps2D>(&self, region: Q) -> bool {
+        self.visit_region(region, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Return one item overlapping `region`, if any.
+    pub fn first_region<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
+        match self.visit_region(region, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// Count the items overlapping `region` without collecting them.
+    pub fn count_region<Q: Overlaps2D>(&self, region: Q) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_region(region, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
     /// Build the SIMD frontend by moving the columns out of the native f32 build.
     pub(crate) fn from_scalar(s: Index2DF32) -> Self {
         Self {
@@ -1387,6 +1459,12 @@ impl SimdIndex2DF32 {
         Box2DF32::from_soa(&self.min_xs, &self.min_ys, &self.max_xs, &self.max_ys, pos)
     }
 
+    /// Decode the stored box, widened to `f64`.
+    #[inline]
+    fn box_at(&self, pos: usize) -> Box2D {
+        self.box_f32_at(pos).widen()
+    }
+
     /// True when the rounded query `q` fully contains the stored box at `pos`.
     #[inline]
     fn q_contains_node(&self, q: Box2DF32, pos: usize) -> bool {
@@ -1569,6 +1647,75 @@ pub struct SimdIndex2DF32View<'a> {
 
 #[cfg(feature = "simd")]
 impl<'a> SimdIndex2DF32View<'a> {
+    /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
+    /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
+    /// or a [`Box2D`].
+    ///
+    /// Boxes are tested after widening the stored `f32` back to `f64`; since they were
+    /// rounded outward, the result is the same conservative superset the other
+    /// queries here return.
+    ///
+    /// The `Box2D` [`search`](Self::search) stays the fast path; this walks the
+    /// tree one node at a time against your shape, so reach for it when the shape
+    /// is what you mean.
+    ///
+    /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
+    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    pub fn search_region<Q: Overlaps2D>(&self, region: Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_region_into(region, &mut out);
+        out
+    }
+
+    /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
+    pub fn search_region_into<Q: Overlaps2D>(&self, region: Q, out: &mut Vec<usize>) {
+        out.clear();
+        let _: ControlFlow<()> = self.visit_region(region, |index| {
+            out.push(index);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Visit every item overlapping `region`; the visitor may return
+    /// [`ControlFlow::Break`] to stop early.
+    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        visit_region(
+            self,
+            &mut stack,
+            |b| region.overlaps_box(b),
+            |b| region.contains_box(b),
+            visitor,
+        )
+    }
+
+    /// Return `true` if at least one item overlaps `region`.
+    pub fn any_region<Q: Overlaps2D>(&self, region: Q) -> bool {
+        self.visit_region(region, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Return one item overlapping `region`, if any.
+    pub fn first_region<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
+        match self.visit_region(region, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// Count the items overlapping `region` without collecting them.
+    pub fn count_region<Q: Overlaps2D>(&self, region: Q) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_region(region, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
     /// Borrow a zero-copy view over f32-format `PSINDEX` bytes.
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
         let (parsed, payload) = parse_index(bytes, 2, 4)?;
@@ -2111,6 +2258,75 @@ pub struct Index2DF32 {
 }
 
 impl Index2DF32 {
+    /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
+    /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
+    /// or a [`Box2D`].
+    ///
+    /// Boxes are tested after widening the stored `f32` back to `f64`; since they were
+    /// rounded outward, the result is the same conservative superset the other
+    /// queries here return.
+    ///
+    /// The `Box2D` [`search`](Self::search) stays the fast path; this walks the
+    /// tree one node at a time against your shape, so reach for it when the shape
+    /// is what you mean.
+    ///
+    /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
+    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    pub fn search_region<Q: Overlaps2D>(&self, region: Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_region_into(region, &mut out);
+        out
+    }
+
+    /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
+    pub fn search_region_into<Q: Overlaps2D>(&self, region: Q, out: &mut Vec<usize>) {
+        out.clear();
+        let _: ControlFlow<()> = self.visit_region(region, |index| {
+            out.push(index);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Visit every item overlapping `region`; the visitor may return
+    /// [`ControlFlow::Break`] to stop early.
+    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        visit_region(
+            self,
+            &mut stack,
+            |b| region.overlaps_box(b),
+            |b| region.contains_box(b),
+            visitor,
+        )
+    }
+
+    /// Return `true` if at least one item overlaps `region`.
+    pub fn any_region<Q: Overlaps2D>(&self, region: Q) -> bool {
+        self.visit_region(region, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Return one item overlapping `region`, if any.
+    pub fn first_region<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
+        match self.visit_region(region, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// Count the items overlapping `region` without collecting them.
+    pub fn count_region<Q: Overlaps2D>(&self, region: Q) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_region(region, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
     /// Build a compact index over each triangle's bounding box.
     pub fn from_triangles<T: Triangle2>(triangles: &[T]) -> Result<Self, BuildError> {
         let mut builder = crate::Index2DBuilder::new(triangles.len());
@@ -2356,6 +2572,136 @@ impl Index2DF32 {
                 return ControlFlow::Continue(());
             }
         }
+    }
+}
+
+// `TreeAccess` lets the shared region traversal (`crate::range::visit_region`)
+// walk these trees. `Bounds` is the f64-widened box: the stored f32 box is
+// rounded outward, so widening it can only grow the box, which keeps region
+// overlap a conservative superset and keeps the contained-subtree fast path
+// sound (a region containing the widened box contains the true one).
+impl TreeAccess for Index2DF32 {
+    type Bounds = Box2D;
+
+    #[inline]
+    fn tree_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn tree_num_nodes(&self) -> usize {
+        self.indices.len()
+    }
+    #[inline]
+    fn tree_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn tree_level_count(&self) -> usize {
+        self.level_bounds.len()
+    }
+    #[inline]
+    fn tree_level_bound(&self, level: usize) -> usize {
+        self.level_bounds[level]
+    }
+    #[inline]
+    fn tree_bounds(&self, pos: usize) -> Box2D {
+        self.box_at(pos)
+    }
+    #[inline]
+    fn tree_index(&self, pos: usize) -> usize {
+        self.indices[pos]
+    }
+    #[inline]
+    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
+        outer.contains(inner)
+    }
+}
+
+#[cfg(feature = "simd")]
+impl TreeAccess for SimdIndex2DF32 {
+    type Bounds = Box2D;
+
+    #[inline]
+    fn tree_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn tree_num_nodes(&self) -> usize {
+        self.indices.len()
+    }
+    #[inline]
+    fn tree_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn tree_level_count(&self) -> usize {
+        self.level_bounds.len()
+    }
+    #[inline]
+    fn tree_level_bound(&self, level: usize) -> usize {
+        self.level_bounds[level]
+    }
+    #[inline]
+    fn tree_bounds(&self, pos: usize) -> Box2D {
+        self.box_at(pos)
+    }
+    #[inline]
+    fn tree_index(&self, pos: usize) -> usize {
+        self.indices[pos]
+    }
+    #[inline]
+    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
+        outer.contains(inner)
+    }
+}
+
+#[cfg(feature = "simd")]
+impl TreeAccess for SimdIndex2DF32View<'_> {
+    type Bounds = Box2D;
+
+    #[inline]
+    fn tree_num_items(&self) -> usize {
+        self.num_items
+    }
+    #[inline]
+    fn tree_num_nodes(&self) -> usize {
+        self.num_nodes
+    }
+    #[inline]
+    fn tree_node_size(&self) -> usize {
+        self.node_size
+    }
+    #[inline]
+    fn tree_level_count(&self) -> usize {
+        self.level_count
+    }
+    #[inline]
+    fn tree_level_bound(&self, level: usize) -> usize {
+        self.level_bound_unchecked(level)
+    }
+    #[inline]
+    fn tree_bounds(&self, pos: usize) -> Box2D {
+        self.box_at(pos)
+    }
+    #[inline]
+    fn tree_index(&self, pos: usize) -> usize {
+        self.index_at(pos)
+    }
+    #[inline]
+    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
+        a.overlaps(b)
+    }
+    #[inline]
+    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
+        outer.contains(inner)
     }
 }
 

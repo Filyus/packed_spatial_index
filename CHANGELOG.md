@@ -4,6 +4,23 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Search
+
+- Added `search_ordered(region, key, max_results, max_key)` (with `_into` and
+  `visit_ordered`) on the owned `f64` indexes and their views. It answers the
+  same set as `search` but emits it in nondecreasing order of a key you supply,
+  so `max_results` and the `max_key` cutoff end the traversal instead of
+  filtering its output. The key must be an admissible lower bound — the key of a
+  box never exceeds the key of any item inside it — exactly the contract
+  `neighbors_metric` already asks for, and the two now share one best-first
+  descent whose bound closure returns `None` to prune. The ready-made key is the
+  new `view_depth_2d` / `view_depth_3d`: paired with a `Frustum3D` it makes the
+  frustum query yield objects front to back, which is what a renderer with a
+  budget, a z-prepass, or an occlusion loop needs and what the unordered
+  `search` could only offer as "collect everything, then sort". Ordering
+  *everything* is still `search` plus a sort — the ordered form is for stopping
+  early.
+
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 
 ### Search

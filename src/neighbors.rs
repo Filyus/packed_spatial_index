@@ -30,6 +30,43 @@ pub fn haversine_distance_2d(query_lon_lat: (f64, f64), bounds: Box2D, earth_rad
     2.0 * earth_radius_m * a.sqrt().asin()
 }
 
+/// Depth of the closest point of `bounds` along a view axis: the smallest
+/// `dot(p - eye, direction)` over every point `p` of the box.
+///
+/// The ready-made ordering key for a front-to-back
+/// [`search_ordered`](crate::Index3D::search_ordered): pair it with a
+/// [`Frustum3D`](crate::Frustum3D) and items come out near-to-far, so a caller
+/// on a budget stops early instead of collecting and sorting everything.
+///
+/// Admissible by construction — a node box encloses its children, so its depth
+/// never exceeds theirs. `direction` need not be normalized: a longer vector
+/// only rescales the key (and any `max_key` cutoff), it never changes the
+/// order. Boxes behind the eye simply get negative depths.
+pub fn view_depth_3d(eye: [f64; 3], direction: [f64; 3], bounds: Box3D) -> f64 {
+    let mins = [bounds.min_x, bounds.min_y, bounds.min_z];
+    let maxs = [bounds.max_x, bounds.max_y, bounds.max_z];
+    let mut depth = 0.0;
+    for axis in 0..3 {
+        let d = direction[axis];
+        let near = if d >= 0.0 { mins[axis] } else { maxs[axis] };
+        depth += (near - eye[axis]) * d;
+    }
+    depth
+}
+
+/// 2D counterpart of [`view_depth_3d`].
+pub fn view_depth_2d(eye: [f64; 2], direction: [f64; 2], bounds: Box2D) -> f64 {
+    let mins = [bounds.min_x, bounds.min_y];
+    let maxs = [bounds.max_x, bounds.max_y];
+    let mut depth = 0.0;
+    for axis in 0..2 {
+        let d = direction[axis];
+        let near = if d >= 0.0 { mins[axis] } else { maxs[axis] };
+        depth += (near - eye[axis]) * d;
+    }
+    depth
+}
+
 /// What a 2D nearest-neighbor traversal measures distance from: a point or a
 /// query box (box queries use box-to-box gap distance, `0.0` on overlap).
 #[derive(Clone, Copy)]

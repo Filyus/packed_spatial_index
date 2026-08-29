@@ -573,7 +573,7 @@ impl Index2D {
             |pos| self.indices[pos],
             max_results,
             max_distance,
-            |pos| metric(self.entries[pos]),
+            |pos| Some(metric(self.entries[pos])),
             results,
             &mut queue,
         );
@@ -600,7 +600,130 @@ impl Index2D {
             |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
             |pos| self.indices[pos],
             max_distance,
-            |pos| metric(self.entries[pos]),
+            |pos| Some(metric(self.entries[pos])),
+            &mut queue,
+            &mut visitor,
+        )
+    }
+
+    /// Up to `max_results` item indices overlapping `region`, in nondecreasing
+    /// `key` order.
+    ///
+    /// `region` is any [`Overlaps2D`] — a [`Box2D`], a
+    /// [`ConvexPolygon2D`](crate::ConvexPolygon2D) — and `key(b)` scores the box
+    /// `b`. The key must be an **admissible lower bound**: the key of a box never
+    /// exceeds the key of any item inside it (a child box is contained in its
+    /// parent). [`view_depth_2d`](crate::view_depth_2d) is the canonical one,
+    /// giving near-to-far order along a view axis. `max_key` is a cutoff in the
+    /// key's own units; `f64::INFINITY` for unbounded.
+    ///
+    /// [`search`](Self::search) answers the same *set* and is faster, because it
+    /// is an unordered depth-first sweep that can emit a fully contained subtree
+    /// wholesale. The ordered form earns its keep only when the order lets you
+    /// stop early: `max_results` and `max_key` end the traversal without touching
+    /// the rest of the tree. To order *everything*, call `search` and sort.
+    ///
+    /// Items with equal keys come out in an unspecified order. Like every query
+    /// here this is broad phase: an overlapping box does not mean the item's
+    /// exact geometry overlaps.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder, view_depth_2d};
+    ///
+    /// let mut b = Index2DBuilder::new(3);
+    /// b.add(Box2D::new(20.0, 0.0, 21.0, 1.0)); // farthest
+    /// b.add(Box2D::new(0.0, 0.0, 1.0, 1.0)); // nearest
+    /// b.add(Box2D::new(10.0, 0.0, 11.0, 1.0));
+    /// let index = b.finish().unwrap();
+    ///
+    /// let eye = [-5.0, 0.0];
+    /// let forward = [1.0, 0.0];
+    /// let visible = Box2D::new(-100.0, -100.0, 100.0, 100.0);
+    ///
+    /// let hits = index.search_ordered(
+    ///     visible,
+    ///     |bx| view_depth_2d(eye, forward, bx),
+    ///     2,
+    ///     f64::INFINITY,
+    /// );
+    /// assert_eq!(hits, vec![1, 2]);
+    /// ```
+    pub fn search_ordered<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+    ) -> Vec<usize>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+    {
+        let mut results = Vec::new();
+        self.search_ordered_into(region, key, max_results, max_key, &mut results);
+        results
+    }
+
+    /// [`search_ordered`](Self::search_ordered) into a reused buffer (cleared first).
+    pub fn search_ordered_into<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+        results: &mut Vec<usize>,
+    ) where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+    {
+        results.clear();
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::collect_neighbors(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
+            |pos| self.indices[pos],
+            max_results,
+            max_key,
+            |pos| {
+                let bounds = self.entries[pos];
+                region.overlaps_box(bounds).then(|| key(bounds))
+            },
+            results,
+            &mut queue,
+        );
+    }
+
+    /// Visit items of `region` in nondecreasing `key` order; the visitor receives
+    /// the key and may return [`ControlFlow::Break`] to stop early. See
+    /// [`search_ordered`](Self::search_ordered) for the key contract.
+    pub fn visit_ordered<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::visit_neighbors(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
+            |pos| self.indices[pos],
+            max_key,
+            |pos| {
+                let bounds = self.entries[pos];
+                region.overlaps_box(bounds).then(|| key(bounds))
+            },
             &mut queue,
             &mut visitor,
         )
@@ -1676,7 +1799,7 @@ impl<'a> Index2DView<'a> {
             |pos| self.index_at_unchecked(pos),
             max_results,
             max_distance,
-            |pos| metric(self.entry_at_unchecked(pos)),
+            |pos| Some(metric(self.entry_at_unchecked(pos))),
             results,
             &mut queue,
         );
@@ -1704,7 +1827,89 @@ impl<'a> Index2DView<'a> {
             |node| self.level_bound_unchecked(self.upper_bound_level(node)),
             |pos| self.index_at_unchecked(pos),
             max_distance,
-            |pos| metric(self.entry_at_unchecked(pos)),
+            |pos| Some(metric(self.entry_at_unchecked(pos))),
+            &mut queue,
+            &mut visitor,
+        )
+    }
+
+    /// Up to `max_results` item indices overlapping `region`, in nondecreasing
+    /// `key` order. See [`Index2D::search_ordered`](crate::Index2D::search_ordered)
+    /// for the key contract and when to prefer it over [`search`](Self::search).
+    pub fn search_ordered<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+    ) -> Vec<usize>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+    {
+        let mut results = Vec::new();
+        self.search_ordered_into(region, key, max_results, max_key, &mut results);
+        results
+    }
+
+    /// [`search_ordered`](Self::search_ordered) into a reused buffer (cleared first).
+    pub fn search_ordered_into<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+        results: &mut Vec<usize>,
+    ) where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+    {
+        results.clear();
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::collect_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
+            |pos| self.index_at_unchecked(pos),
+            max_results,
+            max_key,
+            |pos| {
+                let bounds = self.entry_at_unchecked(pos);
+                region.overlaps_box(bounds).then(|| key(bounds))
+            },
+            results,
+            &mut queue,
+        );
+    }
+
+    /// Visit items of `region` in nondecreasing `key` order; the visitor receives
+    /// the key and may return [`ControlFlow::Break`] to stop early. See
+    /// [`Index2D::search_ordered`](crate::Index2D::search_ordered).
+    pub fn visit_ordered<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        metric_knn::visit_neighbors(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
+            |pos| self.index_at_unchecked(pos),
+            max_key,
+            |pos| {
+                let bounds = self.entry_at_unchecked(pos);
+                region.overlaps_box(bounds).then(|| key(bounds))
+            },
             &mut queue,
             &mut visitor,
         )

@@ -40,6 +40,12 @@
 //!   [`neighbors_of_box`](Index2D::neighbors_of_box) and its variants; or under a
 //!   custom distance metric with [`neighbors_metric`](Index2D::neighbors_metric)
 //!   (e.g. great-circle distance via [`haversine_distance_2d`]).
+//! * **Ordered region** — the same region geometry, but emitted in nondecreasing
+//!   order of a key you supply, so a budget can stop the traversal early:
+//!   [`search_ordered`](Index2D::search_ordered) (plus `_into` and
+//!   [`visit_ordered`](Index2D::visit_ordered)). With
+//!   [`view_depth_3d`] as the key, a `Frustum3D` query yields objects front to
+//!   back.
 //! * **Ray segment** — [`raycast`](Index2D::raycast) (all hits),
 //!   [`raycast_closest`](Index2D::raycast_closest) (nearest box entered), and
 //!   [`visit_raycast`](Index2D::visit_raycast).
@@ -146,7 +152,9 @@ pub use index3d_f32::{Index3DF32, Serializer3DF32};
 pub use index3d_f32::{SimdIndex3DF32, SimdIndex3DF32View};
 #[cfg(feature = "simd")]
 pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
-pub use neighbors::{EARTH_RADIUS_M, NeighborWorkspace, haversine_distance_2d};
+pub use neighbors::{
+    EARTH_RADIUS_M, NeighborWorkspace, haversine_distance_2d, view_depth_2d, view_depth_3d,
+};
 pub use persistence::{FileMetadata, LoadError, PayloadError, read_metadata};
 pub use polygon::ConvexPolygon2D;
 pub use ray::{Ray2D, Ray3D};

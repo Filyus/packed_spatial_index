@@ -11,8 +11,8 @@ use std::ops::ControlFlow;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use packed_spatial_index::benchmark_support::{self, SortKey2DStrategy, SortKey3DStrategy};
 use packed_spatial_index::{
-    Box2D, Box3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
-    NeighborWorkspace, Point2D, Point3D, SearchWorkspace,
+    Box2D, Box3D, Frustum3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder,
+    Index3DView, NeighborWorkspace, Point2D, Point3D, SearchWorkspace, view_depth_3d,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -775,6 +775,73 @@ fn bench_search(c: &mut Criterion) {
     group.finish();
 }
 
+/// Front-to-back frustum queries against the workaround they replace.
+///
+/// `search_unordered` is the control that should not move: it is the same set
+/// with no ordering work. `search_then_sort` is what a caller writes today to
+/// get near-to-far order. The `ordered_*` arms are `search_ordered`; the claim
+/// under test is that a *budgeted* one beats `search_then_sort`, not that
+/// ordering the whole result does.
+fn bench_ordered_frustum(c: &mut Criterion) {
+    let n = 1_000_000usize;
+    let boxes = gen_boxes(DatasetKind::Uniform, n, 0x3D80);
+    let index = build_index(&boxes, 16, SortKey3DStrategy::Hilbert, false);
+
+    // A slab of the scene, as a camera would see it looking down +x.
+    let frustum = Frustum3D::from_planes([
+        [1.0, 0.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, 10_000.0],
+        [0.0, 1.0, 0.0, -3_000.0],
+        [0.0, -1.0, 0.0, 7_000.0],
+        [0.0, 0.0, 1.0, -3_000.0],
+        [0.0, 0.0, -1.0, 7_000.0],
+    ]);
+    let eye = [-2_000.0, 5_000.0, 5_000.0];
+    let forward = [1.0, 0.0, 0.0];
+    let key = |b: Box3D| view_depth_3d(eye, forward, b);
+
+    let mut group = c.benchmark_group("index3d_ordered_frustum");
+    let mut results: Vec<usize> = Vec::new();
+
+    group.bench_function("search_unordered", |b| {
+        b.iter(|| {
+            index.search_into(&frustum, &mut results);
+            black_box(results.len());
+        });
+    });
+
+    // The fair control: key each hit once, then sort the pairs. Sorting the ids
+    // with a comparator that recomputes the key would charge the workaround
+    // `2 * n log n` key evaluations it does not need.
+    let mut keyed: Vec<(f64, usize)> = Vec::new();
+    group.bench_function("search_then_sort", |b| {
+        b.iter(|| {
+            index.search_into(&frustum, &mut results);
+            keyed.clear();
+            keyed.extend(results.iter().map(|&id| (key(boxes[id]), id)));
+            keyed.sort_unstable_by(|a, c| a.0.total_cmp(&c.0));
+            black_box(keyed.len());
+        });
+    });
+
+    group.bench_function("ordered_all", |b| {
+        b.iter(|| {
+            index.search_ordered_into(frustum, key, usize::MAX, f64::INFINITY, &mut results);
+            black_box(results.len());
+        });
+    });
+
+    for budget in [100usize, 1_000, 10_000] {
+        group.bench_function(format!("ordered_top_{budget}"), |b| {
+            b.iter(|| {
+                index.search_ordered_into(frustum, key, budget, f64::INFINITY, &mut results);
+                black_box(results.len());
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_query_windows(c: &mut Criterion) {
     let n = 100_000usize;
     let boxes = gen_boxes(DatasetKind::Uniform, n, 0x3D70);
@@ -1029,6 +1096,7 @@ criterion_group! {
     bench_build,
     bench_search,
     bench_query_windows,
+    bench_ordered_frustum,
     bench_simd_search,
     bench_simd_build,
     bench_persistence,

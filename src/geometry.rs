@@ -657,12 +657,20 @@ fn axis_gap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
 /// contained by queries it does not overlap; taking the shortcut on containment
 /// alone answers "every item" where the per-item test answers "none". Requiring
 /// both costs nothing for well-formed boxes, where containment implies overlap.
+///
+/// Only the SIMD frontends need this as a function: their kernels take the
+/// shortcut against the root explicitly, while the scalar traversals reach the
+/// same conclusion through the contained-subtree flag in
+/// [`crate::range::visit_region`], which applies the identical rule to whatever
+/// region it was given (`overlaps(root) && contains(root)`).
+#[cfg(feature = "simd")]
 #[inline]
 pub(crate) fn query_covers_tree_2d(query: Box2D, root: Box2D) -> bool {
     root.overlaps(query) && query.contains(root)
 }
 
 /// [`query_covers_tree_2d`], in three dimensions.
+#[cfg(feature = "simd")]
 #[inline]
 pub(crate) fn query_covers_tree_3d(query: Box3D, root: Box3D) -> bool {
     root.overlaps(query) && query.contains(root)

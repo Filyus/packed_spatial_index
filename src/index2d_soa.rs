@@ -21,6 +21,7 @@ use crate::{
     geometry::{Box2D, Overlaps2D, Point2D, fold_max, fold_min, query_covers_tree_2d},
     join::{join_core, self_join_core},
     neighbors::{NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first},
+    ordered::{collect_ordered, visit_ordered},
     persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
     range::visit_region,
     ray::Ray2D,
@@ -241,6 +242,73 @@ pub struct SimdIndex2D {
 }
 
 impl SimdIndex2D {
+    /// Up to `max_results` items overlapping `region`, in nondecreasing `key`
+    /// order.
+    ///
+    /// See [`Index2D::search_ordered`](crate::Index2D::search_ordered) for the
+    /// admissible-lower-bound contract the `key` must satisfy and for when to
+    /// prefer this over [`search_region`](Self::search_region);
+    /// [`view_depth_2d`](crate::view_depth_2d) is the ready-made key for
+    /// front-to-back order.
+    ///
+    /// The descent is scalar here, as on every frontend: a heap yields one node
+    /// at a time, so there is nothing for the SIMD kernel to widen. This exists
+    /// so the ordered query is available where your index already lives, not
+    /// because it is faster than the owned f64 one.
+    pub fn search_ordered<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+    ) -> Vec<usize>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+    {
+        let mut results = Vec::new();
+        self.search_ordered_into(region, key, max_results, max_key, &mut results);
+        results
+    }
+
+    /// [`search_ordered`](Self::search_ordered) into a reused buffer (cleared first).
+    pub fn search_ordered_into<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+        results: &mut Vec<usize>,
+    ) where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+    {
+        collect_ordered(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_results,
+            max_key,
+            results,
+        );
+    }
+
+    /// Visit items of `region` in nondecreasing `key` order; the visitor receives
+    /// the key and may return [`ControlFlow::Break`] to stop early.
+    pub fn visit_ordered<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
     /// or a [`Box2D`].
@@ -1789,6 +1857,73 @@ pub struct SimdIndex2DView<'a> {
 }
 
 impl<'a> SimdIndex2DView<'a> {
+    /// Up to `max_results` items overlapping `region`, in nondecreasing `key`
+    /// order.
+    ///
+    /// See [`Index2D::search_ordered`](crate::Index2D::search_ordered) for the
+    /// admissible-lower-bound contract the `key` must satisfy and for when to
+    /// prefer this over [`search_region`](Self::search_region);
+    /// [`view_depth_2d`](crate::view_depth_2d) is the ready-made key for
+    /// front-to-back order.
+    ///
+    /// The descent is scalar here, as on every frontend: a heap yields one node
+    /// at a time, so there is nothing for the SIMD kernel to widen. This exists
+    /// so the ordered query is available where your index already lives, not
+    /// because it is faster than the owned f64 one.
+    pub fn search_ordered<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+    ) -> Vec<usize>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+    {
+        let mut results = Vec::new();
+        self.search_ordered_into(region, key, max_results, max_key, &mut results);
+        results
+    }
+
+    /// [`search_ordered`](Self::search_ordered) into a reused buffer (cleared first).
+    pub fn search_ordered_into<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+        results: &mut Vec<usize>,
+    ) where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+    {
+        collect_ordered(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_results,
+            max_key,
+            results,
+        );
+    }
+
+    /// Visit items of `region` in nondecreasing `key` order; the visitor receives
+    /// the key and may return [`ControlFlow::Break`] to stop early.
+    pub fn visit_ordered<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
     /// or a [`Box2D`].

@@ -110,6 +110,7 @@ mod join;
 #[cfg(feature = "simd")]
 mod leftpack;
 mod neighbors;
+mod ordered;
 #[cfg(test)]
 mod overlaps_tests;
 mod persistence;

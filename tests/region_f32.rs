@@ -308,3 +308,124 @@ mod simd_f32 {
         assert_eq!(view3.count_region(frustum), index3.count_region(frustum));
     }
 }
+
+mod ordered {
+    use super::*;
+    use packed_spatial_index::view_depth_3d;
+
+    const EYE3: [f64; 3] = [-40.0, -30.0, -20.0];
+    const DIR3: [f64; 3] = [0.6, 0.7, 0.4];
+
+    /// The ordered query must answer exactly the set its own `search_region`
+    /// answers — the same conservative superset, only sequenced.
+    #[test]
+    fn ordered_matches_the_region_it_orders() {
+        for n in COUNTS {
+            let boxes = boxes3d(n);
+            for node_size in NODE_SIZES {
+                let compact = f32_3d(&boxes, node_size);
+                let frustum = box_frustum(30.0, 170.0);
+                let key = |b| view_depth_3d(EYE3, DIR3, b);
+
+                assert_eq!(
+                    sorted(compact.search_ordered(frustum, key, usize::MAX, f64::INFINITY)),
+                    sorted(compact.search_region(frustum)),
+                    "n={n} node_size={node_size}"
+                );
+
+                let mut keys = Vec::new();
+                let _: ControlFlow<()> =
+                    compact.visit_ordered(frustum, key, f64::INFINITY, |_, k| {
+                        keys.push(k);
+                        ControlFlow::Continue(())
+                    });
+                for pair in keys.windows(2) {
+                    assert!(pair[0] <= pair[1], "keys out of order");
+                }
+            }
+        }
+    }
+
+    /// Pins the ORDER, which set equality cannot: with the boxes jittered so no
+    /// two share a depth, a budget must return the nearest prefix. The jitter
+    /// (1e-3) is ~65x the f32 spacing here, so ordering by the stored widened box
+    /// and by the original box agree.
+    #[test]
+    fn budget_returns_the_nearest_prefix() {
+        let boxes: Vec<Box3D> = boxes3d(1000)
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| {
+                Box3D::new(
+                    b.min_x + i as f64 * 0.001,
+                    b.min_y,
+                    b.min_z,
+                    b.max_x + i as f64 * 0.001,
+                    b.max_y,
+                    b.max_z,
+                )
+            })
+            .collect();
+        let compact = f32_3d(&boxes, 16);
+        let frustum = box_frustum(30.0, 170.0);
+        let key = |b| view_depth_3d(EYE3, DIR3, b);
+
+        // The oracle is this frontend's own (conservative) answer, ordered.
+        let mut expected: Vec<(usize, f64)> = compact
+            .search_region(frustum)
+            .into_iter()
+            .map(|id| (id, key(boxes[id])))
+            .collect();
+        expected.sort_by(|a, c| a.1.total_cmp(&c.1).then(a.0.cmp(&c.0)));
+
+        for budget in [1usize, 7, 50] {
+            let want: Vec<usize> = expected.iter().take(budget).map(|(i, _)| *i).collect();
+            assert_eq!(
+                compact.search_ordered(frustum, key, budget, f64::INFINITY),
+                want,
+                "budget={budget}"
+            );
+        }
+    }
+
+    /// No exact hit may be lost by ordering: the widened box has a depth no
+    /// larger than the true one, so the bound stays admissible.
+    #[test]
+    fn ordered_loses_no_exact_hit() {
+        let boxes = boxes3d(1000);
+        let compact = f32_3d(&boxes, 16);
+        let frustum = box_frustum(30.0, 170.0);
+        let exact = sorted(owned3d(&boxes, 16).search(&frustum));
+        let hits = sorted(compact.search_ordered(
+            frustum,
+            |b| view_depth_3d(EYE3, DIR3, b),
+            usize::MAX,
+            f64::INFINITY,
+        ));
+        for id in &exact {
+            assert!(hits.contains(id), "missed item {id}");
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn simd_f32_ordered_matches_scalar_f32() {
+        use packed_spatial_index::SimdIndex3DF32;
+        let boxes = boxes3d(1000);
+        let mut b = Index3DBuilder::new(boxes.len()).node_size(16);
+        for bx in &boxes {
+            b.add(*bx);
+        }
+        let simd: SimdIndex3DF32 = b.finish_simd_f32().unwrap();
+        let scalar = f32_3d(&boxes, 16);
+        let frustum = box_frustum(30.0, 170.0);
+        let key = |b| view_depth_3d(EYE3, DIR3, b);
+        for budget in [5usize, usize::MAX] {
+            assert_eq!(
+                simd.search_ordered(frustum, key, budget, f64::INFINITY),
+                scalar.search_ordered(frustum, key, budget, f64::INFINITY),
+                "budget={budget}"
+            );
+        }
+    }
+}

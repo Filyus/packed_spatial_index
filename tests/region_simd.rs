@@ -213,3 +213,103 @@ fn region_on_empty_index() {
     assert!(!simd.any_region(frustum));
     assert_eq!(simd.first_region(frustum), None);
 }
+
+mod ordered {
+    use super::*;
+    use packed_spatial_index::{view_depth_2d, view_depth_3d};
+
+    const EYE3: [f64; 3] = [-40.0, -30.0, -20.0];
+    const DIR3: [f64; 3] = [0.6, 0.7, 0.4];
+
+    /// Jittered so no two boxes share a view depth: the budgeted prefix then has
+    /// exactly one right answer.
+    fn jittered3d(n: usize) -> Vec<Box3D> {
+        boxes3d(n)
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| {
+                Box3D::new(
+                    b.min_x + i as f64 * 0.001,
+                    b.min_y,
+                    b.min_z,
+                    b.max_x + i as f64 * 0.001,
+                    b.max_y,
+                    b.max_z,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ordered_matches_the_region_it_orders() {
+        for n in COUNTS {
+            let boxes = jittered3d(n);
+            for node_size in NODE_SIZES {
+                let simd = simd3d(&boxes, node_size);
+                let frustum = box_frustum(30.0, 170.0);
+                let key = |b| view_depth_3d(EYE3, DIR3, b);
+
+                let hits = simd.search_ordered(frustum, key, usize::MAX, f64::INFINITY);
+                assert_eq!(
+                    sorted(hits.clone()),
+                    sorted(simd.search_region(frustum)),
+                    "n={n} node_size={node_size}"
+                );
+
+                let mut keys = Vec::new();
+                let _: ControlFlow<()> = simd.visit_ordered(frustum, key, f64::INFINITY, |_, k| {
+                    keys.push(k);
+                    ControlFlow::Continue(())
+                });
+                for pair in keys.windows(2) {
+                    assert!(pair[0] <= pair[1], "keys out of order");
+                }
+
+                // The budget must be the nearest prefix of the brute-force order.
+                let mut expected: Vec<(usize, f64)> = boxes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| frustum.overlaps_box(**b))
+                    .map(|(i, b)| (i, key(*b)))
+                    .collect();
+                expected.sort_by(|a, c| a.1.total_cmp(&c.1).then(a.0.cmp(&c.0)));
+                for budget in [1usize, 7, 50] {
+                    let want: Vec<usize> = expected.iter().take(budget).map(|(i, _)| *i).collect();
+                    assert_eq!(
+                        simd.search_ordered(frustum, key, budget, f64::INFINITY),
+                        want,
+                        "budget={budget} n={n} node_size={node_size}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_on_views_and_2d() {
+        let boxes3 = jittered3d(1000);
+        let simd3 = simd3d(&boxes3, 16);
+        let bytes3 = simd3.to_bytes();
+        let view3 = SimdIndex3DView::from_bytes(&bytes3).unwrap();
+        let frustum = box_frustum(30.0, 170.0);
+        let key3 = |b| view_depth_3d(EYE3, DIR3, b);
+        for budget in [5usize, usize::MAX] {
+            assert_eq!(
+                view3.search_ordered(frustum, key3, budget, f64::INFINITY),
+                simd3.search_ordered(frustum, key3, budget, f64::INFINITY),
+                "budget={budget}"
+            );
+        }
+
+        let boxes2 = boxes2d(1000);
+        let simd2 = simd2d(&boxes2, 16);
+        let bytes2 = simd2.to_bytes();
+        let view2 = SimdIndex2DView::from_bytes(&bytes2).unwrap();
+        let poly = trapezoid();
+        let key2 = |b| view_depth_2d([-40.0, -30.0], [0.6, 0.8], b);
+        assert_eq!(
+            sorted(view2.search_ordered(&poly, key2, usize::MAX, f64::INFINITY)),
+            sorted(simd2.search_region(&poly))
+        );
+    }
+}

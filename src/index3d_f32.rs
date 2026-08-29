@@ -14,6 +14,7 @@ use crate::{
     builder3d::BuildConfig3D,
     f32_storage::{Box3DF32, F32Columns3D, columns3d_from_parsed},
     geometry::{Box3D, Overlaps3D},
+    ordered::{collect_ordered, visit_ordered},
     persistence::{LoadError, parse_index},
     range::visit_region,
     ray::Ray3D,
@@ -643,6 +644,73 @@ impl crate::neighbors::PointKnn for SimdIndex3DF32 {
 
 #[cfg(feature = "simd")]
 impl SimdIndex3DF32 {
+    /// Up to `max_results` items overlapping `region`, in nondecreasing `key`
+    /// order.
+    ///
+    /// See [`Index3D::search_ordered`](crate::Index3D::search_ordered) for the
+    /// admissible-lower-bound contract the `key` must satisfy and for when to
+    /// prefer this over [`search_region`](Self::search_region);
+    /// [`view_depth_3d`](crate::view_depth_3d) is the ready-made key for
+    /// front-to-back order.
+    ///
+    /// Boxes are the stored `f32` widened back to `f64`. They were rounded
+    /// outward, so a widened box can only be larger — which keeps the key an
+    /// admissible lower bound and makes the result the same conservative
+    /// superset the other queries here return.
+    pub fn search_ordered<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+    ) -> Vec<usize>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+    {
+        let mut results = Vec::new();
+        self.search_ordered_into(region, key, max_results, max_key, &mut results);
+        results
+    }
+
+    /// [`search_ordered`](Self::search_ordered) into a reused buffer (cleared first).
+    pub fn search_ordered_into<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+        results: &mut Vec<usize>,
+    ) where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+    {
+        collect_ordered(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_results,
+            max_key,
+            results,
+        );
+    }
+
+    /// Visit items of `region` in nondecreasing `key` order; the visitor receives
+    /// the key and may return [`ControlFlow::Break`] to stop early.
+    pub fn visit_ordered<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
     /// Items overlapping the region `region` — any [`Overlaps3D`] shape, such as
     /// [`Frustum3D`](crate::Frustum3D) or a [`Box3D`].
     ///
@@ -1670,6 +1738,73 @@ pub struct SimdIndex3DF32View<'a> {
 
 #[cfg(feature = "simd")]
 impl<'a> SimdIndex3DF32View<'a> {
+    /// Up to `max_results` items overlapping `region`, in nondecreasing `key`
+    /// order.
+    ///
+    /// See [`Index3D::search_ordered`](crate::Index3D::search_ordered) for the
+    /// admissible-lower-bound contract the `key` must satisfy and for when to
+    /// prefer this over [`search_region`](Self::search_region);
+    /// [`view_depth_3d`](crate::view_depth_3d) is the ready-made key for
+    /// front-to-back order.
+    ///
+    /// Boxes are the stored `f32` widened back to `f64`. They were rounded
+    /// outward, so a widened box can only be larger — which keeps the key an
+    /// admissible lower bound and makes the result the same conservative
+    /// superset the other queries here return.
+    pub fn search_ordered<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+    ) -> Vec<usize>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+    {
+        let mut results = Vec::new();
+        self.search_ordered_into(region, key, max_results, max_key, &mut results);
+        results
+    }
+
+    /// [`search_ordered`](Self::search_ordered) into a reused buffer (cleared first).
+    pub fn search_ordered_into<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+        results: &mut Vec<usize>,
+    ) where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+    {
+        collect_ordered(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_results,
+            max_key,
+            results,
+        );
+    }
+
+    /// Visit items of `region` in nondecreasing `key` order; the visitor receives
+    /// the key and may return [`ControlFlow::Break`] to stop early.
+    pub fn visit_ordered<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
     /// Items overlapping the region `region` — any [`Overlaps3D`] shape, such as
     /// [`Frustum3D`](crate::Frustum3D) or a [`Box3D`].
     ///
@@ -2283,6 +2418,73 @@ pub struct Index3DF32 {
 }
 
 impl Index3DF32 {
+    /// Up to `max_results` items overlapping `region`, in nondecreasing `key`
+    /// order.
+    ///
+    /// See [`Index3D::search_ordered`](crate::Index3D::search_ordered) for the
+    /// admissible-lower-bound contract the `key` must satisfy and for when to
+    /// prefer this over [`search_region`](Self::search_region);
+    /// [`view_depth_3d`](crate::view_depth_3d) is the ready-made key for
+    /// front-to-back order.
+    ///
+    /// Boxes are the stored `f32` widened back to `f64`. They were rounded
+    /// outward, so a widened box can only be larger — which keeps the key an
+    /// admissible lower bound and makes the result the same conservative
+    /// superset the other queries here return.
+    pub fn search_ordered<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+    ) -> Vec<usize>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+    {
+        let mut results = Vec::new();
+        self.search_ordered_into(region, key, max_results, max_key, &mut results);
+        results
+    }
+
+    /// [`search_ordered`](Self::search_ordered) into a reused buffer (cleared first).
+    pub fn search_ordered_into<Q, K>(
+        &self,
+        region: Q,
+        key: K,
+        max_results: usize,
+        max_key: f64,
+        results: &mut Vec<usize>,
+    ) where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+    {
+        collect_ordered(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_results,
+            max_key,
+            results,
+        );
+    }
+
+    /// Visit items of `region` in nondecreasing `key` order; the visitor receives
+    /// the key and may return [`ControlFlow::Break`] to stop early.
+    pub fn visit_ordered<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
     /// Items overlapping the region `region` — any [`Overlaps3D`] shape, such as
     /// [`Frustum3D`](crate::Frustum3D) or a [`Box3D`].
     ///

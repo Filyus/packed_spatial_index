@@ -14,6 +14,7 @@ use crate::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first,
         metric_knn,
     },
+    ordered::{collect_ordered, visit_ordered},
     persistence::{
         LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, payload_slice,
         read_f64_le_unchecked, read_u64_le_unchecked,
@@ -600,22 +601,13 @@ impl Index3D {
         Q: Overlaps3D,
         K: Fn(Box3D) -> f64,
     {
-        results.clear();
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        metric_knn::collect_neighbors(
-            self.entries.len(),
-            self.num_items,
-            self.node_size,
-            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
-            |pos| self.indices[pos],
+        collect_ordered(
+            self,
+            |b| region.overlaps_box(b),
+            key,
             max_results,
             max_key,
-            |pos| {
-                let bounds = self.entries[pos];
-                region.overlaps_box(bounds).then(|| key(bounds))
-            },
             results,
-            &mut queue,
         );
     }
 
@@ -634,21 +626,7 @@ impl Index3D {
         K: Fn(Box3D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        metric_knn::visit_neighbors(
-            self.entries.len(),
-            self.num_items,
-            self.node_size,
-            |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
-            |pos| self.indices[pos],
-            max_key,
-            |pos| {
-                let bounds = self.entries[pos];
-                region.overlaps_box(bounds).then(|| key(bounds))
-            },
-            &mut queue,
-            &mut visitor,
-        )
+        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
 
     /// Return up to `max_results` item indices nearest to the box `query`.
@@ -1599,22 +1577,13 @@ impl<'a> Index3DView<'a> {
         Q: Overlaps3D,
         K: Fn(Box3D) -> f64,
     {
-        results.clear();
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        metric_knn::collect_neighbors(
-            self.num_nodes,
-            self.num_items,
-            self.node_size,
-            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
-            |pos| self.index_at_unchecked(pos),
+        collect_ordered(
+            self,
+            |b| region.overlaps_box(b),
+            key,
             max_results,
             max_key,
-            |pos| {
-                let bounds = self.entry_at_unchecked(pos);
-                region.overlaps_box(bounds).then(|| key(bounds))
-            },
             results,
-            &mut queue,
         );
     }
 
@@ -1633,21 +1602,7 @@ impl<'a> Index3DView<'a> {
         K: Fn(Box3D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        metric_knn::visit_neighbors(
-            self.num_nodes,
-            self.num_items,
-            self.node_size,
-            |node| self.level_bound_unchecked(self.upper_bound_level(node)),
-            |pos| self.index_at_unchecked(pos),
-            max_key,
-            |pos| {
-                let bounds = self.entry_at_unchecked(pos);
-                region.overlaps_box(bounds).then(|| key(bounds))
-            },
-            &mut queue,
-            &mut visitor,
-        )
+        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
 
     /// Return up to `max_results` item indices nearest to the box `query`.

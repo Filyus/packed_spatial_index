@@ -19,6 +19,7 @@ the method for each need; the notes after it explain the reasoning.
 | To fold or aggregate hits (sum, min, push elsewhere) | `visit(query, ..)` | `search` followed by a loop |
 | The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `visit_neighbors` — same alloc-vs-buffer choice as above | sorting search results by distance |
 | The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
+| Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `visit_ordered` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
@@ -85,36 +86,44 @@ superset over outward-rounded `f32` boxes (refine with the `*_exact` family).
 "Streaming" is answering queries over a `RangeReader` without loading the whole
 file; `search_iter` is the lazy iterator form of range search.
 
-| Index type | Range | Point kNN | Box kNN | Raycast | Join | Payload | `search_iter` | Streaming |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `Index2D` / `Index3D` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | write | ✓ | ✗ |
-| `Index2DView` / `Index3DView` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | read | ✗ | ✗ |
-| `SimdIndex2D` / `SimdIndex3D` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
-| SIMD views (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
-| `Index2DF32` / `Index3DF32` (f32) | ✓* | ✓* | ✗ | ✓* | ✗ | write | ✗ | ✗ |
-| `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
+| Index type | Range | Region shapes | Ordered region | Point kNN | Box kNN | Raycast | Join | Payload | `search_iter` | Streaming |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `Index2D` / `Index3D` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | write | ✓ | ✗ |
+| `Index2DView` / `Index3DView` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | read | ✗ | ✗ |
+| `SimdIndex2D` / `SimdIndex3D` (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
+| SIMD views (f64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
+| `Index2DF32` / `Index3DF32` (f32) | ✓* | ✓* | ✓* | ✓* | ✗ | ✓* | ✗ | write | ✗ | ✗ |
+| `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
 
 `count` has no column because it would be a column of `✓`: every row above
 answers `count(query)`, including the streaming readers, where it is fallible
 like their other queries (`count(query) -> Result<usize, _>`).
 
-The same overlap machinery also accepts 2D triangle and convex-polygon queries
-on `Index2D` / `Index2DView`, and 3D frustum queries on `Index3D` /
-`Index3DView`. Streaming readers expose the same pruning through
-`search_region` / `visit_region` / `count_region` / `search_payloads_region`
-(including compact `...F32` readers, conservatively over rounded boxes); with
-the `async` feature, the same coverage is available through the matching
-`*_async` methods. These shape queries are not available on SIMD frontends or
-on the owned scalar `Index*F32` search APIs.
+"Region shapes" is the 2D triangle and convex-polygon and the 3D frustum query.
+On `Index2D` / `Index3D` and their views they ride the ordinary `search` / `any`
+/ `first` / `count` / `visit`, which take borrowed region geometry as well as a
+box. Everywhere else they are a parallel family — `search_region` /
+`search_region_into` / `visit_region` / `any_region` / `first_region` /
+`count_region` — so that the `Box` entry points keep their specialized kernels:
+that is how the SIMD and `f32` frontends carry them, and how the streaming
+readers already did (plus `search_payloads_region`, and the matching `*_async`
+methods under the `async` feature). On the `f32` frontends the shape is tested
+against the stored box widened back to `f64`; it was rounded outward, so the
+answer is the same conservative superset those types return everywhere else.
 
 The empty cells are intentional, not gaps to fill:
 
-- Streaming covers range and region search (with payloads). kNN and raycast use a
-  best-first traversal that jumps around the tree, so adjacent reads do not
-  coalesce; streaming them would be one read per node. Load those with a view or
-  an in-memory index. (The in-memory and `f32` indexes serialize the files that
-  `StreamIndex*` reads.)
+- Streaming covers range and region search (with payloads). kNN, raycast and the
+  ordered region query use a best-first traversal that jumps around the tree, so
+  adjacent reads do not coalesce; streaming them would be one read per node,
+  where the level-by-level descent takes about two per level for the whole
+  frontier. Load those with a view or an in-memory index. (The in-memory and
+  `f32` indexes serialize the files that `StreamIndex*` reads.)
+- The ordered region query is a scalar descent on every frontend, SIMD included:
+  a heap yields one node at a time, so there is nothing for a wide kernel to
+  test in parallel. It is on the SIMD and `f32` types so the query is available
+  where your index already lives, not because it is faster there.
 - The `f32` indexes answer range, point-kNN, and (scalar only) raycast as a
   conservative superset; refine with the `*_exact` family against your own `f64`
   boxes. The SIMD `f32` frontend carries no payload and no raycast; the compact
@@ -263,6 +272,60 @@ picking has a second step and the second step is where the accuracy lives:
 The practical shape is: frustum to narrow, ray or exact test to decide. The
 frustum's job is to turn "test every object" into "test the handful the click
 could possibly touch".
+
+## Front-to-back region queries
+
+`search(&frustum)` hands back an unordered bag. When you want the near objects
+first — a renderer filling z, an occlusion loop, a "draw the closest 500 and
+stop" budget — `search_ordered` emits the same set in nondecreasing order of a
+key you supply, and `view_depth_3d` is that key for a view direction:
+
+```rust
+# use packed_spatial_index::{Box3D, Index3DBuilder, view_depth_3d};
+# let mut b = Index3DBuilder::new(3);
+# b.add(Box3D::new(20.0, 0.0, 0.0, 21.0, 1.0, 1.0));
+# b.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+# b.add(Box3D::new(10.0, 0.0, 0.0, 11.0, 1.0, 1.0));
+# let index = b.finish()?;
+let eye = [-5.0, 0.0, 0.0];
+let forward = [1.0, 0.0, 0.0];
+let visible = Box3D::new(-100.0, -100.0, -100.0, 100.0, 100.0, 100.0);
+
+// The two nearest visible objects, near-to-far, without touching the rest.
+let closest = index.search_ordered(
+    visible,
+    |bx| view_depth_3d(eye, forward, bx),
+    2,
+    f64::INFINITY,
+);
+assert_eq!(closest, vec![1, 2]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+The key must be an **admissible lower bound**, the same contract
+[custom-metric kNN](#geographic-and-custom-metric-knn) asks for: the key of a box
+never exceeds the key of any item inside it. `view_depth_3d` satisfies it by
+construction (a node box encloses its children, so its minimum depth is no
+larger than theirs), and so does any "smallest value over the box" score — depth,
+distance, a priority you store per item and summarize per subtree. The direction
+need not be normalized: a longer vector rescales the key and any `max_key`
+cutoff, never the order.
+
+**Order everything and you lose.** The ordered traversal drives a heap, while
+`search` is a depth-first sweep that can emit a wholly contained subtree without
+testing it. Measured on 1M boxes with a frustum holding ~160k of them
+([performance](performance.md#ordered-front-to-back-region-queries)), ordering
+the whole result is ~1.8x slower than `search` plus a sort, while a budget of 100
+is ~185x faster, and 10 000 still ~10x. The rule of thumb: reach for
+`search_ordered` when something — a budget, a `max_key` cutoff, a
+`ControlFlow::Break` — lets the traversal stop; reach for `search` and `sort`
+when you genuinely need every hit ordered.
+
+`visit_ordered` gives the same sequence through a visitor that receives the key
+alongside the id, so a renderer can accumulate until its budget is spent and
+break. Every f64 and `f32` in-memory frontend answers it, SIMD included, though
+the descent is scalar everywhere (a heap pops one node at a time). Streaming does
+not: see the [coverage matrix](#coverage-matrix).
 
 ## Find boxes that contain a point
 

@@ -117,7 +117,7 @@ fn simd_2d_region_matches_owned() {
                 !expected_poly.is_empty()
             );
 
-            assert_eq!(sorted(simd.search_region(&tri)), sorted(owned.search(&tri)));
+            assert_eq!(sorted(simd.search_region(tri)), sorted(owned.search(&tri)));
             // A Box2D is an Overlaps2D too, so the shape path must agree with the
             // SIMD kernel it sits next to.
             assert_eq!(

@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 
 use packed_spatial_index::{
     Box2D, Box3D, ConvexPolygon2D, Frustum3D, Index2DBuilder, Index2DF32, Index3DBuilder,
-    Index3DF32, Overlaps2D, Overlaps3D,
+    Index3DF32,
 };
 
 const COUNTS: [usize; 6] = [0, 1, 5, 17, 64, 1000];

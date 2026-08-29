@@ -220,6 +220,41 @@ depth, since a deeper tree holds larger fully contained subtrees, and a window
 too small to contain any whole node pays a containment test that skips nothing —
 the same trade the owned indexes make.
 
+## Ordered front-to-back region queries
+
+`search_ordered` answers the same set as `search` but emits it in nondecreasing
+order of a key — `view_depth_3d` for a view direction, making a frustum query
+front-to-back. The control that matters is not `search`; it is what a caller
+writes today to get that order: search, key each hit once, sort the pairs.
+Workload: 1,000,000 uniform boxes over a 10,000-wide space, one slab frustum
+holding ~160k of them, `node_size` 16, pinned to one core. Lower is better.
+
+| Query | Time | vs. search + sort |
+| --- | ---: | ---: |
+| `search` alone, unordered (reference) | 505 us | — |
+| `search` + key + sort (the workaround) | 5.87 ms | 1.0x |
+| `search_ordered`, whole result | 10.30 ms | **0.57x** |
+| `search_ordered`, nearest 100 | 31.6 us | **186x** |
+| `search_ordered`, nearest 1,000 | 96.4 us | **61x** |
+| `search_ordered`, nearest 10,000 | 571 us | **10x** |
+
+Ordering the *whole* result loses, and by enough to state plainly: a heap over
+every hit against a depth-first sweep that can emit a wholly contained subtree
+untested, plus one sort. What wins is the budget — by one to two orders of
+magnitude, because `max_results` (and the `max_key` cutoff, and a
+`ControlFlow::Break`) end the traversal rather than filter its output. The
+nearest 100 cost a sixteenth of even the unordered `search`, which has to visit
+everything the frustum touches.
+
+So the selector is not "ordered or unordered" but "does something stop this
+query": a render budget, a z-prepass, an occlusion loop, a "closest few" probe
+take `search_ordered`; "every hit, ordered" takes `search` and `sort`.
+
+The descent is scalar on every frontend — a heap pops one node at a time, so the
+SIMD kernels have nothing to widen. The numbers above therefore also describe
+`SimdIndex3D` and the `f32` frontends, which carry the query for availability,
+not for speed.
+
 ## Closest-hit raycast vs the `bvh` crate
 
 Closest-hit raycast over the packed index against the
@@ -328,6 +363,9 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
   an SoA gather/scatter cost but avoids a second file format;
 - `any` is often much faster than collecting full result sets when all you need
   is existence;
+- `search_ordered` is for stopping early, not for ordering: a budgeted
+  front-to-back frustum query beats search-then-sort by 10-186x, while ordering
+  the whole result is 1.8x slower than sorting it;
 - AVX-512 is not always the fastest path in parallel workloads because CPU
   frequency behavior matters.
 
@@ -354,7 +392,8 @@ Benchmark coverage:
 - `flatgeobuf2d_bench` compares against FlatGeobuf's packed Hilbert R-tree;
 - `index2d_bench` compares build/search paths against `static_aabb2d_index`;
 - `index3d_bench` covers 3D build/search/KNN, SIMD search/build, dimension
-  comparisons, node sizes, and a hidden Morton baseline;
+  comparisons, node sizes, a hidden Morton baseline, and the ordered
+  front-to-back frustum query against its search-then-sort control;
 - `persistence_knn2d_bench` / `persistence_knn3d_bench` cover scalar/SIMD
   persistence, loaded views, and KNN;
 - `raycast3d_bench` compares closest-hit raycast against the `bvh` crate;

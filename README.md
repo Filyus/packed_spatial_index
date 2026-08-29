@@ -83,7 +83,8 @@ Every in-memory **f64** query (range, kNN, raycast, join) exists on `Index2D` /
 `Index3D`, the `simd`-feature `SimdIndex2D` / `SimdIndex3D`, and the zero-copy
 views. The compact `f32` indexes and the streaming reader cover a subset (see
 the [coverage matrix](docs/guide.md#coverage-matrix)). Range/ray results are item indices in
-insertion order; result order is unspecified. For a boolean "any overlap?" reach
+insertion order; result order is unspecified — except for the ordered region
+queries below, whose whole point is the order. For a boolean "any overlap?" reach
 for `any` (no allocation, stops at the first hit) rather than
 `search(..).is_empty()`; `search` returns an owned `Vec`, so in hot loops reuse a
 buffer (`search_into` / `search_with`), count with `count`, or fold with
@@ -98,12 +99,16 @@ see [docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
 | Nearest neighbors (point) | [`neighbors`][neighbors], [`neighbors_within`][neighbors_within], [`neighbors_into`][neighbors_into], [`neighbors_with`][neighbors_with], [`visit_neighbors`][visit_neighbors] |
 | Nearest neighbors (box) | [`neighbors_of_box`][neighbors_of_box], [`neighbors_of_box_within`][neighbors_of_box_within], [`neighbors_of_box_into`][neighbors_of_box_into], [`neighbors_of_box_with`][neighbors_of_box_with], [`visit_neighbors_of_box`][visit_neighbors_of_box] |
 | Geographic / custom-metric kNN | [`neighbors_metric`][neighbors_metric], [`neighbors_metric_into`][neighbors_metric_into], [`visit_neighbors_metric`][visit_neighbors_metric] — pass a `\|box\| -> f64` distance (e.g. [`haversine_distance_2d`][haversine_distance_2d] for lon/lat) |
+| Ordered region | [`search_ordered`][search_ordered], [`search_ordered_into`][search_ordered_into], [`visit_ordered`][visit_ordered] — the same region shapes, emitted in nondecreasing order of a `\|box\| -> f64` key (e.g. [`view_depth_3d`][view_depth_3d] for front-to-back), so a budget can stop the traversal |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
 | Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
 | Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
 
 The range / overlap methods accept `Box2D` / `Box3D` queries and borrowed
-region geometry such as `Triangle2D`, `ConvexPolygon2D`, and `Frustum3D`.
+region geometry such as `Triangle2D`, `ConvexPolygon2D`, and `Frustum3D`. On the
+SIMD and `f32` frontends the shapes live on a parallel `*_region` family
+(`search_region` / `visit_region` / `count_region` / `any_region` /
+`first_region`), so their `Box` entry points keep the SIMD kernel to themselves.
 
 ```rust
 # use packed_spatial_index::{Index2DBuilder, Box2D, Point2D, Ray2D};
@@ -148,6 +153,9 @@ assert_eq!(hit, Some((0, 1.0)));
 - **Distance metrics**: [`haversine_distance_2d`][haversine_distance_2d] and the
   [`EARTH_RADIUS_M`][EARTH_RADIUS_M] constant feed great-circle distances into the
   custom-metric kNN closures.
+- **Ordering keys**: [`view_depth_2d`][view_depth_2d] /
+  [`view_depth_3d`][view_depth_3d] give depth along a view axis, the ready-made
+  key for a front-to-back `search_ordered`.
 - **Workspaces**: [`SearchWorkspace`][SearchWorkspace] /
   [`NeighborWorkspace`][NeighborWorkspace] reuse buffers in loops.
 - **Sorting / errors**: [`SortKey2D`][SortKey2D] / [`SortKey3D`][SortKey3D]
@@ -229,7 +237,10 @@ cargo build --no-default-features --features simd      # SIMD only
 ## Limitations
 
 - Static: rebuild when the dataset changes; no insert/delete.
-- Results are item indices, not stored payloads; result order is unspecified.
+- Results are item indices, not stored payloads. Result order is unspecified
+  unless you asked for one with `search_ordered`, which costs a heap: ordering an
+  entire result set is slower than `search` plus a sort, and pays off when a
+  budget or a cutoff lets the traversal stop early.
 - `f32-storage` indexes store outward-rounded boxes — plain range search may
   return extra near-boundary hits; use `search_exact` / `neighbors_exact` (with
   your source `f64` boxes) for exact results, and prefer `f64` indexes for exact
@@ -288,6 +299,11 @@ Licensed under the Apache License, Version 2.0.
 [neighbors_metric_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_metric_into
 [visit_neighbors_metric]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_neighbors_metric
 [haversine_distance_2d]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/fn.haversine_distance_2d.html
+[search_ordered]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_ordered
+[search_ordered_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_ordered_into
+[visit_ordered]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_ordered
+[view_depth_2d]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/fn.view_depth_2d.html
+[view_depth_3d]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/fn.view_depth_3d.html
 [EARTH_RADIUS_M]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/constant.EARTH_RADIUS_M.html
 [neighbors_of_box]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box
 [neighbors_of_box_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box_within

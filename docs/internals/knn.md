@@ -22,6 +22,13 @@ subtrees that a better ordering would skip. **Best-first** traversal fixes the
 order: always expand the *closest* unexplored node next. That needs a priority
 queue keyed by distance.
 
+Nothing in that paragraph is about *distance*. Any per-node score that is a lower
+bound for its subtree gives the same guarantee, which is what
+`neighbors_metric` (your own metric) and `search_ordered` (a region query
+emitted in key order — depth along a view axis, say) both trade on. Those two use
+the **single**-queue kernel described next; only the default squared-Euclidean
+`neighbors` uses the two-queue refinement this page argues for.
+
 ## One queue is correct but not ideal
 
 The obvious best-first keeps a single distance-ordered queue holding both pending

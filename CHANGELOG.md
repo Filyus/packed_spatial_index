@@ -19,7 +19,24 @@ All notable changes to this crate are documented here.
   budget, a z-prepass, or an occlusion loop needs and what the unordered
   `search` could only offer as "collect everything, then sort". Ordering
   *everything* is still `search` plus a sort — the ordered form is for stopping
-  early.
+  early. Measured on 1M boxes: a budget of 100 is ~186x faster than
+  search-then-sort, 10 000 still ~10x, while ordering the whole result is ~1.8x
+  slower. The query is on every in-memory frontend, SIMD and `f32` included,
+  though the descent is scalar everywhere (a heap pops one node at a time);
+  streaming does not carry it, because a best-first descent reads one node per
+  pop where the level-by-level descent coalesces a whole frontier — the same
+  reason kNN and raycast are not streamed.
+
+- The SIMD and `f32` frontends answer region shapes. Triangles, convex polygons
+  and frusta used to be an `Index2D` / `Index3D` privilege: every SIMD and `f32`
+  entry point took a concrete `Box2D` / `Box3D`, so a renderer on `SimdIndex3D`
+  had to keep a second f64 index to ask for a frustum. All ten types now carry
+  `search_region` / `search_region_into` / `visit_region` / `any_region` /
+  `first_region` / `count_region`, named after the streaming readers that
+  already drew this exact distinction. The `Box` entry points are untouched and
+  stay the specialized fast path. On the `f32` types the shape is tested against
+  the stored box widened back to `f64` — it was rounded outward, so the answer
+  is the same conservative superset those types return everywhere else.
 
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 

@@ -18,10 +18,11 @@ use crate::{
     build::BuildError,
     builder2d::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
-    geometry::{Box2D, Point2D, fold_max, fold_min, query_covers_tree_2d},
+    geometry::{Box2D, Overlaps2D, Point2D, fold_max, fold_min, query_covers_tree_2d},
     join::{join_core, self_join_core},
     neighbors::{NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first},
     persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
+    range::visit_region,
     ray::Ray2D,
     sort2d::{SortKeyContext, encode_sort_by_key},
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
@@ -240,6 +241,71 @@ pub struct SimdIndex2D {
 }
 
 impl SimdIndex2D {
+    /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
+    /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
+    /// or a [`Box2D`].
+    ///
+    /// The `Box2D` [`search`](Self::search) stays the fast path; this walks the
+    /// tree one node at a time against your shape, so reach for it when the shape
+    /// is what you mean.
+    ///
+    /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
+    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    pub fn search_region<Q: Overlaps2D>(&self, region: Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_region_into(region, &mut out);
+        out
+    }
+
+    /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
+    pub fn search_region_into<Q: Overlaps2D>(&self, region: Q, out: &mut Vec<usize>) {
+        out.clear();
+        let _: ControlFlow<()> = self.visit_region(region, |index| {
+            out.push(index);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Visit every item overlapping `region`; the visitor may return
+    /// [`ControlFlow::Break`] to stop early.
+    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        visit_region(
+            self,
+            &mut stack,
+            |b| region.overlaps_box(b),
+            |b| region.contains_box(b),
+            visitor,
+        )
+    }
+
+    /// Return `true` if at least one item overlaps `region`.
+    pub fn any_region<Q: Overlaps2D>(&self, region: Q) -> bool {
+        self.visit_region(region, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Return one item overlapping `region`, if any.
+    pub fn first_region<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
+        match self.visit_region(region, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// Count the items overlapping `region` without collecting them.
+    pub fn count_region<Q: Overlaps2D>(&self, region: Q) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_region(region, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
     /// Number of indexed items.
     pub fn num_items(&self) -> usize {
         self.num_items
@@ -1723,6 +1789,71 @@ pub struct SimdIndex2DView<'a> {
 }
 
 impl<'a> SimdIndex2DView<'a> {
+    /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
+    /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
+    /// or a [`Box2D`].
+    ///
+    /// The `Box2D` [`search`](Self::search) stays the fast path; this walks the
+    /// tree one node at a time against your shape, so reach for it when the shape
+    /// is what you mean.
+    ///
+    /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
+    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    pub fn search_region<Q: Overlaps2D>(&self, region: Q) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_region_into(region, &mut out);
+        out
+    }
+
+    /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
+    pub fn search_region_into<Q: Overlaps2D>(&self, region: Q, out: &mut Vec<usize>) {
+        out.clear();
+        let _: ControlFlow<()> = self.visit_region(region, |index| {
+            out.push(index);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Visit every item overlapping `region`; the visitor may return
+    /// [`ControlFlow::Break`] to stop early.
+    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        visit_region(
+            self,
+            &mut stack,
+            |b| region.overlaps_box(b),
+            |b| region.contains_box(b),
+            visitor,
+        )
+    }
+
+    /// Return `true` if at least one item overlaps `region`.
+    pub fn any_region<Q: Overlaps2D>(&self, region: Q) -> bool {
+        self.visit_region(region, |_| ControlFlow::Break(()))
+            .is_break()
+    }
+
+    /// Return one item overlapping `region`, if any.
+    pub fn first_region<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
+        match self.visit_region(region, ControlFlow::Break) {
+            ControlFlow::Break(index) => Some(index),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+
+    /// Count the items overlapping `region` without collecting them.
+    pub fn count_region<Q: Overlaps2D>(&self, region: Q) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_region(region, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
     /// Borrow a zero-copy view over the canonical `PSINDEX` 2D bytes.
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, LoadError> {
         let (parsed, payload) = parse_index(bytes, 2, 8)?;

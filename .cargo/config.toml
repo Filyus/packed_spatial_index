@@ -1,0 +1,14 @@
+# `geo/`, `server/`, `fuzz/` and `wasm-demo/*` each build into their own target
+# directory; cargo reads this file for all of them, so the debuginfo policy
+# lives here once rather than in nine manifests.
+#
+# Full debuginfo costs more than it buys: MSVC writes a ~64 MB `.pdb` per bench
+# binary per rebuild and cargo never removes the stale ones, which is how
+# target/debug/deps reached 47 GB of `.pdb` alone. Line tables keep backtraces
+# pointing at real source lines; only debugger variable inspection is lost, and
+# dependencies never needed even that.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = 0

@@ -350,6 +350,26 @@ gp2psindex query input.parquet output.psi \
   --json
 ```
 
+Join two artifacts by distance — every pair of items whose boxes lie within
+`--epsilon` of each other, streamed as NDJSON so a join with millions of pairs
+never has to fit in memory. Pass the same path twice for a self-join (every
+unordered pair of distinct items once).
+
+```text
+gp2psindex join towers.psi cables.psi --epsilon 500
+{"a":0,"b":17}
+{"a":0,"b":22}
+
+gp2psindex join towers.psi towers.psi --epsilon 50 --count
+1841
+```
+
+The distance is box-to-box Euclidean in the artifacts' own coordinate units:
+zero when the boxes overlap, inclusive at the bound, so `--epsilon 0` is the
+plain overlap join. Both artifacts must be the same dimensionality. Like every
+query here it is a broad phase — the box distance is a lower bound on the true
+distance between the geometries, so the pairs are candidates.
+
 ## Scope
 
 ### Inputs

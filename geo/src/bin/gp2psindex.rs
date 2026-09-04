@@ -1,7 +1,8 @@
 //! Command-line converter and inspector for geospatial Parquet inputs.
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -14,14 +15,14 @@ use base64::Engine as _;
 #[cfg(feature = "flatgeobuf")]
 use packed_spatial_index_geo::open_flatgeobuf;
 use packed_spatial_index_geo::{
-    AntimeridianPolicy, Box2D, Box3D, ConvertRequest, DuplicateFeatureRows, EnvelopePolicy,
-    FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRecord, FeatureRef,
-    FeatureRows, GeoArtifact, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D,
+    AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, DuplicateFeatureRows,
+    EnvelopePolicy, FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRecord,
+    FeatureRef, FeatureRows, GeoArtifact, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D,
     GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D, GeometryProfile, GeometryReadMode,
-    GeometryScan, GeometrySelector, IndexDimsRequest, InspectRequest, NonPlanarExactPolicy,
-    NullPolicy, PayloadPlan, PrefixIndexPolicy, PropertyProjection, RangeReader, ScanRequest,
-    SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport,
-    ValidationSeverity, open_geo_index, open_geoparquet,
+    GeometryScan, GeometrySelector, Index2D, Index3D, IndexDimsRequest, InspectRequest,
+    NonPlanarExactPolicy, NullPolicy, PayloadPlan, PrefixIndexPolicy, PropertyProjection,
+    RangeReader, ScanRequest, SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest,
+    ValidationReport, ValidationSeverity, open_geo_index, open_geoparquet,
 };
 #[cfg(feature = "geojson")]
 use packed_spatial_index_geo::{convert_geojson_stream, open_geojson};
@@ -52,6 +53,16 @@ usage:
       [--payload none|row-ref|row-wkb|feature-json]
       [--properties none|all|include:a,b|exclude:a,b]
       [--antimeridian reject|split|world]
+  gp2psindex join <a.psi> <b.psi> --epsilon N
+      [--count]
+        (print how many pairs match, then stop)
+      (writes one NDJSON line {\"a\":i,\"b\":j} per pair to stdout, streamed.
+       Pass the same path twice for a self-join: every unordered pair of
+       distinct items once, an item never paired with itself.
+       Distances are box-to-box Euclidean in the artifacts' coordinate
+       units, zero when boxes overlap and inclusive at the bound, so
+       --epsilon 0 is the plain overlap join. Both artifacts must be the
+       same dimensionality)
   gp2psindex query <source> <index.psi>
       [--format parquet|flatgeobuf|geojson]
       (--bbox xmin,ymin,xmax,ymax | --radius lon,lat,metres)
@@ -95,6 +106,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, Box<dyn std::error::Error>> {
         "inspect" => inspect_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "build" => build_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "validate" => validate_cmd(&args[1..]),
+        "join" => join_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "query" => query_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         _ => Err(format!("unknown command `{command}`").into()),
     }
@@ -524,6 +536,131 @@ fn validate_cmd(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>>
             parsed.flag("--json"),
         ),
     }
+}
+
+/// Owned core index over a whole artifact, dimension-dispatched — the shape the
+/// distance join needs, and the same one the server's `JoinIndex` cache holds.
+enum JoinIndex {
+    D2(Index2D),
+    D3(Index3D),
+}
+
+fn join_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&["--epsilon", "--count"])?;
+    let a_path = parsed.required_pos(0, "a.psi")?;
+    let b_path = parsed.required_pos(1, "b.psi")?;
+    parsed.no_extra_pos(2)?;
+    let epsilon = parse_epsilon(parsed.option("--epsilon")?.as_deref())?;
+
+    let a_bytes = std::fs::read(a_path)?;
+    // The same path twice is a self-join, and reading the file again would only
+    // buy a second copy of identical bytes.
+    let same = std::fs::canonicalize(a_path).ok() == std::fs::canonicalize(b_path).ok()
+        || a_path == b_path;
+    let b_bytes = if same {
+        None
+    } else {
+        Some(std::fs::read(b_path)?)
+    };
+
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    let count = join_pairs(
+        &a_bytes,
+        b_bytes.as_deref(),
+        epsilon,
+        parsed.flag("--count"),
+        &mut out,
+    )?;
+    if parsed.flag("--count") {
+        writeln!(out, "{count}")?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// Run the distance join and stream `{"a":i,"b":j}` lines into `out`, one per
+/// pair, returning how many pairs matched.
+///
+/// The pairs are written from inside the join's visitor: the join is
+/// output-bound (millions of pairs at a generous `epsilon`), so materializing
+/// the pair vector first would cost more memory than the indexes do. `b` is
+/// `None` for a self-join. Pair order is traversal order and is not an API.
+fn join_pairs<W: std::io::Write>(
+    a_bytes: &[u8],
+    b_bytes: Option<&[u8]>,
+    epsilon: f64,
+    count_only: bool,
+    out: &mut W,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let a = load_join_index(a_bytes, "a.psi")?;
+    let mut total = 0usize;
+    let mut emit = |i: usize, j: usize| -> ControlFlow<std::io::Error> {
+        total += 1;
+        if count_only {
+            return ControlFlow::Continue(());
+        }
+        match writeln!(out, "{{\"a\":{i},\"b\":{j}}}") {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(err) => ControlFlow::Break(err),
+        }
+    };
+
+    let flow = match b_bytes {
+        None => match &a {
+            JoinIndex::D2(a) => a.self_join_epsilon_with(epsilon, &mut emit),
+            JoinIndex::D3(a) => a.self_join_epsilon_with(epsilon, &mut emit),
+        },
+        Some(bytes) => {
+            let b = load_join_index(bytes, "b.psi")?;
+            match (&a, &b) {
+                (JoinIndex::D2(a), JoinIndex::D2(b)) => a.join_epsilon_with(b, epsilon, &mut emit),
+                (JoinIndex::D3(a), JoinIndex::D3(b)) => a.join_epsilon_with(b, epsilon, &mut emit),
+                _ => {
+                    return Err(
+                        "a.psi and b.psi are different dimensions; a distance join needs both in 2D or both in 3D"
+                            .into(),
+                    );
+                }
+            }
+        }
+    };
+    if let ControlFlow::Break(err) = flow {
+        return Err(err.into());
+    }
+    Ok(total)
+}
+
+fn load_join_index(bytes: &[u8], what: &str) -> Result<JoinIndex, Box<dyn std::error::Error>> {
+    let artifact = open_geo_index(SliceReader::new(bytes.to_vec()))?;
+    match artifact.manifest().dims {
+        CoordinateDims::Xy | CoordinateDims::Xym => Ok(JoinIndex::D2(Index2D::from_bytes(bytes)?)),
+        CoordinateDims::Xyz | CoordinateDims::Xyzm => {
+            Ok(JoinIndex::D3(Index3D::from_bytes(bytes)?))
+        }
+        CoordinateDims::Unknown => Err(format!(
+            "{what} has unknown dimensions; a distance join needs a 2D or 3D artifact"
+        )
+        .into()),
+    }
+}
+
+/// The distance bound, in the artifacts' coordinate units.
+///
+/// Required, finite and non-negative — the same contract as the server's
+/// `epsilon` query parameter, so the two surfaces reject the same inputs.
+fn parse_epsilon(raw: Option<&str>) -> Result<f64, Box<dyn std::error::Error>> {
+    let raw = raw.ok_or(
+        "--epsilon is required: the distance bound in coordinate units, e.g. --epsilon 500",
+    )?;
+    let epsilon: f64 = raw
+        .parse()
+        .map_err(|_| format!("`{raw}` is not a number"))?;
+    if !epsilon.is_finite() || epsilon < 0.0 {
+        return Err(format!("--epsilon must be a finite non-negative number, got `{raw}`").into());
+    }
+    Ok(epsilon)
 }
 
 fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -1368,6 +1505,7 @@ fn option_takes_value(arg: &str) -> bool {
             | "--limit"
             | "--offset"
             | "--prefix-index"
+            | "--epsilon"
     )
 }
 
@@ -1407,6 +1545,185 @@ mod tests {
             parse_dims(parsed.option("--dims").unwrap().as_deref().unwrap()).unwrap(),
             IndexDimsRequest::D3
         ));
+    }
+
+    /// Two points 3.0 apart on the x axis, plus one far away.
+    #[cfg(feature = "geojson")]
+    fn artifact_2d(coords: &[(f64, f64)]) -> Vec<u8> {
+        let features: Vec<String> = coords
+            .iter()
+            .map(|(x, y)| {
+                format!(
+                    r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{x},{y}]}},"properties":{{}}}}"#
+                )
+            })
+            .collect();
+        let doc = format!(
+            r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+            features.join(",")
+        );
+        let mut bytes = Vec::new();
+        packed_spatial_index_geo::open_geojson_slice(doc.as_bytes())
+            .unwrap()
+            .convert_into(ConvertRequest::default(), &mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    #[cfg(feature = "geojson")]
+    fn artifact_3d(coords: &[(f64, f64, f64)]) -> Vec<u8> {
+        let features: Vec<String> = coords
+            .iter()
+            .map(|(x, y, z)| {
+                format!(
+                    r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{x},{y},{z}]}},"properties":{{}}}}"#
+                )
+            })
+            .collect();
+        let doc = format!(
+            r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+            features.join(",")
+        );
+        let mut bytes = Vec::new();
+        packed_spatial_index_geo::open_geojson_slice(doc.as_bytes())
+            .unwrap()
+            .convert_into(ConvertRequest::default(), &mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    /// Pair order is traversal order, so every assertion sorts first.
+    #[cfg(feature = "geojson")]
+    fn sorted_pairs(out: &[u8]) -> Vec<(usize, usize)> {
+        let mut pairs: Vec<(usize, usize)> = String::from_utf8(out.to_vec())
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let (a, b) = line
+                    .trim_start_matches("{\"a\":")
+                    .trim_end_matches('}')
+                    .split_once(",\"b\":")
+                    .unwrap_or_else(|| panic!("unexpected line `{line}`"));
+                let pair: (usize, usize) = (a.parse().unwrap(), b.parse().unwrap());
+                pair
+            })
+            .collect();
+        pairs.sort_unstable();
+        pairs
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn join_reports_pairs_within_epsilon() {
+        let a = artifact_2d(&[(0.0, 0.0), (10.0, 0.0)]);
+        let b = artifact_2d(&[(2.0, 0.0), (12.0, 0.0), (13.0, 0.0)]);
+
+        let mut out = Vec::new();
+        let count = join_pairs(&a, Some(&b), 2.0, false, &mut out).unwrap();
+        // Both matching pairs sit exactly on the bound (2.0 and 2.0); the third
+        // b point is 3.0 from a's item 1 and stays out. The bound is inclusive.
+        assert_eq!(count, 2);
+        assert_eq!(sorted_pairs(&out), vec![(0, 0), (1, 1)]);
+
+        let mut out = Vec::new();
+        let count = join_pairs(&a, Some(&b), 0.0, false, &mut out).unwrap();
+        assert_eq!(count, 0);
+        assert!(out.is_empty());
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn join_count_only_writes_nothing() {
+        let a = artifact_2d(&[(0.0, 0.0), (10.0, 0.0)]);
+        let b = artifact_2d(&[(2.0, 0.0), (12.0, 0.0), (13.0, 0.0)]);
+        let mut out = Vec::new();
+        let count = join_pairs(&a, Some(&b), 2.0, true, &mut out).unwrap();
+        assert_eq!(count, 2);
+        assert!(out.is_empty(), "count-only must not stream pairs");
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn self_join_pairs_each_distinct_pair_once() {
+        let a = artifact_2d(&[(0.0, 0.0), (1.0, 0.0), (50.0, 0.0)]);
+        let mut out = Vec::new();
+        let count = join_pairs(&a, None, 1.0, false, &mut out).unwrap();
+        assert_eq!(count, 1);
+        // Which id lands on which side is traversal order, so normalize; the
+        // pair is never (i, i) — a self-join reports distinct items only.
+        let (i, j) = sorted_pairs(&out)[0];
+        assert_eq!((i.min(j), i.max(j)), (0, 1));
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn join_works_in_3d() {
+        let a = artifact_3d(&[(0.0, 0.0, 0.0), (0.0, 0.0, 10.0)]);
+        let b = artifact_3d(&[(0.0, 0.0, 2.0)]);
+        let mut out = Vec::new();
+        let count = join_pairs(&a, Some(&b), 2.0, false, &mut out).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(sorted_pairs(&out), vec![(0, 0)]);
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn join_rejects_mixed_dimensions() {
+        let a = artifact_2d(&[(0.0, 0.0)]);
+        let b = artifact_3d(&[(0.0, 0.0, 0.0)]);
+        let mut out = Vec::new();
+        let err = join_pairs(&a, Some(&b), 1.0, false, &mut out).unwrap_err();
+        assert!(err.to_string().contains("different dimensions"), "{err}");
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn join_cmd_reads_two_files() {
+        let dir = std::env::temp_dir().join(format!("gp2psindex-join-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a_path = dir.join("a.psi");
+        let b_path = dir.join("b.psi");
+        std::fs::write(&a_path, artifact_2d(&[(0.0, 0.0), (10.0, 0.0)])).unwrap();
+        std::fs::write(&b_path, artifact_2d(&[(2.0, 0.0)])).unwrap();
+
+        join_cmd(&[
+            a_path.to_string_lossy().into_owned(),
+            b_path.to_string_lossy().into_owned(),
+            "--epsilon".to_string(),
+            "2.0".to_string(),
+            "--count".to_string(),
+        ])
+        .unwrap();
+
+        // Passing the same path twice is a self-join, not a cross join.
+        join_cmd(&[
+            a_path.to_string_lossy().into_owned(),
+            a_path.to_string_lossy().into_owned(),
+            "--epsilon=1.0".to_string(),
+            "--count".to_string(),
+        ])
+        .unwrap();
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn epsilon_is_required_finite_and_non_negative() {
+        assert!(
+            parse_epsilon(None)
+                .unwrap_err()
+                .to_string()
+                .contains("required")
+        );
+        for bad in ["-1", "nan", "inf", "abc"] {
+            let err = parse_epsilon(Some(bad)).unwrap_err().to_string();
+            assert!(
+                err.contains("finite non-negative") || err.contains("not a number"),
+                "{bad}: {err}"
+            );
+        }
+        assert_eq!(parse_epsilon(Some("0")).unwrap(), 0.0);
+        assert_eq!(parse_epsilon(Some("2.5")).unwrap(), 2.5);
     }
 
     #[test]

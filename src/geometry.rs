@@ -206,11 +206,25 @@ impl Box2D {
         dx * dx + dy * dy
     }
 
+    /// Return the square of the Euclidean distance between this box and
+    /// `other`, zero when the boxes overlap (edges are inclusive).
+    ///
+    /// This is a lower bound on the distance between any two points chosen
+    /// inside the two boxes, which is what makes a distance join a broad
+    /// phase. The square is returned without `sqrt`, so compare it against
+    /// `epsilon * epsilon`.
     #[inline]
-    pub(crate) fn distance_squared_to_box(&self, other: Box2D) -> f64 {
+    pub fn distance_squared_to_box(&self, other: Box2D) -> f64 {
         let dx = axis_gap(self.min_x, self.max_x, other.min_x, other.max_x);
         let dy = axis_gap(self.min_y, self.max_y, other.min_y, other.max_y);
         dx * dx + dy * dy
+    }
+
+    /// Return the Euclidean distance between this box and `other`, zero when
+    /// the boxes overlap. See [`Box2D::distance_squared_to_box`].
+    #[inline]
+    pub fn distance_to_box(&self, other: Box2D) -> f64 {
+        self.distance_squared_to_box(other).sqrt()
     }
 }
 
@@ -373,12 +387,26 @@ impl Box3D {
         dx * dx + dy * dy + dz * dz
     }
 
+    /// Return the square of the Euclidean distance between this box and
+    /// `other`, zero when the boxes overlap (edges are inclusive).
+    ///
+    /// This is a lower bound on the distance between any two points chosen
+    /// inside the two boxes, which is what makes a distance join a broad
+    /// phase. The square is returned without `sqrt`, so compare it against
+    /// `epsilon * epsilon`.
     #[inline]
-    pub(crate) fn distance_squared_to_box(&self, other: Box3D) -> f64 {
+    pub fn distance_squared_to_box(&self, other: Box3D) -> f64 {
         let dx = axis_gap(self.min_x, self.max_x, other.min_x, other.max_x);
         let dy = axis_gap(self.min_y, self.max_y, other.min_y, other.max_y);
         let dz = axis_gap(self.min_z, self.max_z, other.min_z, other.max_z);
         dx * dx + dy * dy + dz * dz
+    }
+
+    /// Return the Euclidean distance between this box and `other`, zero when
+    /// the boxes overlap. See [`Box3D::distance_squared_to_box`].
+    #[inline]
+    pub fn distance_to_box(&self, other: Box3D) -> f64 {
+        self.distance_squared_to_box(other).sqrt()
     }
 }
 

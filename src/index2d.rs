@@ -23,7 +23,9 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
 use crate::geometry::{Box2D, Overlaps2D, Point2D};
-use crate::join::{join_core, self_join_core};
+use crate::join::{
+    DistanceTest, OverlapTest, anti_join_core, join_core, self_join_components_core, self_join_core,
+};
 use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first, metric_knn,
 };
@@ -948,7 +950,7 @@ impl Index2D {
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        join_core(self, other, visitor)
+        join_core(self, other, OverlapTest, visitor)
     }
 
     /// Return every unordered pair of distinct intersecting items within this
@@ -993,7 +995,186 @@ impl Index2D {
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, visitor)
+        self_join_core(self, OverlapTest, visitor)
+    }
+
+    /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
+    /// `other` lie within `epsilon` of each other: the Euclidean distance
+    /// between their boxes is at most `epsilon`, zero when the boxes overlap
+    /// (edges are inclusive).
+    ///
+    /// This is the distance join — "everything within 500 m", not
+    /// "intersecting". Like every query here it is a broad phase: the box
+    /// distance is a lower bound on the true distance between the underlying
+    /// geometries, so hits are candidates and an exact predicate stays with
+    /// the caller. A negative or NaN `epsilon` matches nothing, and
+    /// `epsilon = 0.0` answers exactly [`Index2D::join`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut a = Index2DBuilder::new(2);
+    /// a.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// a.add(Box2D::new(10.0, 0.0, 11.0, 1.0));
+    /// let a = a.finish().unwrap();
+    ///
+    /// let mut b = Index2DBuilder::new(2);
+    /// b.add(Box2D::new(2.5, 0.0, 3.5, 1.0));
+    /// b.add(Box2D::new(13.0, 0.0, 14.0, 1.0));
+    /// let b = b.finish().unwrap();
+    ///
+    /// let mut pairs = a.join_epsilon(&b, 2.0);
+    /// pairs.sort_unstable();
+    /// // (1, 1) is exactly 2.0 apart, and the bound is inclusive.
+    /// assert_eq!(pairs, vec![(0, 0), (1, 1)]);
+    /// ```
+    pub fn join_epsilon(&self, other: &Index2D, epsilon: f64) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.join_epsilon_with(other, epsilon, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every pair within `epsilon` between `self` and `other` without
+    /// collecting a result `Vec`. See [`Index2D::join_epsilon`].
+    ///
+    /// Return [`ControlFlow::Break`] for early exit.
+    pub fn join_epsilon_with<B, F>(
+        &self,
+        other: &Index2D,
+        epsilon: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        join_core(self, other, DistanceTest::new(epsilon), visitor)
+    }
+
+    /// Return every unordered pair of distinct items within this index whose
+    /// boxes lie within `epsilon` of each other, each pair exactly once. See
+    /// [`Index2D::join_epsilon`] for the distance semantics and
+    /// [`Index2D::self_join`] for the pair shape.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut builder = Index2DBuilder::new(3);
+    /// builder.add(Box2D::new(0.0, 0.0, 2.0, 2.0));
+    /// builder.add(Box2D::new(3.5, 0.0, 5.0, 2.0));
+    /// builder.add(Box2D::new(20.0, 20.0, 21.0, 21.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let mut pairs = index.self_join_epsilon(2.0);
+    /// pairs.sort_unstable();
+    /// assert_eq!(pairs, vec![(0, 1)]);
+    /// ```
+    pub fn self_join_epsilon(&self, epsilon: f64) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.self_join_epsilon_with(epsilon, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every unordered pair of distinct items within this index whose
+    /// boxes lie within `epsilon` of each other, without collecting a result
+    /// `Vec`. See [`Index2D::self_join_epsilon`].
+    ///
+    /// Return [`ControlFlow::Break`] for early exit.
+    pub fn self_join_epsilon_with<B, F>(&self, epsilon: f64, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        self_join_core(self, DistanceTest::new(epsilon), visitor)
+    }
+
+    /// Return the ids of items of `self` that have no item of `other` within
+    /// `epsilon` — the anti-join, the "noise" side of
+    /// [`Index2D::join_epsilon`]. One pruned search into `other` per item of
+    /// `self`. (An index queried against itself pairs with itself at distance
+    /// zero; isolated items of one index are a
+    /// [`self_join_epsilon_components`](Index2D::self_join_epsilon_components)
+    /// question.)
+    ///
+    /// A negative or NaN `epsilon` reports every item of `self`: nothing is
+    /// within an empty bound.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut a = Index2DBuilder::new(2);
+    /// a.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// a.add(Box2D::new(50.0, 50.0, 51.0, 51.0));
+    /// let a = a.finish().unwrap();
+    ///
+    /// let mut b = Index2DBuilder::new(1);
+    /// b.add(Box2D::new(2.5, 0.0, 3.0, 1.0));
+    /// let b = b.finish().unwrap();
+    ///
+    /// assert_eq!(a.anti_join_epsilon(&b, 2.0), vec![1]);
+    /// ```
+    pub fn anti_join_epsilon(&self, other: &Index2D, epsilon: f64) -> Vec<usize> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.anti_join_epsilon_with(other, epsilon, |i| {
+            out.push(i);
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every item of `self` with no item of `other` within `epsilon`,
+    /// without collecting a result `Vec`. See [`Index2D::anti_join_epsilon`].
+    ///
+    /// Return [`ControlFlow::Break`] for early exit.
+    pub fn anti_join_epsilon_with<B, F>(
+        &self,
+        other: &Index2D,
+        epsilon: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        anti_join_core(self, other, DistanceTest::new(epsilon), visitor)
+    }
+
+    /// Label every item with the smallest item id in its component of the
+    /// `epsilon`-proximity graph: items are connected when their boxes lie
+    /// within `epsilon` of each other. An item with no neighbour is its own
+    /// label.
+    ///
+    /// The labels identify components; they are not clusters. Distance
+    /// proximity is not transitive — a chain of items each within `epsilon`
+    /// of the next forms one component no matter how far its ends lie apart —
+    /// so this reports exactly what the graph of
+    /// [`Index2D::self_join_epsilon`] pairs defines, and the collapse policy
+    /// stays with the caller.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut builder = Index2DBuilder::new(3);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(2.0, 0.0, 3.0, 1.0)); // within 1.0 of item 0
+    /// builder.add(Box2D::new(50.0, 50.0, 51.0, 51.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// assert_eq!(index.self_join_epsilon_components(1.0), vec![0, 0, 2]);
+    /// ```
+    pub fn self_join_epsilon_components(&self, epsilon: f64) -> Vec<usize> {
+        self_join_components_core(self, DistanceTest::new(epsilon))
     }
 
     fn collect_neighbors_with_queues(
@@ -2036,7 +2217,7 @@ impl<'a> Index2DView<'a> {
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        join_core(self, other, visitor)
+        join_core(self, other, OverlapTest, visitor)
     }
 
     /// Return every unordered pair of distinct intersecting items within this
@@ -2056,7 +2237,86 @@ impl<'a> Index2DView<'a> {
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, visitor)
+        self_join_core(self, OverlapTest, visitor)
+    }
+
+    /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
+    /// `other` lie within `epsilon` of each other. See [`Index2D::join_epsilon`].
+    pub fn join_epsilon(&self, other: &Index2DView<'_>, epsilon: f64) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.join_epsilon_with(other, epsilon, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every pair within `epsilon` between `self` and `other`. See
+    /// [`Index2D::join_epsilon_with`].
+    pub fn join_epsilon_with<B, F>(
+        &self,
+        other: &Index2DView<'_>,
+        epsilon: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        join_core(self, other, DistanceTest::new(epsilon), visitor)
+    }
+
+    /// Return every unordered pair of distinct items within this view whose
+    /// boxes lie within `epsilon` of each other, each pair exactly once. See
+    /// [`Index2D::self_join_epsilon`].
+    pub fn self_join_epsilon(&self, epsilon: f64) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.self_join_epsilon_with(epsilon, |i, j| {
+            out.push((i, j));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every unordered pair of distinct items within this view whose
+    /// boxes lie within `epsilon` of each other. See
+    /// [`Index2D::self_join_epsilon_with`].
+    pub fn self_join_epsilon_with<B, F>(&self, epsilon: f64, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize, usize) -> ControlFlow<B>,
+    {
+        self_join_core(self, DistanceTest::new(epsilon), visitor)
+    }
+
+    /// Return the ids of items of `self` with no item of `other` within
+    /// `epsilon`. See [`Index2D::anti_join_epsilon`].
+    pub fn anti_join_epsilon(&self, other: &Index2DView<'_>, epsilon: f64) -> Vec<usize> {
+        let mut out = Vec::new();
+        let _: ControlFlow<()> = self.anti_join_epsilon_with(other, epsilon, |i| {
+            out.push(i);
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// Visit every item of `self` with no item of `other` within `epsilon`.
+    /// See [`Index2D::anti_join_epsilon_with`].
+    pub fn anti_join_epsilon_with<B, F>(
+        &self,
+        other: &Index2DView<'_>,
+        epsilon: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        anti_join_core(self, other, DistanceTest::new(epsilon), visitor)
+    }
+
+    /// Label every item with the smallest item id in its component of the
+    /// `epsilon`-proximity graph. See
+    /// [`Index2D::self_join_epsilon_components`].
+    pub fn self_join_epsilon_components(&self, epsilon: f64) -> Vec<usize> {
+        self_join_components_core(self, DistanceTest::new(epsilon))
     }
 
     fn collect_neighbors_with_queues(
@@ -2276,10 +2536,6 @@ impl TreeAccess for Index2D {
     fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
         a.overlaps(b)
     }
-    #[inline]
-    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
-        outer.contains(inner)
-    }
 }
 
 impl TreeAccess for Index2DView<'_> {
@@ -2316,10 +2572,6 @@ impl TreeAccess for Index2DView<'_> {
     #[inline]
     fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
         a.overlaps(b)
-    }
-    #[inline]
-    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
-        outer.contains(inner)
     }
 }
 

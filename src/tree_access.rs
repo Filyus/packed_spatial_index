@@ -16,7 +16,6 @@ pub(crate) trait TreeAccess {
     fn tree_bounds(&self, pos: usize) -> Self::Bounds;
     fn tree_index(&self, pos: usize) -> usize;
     fn bounds_overlap(a: Self::Bounds, b: Self::Bounds) -> bool;
-    fn bounds_contain(outer: Self::Bounds, inner: Self::Bounds) -> bool;
 }
 
 /// Leaf-array `[start, end)` range covered by the subtree of the entry at

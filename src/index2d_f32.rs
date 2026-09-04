@@ -2817,10 +2817,6 @@ impl TreeAccess for Index2DF32 {
     fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
         a.overlaps(b)
     }
-    #[inline]
-    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
-        outer.contains(inner)
-    }
 }
 
 #[cfg(feature = "simd")]
@@ -2859,10 +2855,6 @@ impl TreeAccess for SimdIndex2DF32 {
     fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
         a.overlaps(b)
     }
-    #[inline]
-    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
-        outer.contains(inner)
-    }
 }
 
 #[cfg(feature = "simd")]
@@ -2900,10 +2892,6 @@ impl TreeAccess for SimdIndex2DF32View<'_> {
     #[inline]
     fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
         a.overlaps(b)
-    }
-    #[inline]
-    fn bounds_contain(outer: Box2D, inner: Box2D) -> bool {
-        outer.contains(inner)
     }
 }
 

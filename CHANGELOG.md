@@ -229,6 +229,13 @@ All notable changes to this crate are documented here.
   lon/lat content, the same opt-in a `radius` search takes. `within` caps the
   distance in the metric's units. `capabilities.nearestMetrics` advertises
   the metrics a collection accepts.
+- Added `count=estimate` on `/search`: an `estimate` object — exact
+  `[lower, upper]` bracket on the matched entry count, a point estimate,
+  `nodesTested`, `stopLevel` — in place of `numberMatched`, read from the
+  tree levels the server already holds in memory, so it costs no index read.
+  `numberMatched` is absent in that mode (a breaking shape change only for
+  callers that opt in). Bbox only; refuses what `count=only` refuses plus
+  every region shape. `capabilities.countModes` advertises it.
 - Added `GET /collections/{id}/closest-pair/{other}`: the single nearest pair
   between two collections (or within one, when `other` equals `id`) and its
   distance — the join family's member that needs no bound, over the same

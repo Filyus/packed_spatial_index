@@ -350,6 +350,16 @@ gp2psindex query input.parquet output.psi \
   --json
 ```
 
+`--estimate` answers "roughly how many" before the query is paid for: an
+exact `[lower, upper]` bracket on the entries `--bbox` matches, plus a point
+estimate, read from the tree levels `open` already cached, so no index read
+is issued. Bbox only.
+
+```text
+gp2psindex query input.parquet output.psi --bbox -74.1,40.6,-73.8,40.9 --estimate
+{"lower":1180,"upper":2304,"estimate":1731.5,"nodesTested":49,"stopLevel":2}
+```
+
 `--polygon` takes GeoJSON MultiPolygon coordinates (2D only). Unlike a radius
 it is not an exact query: the polygon drives the index traversal itself,
 pruning subtrees that fall outside it rather than fetching everything in its

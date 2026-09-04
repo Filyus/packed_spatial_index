@@ -271,7 +271,7 @@ async fn contract_collections_summary_shape() {
                     "levels": ["feature", "entry"],
                     "payloadModes": ["none", "summary", "full"],
                     "identityModes": ["ref"],
-                    "countModes": ["records", "only"],
+                    "countModes": ["records", "only", "estimate"],
                     "queryShapes": ["bbox", "polygon"],
                     "nearestMetrics": ["planar", "spherical"]
                 }
@@ -2120,4 +2120,108 @@ async fn route_errors_are_json() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json["error"]["code"], "unsupported_predicate");
+}
+
+/// `count=estimate` answers from the cached upper levels: an exact bracket
+/// around what `count=only` would report, `numberMatched` absent, nothing
+/// materialized.
+#[tokio::test]
+async fn count_estimate_brackets_the_exact_count() {
+    let doc = grid_2d_geojson();
+    let app = router(state_with_geojson_request(
+        ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        },
+        doc.as_bytes(),
+    ));
+    for bbox in ["0,0,3,3", "-1,-1,100,100", "2.5,2.5,6.5,6.5", "50,50,51,51"] {
+        let (status, exact) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?bbox={bbox}&count=only"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{exact}");
+        let (status, est) = get_json(
+            app.clone(),
+            &format!("/collections/places/search?bbox={bbox}&count=estimate"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{est}");
+        let n = exact["numberMatched"].as_u64().unwrap();
+        let lower = est["estimate"]["lower"].as_u64().unwrap();
+        let upper = est["estimate"]["upper"].as_u64().unwrap();
+        assert!(
+            lower <= n && n <= upper,
+            "bbox {bbox}: {n} not in [{lower}, {upper}]"
+        );
+        let point = est["estimate"]["estimate"].as_f64().unwrap();
+        assert!(lower as f64 <= point && point <= upper as f64, "{est}");
+        assert!(est["estimate"]["nodesTested"].as_u64().unwrap() >= 1);
+        assert!(est["estimate"]["stopLevel"].is_u64(), "{est}");
+        assert!(est.get("numberMatched").is_none(), "{est}");
+        assert_eq!(est["numberReturned"], 0);
+        assert_contract(&est["matches"], json!([]));
+        assert_eq!(est["query"]["count"], "estimate");
+    }
+    // A full search never carries an estimate.
+    let (_, full) = get_json(app, "/collections/places/search?bbox=0,0,3,3").await;
+    assert!(full.get("estimate").is_none(), "{full}");
+    assert!(full["numberMatched"].is_u64());
+}
+
+/// The estimate is a bbox-only, index-only answer: everything that narrows
+/// after the index or prunes by a region test is refused, like `count=only`
+/// and then some.
+#[tokio::test]
+async fn count_estimate_refuses_non_bbox_shapes_and_exact_predicates() {
+    let app = router(state_with_payload(PayloadPlan::FeatureJson {
+        properties: PropertyProjection::AllNonGeometry,
+    }));
+    for uri in [
+        "/collections/places/search?bbox=-10,0,0,2&predicate=intersects&count=estimate",
+        "/collections/places/search?radius=0,0,1000&count=estimate",
+        "/collections/places/search?polygon=[[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]]&count=estimate",
+    ] {
+        let (status, json) = get_json(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{uri}: {json}");
+        assert_eq!(json["error"]["code"], "unsupported_query", "{uri}");
+    }
+    let (status, json) = get_json(app, "/collections/places/search?bbox=0,0,1,1&count=guess").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(json["error"]["code"], "invalid_count");
+
+    // 3D: a six-number bbox estimates, a frustum does not.
+    let doc = grid_3d_geojson();
+    let app = router(state_with_geojson_request(
+        ConvertRequest {
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        },
+        doc.as_bytes(),
+    ));
+    let (status, est) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=0,0,0,15,15,15&count=estimate",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{est}");
+    let (_, exact) = get_json(
+        app.clone(),
+        "/collections/places/search?bbox=0,0,0,15,15,15&count=only",
+    )
+    .await;
+    let n = exact["numberMatched"].as_u64().unwrap();
+    assert!(
+        est["estimate"]["lower"].as_u64().unwrap() <= n
+            && n <= est["estimate"]["upper"].as_u64().unwrap(),
+        "{est} vs {n}"
+    );
+    let planes = "1,0,0,0,-1,0,0,10,0,1,0,0,0,-1,0,10,0,0,1,0,0,0,-1,10";
+    let (status, json) = get_json(
+        app,
+        &format!("/collections/places/search?frustum={planes}&count=estimate"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{json}");
 }

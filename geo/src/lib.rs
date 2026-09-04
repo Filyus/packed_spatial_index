@@ -100,8 +100,8 @@ pub use geo_types;
 #[cfg(feature = "async")]
 pub use packed_spatial_index::AsyncRangeReader;
 pub use packed_spatial_index::{
-    Box2D, Box3D, ClipSpaceZ, EARTH_RADIUS_M, FileMetadata, Frustum3D, Index2D, Index2DF32,
-    Index3D, Index3DF32, Point2D, Point3D, RangeReader, Ray2D, Ray3D, SliceReader, StreamError,
-    StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, StreamLimits,
+    Box2D, Box3D, ClipSpaceZ, EARTH_RADIUS_M, Estimate, FileMetadata, Frustum3D, Index2D,
+    Index2DF32, Index3D, Index3DF32, Point2D, Point3D, RangeReader, Ray2D, Ray3D, SliceReader,
+    StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, StreamLimits,
     haversine_distance_2d, read_metadata,
 };

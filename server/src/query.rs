@@ -84,6 +84,10 @@ pub enum CountMode {
     Records,
     /// Return `numberMatched` only, with an empty `matches` array.
     Only,
+    /// Return an `estimate` bracket from the index's node boxes instead of a
+    /// count: `numberMatched` is absent, `matches` is empty, and nothing
+    /// below the cached directory is read.
+    Estimate,
 }
 
 /// What exact filtering does when the artifact's declared edge model cannot
@@ -373,12 +377,38 @@ pub struct SearchResponse {
     pub query: QueryInfo,
     /// Artifact payload kind.
     pub payload_kind: PayloadKind,
-    /// Total matched records before pagination.
-    pub number_matched: usize,
+    /// Total matched records before pagination. Absent under
+    /// `count=estimate`, where `estimate` stands in for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number_matched: Option<usize>,
     /// Returned records after pagination.
     pub number_returned: usize,
     /// Returned records.
     pub matches: Vec<MatchRecord>,
+    /// Under `count=estimate`: the bracket on the entry count, from node
+    /// boxes alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<EstimateInfo>,
+}
+
+/// The `count=estimate` answer: an exact bracket on how many index entries
+/// the bbox matches, plus a point estimate, read from the tree levels the
+/// server already holds in memory. See the core crate's `Estimate`.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EstimateInfo {
+    /// Entries guaranteed to match: those under nodes the bbox contains.
+    pub lower: usize,
+    /// Entries that can possibly match: those under nodes the bbox overlaps.
+    pub upper: usize,
+    /// The point estimate, in `[lower, upper]`; assumes entries spread
+    /// uniformly inside each node box the bbox cuts.
+    pub estimate: f64,
+    /// Node boxes tested: the whole cost.
+    pub nodes_tested: usize,
+    /// The tree level the walk stopped at, counting up from the leaves: the
+    /// lowest level the cached directory holds, so no read was issued.
+    pub stop_level: usize,
 }
 
 /// One `/search` record.
@@ -537,7 +567,7 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
     let count_modes = if collection.entries_may_duplicate_rows() {
         vec![CountMode::Records]
     } else {
-        vec![CountMode::Records, CountMode::Only]
+        vec![CountMode::Records, CountMode::Only, CountMode::Estimate]
     };
     // A frustum is a 3D region; a 2D artifact has no z to test it against. A
     // radius is the other way round -- it is a lon/lat cap narrowed against
@@ -591,6 +621,8 @@ pub fn search_response(
     let count_mode = parse_count_mode(params.count.as_deref())?;
     let outcome = if count_mode == CountMode::Only {
         count_only_outcome(collection, &options.shape, options.predicate, shape)?
+    } else if count_mode == CountMode::Estimate {
+        estimate_outcome(collection, &options.shape, options.predicate, shape)?
     } else {
         search_records(
             collection,
@@ -623,6 +655,7 @@ pub fn search_response(
         number_matched: outcome.number_matched,
         number_returned: outcome.records.len(),
         matches: outcome.records,
+        estimate: outcome.estimate,
     })
 }
 
@@ -1356,7 +1389,9 @@ pub fn items_response(
         options.offset,
         options.limit,
     )?;
-    let number_matched = outcome.number_matched;
+    let number_matched = outcome
+        .number_matched
+        .expect("/items always counts: it never takes count=estimate");
     let page_len = outcome.records.len();
     let features = outcome
         .records
@@ -1552,8 +1587,9 @@ fn resolve_level(
 /// number asks for `count=only`, which skips the list entirely through geo's
 /// `count_entries`.
 struct SearchOutcome {
-    number_matched: usize,
+    number_matched: Option<usize>,
     records: Vec<MatchRecord>,
+    estimate: Option<EstimateInfo>,
 }
 
 /// What a returned record contains, independent of the path that produced it.
@@ -1685,8 +1721,88 @@ fn count_only_outcome(
             .map_err(ServerError::from_geo)?,
     };
     Ok(SearchOutcome {
-        number_matched,
+        number_matched: Some(number_matched),
         records: Vec::new(),
+        estimate: None,
+    })
+}
+
+/// `count=estimate`: the bracket the index's cached upper levels give on how
+/// many entries the bbox matches, before any read below them.
+///
+/// Refuses what `count=only` refuses, for the same reasons — an exact
+/// predicate or a radius narrows after the index, a feature-level number on
+/// a collection with split entries needs the matches — and additionally
+/// anything but a bbox: the polygon and frustum shapes prune by a region
+/// test the node-box arithmetic cannot score. The walk stops at the
+/// directory floor, so the answer costs no reads; a tighter bracket is what
+/// `count=only` is for.
+fn estimate_outcome(
+    collection: &Collection,
+    query_shape: &QueryShape,
+    predicate: QueryPredicate,
+    shape: RecordShape,
+) -> Result<SearchOutcome, ServerError> {
+    if predicate == QueryPredicate::Intersects {
+        return Err(ServerError::UnsupportedQuery(
+            "count=estimate brackets index matches, which predicate=intersects narrows \
+             afterwards; drop one of them"
+                .to_string(),
+        ));
+    }
+    if !matches!(query_shape, QueryShape::Bbox(_)) {
+        return Err(ServerError::UnsupportedQuery(
+            "count=estimate needs a bbox window: a radius, polygon or frustum prunes the \
+             index by a region test that node boxes cannot score; use count=only"
+                .to_string(),
+        ));
+    }
+    if shape.level == ResultLevel::Feature && collection.entries_may_duplicate_rows() {
+        return Err(ServerError::UnsupportedQuery(format!(
+            "collection `{}` can store one source feature as several index entries, so a \
+             feature-level number has to read the matches; use count=estimate with \
+             level=entry",
+            collection.id()
+        )));
+    }
+    let (estimate, stop_level) = match collection.open_local_index()? {
+        GeoArtifactIndex::D2(index) => {
+            let bbox = match query_2d(query_shape, collection)? {
+                GeoQuery2D::Box2D(bbox) => bbox,
+                _ => unreachable!("shape checked to be a bbox"),
+            };
+            let floor = index.directory_floor();
+            (
+                index
+                    .estimate_entries(bbox, floor)
+                    .map_err(ServerError::from_geo)?,
+                floor,
+            )
+        }
+        GeoArtifactIndex::D3(index) => {
+            let bbox = match query_3d(query_shape, collection)? {
+                GeoQuery3D::Box3D(bbox) => bbox,
+                _ => unreachable!("shape checked to be a bbox"),
+            };
+            let floor = index.directory_floor();
+            (
+                index
+                    .estimate_entries(bbox, floor)
+                    .map_err(ServerError::from_geo)?,
+                floor,
+            )
+        }
+    };
+    Ok(SearchOutcome {
+        number_matched: None,
+        records: Vec::new(),
+        estimate: Some(EstimateInfo {
+            lower: estimate.lower,
+            upper: estimate.upper,
+            estimate: estimate.estimate,
+            nodes_tested: estimate.nodes_tested,
+            stop_level,
+        }),
     })
 }
 
@@ -1872,8 +1988,9 @@ fn id_outcome(
         })
         .collect();
     SearchOutcome {
-        number_matched,
+        number_matched: Some(number_matched),
         records,
+        estimate: None,
     }
 }
 
@@ -1895,8 +2012,9 @@ fn match_outcome(
         .map(|m| match_record(m.entry_id, Some(m.feature), m.payload, shape))
         .collect();
     SearchOutcome {
-        number_matched,
+        number_matched: Some(number_matched),
         records,
+        estimate: None,
     }
 }
 
@@ -1920,8 +2038,9 @@ fn header_outcome(
     let number_matched = headers.len();
     let page = paginate(&headers, offset, limit);
     Ok(SearchOutcome {
-        number_matched,
+        number_matched: Some(number_matched),
         records: page_records(page, shape, plan, fetch)?,
+        estimate: None,
     })
 }
 
@@ -1933,8 +2052,9 @@ fn page_outcome(
     fetch: impl FnOnce(&[GeoMatchHeader]) -> Result<Vec<GeoMatch>, packed_spatial_index_geo::GeoError>,
 ) -> Result<SearchOutcome, ServerError> {
     Ok(SearchOutcome {
-        number_matched: page.number_matched,
+        number_matched: Some(page.number_matched),
         records: page_records(page.headers, shape, plan, fetch)?,
+        estimate: None,
     })
 }
 
@@ -2281,8 +2401,9 @@ fn parse_count_mode(raw: Option<&str>) -> Result<CountMode, ServerError> {
     match raw {
         None | Some("") | Some("records") => Ok(CountMode::Records),
         Some("only") => Ok(CountMode::Only),
+        Some("estimate") => Ok(CountMode::Estimate),
         Some(_) => Err(ServerError::InvalidCount(
-            "count must be records or only".to_string(),
+            "count must be records, only or estimate".to_string(),
         )),
     }
 }

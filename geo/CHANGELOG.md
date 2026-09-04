@@ -6,6 +6,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- `GeoArtifactIndex2D::estimate_entries` / `GeoArtifactIndex3D::estimate_entries`
+  and `directory_floor`, the geo faces of the core crate's selectivity
+  estimation: an exact `[lower, upper]` bracket on how many index entries a
+  bbox matches plus a point estimate, read from node boxes; at or above the
+  directory floor it costs no reads. Bbox only — the polygon, radius and
+  frustum shapes prune by region tests node boxes cannot score.
+  `gp2psindex query --bbox … --estimate` prints the bracket as one JSON
+  line; refused with `--count`, `--exact`, `--limit`/`--offset` and every
+  non-bbox shape.
 - `gp2psindex join <a.psi> <b.psi> --within N` reports every pair of items
   whose boxes lie within `max_distance` of each other, the CLI face of the core
   crate's distance join. Pairs are written as NDJSON — one `{"a":i,"b":j}` line

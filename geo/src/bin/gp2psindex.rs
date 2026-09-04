@@ -104,6 +104,11 @@ usage:
       [--duplicates dedup|parts]
       [--count]
         (print how many index entries match, then stop)
+      [--estimate]
+        (print an exact [lower, upper] bracket on how many entries --bbox
+         matches, plus a point estimate, from the tree levels open already
+         cached -- no index reads. --bbox only; refused with --exact,
+         --count, --limit/--offset)
       [--limit n] [--offset n]
         (read back only one page of matches, in index entry order)
       [--json|--ndjson]
@@ -892,6 +897,7 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "--order",
         "--duplicates",
         "--count",
+        "--estimate",
         "--limit",
         "--offset",
         "--json",
@@ -910,6 +916,47 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(index_path)?;
     let artifact = open_geo_index(SliceReader::new(bytes))?;
     let manifest = artifact.manifest().clone();
+
+    if parsed.flag("--estimate") {
+        reject_post_index_narrowing(&parsed, "--estimate")?;
+        if parsed.flag("--count") {
+            return Err(
+                "--estimate and --count are mutually exclusive: one brackets, one counts".into(),
+            );
+        }
+        if parsed.option("--limit")?.is_some() || parsed.option("--offset")?.is_some() {
+            return Err("--estimate describes the whole match set; drop --limit/--offset".into());
+        }
+        let (estimate, stop_level) = match artifact {
+            GeoArtifactIndex::D2(index) => {
+                let GeoQuery2D::Box2D(bbox) = query_2d(&parsed)? else {
+                    return Err(
+                        "--estimate needs --bbox: a radius or polygon prunes the index by \
+                                a region test node boxes cannot score; use --count"
+                            .into(),
+                    );
+                };
+                let floor = index.directory_floor();
+                (index.estimate_entries(bbox, floor)?, floor)
+            }
+            GeoArtifactIndex::D3(index) => {
+                let GeoQuery3D::Box3D(bbox) = query_3d(&parsed)? else {
+                    return Err(
+                        "--estimate needs --bbox: a frustum prunes the index by a region \
+                                test node boxes cannot score; use --count"
+                            .into(),
+                    );
+                };
+                let floor = index.directory_floor();
+                (index.estimate_entries(bbox, floor)?, floor)
+            }
+        };
+        println!(
+            "{{\"lower\":{},\"upper\":{},\"estimate\":{},\"nodesTested\":{},\"stopLevel\":{}}}",
+            estimate.lower, estimate.upper, estimate.estimate, estimate.nodes_tested, stop_level
+        );
+        return Ok(());
+    }
 
     if parsed.flag("--count") {
         reject_post_index_narrowing(&parsed, "--count")?;
@@ -2089,6 +2136,60 @@ mod tests {
         let path = path.to_string_lossy().into_owned();
         let err = anti_join_cmd(&[path.clone(), path, "--within=1".to_string()]).unwrap_err();
         assert!(err.to_string().contains("components"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn query_estimate_runs_on_a_bbox_and_refuses_the_rest() {
+        let dir = std::env::temp_dir().join(format!("gp2psindex-estimate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let coords: Vec<(f64, f64)> = (0..200)
+            .map(|i| ((i % 20) as f64, (i / 20) as f64))
+            .collect();
+        let source = dir.join("pts.geojson");
+        let features: Vec<String> = coords
+            .iter()
+            .map(|(x, y)| {
+                format!(
+                    r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{x},{y}]}},"properties":{{}}}}"#
+                )
+            })
+            .collect();
+        std::fs::write(
+            &source,
+            format!(
+                r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+                features.join(",")
+            ),
+        )
+        .unwrap();
+        let index = dir.join("pts.psi");
+        std::fs::write(&index, artifact_2d(&coords)).unwrap();
+        let (source, index) = (
+            source.to_string_lossy().into_owned(),
+            index.to_string_lossy().into_owned(),
+        );
+
+        query_cmd(&[
+            source.clone(),
+            index.clone(),
+            "--bbox=2,2,7,7".to_string(),
+            "--estimate".to_string(),
+        ])
+        .unwrap();
+
+        for extra in [
+            vec!["--bbox=2,2,7,7", "--estimate", "--count"],
+            vec!["--bbox=2,2,7,7", "--estimate", "--exact"],
+            vec!["--bbox=2,2,7,7", "--estimate", "--limit=3"],
+            vec!["--radius=0,0,1000", "--estimate"],
+            vec!["--polygon=[[[[0,0],[5,0],[0,5],[0,0]]]]", "--estimate"],
+        ] {
+            let mut args = vec![source.clone(), index.clone()];
+            args.extend(extra.iter().map(|s| s.to_string()));
+            assert!(query_cmd(&args).is_err(), "{extra:?} should be refused");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

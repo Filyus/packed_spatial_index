@@ -5,8 +5,8 @@ use geozero::geojson::GeoJson;
 #[cfg(feature = "async")]
 use packed_spatial_index::AsyncRangeReader;
 use packed_spatial_index::{
-    Box2D, Overlaps2D, PayloadPrefix, RangeReader, StreamDirectory, StreamError, StreamIndex2D,
-    StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, StreamLimits,
+    Box2D, Box3D, Estimate, Overlaps2D, PayloadPrefix, RangeReader, StreamDirectory, StreamError,
+    StreamIndex2D, StreamIndex2DF32, StreamIndex3D, StreamIndex3DF32, StreamLimits,
 };
 
 use crate::{
@@ -609,6 +609,30 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             .into_iter()
             .map(|m| m.feature)
             .collect())
+    }
+
+    /// The lowest tree level the cached directory holds entirely; an
+    /// [`estimate_entries`](Self::estimate_entries) stopping there or above
+    /// reads nothing.
+    pub fn directory_floor(&self) -> usize {
+        match &self.index {
+            GeoStreamIndex2D::F64(index) => index.directory_floor(),
+            GeoStreamIndex2D::F32(index) => index.directory_floor(),
+        }
+    }
+
+    /// Bracket and estimate how many index entries `bbox` would match, from
+    /// node boxes, without walking to the leaves. See
+    /// [`Estimate`](packed_spatial_index::Estimate).
+    ///
+    /// A window only: the polygon and spherical-radius shapes drive the
+    /// traversal by a region test the node-box arithmetic cannot score, so
+    /// they have no estimate. Levels the directory caches cost no reads.
+    pub fn estimate_entries(&self, bbox: Box2D, stop_level: usize) -> Result<Estimate, GeoError> {
+        Ok(match &self.index {
+            GeoStreamIndex2D::F64(index) => index.estimate_count(bbox, stop_level)?,
+            GeoStreamIndex2D::F32(index) => index.estimate_count(bbox, stop_level)?,
+        })
     }
 
     /// Count matching index entries without materializing ids or payloads.
@@ -1870,6 +1894,26 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
             .into_iter()
             .map(|m| m.feature)
             .collect())
+    }
+
+    /// The lowest tree level the cached directory holds entirely; an
+    /// [`estimate_entries`](Self::estimate_entries) stopping there or above
+    /// reads nothing.
+    pub fn directory_floor(&self) -> usize {
+        match &self.index {
+            GeoStreamIndex3D::F64(index) => index.directory_floor(),
+            GeoStreamIndex3D::F32(index) => index.directory_floor(),
+        }
+    }
+
+    /// Bracket and estimate how many index entries `bbox` would match, from
+    /// node boxes, without walking to the leaves. A box window only: a
+    /// frustum has no estimate. See [`Estimate`](packed_spatial_index::Estimate).
+    pub fn estimate_entries(&self, bbox: Box3D, stop_level: usize) -> Result<Estimate, GeoError> {
+        Ok(match &self.index {
+            GeoStreamIndex3D::F64(index) => index.estimate_count(bbox, stop_level)?,
+            GeoStreamIndex3D::F32(index) => index.estimate_count(bbox, stop_level)?,
+        })
     }
 
     /// Count matching index entries without materializing ids or payloads;

@@ -66,7 +66,7 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections`
 - `GET /collections/{id}`
 - `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy|radius=|polygon=&limit=&offset=&predicate=`
-- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=|radius=|polygon=&limit=&offset=&predicate=&nonplanar=&level=&payload=&identity=&count=`
+- `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=|radius=|polygon=&limit=&offset=&predicate=&nonplanar=&level=&payload=&identity=&count=records|only|estimate`
 - `POST /collections/{id}/search` — the same search as a JSON body
 - `GET /collections/{id}/join/{other}?within=&limit=&count=`
 - `GET /collections/{id}/anti-join/{other}?within=&limit=&count=`
@@ -151,6 +151,17 @@ Query parameters:
   - `payload=full` resolves to `full`, because the bodies are read regardless
     and the returned GeoJSON feature carries its own `id` anyway. Withholding
     it from `featureRef` there would hide nothing.
+- `count=estimate` — `/search` only, bbox only. Answers an `estimate`
+  object instead of `numberMatched`: an exact `[lower, upper]` bracket on the
+  number of index entries the bbox matches, a point `estimate` inside it,
+  `nodesTested` and the `stopLevel` the walk stopped at. It is read from the
+  tree levels the server holds in memory for every collection, so it costs
+  no index read and answers before a query is worth its traversal — "roughly
+  how many are in this window" for a client deciding whether to ask. The
+  bracket is exact from node boxes alone; only `estimate` assumes entries
+  spread uniformly inside a node box. Refuses what `count=only` refuses and
+  additionally every non-bbox shape (`radius`, `polygon`, `frustum` prune by
+  a region test node boxes cannot score), with `unsupported_query`.
 - `count=records|only` — `/search` only; default `records`. `only` answers
   `numberMatched` and nothing else: `matches` is empty, `numberReturned` is 0,
   and the index counts the matches without materializing one of them, which is

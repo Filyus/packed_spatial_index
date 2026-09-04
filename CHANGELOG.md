@@ -42,6 +42,33 @@ All notable changes to this crate are documented here.
   stay merged is the caller's call, and the method reports exactly what the
   graph defines.
 
+- Added the radius query: `search_within` / `search_within_into` /
+  `visit_within` / `any_within` report every item whose box lies within
+  `epsilon` of a query box — "everything within 500 m of here", without
+  pretending to need a `k`. It is the single-index sibling of the ε-join, with
+  the same predicate and the same semantics: box-to-box Euclidean distance,
+  zero when the boxes overlap, edges inclusive, so `epsilon = 0.0` reproduces
+  `search` exactly and a negative or NaN `epsilon` matches nothing. A
+  degenerate query box (`min == max`, a point) works. Result order is traversal
+  order, as for `search`. On the eight types that carry `join_epsilon`: the
+  owned `f64` indexes, their views, and the SIMD indexes and views (`f32` and
+  streaming carry no distance operations yet, so the family is still missing
+  there). The traversal is the shared region descent with the distance as the
+  prune test and the *farthest-corner* distance as the whole-subtree accept —
+  the plain node distance prunes but never fast-accepts, because items sit
+  anywhere inside their node box and shrinking a box only pushes it farther
+  from an external query.
+  Measured against the workaround it replaces — `search` on the
+  `epsilon`-inflated query box, then an exact distance filter over the
+  candidates — on 1 M boxes, pinned to one core, best-of-3 with the arm order
+  alternated per round, ten paired rounds after a discarded warm-up, control
+  arm 0.99–1.07× (spread ±0.1): at ~10 hits/query `search_within` is 1.25–1.5×
+  faster on uniform data and a wash on clustered point queries (0.99×), at
+  ~10² hits 2.7–5.3×, and at ~7×10³ hits 8.5–17.5×. The win is not
+  selectivity — the circle-to-square area ratio is only π/4 for a point query
+  — it is that the pruning happens inside the traversal instead of
+  materializing every candidate and gathering its geometry back to filter it.
+
 - Added `search_ordered(region, key, max_results, max_key)` (with `_into` and
   `visit_ordered`) on the owned `f64` indexes and their views. It answers the
   same set as `search` but emits it in nondecreasing order of a key you supply,

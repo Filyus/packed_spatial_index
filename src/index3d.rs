@@ -10,8 +10,8 @@ use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box3D, Overlaps3D, Point3D},
     join::{
-        DistanceTest, OverlapTest, anti_join_core, join_core, self_join_components_core,
-        self_join_core,
+        DistanceTest, OverlapTest, anti_join_core, any_within_core, join_core,
+        self_join_components_core, self_join_core, within_core,
     },
     neighbors::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first,
@@ -922,6 +922,77 @@ impl Index3D {
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
         join_core(self, other, DistanceTest::new(epsilon), visitor)
+    }
+
+    /// Return the ids of every item whose box lies within `epsilon` of
+    /// `query`: the Euclidean distance between the two boxes is at most
+    /// `epsilon`, zero when they overlap (edges are inclusive).
+    ///
+    /// This is the radius query — "everything within 500 m of here" — the
+    /// single-index sibling of [`Index3D::join_epsilon`]. Like every query here it
+    /// is a broad phase: the box distance is a lower bound on the true
+    /// distance between the underlying geometries, so hits are candidates and
+    /// an exact predicate stays with the caller.
+    ///
+    /// A negative or NaN `epsilon` matches nothing, and `epsilon = 0.0`
+    /// answers exactly [`Index3D::search`]. Result order is traversal order and is
+    /// not part of the API.
+    ///
+    /// Allocates a fresh `Vec` per call — see
+    /// [`search_within_into`](Index3D::search_within_into),
+    /// [`any_within`](Index3D::any_within).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box3D, Index3DBuilder};
+    ///
+    /// let mut builder = Index3DBuilder::new(3);
+    /// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// builder.add(Box3D::new(3.0, 0.0, 0.0, 4.0, 1.0, 1.0));
+    /// builder.add(Box3D::new(50.0, 50.0, 50.0, 51.0, 51.0, 51.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let mut hits = index.search_within(Box3D::new(0.5, 0.5, 0.5, 1.0, 1.0, 1.0), 2.0);
+    /// hits.sort_unstable();
+    /// // item 1 is exactly 2.0 away, and the bound is inclusive.
+    /// assert_eq!(hits, vec![0, 1]);
+    /// ```
+    pub fn search_within(&self, query: Box3D, epsilon: f64) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_within_into(query, epsilon, &mut out);
+        out
+    }
+
+    /// [`search_within`](Self::search_within) into a reused buffer (cleared
+    /// first).
+    pub fn search_within_into(&self, query: Box3D, epsilon: f64, out: &mut Vec<usize>) {
+        out.clear();
+        let _: ControlFlow<()> = self.visit_within(query, epsilon, |index| {
+            out.push(index);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Visit every item within `epsilon` of `query` without collecting a
+    /// result `Vec`. See [`search_within`](Self::search_within).
+    ///
+    /// Return [`ControlFlow::Break`] for early exit.
+    pub fn visit_within<B, F>(&self, query: Box3D, epsilon: f64, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        within_core(self, query, DistanceTest::new(epsilon), &mut stack, visitor)
+    }
+
+    /// Return `true` when at least one item lies within `epsilon` of `query`.
+    ///
+    /// Stops at the first hit, so it takes the prune-only descent: no
+    /// whole-subtree accept is computed. See
+    /// [`search_within`](Self::search_within).
+    pub fn any_within(&self, query: Box3D, epsilon: f64) -> bool {
+        any_within_core(self, query, DistanceTest::new(epsilon))
     }
 
     /// Return every unordered pair of distinct items within this index whose
@@ -1995,6 +2066,45 @@ impl<'a> Index3DView<'a> {
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
         join_core(self, other, DistanceTest::new(epsilon), visitor)
+    }
+
+    /// Return the ids of every item of the view whose box lies within
+    /// `epsilon` of `query`. See [`Index3D::search_within`].
+    pub fn search_within(&self, query: Box3D, epsilon: f64) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.search_within_into(query, epsilon, &mut out);
+        out
+    }
+
+    /// [`search_within`](Self::search_within) into a reused buffer (cleared
+    /// first).
+    pub fn search_within_into(&self, query: Box3D, epsilon: f64, out: &mut Vec<usize>) {
+        out.clear();
+        let _: ControlFlow<()> = self.visit_within(query, epsilon, |index| {
+            out.push(index);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Visit every item within `epsilon` of `query` without collecting a
+    /// result `Vec`. See [`search_within`](Self::search_within).
+    ///
+    /// Return [`ControlFlow::Break`] for early exit.
+    pub fn visit_within<B, F>(&self, query: Box3D, epsilon: f64, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        within_core(self, query, DistanceTest::new(epsilon), &mut stack, visitor)
+    }
+
+    /// Return `true` when at least one item lies within `epsilon` of `query`.
+    ///
+    /// Stops at the first hit, so it takes the prune-only descent: no
+    /// whole-subtree accept is computed. See
+    /// [`search_within`](Self::search_within).
+    pub fn any_within(&self, query: Box3D, epsilon: f64) -> bool {
+        any_within_core(self, query, DistanceTest::new(epsilon))
     }
 
     /// Return every unordered pair of distinct items within this view whose

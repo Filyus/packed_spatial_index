@@ -12,6 +12,7 @@
 use std::ops::ControlFlow;
 
 use crate::geometry::{Box2D, Box3D};
+use crate::range::visit_region;
 use crate::tree_access::{TreeAccess, leaf_range};
 
 /// Which entry pairs of a dual-tree descent can hold output pairs.
@@ -329,6 +330,46 @@ where
             None => return ControlFlow::Continue(()),
         }
     }
+}
+
+/// Visit every item of `tree` whose box lies within `epsilon` of `query`: the
+/// radius query, single-tree sibling of the `join_epsilon` family.
+///
+/// Node prune and whole-subtree accept are deliberately different tests. A node
+/// is descended when its box is within `epsilon` — items sit inside their node
+/// box, and shrinking a box only pushes it farther from an external query, so
+/// the node distance is a lower bound and prunes soundly. It never *accepts*
+/// for the same reason: the sufficient condition is the node's *farthest*
+/// corner being within `epsilon`, which is what `covers` tests.
+///
+/// A cheaper node prune was tried and lost: overlap against the query grown by
+/// `epsilon` is a valid necessary condition (the L-infinity ball contains the
+/// L2 one) and costs four compares where the exact distance costs two axis
+/// gaps and two multiplies, but the extra subtrees it descends cost 1.2x-2.2x
+/// more than the predicate saves across uniform and clustered data at every
+/// radius measured.
+///
+/// Item order is traversal order and is not part of the API.
+#[inline]
+pub(crate) fn within_core<R, T, P, F>(
+    tree: &T,
+    query: T::Bounds,
+    test: P,
+    stack: &mut Vec<usize>,
+    visitor: F,
+) -> ControlFlow<R>
+where
+    T: TreeAccess,
+    P: PairTest<T::Bounds>,
+    F: FnMut(usize) -> ControlFlow<R>,
+{
+    visit_region(
+        tree,
+        stack,
+        |node| test.keeps(node, query),
+        |node| test.covers(query, node),
+        visitor,
+    )
 }
 
 /// Is there an item of `tree` pairing with `bounds` under `test`? One pruned

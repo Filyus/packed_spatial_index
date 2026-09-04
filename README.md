@@ -103,6 +103,7 @@ see [docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
 | Ordered region | [`search_ordered`][search_ordered], [`search_ordered_into`][search_ordered_into], [`visit_ordered`][visit_ordered] — the same region shapes, emitted in nondecreasing order of a `\|box\| -> f64` key (e.g. [`view_depth_3d`][view_depth_3d] for front-to-back), so a budget can stop the traversal |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
 | Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
+| Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`visit_within`][visit_within], [`any_within`][any_within] — every item whose box lies within `epsilon` of a query box, `epsilon = 0.0` reproducing `search` |
 | Distance join (ε-join) | [`join_epsilon`][join_epsilon], [`join_epsilon_with`][join_epsilon_with], [`self_join_epsilon`][self_join_epsilon], [`self_join_epsilon_with`][self_join_epsilon_with], [`anti_join_epsilon`][anti_join_epsilon], [`self_join_epsilon_components`][self_join_epsilon_components] |
 | Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
 
@@ -322,6 +323,10 @@ Licensed under the Apache License, Version 2.0.
 [join_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_with
 [self_join]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_join
 [self_join_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_join_with
+[search_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within
+[search_within_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within_into
+[visit_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_within
+[any_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any_within
 [join_epsilon]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_epsilon
 [join_epsilon_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_epsilon_with
 [self_join_epsilon]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_join_epsilon

@@ -23,6 +23,7 @@ the method for each need; the notes after it explain the reasoning.
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
+| Everything within a distance of one place | `search_within(query, epsilon)` / `search_within_into` / `visit_within` / `any_within` | `search` on an `epsilon`-inflated box and then filtering the hits |
 | All pairs within a distance — "within 500 m", not "intersecting" | `join_epsilon` / `join_epsilon_with` (`self_join_epsilon` within one index, `anti_join_epsilon` for the unpaired items, `self_join_epsilon_components` for groups) | joining indexes of `epsilon`-inflated boxes and filtering |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
@@ -380,6 +381,60 @@ typical. A useful first estimate costs no I/O at all, since `open` caches the
 upper levels: a node's *far*-corner depth is an upper bound on the nearest depth
 of anything inside it. Widen generously rather than tightly — an over-large cap
 costs bytes, an over-small one costs a whole extra round.
+
+## Search by distance (radius query)
+
+`search` answers "which boxes overlap this one". `search_within` answers
+"which boxes are within 500 m of it" — the same distance the ε-join uses, one
+tree instead of a pair, and no `k` to invent. The distance is between boxes
+(`Box2D::distance_to_box`, or the `sqrt`-free `distance_squared_to_box`): zero
+when the boxes overlap, edges inclusive, so `epsilon = 0.0` reproduces `search`
+exactly. A degenerate query box (`min == max`) is a point. A negative or NaN
+`epsilon` matches nothing. Results come back in traversal order, as from
+`search`.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut b = Index2DBuilder::new(3);
+# b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
+# b.add(Box2D::new(200.0, 200.0, 201.0, 201.0));
+# let towers = b.finish()?;
+let mut near = towers.search_within(Box2D::new(0.5, 0.5, 0.5, 0.5), 3.0);
+near.sort_unstable();
+assert_eq!(near, vec![0, 1]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+`search_within_into` fills a buffer you own, `visit_within` folds without one
+(return `ControlFlow::Break` to stop early), and `any_within` answers "is there
+anything near here" without collecting. All four are on the same eight types
+that carry `join_epsilon`: the owned `f64` indexes, their views, and the SIMD
+indexes and views. The `f32` and streaming frontends carry no distance
+operations yet.
+
+Two node tests, deliberately different. A node is descended when its box is
+within `epsilon` — items sit inside their node box, so the node distance is a
+lower bound and prunes soundly. It never *accepts*, for the same reason: an
+item inside a passing node box can be farther than the node box is. The
+sufficient test is the node's *farthest* corner being within `epsilon`, and a
+node passing that has its whole subtree emitted without per-item tests.
+
+Measured on 1 million boxes against the workaround it replaces — `search` on
+the `epsilon`-inflated query box, then an exact distance filter over the
+candidates — pinned to one core, arm order alternated per round, control arm
+0.99–1.07×: at ~10 hits per query `search_within` runs 1.25–1.5× faster on
+uniform data and level with the workaround on clustered point queries, at ~100
+hits 2.7–5.3×, and at ~7000 hits 8.5–17.5×. The win is not selectivity — for a
+point query the circle-to-square area ratio is only π/4 — it is that the
+pruning happens inside the traversal, where the workaround must materialize
+every candidate and gather its geometry back to filter it.
+
+A cheaper node prune was tried and rejected: overlapping against the query
+grown by `epsilon` is a valid necessary condition and costs four compares where
+the exact distance costs two axis gaps and two multiplies, but the extra
+subtrees it descends cost 1.2–2.2× more than the predicate saves, measured
+with both arms in one binary.
 
 ## Join by distance (ε-join)
 

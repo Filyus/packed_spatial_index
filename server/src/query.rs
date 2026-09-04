@@ -724,20 +724,20 @@ pub fn join_response(
             (collection.id() != other.id()).then(|| other.join_index()),
         ) {
             (JoinIndex::D2(index), None) => {
-                let _ = index.self_join_within_with(max_distance, |a, b| emit(a, b));
+                let _ = index.self_join_within_with(max_distance, &mut emit);
             }
             (JoinIndex::D3(index), None) => {
-                let _ = index.self_join_within_with(max_distance, |a, b| emit(a, b));
+                let _ = index.self_join_within_with(max_distance, &mut emit);
             }
             (JoinIndex::D2(a), Some(views)) => match views? {
                 JoinIndex::D2(b) => {
-                    let _ = a.join_within_with(b, max_distance, |a, b| emit(a, b));
+                    let _ = a.join_within_with(b, max_distance, &mut emit);
                 }
                 JoinIndex::D3(_) => return Err(dimension_mismatch(collection, other)),
             },
             (JoinIndex::D3(a), Some(views)) => match views? {
                 JoinIndex::D3(b) => {
-                    let _ = a.join_within_with(b, max_distance, |a, b| emit(a, b));
+                    let _ = a.join_within_with(b, max_distance, &mut emit);
                 }
                 JoinIndex::D2(_) => return Err(dimension_mismatch(collection, other)),
             },

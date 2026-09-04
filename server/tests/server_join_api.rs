@@ -7,12 +7,9 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use packed_spatial_index_geo::{
-    AntimeridianPolicy, ConvertRequest, EnvelopePolicy, PayloadPlan, PropertyProjection,
-    open_geojson_slice,
-};
+use packed_spatial_index_geo::{ConvertRequest, PayloadPlan, open_geojson_slice};
 use packed_spatial_index_server::{Catalog, ServerState, router};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tempfile::tempdir;
 use tower::ServiceExt;
 

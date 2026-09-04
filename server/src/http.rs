@@ -256,7 +256,7 @@ async fn join(
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
     let other = state
         .collection(&other)
-        .ok_or_else(|| ServerError::CollectionNotFound(other))?;
+        .ok_or(ServerError::CollectionNotFound(other))?;
     Ok(Json(
         query_blocking(move || join_response(&collection, &other, params)).await?,
     ))
@@ -274,7 +274,7 @@ async fn anti_join(
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
     let other = state
         .collection(&other)
-        .ok_or_else(|| ServerError::CollectionNotFound(other))?;
+        .ok_or(ServerError::CollectionNotFound(other))?;
     Ok(Json(
         query_blocking(move || anti_join_response(&collection, &other, params)).await?,
     ))

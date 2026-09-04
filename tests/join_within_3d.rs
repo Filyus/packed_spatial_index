@@ -111,9 +111,9 @@ fn epsilon_join_matches_naive_pairs_3d() {
         let b = build(&boxes_b);
 
         let expected = naive_epsilon_join(&boxes_a, &boxes_b, epsilon);
-        let actual: BTreeSet<_> = a.join_epsilon(&b, epsilon).into_iter().collect();
+        let actual: BTreeSet<_> = a.join_within(&b, epsilon).into_iter().collect();
         assert_eq!(
-            a.join_epsilon(&b, epsilon).len(),
+            a.join_within(&b, epsilon).len(),
             expected.len(),
             "duplicate pairs reported (n={n} m={m} eps={epsilon})"
         );
@@ -135,7 +135,7 @@ fn epsilon_self_join_matches_naive_pairs_3d() {
 
         let expected = naive_self_epsilon_join(&boxes, epsilon);
         assert_eq!(
-            normalized(index.self_join_epsilon(epsilon)),
+            normalized(index.self_join_within(epsilon)),
             expected,
             "n={n} eps={epsilon}"
         );
@@ -151,11 +151,11 @@ fn epsilon_zero_equals_overlap_join_3d() {
     let b = build(&boxes_b);
 
     let joined: BTreeSet<_> = a.join(&b).into_iter().collect();
-    let joined_at_zero: BTreeSet<_> = a.join_epsilon(&b, 0.0).into_iter().collect();
+    let joined_at_zero: BTreeSet<_> = a.join_within(&b, 0.0).into_iter().collect();
     assert_eq!(joined, joined_at_zero);
 
     let self_joined = normalized(a.self_join());
-    let self_joined_at_zero = normalized(a.self_join_epsilon(0.0));
+    let self_joined_at_zero = normalized(a.self_join_within(0.0));
     assert_eq!(self_joined, self_joined_at_zero);
 }
 
@@ -164,8 +164,8 @@ fn epsilon_boundary_is_inclusive_3d() {
     // Exactly epsilon apart on x, overlapping spans on y and z.
     let a = build(&[Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)]);
     let b = build(&[Box3D::new(3.0, 0.0, 0.0, 4.0, 1.0, 1.0)]);
-    assert_eq!(a.join_epsilon(&b, 2.0), vec![(0, 0)]);
-    assert!(a.join_epsilon(&b, 1.999_999).is_empty());
+    assert_eq!(a.join_within(&b, 2.0), vec![(0, 0)]);
+    assert!(a.join_within(&b, 1.999_999).is_empty());
 }
 
 #[test]
@@ -176,15 +176,15 @@ fn epsilon_invalid_matches_nothing_3d() {
     let b = build(&random_boxes(&mut rng, 30, 50.0, 4.0));
 
     for epsilon in [-1.0, f64::NAN] {
-        assert!(a.join_epsilon(&b, epsilon).is_empty());
-        assert!(a.self_join_epsilon(epsilon).is_empty());
+        assert!(a.join_within(&b, epsilon).is_empty());
+        assert!(a.self_join_within(epsilon).is_empty());
         assert_eq!(
-            a.anti_join_epsilon(&b, epsilon).len(),
+            a.anti_join_within(&b, epsilon).len(),
             boxes.len(),
             "eps={epsilon}"
         );
         assert_eq!(
-            a.self_join_epsilon_components(epsilon),
+            a.self_join_within_components(epsilon),
             (0..boxes.len()).collect::<Vec<_>>(),
             "eps={epsilon}"
         );
@@ -199,8 +199,8 @@ fn epsilon_huge_reports_every_pair_3d() {
     let a = build(&boxes_a);
     let b = build(&boxes_b);
 
-    assert_eq!(a.join_epsilon(&b, 1.0e9).len(), 12 * 9);
-    assert_eq!(a.self_join_epsilon(1.0e9).len(), 12 * 11 / 2);
+    assert_eq!(a.join_within(&b, 1.0e9).len(), 12 * 9);
+    assert_eq!(a.self_join_within(1.0e9).len(), 12 * 11 / 2);
 }
 
 #[test]
@@ -209,11 +209,11 @@ fn epsilon_join_with_supports_early_exit_3d() {
     let boxes = random_boxes(&mut rng, 400, 60.0, 6.0);
     let index = build(&boxes);
 
-    let total = index.self_join_epsilon(5.0).len();
+    let total = index.self_join_within(5.0).len();
     assert!(total > 10, "test needs a pair-rich input, got {total}");
 
     let mut seen = 0usize;
-    let flow = index.self_join_epsilon_with(5.0, |_, _| {
+    let flow = index.self_join_within_with(5.0, |_, _| {
         seen += 1;
         if seen == 10 {
             ControlFlow::Break(())
@@ -232,7 +232,7 @@ fn epsilon_components_match_naive_union_find_3d() {
         let boxes = random_boxes(&mut rng, 300, 100.0, max_size);
         let index = build(&boxes);
         assert_eq!(
-            index.self_join_epsilon_components(epsilon),
+            index.self_join_within_components(epsilon),
             naive_components(&boxes, epsilon),
             "max_size={max_size} eps={epsilon}"
         );
@@ -247,8 +247,8 @@ fn epsilon_chain_is_one_component_3d() {
         Box3D::new(4.0, 0.0, 0.0, 5.0, 1.0, 1.0),
     ];
     let index = build(&boxes);
-    assert_eq!(index.self_join_epsilon_components(1.0), vec![0, 0, 0]);
-    assert!(index.anti_join_epsilon(&index, 1.0).is_empty());
+    assert_eq!(index.self_join_within_components(1.0), vec![0, 0, 0]);
+    assert!(index.anti_join_within(&index, 1.0).is_empty());
 }
 
 #[test]
@@ -260,7 +260,7 @@ fn epsilon_anti_join_matches_naive_3d() {
         let a = build(&boxes_a);
         let b = build(&boxes_b);
         assert_eq!(
-            sorted_ids(a.anti_join_epsilon(&b, epsilon)),
+            sorted_ids(a.anti_join_within(&b, epsilon)),
             naive_anti_join(&boxes_a, &boxes_b, epsilon)
                 .into_iter()
                 .collect::<Vec<_>>(),
@@ -282,23 +282,23 @@ fn view_epsilon_family_matches_owned_3d() {
     let view_b = Index3DView::from_bytes(&bytes_b).unwrap();
 
     for epsilon in [0.0, 2.5] {
-        let owned: BTreeSet<_> = a.join_epsilon(&b, epsilon).into_iter().collect();
-        let viewed: BTreeSet<_> = view_a.join_epsilon(&view_b, epsilon).into_iter().collect();
+        let owned: BTreeSet<_> = a.join_within(&b, epsilon).into_iter().collect();
+        let viewed: BTreeSet<_> = view_a.join_within(&view_b, epsilon).into_iter().collect();
         assert_eq!(owned, viewed, "eps={epsilon}");
         assert_eq!(
-            normalized(view_a.self_join_epsilon(epsilon)),
-            normalized(a.self_join_epsilon(epsilon)),
+            normalized(view_a.self_join_within(epsilon)),
+            normalized(a.self_join_within(epsilon)),
             "eps={epsilon}"
         );
         assert_eq!(
-            sorted_ids(view_a.anti_join_epsilon(&view_b, epsilon)),
-            sorted_ids(a.anti_join_epsilon(&b, epsilon)),
+            sorted_ids(view_a.anti_join_within(&view_b, epsilon)),
+            sorted_ids(a.anti_join_within(&b, epsilon)),
             "eps={epsilon}"
         );
     }
     assert_eq!(
-        view_a.self_join_epsilon_components(3.0),
-        a.self_join_epsilon_components(3.0)
+        view_a.self_join_within_components(3.0),
+        a.self_join_within_components(3.0)
     );
 }
 
@@ -325,20 +325,20 @@ mod simd {
             let b = build_simd(&boxes_b);
 
             let expected = naive_epsilon_join(&boxes_a, &boxes_b, epsilon);
-            let actual: BTreeSet<_> = a.join_epsilon(&b, epsilon).into_iter().collect();
+            let actual: BTreeSet<_> = a.join_within(&b, epsilon).into_iter().collect();
             assert_eq!(actual, expected, "eps={epsilon}");
 
             let expected_self = naive_self_epsilon_join(&boxes_a, epsilon);
-            assert_eq!(normalized(a.self_join_epsilon(epsilon)), expected_self);
+            assert_eq!(normalized(a.self_join_within(epsilon)), expected_self);
 
             assert_eq!(
-                sorted_ids(a.anti_join_epsilon(&b, epsilon)),
+                sorted_ids(a.anti_join_within(&b, epsilon)),
                 naive_anti_join(&boxes_a, &boxes_b, epsilon)
                     .into_iter()
                     .collect::<Vec<_>>()
             );
             assert_eq!(
-                a.self_join_epsilon_components(epsilon),
+                a.self_join_within_components(epsilon),
                 naive_components(&boxes_a, epsilon),
                 "eps={epsilon}"
             );
@@ -358,21 +358,21 @@ mod simd {
         let view_b = SimdIndex3DView::from_bytes(&bytes_b).unwrap();
 
         for epsilon in [0.0, 3.0] {
-            let owned: BTreeSet<_> = a.join_epsilon(&b, epsilon).into_iter().collect();
-            let viewed: BTreeSet<_> = view_a.join_epsilon(&view_b, epsilon).into_iter().collect();
+            let owned: BTreeSet<_> = a.join_within(&b, epsilon).into_iter().collect();
+            let viewed: BTreeSet<_> = view_a.join_within(&view_b, epsilon).into_iter().collect();
             assert_eq!(owned, viewed, "eps={epsilon}");
             assert_eq!(
-                normalized(view_a.self_join_epsilon(epsilon)),
-                normalized(a.self_join_epsilon(epsilon))
+                normalized(view_a.self_join_within(epsilon)),
+                normalized(a.self_join_within(epsilon))
             );
             assert_eq!(
-                sorted_ids(view_a.anti_join_epsilon(&view_b, epsilon)),
-                sorted_ids(a.anti_join_epsilon(&b, epsilon))
+                sorted_ids(view_a.anti_join_within(&view_b, epsilon)),
+                sorted_ids(a.anti_join_within(&b, epsilon))
             );
         }
         assert_eq!(
-            view_a.self_join_epsilon_components(4.0),
-            a.self_join_epsilon_components(4.0)
+            view_a.self_join_within_components(4.0),
+            a.self_join_within_components(4.0)
         );
     }
 }

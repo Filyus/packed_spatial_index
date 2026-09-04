@@ -53,7 +53,7 @@ usage:
       [--payload none|row-ref|row-wkb|feature-json]
       [--properties none|all|include:a,b|exclude:a,b]
       [--antimeridian reject|split|world]
-  gp2psindex join <a.psi> <b.psi> --epsilon N
+  gp2psindex join <a.psi> <b.psi> --within N
       [--count]
         (print how many pairs match, then stop)
       (writes one NDJSON line {\"a\":i,\"b\":j} per pair to stdout, streamed.
@@ -61,7 +61,7 @@ usage:
        distinct items once, an item never paired with itself.
        Distances are box-to-box Euclidean in the artifacts' coordinate
        units, zero when boxes overlap and inclusive at the bound, so
-       --epsilon 0 is the plain overlap join. Both artifacts must be the
+       --within 0 is the plain overlap join. Both artifacts must be the
        same dimensionality)
   gp2psindex query <source> <index.psi>
       [--format parquet|flatgeobuf|geojson]
@@ -547,11 +547,11 @@ enum JoinIndex {
 
 fn join_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Parsed::new(args);
-    parsed.no_unknown_flags(&["--epsilon", "--count"])?;
+    parsed.no_unknown_flags(&["--within", "--count"])?;
     let a_path = parsed.required_pos(0, "a.psi")?;
     let b_path = parsed.required_pos(1, "b.psi")?;
     parsed.no_extra_pos(2)?;
-    let epsilon = parse_epsilon(parsed.option("--epsilon")?.as_deref())?;
+    let epsilon = parse_epsilon(parsed.option("--within")?.as_deref())?;
 
     let a_bytes = std::fs::read(a_path)?;
     // The same path twice is a self-join, and reading the file again would only
@@ -609,14 +609,14 @@ fn join_pairs<W: std::io::Write>(
 
     let flow = match b_bytes {
         None => match &a {
-            JoinIndex::D2(a) => a.self_join_epsilon_with(epsilon, &mut emit),
-            JoinIndex::D3(a) => a.self_join_epsilon_with(epsilon, &mut emit),
+            JoinIndex::D2(a) => a.self_join_within_with(epsilon, &mut emit),
+            JoinIndex::D3(a) => a.self_join_within_with(epsilon, &mut emit),
         },
         Some(bytes) => {
             let b = load_join_index(bytes, "b.psi")?;
             match (&a, &b) {
-                (JoinIndex::D2(a), JoinIndex::D2(b)) => a.join_epsilon_with(b, epsilon, &mut emit),
-                (JoinIndex::D3(a), JoinIndex::D3(b)) => a.join_epsilon_with(b, epsilon, &mut emit),
+                (JoinIndex::D2(a), JoinIndex::D2(b)) => a.join_within_with(b, epsilon, &mut emit),
+                (JoinIndex::D3(a), JoinIndex::D3(b)) => a.join_within_with(b, epsilon, &mut emit),
                 _ => {
                     return Err(
                         "a.psi and b.psi are different dimensions; a distance join needs both in 2D or both in 3D"
@@ -649,16 +649,16 @@ fn load_join_index(bytes: &[u8], what: &str) -> Result<JoinIndex, Box<dyn std::e
 /// The distance bound, in the artifacts' coordinate units.
 ///
 /// Required, finite and non-negative — the same contract as the server's
-/// `epsilon` query parameter, so the two surfaces reject the same inputs.
+/// `within` query parameter, so the two surfaces reject the same inputs.
 fn parse_epsilon(raw: Option<&str>) -> Result<f64, Box<dyn std::error::Error>> {
     let raw = raw.ok_or(
-        "--epsilon is required: the distance bound in coordinate units, e.g. --epsilon 500",
+        "--within is required: the distance bound in coordinate units, e.g. --within 500",
     )?;
     let epsilon: f64 = raw
         .parse()
         .map_err(|_| format!("`{raw}` is not a number"))?;
     if !epsilon.is_finite() || epsilon < 0.0 {
-        return Err(format!("--epsilon must be a finite non-negative number, got `{raw}`").into());
+        return Err(format!("--within must be a finite non-negative number, got `{raw}`").into());
     }
     Ok(epsilon)
 }
@@ -1505,7 +1505,7 @@ fn option_takes_value(arg: &str) -> bool {
             | "--limit"
             | "--offset"
             | "--prefix-index"
-            | "--epsilon"
+            | "--within"
     )
 }
 
@@ -1689,7 +1689,7 @@ mod tests {
         join_cmd(&[
             a_path.to_string_lossy().into_owned(),
             b_path.to_string_lossy().into_owned(),
-            "--epsilon".to_string(),
+            "--within".to_string(),
             "2.0".to_string(),
             "--count".to_string(),
         ])
@@ -1699,7 +1699,7 @@ mod tests {
         join_cmd(&[
             a_path.to_string_lossy().into_owned(),
             a_path.to_string_lossy().into_owned(),
-            "--epsilon=1.0".to_string(),
+            "--within=1.0".to_string(),
             "--count".to_string(),
         ])
         .unwrap();

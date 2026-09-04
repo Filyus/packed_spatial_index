@@ -630,7 +630,7 @@ pub struct JoinParams {
     /// at most `epsilon`; `0` answers exactly the intersecting pairs; negative
     /// or NaN is rejected.
     #[serde(default)]
-    pub epsilon: Option<String>,
+    pub within: Option<String>,
     /// Maximum returned pairs, 1..=10 000. `numberMatched` always reports the
     /// true total — the traversal counts through even when collecting stops.
     #[serde(default)]
@@ -650,7 +650,7 @@ pub struct JoinResponse {
     /// `collectionId` for a self join, which reports each unordered pair once.
     pub join_collection_id: String,
     /// Effective distance bound.
-    pub epsilon: f64,
+    pub within: f64,
     /// Count mode: `records` (default) or `only`.
     pub count: CountMode,
     /// Total matched pairs, before any limit.
@@ -676,7 +676,7 @@ pub struct JoinPair {
 ///
 /// Every pair of entries whose boxes lie within `epsilon` of each other —
 /// "which places are within 500 m of which roads", where `search` can only
-/// answer one side at a time. Runs the core `join_epsilon` on in-memory owned
+/// answer one side at a time. Runs the core `join_within` on in-memory owned
 /// indexes of both artifacts (loaded from the artifact files on first use and
 /// cached; the core loader accepts the interleaved layout the convert writes
 /// by default). The traversal itself measures in tens of milliseconds per
@@ -687,7 +687,7 @@ pub fn join_response(
     other: &Collection,
     params: JoinParams,
 ) -> Result<JoinResponse, ServerError> {
-    let epsilon = parse_epsilon(params.epsilon.as_deref())?;
+    let epsilon = parse_epsilon(params.within.as_deref())?;
     let limit = join_limit(params.limit.as_deref())?;
     let count_mode = parse_count_mode(params.count.as_deref())?;
 
@@ -713,20 +713,20 @@ pub fn join_response(
             (collection.id() != other.id()).then(|| other.join_index()),
         ) {
             (JoinIndex::D2(index), None) => {
-                let _ = index.self_join_epsilon_with(epsilon, |a, b| emit(a, b));
+                let _ = index.self_join_within_with(epsilon, |a, b| emit(a, b));
             }
             (JoinIndex::D3(index), None) => {
-                let _ = index.self_join_epsilon_with(epsilon, |a, b| emit(a, b));
+                let _ = index.self_join_within_with(epsilon, |a, b| emit(a, b));
             }
             (JoinIndex::D2(a), Some(views)) => match views? {
                 JoinIndex::D2(b) => {
-                    let _ = a.join_epsilon_with(b, epsilon, |a, b| emit(a, b));
+                    let _ = a.join_within_with(b, epsilon, |a, b| emit(a, b));
                 }
                 JoinIndex::D3(_) => return Err(dimension_mismatch(collection, other)),
             },
             (JoinIndex::D3(a), Some(views)) => match views? {
                 JoinIndex::D3(b) => {
-                    let _ = a.join_epsilon_with(b, epsilon, |a, b| emit(a, b));
+                    let _ = a.join_within_with(b, epsilon, |a, b| emit(a, b));
                 }
                 JoinIndex::D2(_) => return Err(dimension_mismatch(collection, other)),
             },
@@ -736,7 +736,7 @@ pub fn join_response(
     Ok(JoinResponse {
         collection_id: collection.id().to_owned(),
         join_collection_id: other.id().to_owned(),
-        epsilon,
+        within: epsilon,
         count: count_mode,
         number_matched: total.get(),
         number_returned: pairs.len(),
@@ -756,7 +756,7 @@ pub struct AntiJoinParams {
     /// reported when *no* entry of `other` lies within `epsilon` of it;
     /// negative or NaN is rejected.
     #[serde(default)]
-    pub epsilon: Option<String>,
+    pub within: Option<String>,
     /// Maximum returned entries, 1..=10 000. `numberMatched` always reports
     /// the true total — the traversal counts through even when collecting
     /// stops.
@@ -776,7 +776,7 @@ pub struct AntiJoinResponse {
     /// Collection searched for partners.
     pub join_collection_id: String,
     /// Effective distance bound.
-    pub epsilon: f64,
+    pub within: f64,
     /// Count mode: `records` (default) or `only`.
     pub count: CountMode,
     /// Total unpaired entries, before any limit.
@@ -813,7 +813,7 @@ pub fn anti_join_response(
             collection.id()
         )));
     }
-    let epsilon = parse_epsilon(params.epsilon.as_deref())?;
+    let epsilon = parse_epsilon(params.within.as_deref())?;
     let limit = join_limit(params.limit.as_deref())?;
     let count_mode = parse_count_mode(params.count.as_deref())?;
 
@@ -836,10 +836,10 @@ pub fn anti_join_response(
         };
         match (collection.join_index()?, other.join_index()?) {
             (JoinIndex::D2(a), JoinIndex::D2(b)) => {
-                let _ = a.anti_join_epsilon_with(b, epsilon, &mut emit);
+                let _ = a.anti_join_within_with(b, epsilon, &mut emit);
             }
             (JoinIndex::D3(a), JoinIndex::D3(b)) => {
-                let _ = a.anti_join_epsilon_with(b, epsilon, &mut emit);
+                let _ = a.anti_join_within_with(b, epsilon, &mut emit);
             }
             _ => return Err(dimension_mismatch(collection, other)),
         }
@@ -848,7 +848,7 @@ pub fn anti_join_response(
     Ok(AntiJoinResponse {
         collection_id: collection.id().to_owned(),
         join_collection_id: other.id().to_owned(),
-        epsilon,
+        within: epsilon,
         count: count_mode,
         number_matched: total,
         number_returned: items.len(),
@@ -869,7 +869,7 @@ pub struct ComponentsParams {
     /// are connected when their boxes lie within `epsilon` of each other;
     /// negative or NaN is rejected.
     #[serde(default)]
-    pub epsilon: Option<String>,
+    pub within: Option<String>,
     /// Set to `only` to return `componentCount` without the labels.
     #[serde(default)]
     pub count: Option<String>,
@@ -882,7 +882,7 @@ pub struct ComponentsResponse {
     /// Collection the components are over.
     pub collection_id: String,
     /// Effective distance bound.
-    pub epsilon: f64,
+    pub within: f64,
     /// Count mode: `records` (default) or `only`.
     pub count: CountMode,
     /// Number of index entries, and so of labels in `records` mode.
@@ -894,7 +894,7 @@ pub struct ComponentsResponse {
     pub labels: Vec<usize>,
 }
 
-/// Proximity components `GET /collections/{id}/components?epsilon=`.
+/// Proximity components `GET /collections/{id}/components?within=`.
 ///
 /// Labels every entry with the smallest entry ordinal in its component of the
 /// `epsilon`-proximity graph — the graph whose edges are the pairs
@@ -915,12 +915,12 @@ pub fn components_response(
     collection: &Collection,
     params: ComponentsParams,
 ) -> Result<ComponentsResponse, ServerError> {
-    let epsilon = parse_epsilon(params.epsilon.as_deref())?;
+    let epsilon = parse_epsilon(params.within.as_deref())?;
     let count_mode = parse_count_mode(params.count.as_deref())?;
 
     let labels = match collection.join_index()? {
-        JoinIndex::D2(index) => index.self_join_epsilon_components(epsilon),
-        JoinIndex::D3(index) => index.self_join_epsilon_components(epsilon),
+        JoinIndex::D2(index) => index.self_join_within_components(epsilon),
+        JoinIndex::D3(index) => index.self_join_within_components(epsilon),
     };
     let item_count = labels.len();
     // A component's label is the smallest ordinal in it, so the distinct
@@ -934,7 +934,7 @@ pub fn components_response(
 
     Ok(ComponentsResponse {
         collection_id: collection.id().to_owned(),
-        epsilon,
+        within: epsilon,
         count: count_mode,
         item_count,
         component_count,
@@ -956,17 +956,17 @@ fn dimension_mismatch(collection: &Collection, other: &Collection) -> ServerErro
 
 fn parse_epsilon(raw: Option<&str>) -> Result<f64, ServerError> {
     let raw = raw.ok_or_else(|| {
-        ServerError::InvalidEpsilon(
-            "epsilon is required: the distance bound in coordinate units, e.g. epsilon=500"
+        ServerError::InvalidWithin(
+            "within is required: the distance bound in coordinate units, e.g. within=500"
                 .to_string(),
         )
     })?;
     let epsilon: f64 = raw
         .parse()
-        .map_err(|_| ServerError::InvalidEpsilon(format!("`{raw}` is not a number")))?;
+        .map_err(|_| ServerError::InvalidWithin(format!("`{raw}` is not a number")))?;
     if !epsilon.is_finite() || epsilon < 0.0 {
-        return Err(ServerError::InvalidEpsilon(format!(
-            "epsilon must be a finite non-negative number, got `{raw}`"
+        return Err(ServerError::InvalidWithin(format!(
+            "within must be a finite non-negative number, got `{raw}`"
         )));
     }
     Ok(epsilon)

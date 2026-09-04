@@ -6,7 +6,7 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
-- `gp2psindex join <a.psi> <b.psi> --epsilon N` reports every pair of items
+- `gp2psindex join <a.psi> <b.psi> --within N` reports every pair of items
   whose boxes lie within `epsilon` of each other, the CLI face of the core
   crate's distance join. Pairs are written as NDJSON — one `{"a":i,"b":j}` line
   per pair — from inside the join's visitor rather than collected first: the
@@ -20,8 +20,8 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   joined against a 3D one is refused. Semantics mirror the server's
   `/collections/{id}/join/{other}` endpoint exactly: the distance is box-to-box
   Euclidean in the artifacts' coordinate units, zero when the boxes overlap and
-  inclusive at the bound, so `--epsilon 0` reproduces the plain overlap join;
-  `--epsilon` is required and must be a finite non-negative number. Pair order
+  inclusive at the bound, so `--within 0` reproduces the plain overlap join;
+  `--within` is required and must be a finite non-negative number. Pair order
   is traversal order and is not part of the interface.
 
 ## [0.26.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.25.0...psi-geo-v0.26.0) - 2026-08-25

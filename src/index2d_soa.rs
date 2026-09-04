@@ -742,10 +742,10 @@ impl SimdIndex2D {
 
     /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
     /// `other` lie within `epsilon` of each other. See
-    /// [`Index2D::join_epsilon`](crate::Index2D::join_epsilon).
-    pub fn join_epsilon(&self, other: &SimdIndex2D, epsilon: f64) -> Vec<(usize, usize)> {
+    /// [`Index2D::join_within`](crate::Index2D::join_within).
+    pub fn join_within(&self, other: &SimdIndex2D, epsilon: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_epsilon_with(other, epsilon, |i, j| {
+        let _: ControlFlow<()> = self.join_within_with(other, epsilon, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -753,8 +753,8 @@ impl SimdIndex2D {
     }
 
     /// Visit every pair within `epsilon` between `self` and `other`. See
-    /// [`Index2D::join_epsilon_with`](crate::Index2D::join_epsilon_with).
-    pub fn join_epsilon_with<B, F>(
+    /// [`Index2D::join_within_with`](crate::Index2D::join_within_with).
+    pub fn join_within_with<B, F>(
         &self,
         other: &SimdIndex2D,
         epsilon: f64,
@@ -771,7 +771,7 @@ impl SimdIndex2D {
     /// `epsilon`, zero when they overlap (edges are inclusive).
     ///
     /// This is the radius query — "everything within 500 m of here" — the
-    /// single-index sibling of [`SimdIndex2D::join_epsilon`]. Like every query here it
+    /// single-index sibling of [`SimdIndex2D::join_within`]. Like every query here it
     /// is a broad phase: the box distance is a lower bound on the true
     /// distance between the underlying geometries, so hits are candidates and
     /// an exact predicate stays with the caller.
@@ -839,10 +839,10 @@ impl SimdIndex2D {
 
     /// Return every unordered pair of distinct items within this index whose
     /// boxes lie within `epsilon` of each other, each pair exactly once. See
-    /// [`Index2D::self_join_epsilon`](crate::Index2D::self_join_epsilon).
-    pub fn self_join_epsilon(&self, epsilon: f64) -> Vec<(usize, usize)> {
+    /// [`Index2D::self_join_within`](crate::Index2D::self_join_within).
+    pub fn self_join_within(&self, epsilon: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_epsilon_with(epsilon, |i, j| {
+        let _: ControlFlow<()> = self.self_join_within_with(epsilon, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -851,8 +851,8 @@ impl SimdIndex2D {
 
     /// Visit every unordered pair of distinct items within this index whose
     /// boxes lie within `epsilon` of each other. See
-    /// [`Index2D::self_join_epsilon_with`](crate::Index2D::self_join_epsilon_with).
-    pub fn self_join_epsilon_with<B, F>(&self, epsilon: f64, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::self_join_within_with`](crate::Index2D::self_join_within_with).
+    pub fn self_join_within_with<B, F>(&self, epsilon: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -860,10 +860,10 @@ impl SimdIndex2D {
     }
 
     /// Return the ids of items of `self` with no item of `other` within
-    /// `epsilon`. See [`Index2D::anti_join_epsilon`](crate::Index2D::anti_join_epsilon).
-    pub fn anti_join_epsilon(&self, other: &SimdIndex2D, epsilon: f64) -> Vec<usize> {
+    /// `epsilon`. See [`Index2D::anti_join_within`](crate::Index2D::anti_join_within).
+    pub fn anti_join_within(&self, other: &SimdIndex2D, epsilon: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.anti_join_epsilon_with(other, epsilon, |i| {
+        let _: ControlFlow<()> = self.anti_join_within_with(other, epsilon, |i| {
             out.push(i);
             ControlFlow::Continue(())
         });
@@ -871,8 +871,8 @@ impl SimdIndex2D {
     }
 
     /// Visit every item of `self` with no item of `other` within `epsilon`.
-    /// See [`Index2D::anti_join_epsilon_with`](crate::Index2D::anti_join_epsilon_with).
-    pub fn anti_join_epsilon_with<B, F>(
+    /// See [`Index2D::anti_join_within_with`](crate::Index2D::anti_join_within_with).
+    pub fn anti_join_within_with<B, F>(
         &self,
         other: &SimdIndex2D,
         epsilon: f64,
@@ -886,8 +886,8 @@ impl SimdIndex2D {
 
     /// Label every item with the smallest item id in its component of the
     /// `epsilon`-proximity graph. See
-    /// [`Index2D::self_join_epsilon_components`](crate::Index2D::self_join_epsilon_components).
-    pub fn self_join_epsilon_components(&self, epsilon: f64) -> Vec<usize> {
+    /// [`Index2D::self_join_within_components`](crate::Index2D::self_join_within_components).
+    pub fn self_join_within_components(&self, epsilon: f64) -> Vec<usize> {
         self_join_components_core(self, DistanceTest::new(epsilon))
     }
 
@@ -896,7 +896,7 @@ impl SimdIndex2D {
     /// is empty.
     ///
     /// The one-answer end of the distance family: where
-    /// [`SimdIndex2D::join_epsilon`] needs an `epsilon` and reports every pair inside
+    /// [`SimdIndex2D::join_within`] needs an `epsilon` and reports every pair inside
     /// it, this reports the single nearest pair with no bound to guess. The
     /// traversal is best-first over node pairs and stops as soon as nothing
     /// left on the frontier can beat the pair already found.
@@ -2731,10 +2731,10 @@ impl<'a> SimdIndex2DView<'a> {
 
     /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
     /// `other` lie within `epsilon` of each other. See
-    /// [`Index2D::join_epsilon`](crate::Index2D::join_epsilon).
-    pub fn join_epsilon(&self, other: &SimdIndex2DView<'_>, epsilon: f64) -> Vec<(usize, usize)> {
+    /// [`Index2D::join_within`](crate::Index2D::join_within).
+    pub fn join_within(&self, other: &SimdIndex2DView<'_>, epsilon: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_epsilon_with(other, epsilon, |i, j| {
+        let _: ControlFlow<()> = self.join_within_with(other, epsilon, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2742,8 +2742,8 @@ impl<'a> SimdIndex2DView<'a> {
     }
 
     /// Visit every pair within `epsilon` between `self` and `other`. See
-    /// [`Index2D::join_epsilon_with`](crate::Index2D::join_epsilon_with).
-    pub fn join_epsilon_with<B, F>(
+    /// [`Index2D::join_within_with`](crate::Index2D::join_within_with).
+    pub fn join_within_with<B, F>(
         &self,
         other: &SimdIndex2DView<'_>,
         epsilon: f64,
@@ -2796,10 +2796,10 @@ impl<'a> SimdIndex2DView<'a> {
 
     /// Return every unordered pair of distinct items within this view whose
     /// boxes lie within `epsilon` of each other, each pair exactly once. See
-    /// [`Index2D::self_join_epsilon`](crate::Index2D::self_join_epsilon).
-    pub fn self_join_epsilon(&self, epsilon: f64) -> Vec<(usize, usize)> {
+    /// [`Index2D::self_join_within`](crate::Index2D::self_join_within).
+    pub fn self_join_within(&self, epsilon: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_epsilon_with(epsilon, |i, j| {
+        let _: ControlFlow<()> = self.self_join_within_with(epsilon, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2808,8 +2808,8 @@ impl<'a> SimdIndex2DView<'a> {
 
     /// Visit every unordered pair of distinct items within this view whose
     /// boxes lie within `epsilon` of each other. See
-    /// [`Index2D::self_join_epsilon_with`](crate::Index2D::self_join_epsilon_with).
-    pub fn self_join_epsilon_with<B, F>(&self, epsilon: f64, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::self_join_within_with`](crate::Index2D::self_join_within_with).
+    pub fn self_join_within_with<B, F>(&self, epsilon: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -2817,10 +2817,10 @@ impl<'a> SimdIndex2DView<'a> {
     }
 
     /// Return the ids of items of `self` with no item of `other` within
-    /// `epsilon`. See [`Index2D::anti_join_epsilon`](crate::Index2D::anti_join_epsilon).
-    pub fn anti_join_epsilon(&self, other: &SimdIndex2DView<'_>, epsilon: f64) -> Vec<usize> {
+    /// `epsilon`. See [`Index2D::anti_join_within`](crate::Index2D::anti_join_within).
+    pub fn anti_join_within(&self, other: &SimdIndex2DView<'_>, epsilon: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.anti_join_epsilon_with(other, epsilon, |i| {
+        let _: ControlFlow<()> = self.anti_join_within_with(other, epsilon, |i| {
             out.push(i);
             ControlFlow::Continue(())
         });
@@ -2828,8 +2828,8 @@ impl<'a> SimdIndex2DView<'a> {
     }
 
     /// Visit every item of `self` with no item of `other` within `epsilon`.
-    /// See [`Index2D::anti_join_epsilon_with`](crate::Index2D::anti_join_epsilon_with).
-    pub fn anti_join_epsilon_with<B, F>(
+    /// See [`Index2D::anti_join_within_with`](crate::Index2D::anti_join_within_with).
+    pub fn anti_join_within_with<B, F>(
         &self,
         other: &SimdIndex2DView<'_>,
         epsilon: f64,
@@ -2843,8 +2843,8 @@ impl<'a> SimdIndex2DView<'a> {
 
     /// Label every item with the smallest item id in its component of the
     /// `epsilon`-proximity graph. See
-    /// [`Index2D::self_join_epsilon_components`](crate::Index2D::self_join_epsilon_components).
-    pub fn self_join_epsilon_components(&self, epsilon: f64) -> Vec<usize> {
+    /// [`Index2D::self_join_within_components`](crate::Index2D::self_join_within_components).
+    pub fn self_join_within_components(&self, epsilon: f64) -> Vec<usize> {
         self_join_components_core(self, DistanceTest::new(epsilon))
     }
 

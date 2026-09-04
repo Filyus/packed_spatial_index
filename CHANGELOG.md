@@ -6,7 +6,7 @@ All notable changes to this crate are documented here.
 
 ### Search
 
-- Added the distance join (ε-join): `join_epsilon` / `join_epsilon_with` report
+- Added the distance join (ε-join): `join_within` / `join_within_with` report
   every pair `(i, j)` whose boxes lie within `epsilon` of each other — the
   "within 500 m" question `join` could only answer as "intersecting, filter
   yourself". The distance is box-to-box Euclidean (`Box2D::distance_to_box` /
@@ -24,18 +24,18 @@ All notable changes to this crate are documented here.
   and the SIMD indexes and views (streaming and `f32` carry no join at all, so
   nothing new is missing there). Measured on 100 000 × 100 000 uniform unit
   boxes, pinned, interleaved on a quiet machine: at `epsilon = 2` (324 k
-  pairs) `join_epsilon` is ~2–2.5× faster than the workaround of joining two
+  pairs) `join_within` is ~2–2.5× faster than the workaround of joining two
   indexes of `epsilon`-inflated boxes and filtering the pairs by exact
   distance, at `epsilon = 6` (1.6 M pairs) ~3× in 2D and ~2–3× in 3D — and
   the workaround needs the second, inflated index built and kept around. Against plain `join` — the same pairs with the predicate
   swapped — the branchless per-axis `max` distance test measures at or below
-  the overlap test on uniform data (`join_epsilon(0.0)` runs 0.5–1.0× of
+  the overlap test on uniform data (`join_within(0.0)` runs 0.5–1.0× of
   `join`, both dimensions) and above it on clustered data (1.1–2.9×, worst
   where almost nothing matches).
   The family also ships the two folds the pair stream implies:
-  `anti_join_epsilon` / `anti_join_epsilon_with` report the items of `self`
+  `anti_join_within` / `anti_join_within_with` report the items of `self`
   with no partner within `epsilon` (one pruned search into `other` per item),
-  and `self_join_epsilon_components` labels every item with the smallest item
+  and `self_join_within_components` labels every item with the smallest item
   id in its component of the `epsilon`-proximity graph, an isolated item being
   its own label. The labels identify components; they are not clusters —
   distance proximity is not transitive, so whether a chained component should
@@ -46,11 +46,11 @@ All notable changes to this crate are documented here.
   items between two indexes as `(item_of_self, item_of_other, distance)`, and
   `self_closest_pair()` the nearest pair of *distinct* items within one, or
   `None` when there is no pair to report. The one-answer end of the distance
-  family — where `join_epsilon` needs a bound and reports everything inside it,
+  family — where `join_within` needs a bound and reports everything inside it,
   this needs none. The distance is between boxes, zero when they overlap, so
   it is a broad phase like everything else here; which pair is reported among
   several at the same distance is traversal order. On the same eight types that
-  carry `join_epsilon`.
+  carry `join_within`.
   A different traversal from the joins: a best-first frontier of *node pairs*
   keyed by the pair's box distance, which is a lower bound on any item pair
   beneath it, so the first time the head is no closer than the best pair found,
@@ -79,7 +79,7 @@ All notable changes to this crate are documented here.
   zero when the boxes overlap, edges inclusive, so `epsilon = 0.0` reproduces
   `search` exactly and a negative or NaN `epsilon` matches nothing. A
   degenerate query box (`min == max`, a point) works. Result order is traversal
-  order, as for `search`. On the eight types that carry `join_epsilon`: the
+  order, as for `search`. On the eight types that carry `join_within`: the
   owned `f64` indexes, their views, and the SIMD indexes and views (`f32` and
   streaming carry no distance operations yet, so the family is still missing
   there). The traversal is the shared region descent with the distance as the

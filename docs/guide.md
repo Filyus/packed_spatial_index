@@ -24,8 +24,8 @@ the method for each need; the notes after it explain the reasoning.
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
 | Everything within a distance of one place | `search_within(query, epsilon)` / `search_within_into` / `visit_within` / `any_within` | `search` on an `epsilon`-inflated box and then filtering the hits |
-| The single closest pair, with no distance to guess | `closest_pair(&other)` / `self_closest_pair()` | `join_epsilon` with a guessed `epsilon`, widened until it is non-empty |
-| All pairs within a distance — "within 500 m", not "intersecting" | `join_epsilon` / `join_epsilon_with` (`self_join_epsilon` within one index, `anti_join_epsilon` for the unpaired items, `self_join_epsilon_components` for groups) | joining indexes of `epsilon`-inflated boxes and filtering |
+| The single closest pair, with no distance to guess | `closest_pair(&other)` / `self_closest_pair()` | `join_within` with a guessed `epsilon`, widened until it is non-empty |
+| All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_with` (`self_join_within` within one index, `anti_join_within` for the unpaired items, `self_join_within_components` for groups) | joining indexes of `epsilon`-inflated boxes and filtering |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
 | The per-item blob back, not just the id | `payload(id)` / `search_payloads(query)` on a view, or `search_payloads` on a streaming reader | a side table keyed by id |
@@ -410,7 +410,7 @@ assert_eq!(near, vec![0, 1]);
 `search_within_into` fills a buffer you own, `visit_within` folds without one
 (return `ControlFlow::Break` to stop early), and `any_within` answers "is there
 anything near here" without collecting. All four are on the same eight types
-that carry `join_epsilon`: the owned `f64` indexes, their views, and the SIMD
+that carry `join_within`: the owned `f64` indexes, their views, and the SIMD
 indexes and views. The `f32` and streaming frontends carry no distance
 operations yet.
 
@@ -439,7 +439,14 @@ with both arms in one binary.
 
 ## Join by distance (ε-join)
 
-`join` answers "which boxes intersect". `join_epsilon` answers the question
+Naming: every method that takes a distance bound ends in `_within`
+(`search_within`, `neighbors_within`, `join_within`, ...), and the HTTP
+parameter and CLI flag are `within=` / `--within`. "ε-join" is the literature
+name for the same operation; `epsilon` never appears in a method name.
+`radius` is reserved for the spherical lon/lat query, where it is literally a
+circle on the sphere.
+
+`join` answers "which boxes intersect". `join_within` answers the question
 people actually ask — "which pairs are within 500 m of each other". The
 distance is between boxes (`Box2D::distance_to_box`, `Box3D::distance_to_box`,
 or the `sqrt`-free `distance_squared_to_box`): zero when the boxes overlap,
@@ -456,7 +463,7 @@ nothing.
 # b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
 # b.add(Box2D::new(200.0, 200.0, 201.0, 201.0));
 # let towers = b.finish()?;
-let mut pairs = towers.join_epsilon(&towers, 5.0);
+let mut pairs = towers.join_within(&towers, 5.0);
 pairs.sort_unstable();
 assert_eq!(pairs, vec![(0, 1)]);
 # Ok::<(), packed_spatial_index::BuildError>(())
@@ -466,14 +473,14 @@ The family shares the `join` descent with the prune test swapped for the
 distance, on every type that carries `join` (the owned `f64` indexes, their
 views, and the SIMD indexes and views):
 
-- `join_epsilon` / `join_epsilon_with`, `self_join_epsilon` /
-  `self_join_epsilon_with` — the pair stream. A leaf whose whole subtree lies
+- `join_within` / `join_within_with`, `self_join_within` /
+  `self_join_within_with` — the pair stream. A leaf whose whole subtree lies
   within `epsilon` is emitted as a range without per-item tests.
-- `anti_join_epsilon` / `anti_join_epsilon_with` — items of `self` with *no*
+- `anti_join_within` / `anti_join_within_with` — items of `self` with *no*
   partner within `epsilon`: the noise side of the graph, one pruned search per
   item. An index queried against itself pairs with itself at distance zero, so
   isolation within one index is a components question, not an anti-join.
-- `self_join_epsilon_components` — one label per item: the smallest item id in
+- `self_join_within_components` — one label per item: the smallest item id in
   its component of the `epsilon`-proximity graph, an isolated item being its
   own label. The labels identify components; they are not clusters. Distance
   proximity is *not transitive* — a chain of items each within `epsilon` of the
@@ -482,13 +489,13 @@ views, and the SIMD indexes and views):
   reports what the graph defines, deterministically.
 
 Measured on 100 000 × 100 000 uniform 2D boxes (extent 1000, unit size):
-`join_epsilon` at `epsilon = 2` (324 000 pairs) runs ~2.5× faster than the
+`join_within` at `epsilon = 2` (324 000 pairs) runs ~2.5× faster than the
 workaround of joining two indexes of `epsilon`-inflated boxes and filtering
 the pairs by exact distance; at `epsilon = 6` (1.6 million pairs) ~3×. The
 workaround also needs a second, larger index — 6–10 ms extra build and more
 memory in this setup. Against plain `join` the picture splits by data shape:
 on uniform data the distance predicate costs nothing extra —
-`join_epsilon(0.0)`, the same pairs with the predicate swapped, measures
+`join_within(0.0)`, the same pairs with the predicate swapped, measures
 0.5–1.0× of `join` — while on clustered data plain `join` stays the cheaper
 tool (1.1–2.9×, worst where almost nothing matches), so pick by the question
 being asked.
@@ -496,7 +503,7 @@ being asked.
 ## The closest pair
 
 `closest_pair` answers "which two of these are nearest each other" — one
-answer, no `epsilon` to guess. `join_epsilon` can be walked up to it, but only
+answer, no `epsilon` to guess. `join_within` can be walked up to it, but only
 by picking a bound, finding it empty, and widening; this finds it directly.
 
 ```rust

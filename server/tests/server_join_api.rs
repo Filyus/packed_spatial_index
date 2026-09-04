@@ -134,33 +134,33 @@ async fn join_pairs_match_distances() {
     // a0-b0 = 1, a1-b1 = 2, a2-b2 = 1, a1-b0 = 9, everything else farther.
     // Pair order is traversal order and not part of the API, so the envelope
     // is checked field-by-field and the pairs as a set.
-    let (status, json) = get_json(app.clone(), "/collections/places/join/roads?epsilon=2").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/join/roads?within=2").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["collectionId"], "places");
     assert_eq!(json["joinCollectionId"], "roads");
-    assert_eq!(json["epsilon"], 2.0);
+    assert_eq!(json["within"], 2.0);
     assert_eq!(json["count"], "records");
     assert_eq!(json["numberMatched"], 3);
     assert_eq!(json["numberReturned"], 3);
     assert_eq!(sorted_pairs(&json), vec![(0, 0), (1, 1), (2, 2)]);
 
-    let (status, json) = get_json(app.clone(), "/collections/places/join/roads?epsilon=9.5").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/join/roads?within=9.5").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 4);
     assert_eq!(sorted_pairs(&json), vec![(0, 0), (1, 0), (1, 1), (2, 2)]);
 
     // The bound is inclusive: a1-b0 is exactly 9.0 away.
-    let (status, json) = get_json(app.clone(), "/collections/places/join/roads?epsilon=9").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/join/roads?within=9").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 4);
 
     // Distinct points never touch, so epsilon = 0 is empty here.
-    let (status, json) = get_json(app.clone(), "/collections/places/join/roads?epsilon=0").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/join/roads?within=0").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 0);
 
     // A large enough bound pairs everything: 3 x 3.
-    let (status, json) = get_json(app, "/collections/places/join/roads?epsilon=200").await;
+    let (status, json) = get_json(app, "/collections/places/join/roads?within=200").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 9);
     assert_eq!(json["numberReturned"], 9);
@@ -180,7 +180,7 @@ async fn join_epsilon_zero_answers_overlaps() {
 
     // The polygon's box overlaps the inside point at distance 0; the outside
     // point is ~14.1 away.
-    let (status, json) = get_json(app, "/collections/places/join/roads?epsilon=0").await;
+    let (status, json) = get_json(app, "/collections/places/join/roads?within=0").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 1);
     assert_eq!(sorted_pairs(&json), vec![(0, 0)]);
@@ -194,7 +194,7 @@ async fn join_count_only_reports_total_without_pairs() {
         "roads",
     ));
     let (status, json) =
-        get_json(app, "/collections/places/join/roads?epsilon=9.5&count=only").await;
+        get_json(app, "/collections/places/join/roads?within=9.5&count=only").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["count"], "only");
     assert_eq!(json["numberMatched"], 4);
@@ -209,7 +209,7 @@ async fn join_limit_truncates_but_counts_through() {
         grid_points_shifted_geojson(),
         "roads",
     ));
-    let (status, json) = get_json(app, "/collections/places/join/roads?epsilon=9.5&limit=2").await;
+    let (status, json) = get_json(app, "/collections/places/join/roads?within=9.5&limit=2").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 4, "limit must not change the total");
     assert_eq!(json["numberReturned"], 2);
@@ -227,7 +227,7 @@ async fn join_with_self_reports_each_unordered_pair_once() {
     // Within `places`: a0-a1 = 10 apart, a2 far from both. The unordered
     // pair (0, 1) appears exactly once, with `a` below `b`.
     let (status, json) =
-        get_json(app.clone(), "/collections/places/join/places?epsilon=10.5").await;
+        get_json(app.clone(), "/collections/places/join/places?within=10.5").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["collectionId"], "places");
     assert_eq!(json["joinCollectionId"], "places");
@@ -235,7 +235,7 @@ async fn join_with_self_reports_each_unordered_pair_once() {
     assert_eq!(sorted_pairs(&json), vec![(0, 1)]);
 
     // The cross join against the shifted copy still reports both directions.
-    let (status, json) = get_json(app, "/collections/places/join/roads?epsilon=2").await;
+    let (status, json) = get_json(app, "/collections/places/join/roads?within=2").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 3);
 }
@@ -249,24 +249,24 @@ async fn join_rejects_bad_requests() {
     ));
 
     // Unknown right-hand collection.
-    let (status, json) = get_json(app.clone(), "/collections/places/join/nope?epsilon=1").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/join/nope?within=1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json["error"]["code"], "collection_not_found");
 
     // Missing, non-numeric, negative, and NaN epsilons.
     for (uri, code) in [
-        ("/collections/places/join/roads", "invalid_epsilon"),
+        ("/collections/places/join/roads", "invalid_within"),
         (
-            "/collections/places/join/roads?epsilon=abc",
-            "invalid_epsilon",
+            "/collections/places/join/roads?within=abc",
+            "invalid_within",
         ),
         (
-            "/collections/places/join/roads?epsilon=-1",
-            "invalid_epsilon",
+            "/collections/places/join/roads?within=-1",
+            "invalid_within",
         ),
         (
-            "/collections/places/join/roads?epsilon=NaN",
-            "invalid_epsilon",
+            "/collections/places/join/roads?within=NaN",
+            "invalid_within",
         ),
     ] {
         let (status, json) = get_json(app.clone(), uri).await;
@@ -277,13 +277,13 @@ async fn join_rejects_bad_requests() {
     // Bad limit and unknown parameters.
     let (status, json) = get_json(
         app.clone(),
-        "/collections/places/join/roads?epsilon=1&limit=0",
+        "/collections/places/join/roads?within=1&limit=0",
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"]["code"], "invalid_limit");
 
-    let (status, json) = get_json(app, "/collections/places/join/roads?epsilon=1&offset=4").await;
+    let (status, json) = get_json(app, "/collections/places/join/roads?within=1&offset=4").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"]["code"], "invalid_query");
 }
@@ -295,7 +295,7 @@ async fn join_cross_dimension_rejected() {
         grid_3d_geojson().as_bytes(),
         "grid3d",
     ));
-    let (status, json) = get_json(app, "/collections/places/join/grid3d?epsilon=1").await;
+    let (status, json) = get_json(app, "/collections/places/join/grid3d?within=1").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json["error"]["code"], "unsupported_query");
 }
@@ -309,7 +309,7 @@ async fn join_3d_collections() {
         grid_3d_geojson().as_bytes(),
         "gridcopy",
     ));
-    let (status, json) = get_json(app, "/collections/places/join/gridcopy?epsilon=5").await;
+    let (status, json) = get_json(app, "/collections/places/join/gridcopy?within=5").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 125);
     assert_eq!(sorted_pairs(&json).len(), 125);
@@ -340,11 +340,11 @@ async fn anti_join_reports_entries_with_no_partner() {
 
     // a0-b0 = 1, a1-b1 = 2, a2-b2 = 1: at epsilon = 2 every entry is paired.
     let (status, json) =
-        get_json(app.clone(), "/collections/places/anti-join/roads?epsilon=2").await;
+        get_json(app.clone(), "/collections/places/anti-join/roads?within=2").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["collectionId"], "places");
     assert_eq!(json["joinCollectionId"], "roads");
-    assert_eq!(json["epsilon"], 2.0);
+    assert_eq!(json["within"], 2.0);
     assert_eq!(json["count"], "records");
     assert_eq!(json["numberMatched"], 0);
     assert_eq!(items(&json), Vec::<u64>::new());
@@ -353,7 +353,7 @@ async fn anti_join_reports_entries_with_no_partner() {
     // inclusive, so 2.0 itself already pairs it (checked above).
     let (status, json) = get_json(
         app.clone(),
-        "/collections/places/anti-join/roads?epsilon=1.9",
+        "/collections/places/anti-join/roads?within=1.9",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -363,7 +363,7 @@ async fn anti_join_reports_entries_with_no_partner() {
     // Nothing within zero: distinct points never touch, so every entry is
     // unpaired.
     let (status, json) =
-        get_json(app.clone(), "/collections/places/anti-join/roads?epsilon=0").await;
+        get_json(app.clone(), "/collections/places/anti-join/roads?within=0").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 3);
     assert_eq!(items(&json), vec![0, 1, 2]);
@@ -371,7 +371,7 @@ async fn anti_join_reports_entries_with_no_partner() {
     // count=only reports the total and ships nothing.
     let (status, json) = get_json(
         app.clone(),
-        "/collections/places/anti-join/roads?epsilon=0&count=only",
+        "/collections/places/anti-join/roads?within=0&count=only",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -382,7 +382,7 @@ async fn anti_join_reports_entries_with_no_partner() {
 
     // limit truncates the array; numberMatched keeps counting through.
     let (status, json) =
-        get_json(app, "/collections/places/anti-join/roads?epsilon=0&limit=2").await;
+        get_json(app, "/collections/places/anti-join/roads?within=0&limit=2").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 3);
     assert_eq!(json["numberReturned"], 2);
@@ -399,7 +399,7 @@ async fn anti_join_with_self_is_refused() {
     // Every entry is at distance zero from itself, so the literal answer is
     // always empty. The endpoint says so and points at /components instead of
     // quietly answering a different question.
-    let (status, json) = get_json(app, "/collections/places/anti-join/places?epsilon=1").await;
+    let (status, json) = get_json(app, "/collections/places/anti-join/places?within=1").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json["error"]["code"], "unsupported_query");
     assert!(
@@ -420,24 +420,24 @@ async fn anti_join_rejects_bad_requests() {
     ));
 
     let (status, json) =
-        get_json(app.clone(), "/collections/places/anti-join/nope?epsilon=1").await;
+        get_json(app.clone(), "/collections/places/anti-join/nope?within=1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json["error"]["code"], "collection_not_found");
 
     for uri in [
         "/collections/places/anti-join/roads",
-        "/collections/places/anti-join/roads?epsilon=abc",
-        "/collections/places/anti-join/roads?epsilon=-1",
-        "/collections/places/anti-join/roads?epsilon=NaN",
+        "/collections/places/anti-join/roads?within=abc",
+        "/collections/places/anti-join/roads?within=-1",
+        "/collections/places/anti-join/roads?within=NaN",
     ] {
         let (status, json) = get_json(app.clone(), uri).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "uri: {uri}");
-        assert_eq!(json["error"]["code"], "invalid_epsilon", "uri: {uri}");
+        assert_eq!(json["error"]["code"], "invalid_within", "uri: {uri}");
     }
 
     let (status, json) = get_json(
         app.clone(),
-        "/collections/places/anti-join/roads?epsilon=1&limit=0",
+        "/collections/places/anti-join/roads?within=1&limit=0",
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -445,7 +445,7 @@ async fn anti_join_rejects_bad_requests() {
 
     let (status, json) = get_json(
         app,
-        "/collections/places/anti-join/roads?epsilon=1&offset=4",
+        "/collections/places/anti-join/roads?within=1&offset=4",
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -459,7 +459,7 @@ async fn anti_join_cross_dimension_rejected() {
         grid_3d_geojson().as_bytes(),
         "grid3d",
     ));
-    let (status, json) = get_json(app, "/collections/places/anti-join/grid3d?epsilon=1").await;
+    let (status, json) = get_json(app, "/collections/places/anti-join/grid3d?within=1").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json["error"]["code"], "unsupported_query");
 }
@@ -501,10 +501,10 @@ async fn components_label_the_chain_and_the_isolated_entry() {
         "roads",
     ));
 
-    let (status, json) = get_json(app.clone(), "/collections/places/components?epsilon=3").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/components?within=3").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["collectionId"], "places");
-    assert_eq!(json["epsilon"], 3.0);
+    assert_eq!(json["within"], 3.0);
     assert_eq!(json["count"], "records");
     assert_eq!(json["itemCount"], 4);
     // The chain collapses into one component labelled with its minimum id;
@@ -513,18 +513,18 @@ async fn components_label_the_chain_and_the_isolated_entry() {
     assert_eq!(labels(&json), vec![0, 0, 0, 3]);
 
     // Below the chain's link length every entry stands alone.
-    let (status, json) = get_json(app.clone(), "/collections/places/components?epsilon=2").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/components?within=2").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["componentCount"], 4);
     assert_eq!(labels(&json), vec![0, 1, 2, 3]);
 
     // Distinct points never touch, so epsilon = 0 is all singletons too.
-    let (status, json) = get_json(app.clone(), "/collections/places/components?epsilon=0").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/components?within=0").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["componentCount"], 4);
 
     // A bound large enough to reach the far entry merges everything.
-    let (status, json) = get_json(app, "/collections/places/components?epsilon=1000").await;
+    let (status, json) = get_json(app, "/collections/places/components?within=1000").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["componentCount"], 1);
     assert_eq!(labels(&json), vec![0, 0, 0, 0]);
@@ -537,7 +537,7 @@ async fn components_count_only_omits_the_labels() {
         grid_points_shifted_geojson(),
         "roads",
     ));
-    let (status, json) = get_json(app, "/collections/places/components?epsilon=3&count=only").await;
+    let (status, json) = get_json(app, "/collections/places/components?within=3&count=only").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["count"], "only");
     assert_eq!(json["itemCount"], 4);
@@ -554,12 +554,12 @@ async fn components_work_in_3d() {
         grid_points_shifted_geojson(),
         "roads",
     ));
-    let (status, json) = get_json(app.clone(), "/collections/places/components?epsilon=9").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/components?within=9").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["itemCount"], 125);
     assert_eq!(json["componentCount"], 125);
 
-    let (status, json) = get_json(app, "/collections/places/components?epsilon=10").await;
+    let (status, json) = get_json(app, "/collections/places/components?within=10").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["componentCount"], 1);
 }
@@ -572,24 +572,24 @@ async fn components_reject_bad_requests() {
         "roads",
     ));
 
-    let (status, json) = get_json(app.clone(), "/collections/nope/components?epsilon=1").await;
+    let (status, json) = get_json(app.clone(), "/collections/nope/components?within=1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json["error"]["code"], "collection_not_found");
 
     for uri in [
         "/collections/places/components",
-        "/collections/places/components?epsilon=abc",
-        "/collections/places/components?epsilon=-1",
-        "/collections/places/components?epsilon=NaN",
+        "/collections/places/components?within=abc",
+        "/collections/places/components?within=-1",
+        "/collections/places/components?within=NaN",
     ] {
         let (status, json) = get_json(app.clone(), uri).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "uri: {uri}");
-        assert_eq!(json["error"]["code"], "invalid_epsilon", "uri: {uri}");
+        assert_eq!(json["error"]["code"], "invalid_within", "uri: {uri}");
     }
 
     // `labels` is one entry per index entry by definition, so there is no
     // limit to accept.
-    let (status, json) = get_json(app, "/collections/places/components?epsilon=1&limit=2").await;
+    let (status, json) = get_json(app, "/collections/places/components?within=1&limit=2").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"]["code"], "invalid_query");
 }

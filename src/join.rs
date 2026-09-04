@@ -1,6 +1,6 @@
 //! Pairwise spatial joins: report every intersecting pair of items between two
 //! packed trees, or within one tree (`self_join`), or every pair within a
-//! distance bound (`join_epsilon`).
+//! distance bound (`join_within`).
 //!
 //! The traversal descends both trees simultaneously from the pair of roots. One
 //! bounds test between two internal entries prunes their whole subtree pair, so
@@ -59,7 +59,7 @@ impl PairTest<Box3D> for OverlapTest {
     }
 }
 
-/// Box-to-box distance at most `epsilon`: the `join_epsilon` semantics.
+/// Box-to-box distance at most `epsilon`: the `join_within` semantics.
 #[derive(Clone, Copy)]
 pub(crate) struct DistanceTest {
     eps_squared: f64,
@@ -335,7 +335,7 @@ where
 }
 
 /// Visit every item of `tree` whose box lies within `epsilon` of `query`: the
-/// radius query, single-tree sibling of the `join_epsilon` family.
+/// radius query, single-tree sibling of the `join_within` family.
 ///
 /// Node prune and whole-subtree accept are deliberately different tests. A node
 /// is descended when its box is within `epsilon` — items sit inside their node
@@ -552,7 +552,7 @@ where
 /// lower bound on any item pair beneath it, so the first time the heap's head
 /// is no closer than the best pair found the answer is settled and everything
 /// still queued can be dropped unexamined. That early exit is the whole point —
-/// there is one answer, not a stream, and a `join_epsilon` would have to guess
+/// there is one answer, not a stream, and a `join_within` would have to guess
 /// an `epsilon` that contains it.
 ///
 /// Ties: the pair reported among several at the same distance is traversal

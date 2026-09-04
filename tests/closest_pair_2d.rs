@@ -197,17 +197,17 @@ fn closest_pair_agrees_with_join_epsilon() {
     let a = build(&boxes_a);
     let b = build(&boxes_b);
     let (_, _, d) = a.closest_pair(&b).unwrap();
-    assert!(!a.join_epsilon(&b, d).is_empty(), "empty at the answer");
+    assert!(!a.join_within(&b, d).is_empty(), "empty at the answer");
     if d > 0.0 {
         let just_under = d - d * 1e-9;
         assert!(
-            a.join_epsilon(&b, just_under).is_empty(),
+            a.join_within(&b, just_under).is_empty(),
             "non-empty below the answer"
         );
     }
 
     let (_, _, d) = a.self_closest_pair().unwrap();
-    assert!(!a.self_join_epsilon(d).is_empty());
+    assert!(!a.self_join_within(d).is_empty());
 }
 
 #[cfg(feature = "simd")]

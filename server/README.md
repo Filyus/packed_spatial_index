@@ -68,9 +68,9 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy|radius=|polygon=&limit=&offset=&predicate=`
 - `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=|radius=|polygon=&limit=&offset=&predicate=&nonplanar=&level=&payload=&identity=&count=`
 - `POST /collections/{id}/search` — the same search as a JSON body
-- `GET /collections/{id}/join/{other}?epsilon=&limit=&count=`
-- `GET /collections/{id}/anti-join/{other}?epsilon=&limit=&count=`
-- `GET /collections/{id}/components?epsilon=&count=`
+- `GET /collections/{id}/join/{other}?within=&limit=&count=`
+- `GET /collections/{id}/anti-join/{other}?within=&limit=&count=`
+- `GET /collections/{id}/components?within=&count=`
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
@@ -242,9 +242,9 @@ object listing the accepted `predicates`, `levels`, `payloadModes`, and
 Three endpoints over one idea: the *ε-proximity graph*, whose nodes are index
 entries and whose edges join two entries whose boxes lie within `epsilon` of
 each other. The distance is box-to-box Euclidean in the artifact's coordinate
-units — zero when the boxes overlap, inclusive at the bound, so `epsilon=0`
-asks the plain overlap question. `epsilon` is required on all three and must be
-a finite non-negative number (`invalid_epsilon` otherwise). Both collections
+units — zero when the boxes overlap, inclusive at the bound, so `within=0`
+asks the plain overlap question. `within` is required on all three and must be
+a finite non-negative number (`invalid_within` otherwise). Both collections
 must be the same dimensionality; 2D against 3D is `unsupported_query` (422).
 
 Like every query here these are a broad phase: the box distance is a lower
@@ -258,7 +258,7 @@ The edges. Every pair of entries within `epsilon`, as `pairs: [{a, b}]` where
 with itself reports each unordered pair once.
 
 ```
-GET /collections/towers/join/cables?epsilon=500&limit=100
+GET /collections/towers/join/cables?within=500&limit=100
 ```
 
 `limit` truncates the returned array; `numberMatched` always reports the true
@@ -287,8 +287,8 @@ a label: the smallest entry ordinal in its component. An entry with no
 neighbour is its own label.
 
 ```
-GET /collections/towers/components?epsilon=50
-{"collectionId":"towers","epsilon":50.0,"count":"records",
+GET /collections/towers/components?within=50
+{"collectionId":"towers","within":50.0,"count":"records",
  "itemCount":4,"componentCount":2,"labels":[0,0,0,3]}
 ```
 

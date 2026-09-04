@@ -13,8 +13,8 @@ use crate::{
     ServerError, ServerState,
     query::{
         AntiJoinParams, CollectionDetail, CollectionSummary, ComponentsParams, JoinParams,
-        SearchParams, anti_join_response, components_response, items_response, join_response,
-        search_response,
+        NearestParams, SearchParams, anti_join_response, components_response, items_response,
+        join_response, nearest_response, search_response,
     },
 };
 
@@ -58,6 +58,10 @@ pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router
         // Connected components of one collection's own proximity graph. No
         // `{other}` segment: a component is a property of one graph.
         .route("/collections/{id}/components", get(components))
+        // The k entries nearest a point, nearest first, under a planar or
+        // spherical metric. See `nearest_response` for how the metric is
+        // chosen.
+        .route("/collections/{id}/nearest", get(nearest))
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(route_not_found)
         // Layered outside the fallbacks so a 404 or 405 is logged too.
@@ -288,6 +292,20 @@ async fn components(
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
     Ok(Json(
         query_blocking(move || components_response(&collection, params)).await?,
+    ))
+}
+
+/// The k entries nearest a point. See `nearest_response`.
+async fn nearest(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    ValidQuery(params): ValidQuery<NearestParams>,
+) -> Result<Json<crate::query::NearestResponse>, ServerError> {
+    let collection = state
+        .collection(&id)
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
+    Ok(Json(
+        query_blocking(move || nearest_response(&collection, params)).await?,
     ))
 }
 

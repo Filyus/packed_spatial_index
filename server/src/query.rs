@@ -1,6 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::ops::ControlFlow;
 
+use packed_spatial_index::{EARTH_RADIUS_M, Point2D, Point3D, haversine_distance_2d};
 use packed_spatial_index_geo::geo_types::{Coord, LineString, MultiPolygon, Polygon};
 use packed_spatial_index_geo::{
     Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, Frustum3D, GeoArtifactIndex,
@@ -293,6 +294,10 @@ pub struct Capabilities {
     pub count_modes: Vec<CountMode>,
     /// Query shapes accepted by `/search`. `frustum` needs a 3D artifact.
     pub query_shapes: Vec<QueryShapeKind>,
+    /// Metrics `/nearest` accepts. `spherical` is listed for every 2D
+    /// artifact; on one that does not declare spherical edges it needs
+    /// `nonplanar=treat_as_planar`, the same opt-in a `radius` search takes.
+    pub nearest_metrics: Vec<NearestMetric>,
 }
 
 /// A query shape a collection accepts, for [`Capabilities`].
@@ -549,6 +554,11 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
             query_shapes.push(QueryShapeKind::Radius);
         }
     }
+    let nearest_metrics = if matches!(collection.manifest().dims, CoordinateDims::Xyz) {
+        vec![NearestMetric::Planar]
+    } else {
+        vec![NearestMetric::Planar, NearestMetric::Spherical]
+    };
     Capabilities {
         items: payload_kind == PayloadKind::FeatureJson,
         predicates,
@@ -557,6 +567,7 @@ pub fn capabilities(collection: &Collection) -> Capabilities {
         identity_modes,
         count_modes,
         query_shapes,
+        nearest_metrics,
     }
 }
 
@@ -944,6 +955,239 @@ pub fn components_response(
             labels
         },
     })
+}
+
+/// Query parameters accepted by `/collections/{id}/nearest`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearestParams {
+    /// The query point as `x,y` (2D) or `x,y,z` (3D), in the collection's
+    /// coordinates. Required.
+    #[serde(default)]
+    pub point: Option<String>,
+    /// How many neighbours, 1..=10 000. Required.
+    #[serde(default)]
+    pub k: Option<String>,
+    /// `planar` (Euclidean in coordinate units, the default unless the
+    /// artifact declares spherical edges) or `spherical` (great-circle metres
+    /// over lon/lat degrees, 2D only).
+    #[serde(default)]
+    pub metric: Option<String>,
+    /// Optional cutoff in the metric's units: only neighbours within this
+    /// distance are returned, so fewer than `k` may come back.
+    #[serde(default)]
+    pub within: Option<String>,
+    /// `treat_as_planar` vouches that a collection declaring planar edges
+    /// stores lon/lat degrees, which lets `metric=spherical` run there —
+    /// the same opt-in the `radius` search takes.
+    #[serde(default)]
+    pub nonplanar: Option<String>,
+}
+
+/// The distance a `/nearest` query orders by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NearestMetric {
+    /// Euclidean distance in the collection's coordinate units, the
+    /// point-to-box distance the core kNN uses. Any dimensionality.
+    Planar,
+    /// Great-circle (haversine) metres from a lon/lat point to the closest
+    /// point of each entry's lon/lat box. 2D only.
+    Spherical,
+}
+
+/// One `/nearest` answer.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NearestItem {
+    /// Entry ordinal in the collection.
+    pub entry: usize,
+    /// Distance in the metric's units: coordinate units for `planar`, metres
+    /// for `spherical`. Box distance, so a lower bound on the distance to the
+    /// entry's real geometry, exact for points.
+    pub distance: f64,
+}
+
+/// `/collections/{id}/nearest` response envelope.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NearestResponse {
+    /// Collection searched.
+    pub collection_id: String,
+    /// Effective query point.
+    pub point: Vec<f64>,
+    /// Requested neighbour count.
+    pub k: usize,
+    /// Effective metric.
+    pub metric: NearestMetric,
+    /// Effective cutoff, when one was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub within: Option<f64>,
+    /// Returned neighbours, `k` at most.
+    pub number_returned: usize,
+    /// Nearest first.
+    pub items: Vec<NearestItem>,
+}
+
+/// Nearest neighbours `GET /collections/{id}/nearest?point=&k=`.
+///
+/// The k entries nearest a point, nearest first, with their distances — the
+/// one question `/search` cannot express: a radius needs a guess and a bbox
+/// needs two. Runs the core best-first kNN over the same cached owned index
+/// the join family uses, so the traversal never leaves memory.
+///
+/// Which distance is meant is the part worth being explicit about. A
+/// collection stores numbers; whether they are metres on a plane or degrees
+/// on a sphere is declared by its edge model, so `metric` defaults from that
+/// declaration: `spherical` where the artifact says its edges are spherical,
+/// `planar` otherwise. Asking for `spherical` on a collection that does not
+/// declare it is refused (422) unless `nonplanar=treat_as_planar` vouches for
+/// lon/lat content, exactly as a `radius` search is — GeoJSON and plain
+/// GeoParquet declare planar edges while storing degrees, and the caller is
+/// the one who knows. A 3D collection is planar only.
+pub fn nearest_response(
+    collection: &Collection,
+    params: NearestParams,
+) -> Result<NearestResponse, ServerError> {
+    let manifest = collection.manifest();
+    let is_3d = matches!(manifest.dims, CoordinateDims::Xyz | CoordinateDims::Xyzm);
+    let point = parse_point(params.point.as_deref(), if is_3d { 3 } else { 2 })?;
+    let k = parse_k(params.k.as_deref())?;
+    let within = parse_optional_max_distance(params.within.as_deref())?;
+    let nonplanar = parse_nonplanar(params.nonplanar.as_deref())?;
+    let declares_spherical = matches!(manifest.edges, EdgeModel::Spherical);
+    let metric = match params.metric.as_deref() {
+        None => {
+            if declares_spherical && !is_3d {
+                NearestMetric::Spherical
+            } else {
+                NearestMetric::Planar
+            }
+        }
+        Some("planar") => NearestMetric::Planar,
+        Some("spherical") => NearestMetric::Spherical,
+        Some(other) => {
+            return Err(ServerError::InvalidMetric(format!(
+                "metric must be `planar` or `spherical`, got `{other}`"
+            )));
+        }
+    };
+    if metric == NearestMetric::Spherical {
+        if is_3d {
+            return Err(ServerError::UnsupportedQuery(format!(
+                "collection `{}` is 3D; a spherical metric is a lon/lat question -- use metric=planar",
+                collection.id()
+            )));
+        }
+        if !declares_spherical && nonplanar != NonPlanarMode::TreatAsPlanar {
+            return Err(ServerError::UnsupportedQuery(format!(
+                "collection `{}` declares {:?} edges, so a spherical distance over its \
+                 coordinates is not known to mean anything; pass nonplanar=treat_as_planar \
+                 to vouch that they are lon/lat degrees",
+                collection.id(),
+                manifest.edges
+            )));
+        }
+        let (lon, lat) = (point[0], point[1]);
+        if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
+            return Err(ServerError::InvalidPoint(format!(
+                "a spherical query point is lon,lat in degrees: longitude in [-180, 180] and \
+                 latitude in [-90, 90], got {lon},{lat}"
+            )));
+        }
+    }
+
+    let cutoff = within.unwrap_or(f64::INFINITY);
+    let mut items = Vec::with_capacity(k.min(1024));
+    let mut take = |entry: usize, distance: f64| -> ControlFlow<()> {
+        items.push(NearestItem { entry, distance });
+        if items.len() >= k {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    match (collection.join_index()?, metric) {
+        (JoinIndex::D2(index), NearestMetric::Planar) => {
+            let _ = index.visit_neighbors(Point2D::new(point[0], point[1]), cutoff, |i, d2| {
+                take(i, d2.sqrt())
+            });
+        }
+        (JoinIndex::D2(index), NearestMetric::Spherical) => {
+            let query = (point[0], point[1]);
+            let _ = index.visit_neighbors_metric(
+                |bounds| haversine_distance_2d(query, bounds, EARTH_RADIUS_M),
+                cutoff,
+                &mut take,
+            );
+        }
+        (JoinIndex::D3(index), _) => {
+            let _ = index.visit_neighbors(
+                Point3D::new(point[0], point[1], point[2]),
+                cutoff,
+                |i, d2| take(i, d2.sqrt()),
+            );
+        }
+    }
+
+    Ok(NearestResponse {
+        collection_id: collection.id().to_owned(),
+        point,
+        k,
+        metric,
+        within,
+        number_returned: items.len(),
+        items,
+    })
+}
+
+fn parse_point(raw: Option<&str>, dims: usize) -> Result<Vec<f64>, ServerError> {
+    let raw = raw.ok_or_else(|| {
+        ServerError::InvalidPoint(format!(
+            "point is required: {} comma-separated numbers, e.g. point={}",
+            dims,
+            if dims == 3 { "1,2,3" } else { "1,2" }
+        ))
+    })?;
+    let mut point = Vec::with_capacity(dims);
+    for part in raw.split(',') {
+        let part = part.trim();
+        let value: f64 = part
+            .parse()
+            .map_err(|_| ServerError::InvalidPoint(format!("`{part}` is not a number")))?;
+        if !value.is_finite() {
+            return Err(ServerError::InvalidPoint(format!("`{part}` is not finite")));
+        }
+        point.push(value);
+    }
+    if point.len() != dims {
+        return Err(ServerError::InvalidPoint(format!(
+            "point must have {dims} coordinates for this collection, got {}",
+            point.len()
+        )));
+    }
+    Ok(point)
+}
+
+fn parse_k(raw: Option<&str>) -> Result<usize, ServerError> {
+    let raw = raw.ok_or_else(|| {
+        ServerError::InvalidK("k is required: how many neighbours, e.g. k=10".to_string())
+    })?;
+    let k: usize = raw
+        .parse()
+        .map_err(|_| ServerError::InvalidK(format!("`{raw}` is not a number")))?;
+    if k == 0 || k > MAX_LIMIT {
+        return Err(ServerError::InvalidK(format!(
+            "k must be between 1 and {MAX_LIMIT}"
+        )));
+    }
+    Ok(k)
+}
+
+/// `within` where it is a cutoff rather than the operation's own bound:
+/// absent means unbounded, present must be finite and non-negative.
+fn parse_optional_max_distance(raw: Option<&str>) -> Result<Option<f64>, ServerError> {
+    raw.map(|raw| parse_max_distance(Some(raw))).transpose()
 }
 
 fn dimension_mismatch(collection: &Collection, other: &Collection) -> ServerError {

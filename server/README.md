@@ -71,6 +71,7 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections/{id}/join/{other}?within=&limit=&count=`
 - `GET /collections/{id}/anti-join/{other}?within=&limit=&count=`
 - `GET /collections/{id}/components?within=&count=`
+- `GET /collections/{id}/nearest?point=x,y[,z]&k=&metric=planar|spherical&within=&nonplanar=`
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
@@ -302,3 +303,45 @@ There is no `limit`: `labels` has one entry per index entry by definition, so a
 truncated labelling would not be a labelling of anything. A large collection
 therefore returns a large body; `count=only` returns `componentCount` alone
 when that is all you need.
+
+### GET /collections/{id}/nearest
+
+The `k` entries nearest a point, nearest first, each with its distance — the
+question `/search` cannot express, since a radius needs a guess and a bbox
+needs two. Runs the core best-first kNN over the same cached owned index the
+join family uses.
+
+```
+GET /collections/towers/nearest?point=13.40,52.52&k=3
+{"collectionId":"towers","point":[13.4,52.52],"k":3,"metric":"planar",
+ "numberReturned":3,"items":[{"entry":17,"distance":0.012},{"entry":4,"distance":0.09},{"entry":22,"distance":0.31}]}
+```
+
+- `point` — `x,y` for a 2D collection, `x,y,z` for a 3D one, in its own
+  coordinates. Required.
+- `k` — 1..=10 000. Required. Fewer may come back when `within` caps them or
+  the collection is smaller.
+- `metric` — which distance orders the answer, and the part worth being
+  explicit about. A collection stores numbers; whether they are metres on a
+  plane or degrees on a sphere is declared by its edge model, so the default
+  follows that declaration: `spherical` where the artifact declares spherical
+  edges, `planar` otherwise.
+  - `planar`: Euclidean in coordinate units, any dimensionality.
+  - `spherical`: great-circle metres from a lon/lat point to the closest
+    point of each entry's lon/lat box (haversine, mean Earth radius). 2D
+    only. Asking for it on a collection that does not declare spherical
+    edges is refused (422) unless `nonplanar=treat_as_planar` vouches that
+    the coordinates are lon/lat degrees — the same opt-in a `radius` search
+    takes, and needed for the same reason: GeoJSON and plain GeoParquet
+    declare planar edges while storing degrees, and only the caller knows.
+- `within` — optional cutoff in the metric's units (coordinate units or
+  metres); only neighbours inside it are returned. Echoed when given.
+- `distance` is the box distance, so a lower bound on the distance to the
+  entry's real geometry and exact for points; the entries are candidates in
+  the same sense as everywhere else here.
+
+`capabilities.nearestMetrics` lists what a collection takes: both metrics on
+2D, `planar` alone on 3D. Errors: unknown collection 404; missing or
+malformed `point`, `k`, `metric`, `within`, unknown parameters 400
+(`invalid_point`, `invalid_k`, `invalid_metric`, `invalid_within`,
+`invalid_query`); `spherical` on 3D or without the opt-in 422.

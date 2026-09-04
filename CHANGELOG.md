@@ -194,6 +194,15 @@ All notable changes to this crate are documented here.
   resumable cursor. Errors: unknown collection 404; missing/invalid `max_distance`,
   bad `limit`, unknown parameters 400; a 2D/3D mismatch between the two
   collections 422.
+- Added `GET /collections/{id}/nearest?point=&k=`: the `k` entries nearest a
+  point, nearest first, each with its distance, over the same cached owned
+  index the join family uses. `metric=planar|spherical` chooses the distance
+  and defaults from the artifact's declared edge model; `spherical`
+  (haversine metres over lon/lat, 2D only) on a collection declaring planar
+  edges is refused with 422 unless `nonplanar=treat_as_planar` vouches for
+  lon/lat content, the same opt-in a `radius` search takes. `within` caps the
+  distance in the metric's units. `capabilities.nearestMetrics` advertises
+  the metrics a collection accepts.
 
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 

@@ -62,6 +62,15 @@ pub enum ServerError {
     /// The client supplied an invalid distance-join bound (`within`).
     #[error("invalid within: {0}")]
     InvalidWithin(String),
+    /// The client supplied an invalid nearest-neighbour query point.
+    #[error("invalid point: {0}")]
+    InvalidPoint(String),
+    /// The client supplied an invalid nearest-neighbour count (`k`).
+    #[error("invalid k: {0}")]
+    InvalidK(String),
+    /// The client supplied an invalid nearest-neighbour metric.
+    #[error("invalid metric: {0}")]
+    InvalidMetric(String),
     /// The client supplied a query the artifact's edge/encoding model rejects.
     /// 422, not 500: these describe a client request that cannot be satisfied
     /// by this collection, not a server-side fault.
@@ -146,7 +155,10 @@ impl ServerError {
             | ServerError::InvalidFrustum(_)
             | ServerError::InvalidRadius(_)
             | ServerError::InvalidPolygon(_)
-            | ServerError::InvalidWithin(_) => StatusCode::BAD_REQUEST,
+            | ServerError::InvalidWithin(_)
+            | ServerError::InvalidPoint(_)
+            | ServerError::InvalidK(_)
+            | ServerError::InvalidMetric(_) => StatusCode::BAD_REQUEST,
             ServerError::CollectionNotFound(_) | ServerError::RouteNotFound(_) => {
                 StatusCode::NOT_FOUND
             }
@@ -181,6 +193,9 @@ impl ServerError {
             ServerError::InvalidRadius(_) => "invalid_radius",
             ServerError::InvalidPolygon(_) => "invalid_polygon",
             ServerError::InvalidWithin(_) => "invalid_within",
+            ServerError::InvalidPoint(_) => "invalid_point",
+            ServerError::InvalidK(_) => "invalid_k",
+            ServerError::InvalidMetric(_) => "invalid_metric",
             ServerError::CollectionNotFound(_) => "collection_not_found",
             ServerError::RouteNotFound(_) => "not_found",
             ServerError::MethodNotAllowed(_) => "method_not_allowed",

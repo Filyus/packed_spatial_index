@@ -273,6 +273,7 @@ async fn contract_collections_summary_shape() {
                     "identityModes": ["ref"],
                     "countModes": ["records", "only"],
                     "queryShapes": ["bbox", "polygon"]
+                    "nearestMetrics": ["planar", "spherical"],
                 }
             }
         ]),

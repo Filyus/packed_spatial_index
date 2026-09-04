@@ -226,8 +226,7 @@ async fn join_with_self_reports_each_unordered_pair_once() {
 
     // Within `places`: a0-a1 = 10 apart, a2 far from both. The unordered
     // pair (0, 1) appears exactly once, with `a` below `b`.
-    let (status, json) =
-        get_json(app.clone(), "/collections/places/join/places?within=10.5").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/join/places?within=10.5").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["collectionId"], "places");
     assert_eq!(json["joinCollectionId"], "places");
@@ -260,10 +259,7 @@ async fn join_rejects_bad_requests() {
             "/collections/places/join/roads?within=abc",
             "invalid_within",
         ),
-        (
-            "/collections/places/join/roads?within=-1",
-            "invalid_within",
-        ),
+        ("/collections/places/join/roads?within=-1", "invalid_within"),
         (
             "/collections/places/join/roads?within=NaN",
             "invalid_within",
@@ -419,8 +415,7 @@ async fn anti_join_rejects_bad_requests() {
         "roads",
     ));
 
-    let (status, json) =
-        get_json(app.clone(), "/collections/places/anti-join/nope?within=1").await;
+    let (status, json) = get_json(app.clone(), "/collections/places/anti-join/nope?within=1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json["error"]["code"], "collection_not_found");
 
@@ -443,11 +438,8 @@ async fn anti_join_rejects_bad_requests() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"]["code"], "invalid_limit");
 
-    let (status, json) = get_json(
-        app,
-        "/collections/places/anti-join/roads?within=1&offset=4",
-    )
-    .await;
+    let (status, json) =
+        get_json(app, "/collections/places/anti-join/roads?within=1&offset=4").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["error"]["code"], "invalid_query");
 }

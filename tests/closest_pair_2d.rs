@@ -190,7 +190,7 @@ fn closest_pair_is_symmetric_in_distance() {
 
 /// The closest pair is the smallest max_distance at which the join is non-empty.
 #[test]
-fn closest_pair_agrees_with_join_epsilon() {
+fn closest_pair_agrees_with_join_within() {
     let mut rng = StdRng::seed_from_u64(4205);
     let boxes_a = random_boxes(&mut rng, 250, 100.0, 3.0);
     let boxes_b = random_boxes(&mut rng, 200, 100.0, 3.0);

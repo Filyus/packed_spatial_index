@@ -1614,7 +1614,7 @@ mod tests {
 
     #[cfg(feature = "geojson")]
     #[test]
-    fn join_reports_pairs_within_epsilon() {
+    fn join_reports_pairs_within_max_distance() {
         let a = artifact_2d(&[(0.0, 0.0), (10.0, 0.0)]);
         let b = artifact_2d(&[(2.0, 0.0), (12.0, 0.0), (13.0, 0.0)]);
 
@@ -1708,7 +1708,7 @@ mod tests {
     }
 
     #[test]
-    fn epsilon_is_required_finite_and_non_negative() {
+    fn max_distance_is_required_finite_and_non_negative() {
         assert!(
             parse_max_distance(None)
                 .unwrap_err()

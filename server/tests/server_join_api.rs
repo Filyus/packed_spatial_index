@@ -167,7 +167,7 @@ async fn join_pairs_match_distances() {
 }
 
 #[tokio::test]
-async fn join_epsilon_zero_answers_overlaps() {
+async fn join_within_zero_answers_overlaps() {
     // One big polygon over the origin, probed by points inside and outside it.
     let points = br#"{
         "type": "FeatureCollection",
@@ -253,7 +253,7 @@ async fn join_rejects_bad_requests() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json["error"]["code"], "collection_not_found");
 
-    // Missing, non-numeric, negative, and NaN epsilons.
+    // Missing, non-numeric, negative, and NaN max_distances.
     for (uri, code) in [
         ("/collections/places/join/roads", "invalid_within"),
         (

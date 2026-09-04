@@ -68,7 +68,7 @@ fn search_within_matches_naive() {
 }
 
 #[test]
-fn epsilon_zero_reproduces_search() {
+fn max_distance_zero_reproduces_search() {
     let mut rng = StdRng::seed_from_u64(3102);
     let boxes = random_boxes(&mut rng, 500, 100.0, 5.0);
     let index = build(&boxes);
@@ -113,7 +113,7 @@ fn degenerate_point_query() {
 }
 
 #[test]
-fn negative_and_nan_epsilon_match_nothing() {
+fn negative_and_nan_max_distance_match_nothing() {
     let mut rng = StdRng::seed_from_u64(3103);
     let boxes = random_boxes(&mut rng, 200, 100.0, 5.0);
     let index = build(&boxes);

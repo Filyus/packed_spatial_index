@@ -23,6 +23,23 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   inclusive at the bound, so `--within 0` reproduces the plain overlap join;
   `--within` is required and must be a finite non-negative number. Pair order
   is traversal order and is not part of the interface.
+- `gp2psindex anti-join <a.psi> <b.psi> --within N` and
+  `gp2psindex components <a.psi> --within N`, the CLI faces of the server's
+  `/anti-join` and `/components`. The anti-join streams one `{"a":i}` line per
+  item of `a` with no item of `b` within the bound, and refuses the same path
+  twice for the reason the server does: against itself every item is at
+  distance zero from itself, so the literal answer is always empty and the
+  question meant is `components`. Components print one
+  `{"item":i,"label":l}` line per item, the label being the smallest item id
+  in the item's connected component; `--count` prints the number of unpaired
+  items or of components and streams nothing.
+- `gp2psindex query` takes `--polygon` (GeoJSON MultiPolygon coordinates, 2D
+  only; the polygon drives the index traversal itself, so it needs no payload,
+  `--count` works over it and `--exact` refines the survivors against source
+  geometry) and, against a 3D index, `--frustum` (24 numbers, six
+  inward-pointing planes as `a,b,c,d`, a plane with a zero normal refused).
+  Both are the shapes the server's `/search` already accepted, validated by
+  the same rules, so the CLI no longer trails its own HTTP surface.
 
 ## [0.26.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.25.0...psi-geo-v0.26.0) - 2026-08-25
 

@@ -350,6 +350,20 @@ gp2psindex query input.parquet output.psi \
   --json
 ```
 
+`--polygon` takes GeoJSON MultiPolygon coordinates (2D only). Unlike a radius
+it is not an exact query: the polygon drives the index traversal itself,
+pruning subtrees that fall outside it rather than fetching everything in its
+bounding box, so it needs no payload and `--count` works over it. `--exact`
+still refines the surviving entries against the source geometry.
+Against a 3D index `--frustum` takes six inward-pointing planes as 24 numbers
+`a,b,c,d,...`, the same wire form as the server's `frustum=`.
+
+```text
+gp2psindex query places.parquet places.psi \
+  --polygon '[[[[-74.1,40.6],[-73.8,40.6],[-73.8,40.9],[-74.1,40.9],[-74.1,40.6]]]]' \
+  --count
+```
+
 Join two artifacts by distance — every pair of items whose boxes lie within
 `--within` of each other, streamed as NDJSON so a join with millions of pairs
 never has to fit in memory. Pass the same path twice for a self-join (every
@@ -369,6 +383,30 @@ zero when the boxes overlap, inclusive at the bound, so `--within 0` is the
 plain overlap join. Both artifacts must be the same dimensionality. Like every
 query here it is a broad phase — the box distance is a lower bound on the true
 distance between the geometries, so the pairs are candidates.
+
+The same bound drives two more commands, mirroring the server's `/anti-join`
+and `/components` endpoints. `anti-join` streams the items of the first
+artifact with *no* item of the second within the bound ("which towers no cable
+comes near"); the two paths must differ, because against itself every item is
+at distance zero from itself. `components` labels every item of one artifact
+with the smallest item id in its connected component of the within-graph, an
+isolated item being its own label. `--count` prints the number of unpaired
+items, or of components, and streams nothing.
+
+```text
+gp2psindex anti-join towers.psi cables.psi --within 500
+{"a":3}
+{"a":9}
+
+gp2psindex components towers.psi --within 50
+{"item":0,"label":0}
+{"item":1,"label":0}
+{"item":2,"label":2}
+```
+
+The labels identify components, not clusters: proximity is not transitive, so
+a chain of items each within the bound of the next is one component however
+far apart its ends lie.
 
 ## Scope
 

@@ -13,16 +13,18 @@ use arrow::record_batch::RecordBatch;
 use arrow_json::LineDelimitedWriter;
 use base64::Engine as _;
 #[cfg(feature = "flatgeobuf")]
+use packed_spatial_index_geo::geo_types::{Coord, LineString, MultiPolygon, Polygon};
 use packed_spatial_index_geo::open_flatgeobuf;
 use packed_spatial_index_geo::{
     AntimeridianPolicy, Box2D, Box3D, ConvertRequest, CoordinateDims, DuplicateFeatureRows,
     EnvelopePolicy, FeatureFilterRequest, FeatureReadOrder, FeatureReadRequest, FeatureRecord,
-    FeatureRef, FeatureRows, GeoArtifact, GeoArtifactIndex, GeoArtifactIndex2D, GeoArtifactIndex3D,
-    GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D, GeometryProfile, GeometryReadMode,
-    GeometryScan, GeometrySelector, Index2D, Index3D, IndexDimsRequest, InspectRequest,
-    NonPlanarExactPolicy, NullPolicy, PayloadPlan, PrefixIndexPolicy, PropertyProjection,
-    RangeReader, ScanRequest, SliceReader, SpatialPredicate, StoragePrecision, ValidateRequest,
-    ValidationReport, ValidationSeverity, open_geo_index, open_geoparquet,
+    FeatureRef, FeatureRows, Frustum3D, GeoArtifact, GeoArtifactIndex, GeoArtifactIndex2D,
+    GeoArtifactIndex3D, GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D, GeoQuery3D,
+    GeometryProfile, GeometryReadMode, GeometryScan, GeometrySelector, Index2D, Index3D,
+    IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
+    PrefixIndexPolicy, PropertyProjection, RangeReader, ScanRequest, SliceReader, SpatialPredicate,
+    StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity, open_geo_index,
+    open_geoparquet,
 };
 #[cfg(feature = "geojson")]
 use packed_spatial_index_geo::{convert_geojson_stream, open_geojson};
@@ -63,9 +65,29 @@ usage:
        units, zero when boxes overlap and inclusive at the bound, so
        --within 0 is the plain overlap join. Both artifacts must be the
        same dimensionality)
+  gp2psindex anti-join <a.psi> <b.psi> --within N
+      [--count]
+        (print how many items have no partner, then stop)
+      (the complement of join: one NDJSON line {\"a\":i} per item of a.psi
+       with NO item of b.psi within the bound. The two paths must differ --
+       against itself every item is at distance zero from itself; the
+       question meant there is what `components` answers)
+  gp2psindex components <a.psi> --within N
+      [--count]
+        (print the number of components, then stop)
+      (connected components of the within-graph: one NDJSON line
+       {\"item\":i,\"label\":l} per item, the label being the smallest item
+       id in its component. An isolated item is its own label. Labels
+       identify components, not clusters: proximity is not transitive)
   gp2psindex query <source> <index.psi>
       [--format parquet|flatgeobuf|geojson]
-      (--bbox xmin,ymin,xmax,ymax | --radius lon,lat,metres)
+      (--bbox xmin,ymin,xmax,ymax | --radius lon,lat,metres
+       | --polygon '[[[[x,y],...],...],...]')
+        (--polygon takes GeoJSON MultiPolygon coordinates: ring 0 of each
+         polygon is its exterior, the rest are holes. The polygon drives the
+         index traversal itself, pruning subtrees outside it, so it needs no
+         payload and --count works over it; --exact still refines the
+         surviving entries against the source geometry)
       [--exact]
       [--predicate intersects]
       [--treat-nonplanar-as-planar]
@@ -81,8 +103,10 @@ usage:
         (read back only one page of matches, in index entry order)
       [--json|--ndjson]
       [--allow-source-mismatch]
-      (against a 3D index: --bbox takes xmin,ymin,zmin,xmax,ymax,zmax;
-       --radius/--exact/--predicate/--treat-nonplanar-as-planar are 2D-only.
+      (against a 3D index: --bbox takes xmin,ymin,zmin,xmax,ymax,zmax, or
+       --frustum takes 24 numbers -- six inward-pointing planes as a,b,c,d;
+       --radius/--polygon/--exact/--predicate/--treat-nonplanar-as-planar
+       are 2D-only.
        --count and --limit/--offset describe the index's own match set, so
        they are refused together with --exact, which narrows it afterwards)";
 
@@ -107,6 +131,8 @@ fn run(args: Vec<String>) -> Result<ExitCode, Box<dyn std::error::Error>> {
         "build" => build_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "validate" => validate_cmd(&args[1..]),
         "join" => join_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
+        "anti-join" => anti_join_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
+        "components" => components_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "query" => query_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         _ => Err(format!("unknown command `{command}`").into()),
     }
@@ -615,8 +641,12 @@ fn join_pairs<W: std::io::Write>(
         Some(bytes) => {
             let b = load_join_index(bytes, "b.psi")?;
             match (&a, &b) {
-                (JoinIndex::D2(a), JoinIndex::D2(b)) => a.join_within_with(b, max_distance, &mut emit),
-                (JoinIndex::D3(a), JoinIndex::D3(b)) => a.join_within_with(b, max_distance, &mut emit),
+                (JoinIndex::D2(a), JoinIndex::D2(b)) => {
+                    a.join_within_with(b, max_distance, &mut emit)
+                }
+                (JoinIndex::D3(a), JoinIndex::D3(b)) => {
+                    a.join_within_with(b, max_distance, &mut emit)
+                }
                 _ => {
                     return Err(
                         "a.psi and b.psi are different dimensions; a distance join needs both in 2D or both in 3D"
@@ -630,6 +660,131 @@ fn join_pairs<W: std::io::Write>(
         return Err(err.into());
     }
     Ok(total)
+}
+
+fn anti_join_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&["--within", "--count"])?;
+    let a_path = parsed.required_pos(0, "a.psi")?;
+    let b_path = parsed.required_pos(1, "b.psi")?;
+    parsed.no_extra_pos(2)?;
+    let max_distance = parse_max_distance(parsed.option("--within")?.as_deref())?;
+
+    // Against itself every item is at distance zero from itself, so the literal
+    // answer is always empty. The question people mean there -- which items have
+    // no *other* item nearby -- is what `components` answers (an isolated item is
+    // its own label). Refuse rather than quietly answer a different question,
+    // exactly as the server's /anti-join does.
+    let same = std::fs::canonicalize(a_path).ok() == std::fs::canonicalize(b_path).ok()
+        || a_path == b_path;
+    if same {
+        return Err(
+            "anti-join needs two different artifacts: every item is at distance zero from \
+             itself, so the answer against the same file is always empty; for items with no \
+             *other* item nearby, run `components` and look for labels that occur once"
+                .into(),
+        );
+    }
+
+    let a_bytes = std::fs::read(a_path)?;
+    let b_bytes = std::fs::read(b_path)?;
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    let count = anti_join_items(
+        &a_bytes,
+        &b_bytes,
+        max_distance,
+        parsed.flag("--count"),
+        &mut out,
+    )?;
+    if parsed.flag("--count") {
+        writeln!(out, "{count}")?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// Run the anti-join and stream `{"a":i}` lines into `out`, one per item of
+/// `a` with no item of `b` within `max_distance`, returning how many there were.
+fn anti_join_items<W: std::io::Write>(
+    a_bytes: &[u8],
+    b_bytes: &[u8],
+    max_distance: f64,
+    count_only: bool,
+    out: &mut W,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let a = load_join_index(a_bytes, "a.psi")?;
+    let b = load_join_index(b_bytes, "b.psi")?;
+    let mut total = 0usize;
+    let mut emit = |i: usize| -> ControlFlow<std::io::Error> {
+        total += 1;
+        if count_only {
+            return ControlFlow::Continue(());
+        }
+        match writeln!(out, "{{\"a\":{i}}}") {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(err) => ControlFlow::Break(err),
+        }
+    };
+    let flow = match (&a, &b) {
+        (JoinIndex::D2(a), JoinIndex::D2(b)) => a.anti_join_within_with(b, max_distance, &mut emit),
+        (JoinIndex::D3(a), JoinIndex::D3(b)) => a.anti_join_within_with(b, max_distance, &mut emit),
+        _ => {
+            return Err(
+                "a.psi and b.psi are different dimensions; an anti-join needs both in 2D or both in 3D"
+                    .into(),
+            );
+        }
+    };
+    if let ControlFlow::Break(err) = flow {
+        return Err(err.into());
+    }
+    Ok(total)
+}
+
+fn components_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&["--within", "--count"])?;
+    let path = parsed.required_pos(0, "a.psi")?;
+    parsed.no_extra_pos(1)?;
+    let max_distance = parse_max_distance(parsed.option("--within")?.as_deref())?;
+
+    let bytes = std::fs::read(path)?;
+    let labels = component_labels(&bytes, max_distance)?;
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    if parsed.flag("--count") {
+        writeln!(out, "{}", count_components(&labels))?;
+    } else {
+        for (item, label) in labels.iter().enumerate() {
+            writeln!(out, "{{\"item\":{item},\"label\":{label}}}")?;
+        }
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// One label per item: the smallest item id in that item's component of the
+/// `max_distance`-proximity graph. Unlike the pair stream this is not
+/// output-bound -- it is exactly one `usize` per item -- so it is collected.
+fn component_labels(
+    bytes: &[u8],
+    max_distance: f64,
+) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+    Ok(match load_join_index(bytes, "a.psi")? {
+        JoinIndex::D2(index) => index.self_join_within_components(max_distance),
+        JoinIndex::D3(index) => index.self_join_within_components(max_distance),
+    })
+}
+
+/// A label is the smallest id in its component, so an item is a component's
+/// representative exactly when its label is its own id.
+fn count_components(labels: &[usize]) -> usize {
+    labels
+        .iter()
+        .enumerate()
+        .filter(|(item, label)| item == *label)
+        .count()
 }
 
 fn load_join_index(bytes: &[u8], what: &str) -> Result<JoinIndex, Box<dyn std::error::Error>> {
@@ -651,9 +806,8 @@ fn load_join_index(bytes: &[u8], what: &str) -> Result<JoinIndex, Box<dyn std::e
 /// Required, finite and non-negative — the same contract as the server's
 /// `within` query parameter, so the two surfaces reject the same inputs.
 fn parse_max_distance(raw: Option<&str>) -> Result<f64, Box<dyn std::error::Error>> {
-    let raw = raw.ok_or(
-        "--within is required: the distance bound in coordinate units, e.g. --within 500",
-    )?;
+    let raw = raw
+        .ok_or("--within is required: the distance bound in coordinate units, e.g. --within 500")?;
     let max_distance: f64 = raw
         .parse()
         .map_err(|_| format!("`{raw}` is not a number"))?;
@@ -669,6 +823,8 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "--format",
         "--bbox",
         "--radius",
+        "--polygon",
+        "--frustum",
         "--exact",
         "--predicate",
         "--treat-nonplanar-as-planar",
@@ -834,31 +990,56 @@ fn query_cmd_2d<R: RangeReader>(
         .collect())
 }
 
-/// Parse the 2D query geometry from `--bbox` or `--radius`.
+/// Parse the 2D query geometry from `--bbox`, `--radius` or `--polygon`.
 fn query_2d(parsed: &Parsed<'_>) -> Result<GeoQuery2D, Box<dyn std::error::Error>> {
-    match (parsed.option("--bbox")?, parsed.option("--radius")?) {
-        (Some(_), Some(_)) => Err("--bbox and --radius are mutually exclusive".into()),
-        (Some(value), None) => Ok(GeoQuery2D::box2d(parse_bbox(&value)?)),
-        (None, Some(value)) => {
+    if parsed.option("--frustum")?.is_some() {
+        return Err("--frustum is a 3D query; this is a 2D index -- use --bbox".into());
+    }
+    let shapes = [
+        parsed.option("--bbox")?.map(|v| ("--bbox", v)),
+        parsed.option("--radius")?.map(|v| ("--radius", v)),
+        parsed.option("--polygon")?.map(|v| ("--polygon", v)),
+    ];
+    let mut given = shapes.into_iter().flatten();
+    let Some((flag, value)) = given.next() else {
+        return Err("--bbox, --radius or --polygon is required".into());
+    };
+    if given.next().is_some() {
+        return Err("--bbox, --radius and --polygon are mutually exclusive".into());
+    }
+    match flag {
+        "--bbox" => Ok(GeoQuery2D::box2d(parse_bbox(&value)?)),
+        "--radius" => {
             let (lon, lat, radius_metres) = parse_radius(&value)?;
             Ok(GeoQuery2D::spherical_radius(lon, lat, radius_metres))
         }
-        (None, None) => Err("--bbox or --radius is required".into()),
+        _ => Ok(GeoQuery2D::multi_polygon(parse_polygon(&value)?)),
     }
 }
 
-/// Parse the 3D query box, rejecting the 2D-only flags on the way.
-fn query_3d(parsed: &Parsed<'_>) -> Result<Box3D, Box<dyn std::error::Error>> {
+/// Parse the 3D query shape, `--bbox` or `--frustum`, rejecting the 2D-only
+/// flags on the way.
+fn query_3d(parsed: &Parsed<'_>) -> Result<GeoQuery3D, Box<dyn std::error::Error>> {
     reject_two_dimensional_flags(parsed)?;
-    let Some(value) = parsed.option("--bbox")? else {
-        return Err("--bbox is required for a 3D index (--radius is 2D-only)".into());
-    };
-    parse_bbox3d(&value)
+    match (parsed.option("--bbox")?, parsed.option("--frustum")?) {
+        (Some(_), Some(_)) => Err("--bbox and --frustum are mutually exclusive".into()),
+        (Some(value), None) => Ok(GeoQuery3D::from(parse_bbox3d(&value)?)),
+        (None, Some(value)) => Ok(GeoQuery3D::from(parse_frustum(&value)?)),
+        (None, None) => Err(
+            "--bbox or --frustum is required for a 3D index (--radius and --polygon are 2D-only)"
+                .into(),
+        ),
+    }
 }
 
 fn reject_two_dimensional_flags(parsed: &Parsed<'_>) -> Result<(), Box<dyn std::error::Error>> {
     if parsed.option("--radius")?.is_some() {
         return Err("--radius is a 2D lon/lat query; this is a 3D index".into());
+    }
+    if parsed.option("--polygon")?.is_some() {
+        return Err(
+            "--polygon is a 2D query; this is a 3D index -- use --bbox or --frustum".into(),
+        );
     }
     if parsed.flag("--exact") {
         return Err(
@@ -894,16 +1075,16 @@ fn query_cmd_3d<R: RangeReader>(
     index: &GeoArtifactIndex3D<R>,
     page: Option<(usize, usize)>,
 ) -> Result<Vec<FeatureRef>, Box<dyn std::error::Error>> {
-    let bbox3d = query_3d(parsed)?;
+    let query = query_3d(parsed)?;
     if let Some((offset, limit)) = page {
-        let page = index.search_match_headers_page(bbox3d, offset, limit)?;
+        let page = index.search_match_headers_page(query, offset, limit)?;
         return Ok(index
             .fetch_matches(&page.headers)?
             .into_iter()
             .map(|m| m.feature)
             .collect());
     }
-    Ok(index.search_feature_refs(bbox3d)?)
+    Ok(index.search_feature_refs(query)?)
 }
 
 /// Shared tail: read projected rows for `features` back from `source` and print them.
@@ -1148,6 +1329,97 @@ fn parse_bbox(value: &str) -> Result<Box2D, Box<dyn std::error::Error>> {
         return Err("--bbox expects four comma-separated numbers".into());
     }
     Ok(Box2D::new(parts[0], parts[1], parts[2], parts[3]))
+}
+
+/// Parse `--polygon`: GeoJSON MultiPolygon coordinates, `[[[[x, y], ...], ...], ...]`.
+///
+/// The same array the server's `polygon=` takes and the crate's own
+/// `GeoQuery2D` serializes, validated by the same rules: at least one polygon,
+/// every exterior ring at least three points, every coordinate finite.
+fn parse_polygon(raw: &str) -> Result<MultiPolygon<f64>, Box<dyn std::error::Error>> {
+    let polygons: Vec<Vec<Vec<[f64; 2]>>> = serde_json::from_str(raw).map_err(|err| {
+        format!("--polygon expects GeoJSON MultiPolygon coordinates [[[[x, y], ...]]]: {err}")
+    })?;
+    if polygons.is_empty() {
+        return Err("--polygon must contain at least one polygon".into());
+    }
+    for (index, rings) in polygons.iter().enumerate() {
+        let exterior = rings
+            .first()
+            .ok_or_else(|| format!("--polygon: polygon {index} has no exterior ring"))?;
+        // Three distinct corners is the least that bounds any area; anything
+        // smaller is a line or a point, which would match nothing while
+        // looking like a region query that simply found nothing.
+        if exterior.len() < 3 {
+            return Err(format!(
+                "--polygon: polygon {index} has an exterior ring of {} points; at least 3 are \
+                 needed to bound an area",
+                exterior.len()
+            )
+            .into());
+        }
+        if rings
+            .iter()
+            .flatten()
+            .any(|[x, y]| !x.is_finite() || !y.is_finite())
+        {
+            return Err(format!("--polygon: polygon {index} has a non-finite coordinate").into());
+        }
+    }
+    Ok(MultiPolygon::new(
+        polygons
+            .into_iter()
+            .map(|rings| {
+                let mut rings = rings.into_iter().map(|coords| {
+                    LineString::new(coords.into_iter().map(|[x, y]| Coord { x, y }).collect())
+                });
+                let exterior = rings.next().unwrap_or_else(|| LineString::new(Vec::new()));
+                Polygon::new(exterior, rings.collect())
+            })
+            .collect(),
+    ))
+}
+
+/// Parse `--frustum`: 24 numbers, six inward-pointing planes as `a,b,c,d`.
+///
+/// Planes rather than a view-projection matrix, as on the server: a matrix
+/// carries a clip-space convention and a storage order the flag cannot
+/// recover, and either wrong moves the near plane without failing.
+fn parse_frustum(raw: &str) -> Result<Frustum3D, Box<dyn std::error::Error>> {
+    let mut values = Vec::with_capacity(24);
+    for part in raw.split(',') {
+        let part = part.trim();
+        let value: f64 = part
+            .parse()
+            .map_err(|_| format!("--frustum value `{part}` is not a number"))?;
+        if !value.is_finite() {
+            return Err(format!("--frustum value `{part}` is not finite").into());
+        }
+        values.push(value);
+    }
+    if values.len() != 24 {
+        return Err(format!(
+            "--frustum expects 24 comma-separated numbers (six planes of a,b,c,d), got {}",
+            values.len()
+        )
+        .into());
+    }
+    let mut planes = [[0.0f64; 4]; 6];
+    for (plane, chunk) in planes.iter_mut().zip(values.as_chunks::<4>().0) {
+        plane.copy_from_slice(chunk);
+    }
+    // A plane whose normal is zero tests nothing: `0*x + 0*y + 0*z + d` is a
+    // constant, so the frustum silently becomes a half-open region instead
+    // of failing. Cheaper to refuse than to explain.
+    if let Some(index) = planes
+        .iter()
+        .position(|p| p[0] == 0.0 && p[1] == 0.0 && p[2] == 0.0)
+    {
+        return Err(
+            format!("--frustum plane {index} has a zero normal, so it constrains nothing").into(),
+        );
+    }
+    Ok(Frustum3D::from_planes(planes))
 }
 
 fn parse_bbox3d(value: &str) -> Result<Box3D, Box<dyn std::error::Error>> {
@@ -1502,6 +1774,8 @@ fn option_takes_value(arg: &str) -> bool {
             | "--duplicates"
             | "--predicate"
             | "--radius"
+            | "--polygon"
+            | "--frustum"
             | "--limit"
             | "--offset"
             | "--prefix-index"
@@ -1705,6 +1979,119 @@ mod tests {
         .unwrap();
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn anti_join_reports_items_with_no_partner() {
+        let a = artifact_2d(&[(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]);
+        let b = artifact_2d(&[(2.0, 0.0), (23.0, 0.0)]);
+        let mut out = Vec::new();
+        // Item 0 has b[0] at 2.0 (on the bound, inclusive); item 2 has b[1] at
+        // 3.0, outside; item 1 has nothing within 8.0. Unpaired: 1 and 2.
+        let count = anti_join_items(&a, &b, 2.0, false, &mut out).unwrap();
+        assert_eq!(count, 2);
+        let mut items: Vec<usize> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                line.trim_start_matches("{\"a\":")
+                    .trim_end_matches('}')
+                    .parse()
+                    .unwrap()
+            })
+            .collect();
+        items.sort_unstable();
+        assert_eq!(items, vec![1, 2]);
+
+        let mut out = Vec::new();
+        let count = anti_join_items(&a, &b, 2.0, true, &mut out).unwrap();
+        assert_eq!(count, 2);
+        assert!(out.is_empty(), "count-only must not stream items");
+
+        // A huge bound pairs everything; nothing is unpaired.
+        let mut out = Vec::new();
+        assert_eq!(anti_join_items(&a, &b, 1000.0, true, &mut out).unwrap(), 0);
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn anti_join_rejects_mixed_dimensions_and_same_file() {
+        let a = artifact_2d(&[(0.0, 0.0)]);
+        let b = artifact_3d(&[(0.0, 0.0, 0.0)]);
+        let mut out = Vec::new();
+        let err = anti_join_items(&a, &b, 1.0, false, &mut out).unwrap_err();
+        assert!(err.to_string().contains("different dimensions"), "{err}");
+
+        let dir = std::env::temp_dir().join(format!("gp2psindex-antijoin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.psi");
+        std::fs::write(&path, &a).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let err = anti_join_cmd(&[path.clone(), path, "--within=1".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("components"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn components_label_by_smallest_member() {
+        // 0-1 touch within 1.5, 2 is alone, 3-4 touch: three components.
+        let a = artifact_2d(&[
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (10.0, 0.0),
+            (20.0, 0.0),
+            (21.0, 0.0),
+        ]);
+        let labels = component_labels(&a, 1.5).unwrap();
+        assert_eq!(labels, vec![0, 0, 2, 3, 3]);
+        assert_eq!(count_components(&labels), 3);
+
+        // A chain is one component however far its ends lie apart.
+        let labels = component_labels(&a, 10.0).unwrap();
+        assert_eq!(labels, vec![0, 0, 0, 0, 0]);
+        assert_eq!(count_components(&labels), 1);
+
+        // Zero bound: nothing overlaps, every point is its own component.
+        let labels = component_labels(&a, 0.0).unwrap();
+        assert_eq!(labels, vec![0, 1, 2, 3, 4]);
+        assert_eq!(count_components(&labels), 5);
+    }
+
+    #[test]
+    fn polygon_parses_geojson_multipolygon_coordinates() {
+        let multi = parse_polygon("[[[[0,0],[4,0],[4,4],[0,4],[0,0]]]]").unwrap();
+        assert_eq!(multi.0.len(), 1);
+        assert_eq!(multi.0[0].exterior().0.len(), 5);
+
+        for (bad, needle) in [
+            ("[]", "at least one polygon"),
+            ("[[]]", "no exterior ring"),
+            ("[[[[0,0],[1,1]]]]", "at least 3"),
+            ("[[[[0,0],[1,0],[0,1]]],[[]]]", "0 points"),
+            ("not json", "MultiPolygon"),
+        ] {
+            let err = parse_polygon(bad).unwrap_err().to_string();
+            assert!(err.contains(needle), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn frustum_parses_six_planes_and_rejects_zero_normals() {
+        let raw = "1,0,0,0, -1,0,0,10, 0,1,0,0, 0,-1,0,10, 0,0,1,0, 0,0,-1,10";
+        let frustum = parse_frustum(raw).unwrap();
+        // Six axis-aligned planes bound the unit-ish box [0,10]^3.
+        assert!(frustum.overlaps_box(Box3D::new(1.0, 1.0, 1.0, 2.0, 2.0, 2.0)));
+        assert!(!frustum.overlaps_box(Box3D::new(20.0, 20.0, 20.0, 21.0, 21.0, 21.0)));
+
+        let err = parse_frustum("1,0,0,0").unwrap_err().to_string();
+        assert!(err.contains("24"), "{err}");
+        let zero = "0,0,0,1, -1,0,0,10, 0,1,0,0, 0,-1,0,10, 0,0,1,0, 0,0,-1,10";
+        let err = parse_frustum(zero).unwrap_err().to_string();
+        assert!(err.contains("zero normal"), "{err}");
+        let err = parse_frustum("1,0,0,x").unwrap_err().to_string();
+        assert!(err.contains("not a number"), "{err}");
     }
 
     #[test]

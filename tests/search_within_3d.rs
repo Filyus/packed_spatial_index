@@ -27,9 +27,9 @@ fn build(boxes: &[Box3D]) -> Index3D {
     builder.finish().unwrap()
 }
 
-fn naive_within(boxes: &[Box3D], query: Box3D, epsilon: f64) -> BTreeSet<usize> {
+fn naive_within(boxes: &[Box3D], query: Box3D, max_distance: f64) -> BTreeSet<usize> {
     (0..boxes.len())
-        .filter(|&i| boxes[i].distance_to_box(query) <= epsilon)
+        .filter(|&i| boxes[i].distance_to_box(query) <= max_distance)
         .collect()
 }
 
@@ -42,7 +42,7 @@ fn as_set(ids: Vec<usize>) -> BTreeSet<usize> {
 #[test]
 fn search_within_matches_naive() {
     let mut rng = StdRng::seed_from_u64(3101);
-    for (n, max_size, epsilon) in [
+    for (n, max_size, max_distance) in [
         (0, 4.0, 2.0),
         (1, 4.0, 2.0),
         (37, 8.0, 5.0),
@@ -57,11 +57,11 @@ fn search_within_matches_naive() {
             Box3D::new(-20.0, -20.0, -20.0, -19.0, -19.0, -19.0),
             Box3D::new(0.0, 0.0, 0.0, 100.0, 100.0, 100.0),
         ] {
-            let expected = naive_within(&boxes, query, epsilon);
+            let expected = naive_within(&boxes, query, max_distance);
             assert_eq!(
-                as_set(index.search_within(query, epsilon)),
+                as_set(index.search_within(query, max_distance)),
                 expected,
-                "n={n} eps={epsilon} query={query:?}"
+                "n={n} eps={max_distance} query={query:?}"
             );
         }
     }
@@ -118,9 +118,12 @@ fn negative_and_nan_epsilon_match_nothing() {
     let boxes = random_boxes(&mut rng, 200, 100.0, 5.0);
     let index = build(&boxes);
     let query = Box3D::new(10.0, 10.0, 10.0, 20.0, 20.0, 20.0);
-    for epsilon in [-1.0, -0.0000001, f64::NAN] {
-        assert!(index.search_within(query, epsilon).is_empty(), "{epsilon}");
-        assert!(!index.any_within(query, epsilon), "{epsilon}");
+    for max_distance in [-1.0, -0.0000001, f64::NAN] {
+        assert!(
+            index.search_within(query, max_distance).is_empty(),
+            "{max_distance}"
+        );
+        assert!(!index.any_within(query, max_distance), "{max_distance}");
     }
 }
 
@@ -130,23 +133,23 @@ fn into_visit_and_any_agree_with_search_within() {
     let boxes = random_boxes(&mut rng, 400, 100.0, 4.0);
     let index = build(&boxes);
     let mut buffer = vec![usize::MAX; 3];
-    for epsilon in [0.0, 2.0, 30.0] {
+    for max_distance in [0.0, 2.0, 30.0] {
         for query in [
             Box3D::new(10.0, 10.0, 10.0, 12.0, 12.0, 12.0),
             Box3D::new(300.0, 300.0, 300.0, 301.0, 301.0, 301.0),
         ] {
-            let expected = index.search_within(query, epsilon);
-            index.search_within_into(query, epsilon, &mut buffer);
-            assert_eq!(buffer, expected, "eps={epsilon}");
+            let expected = index.search_within(query, max_distance);
+            index.search_within_into(query, max_distance, &mut buffer);
+            assert_eq!(buffer, expected, "eps={max_distance}");
 
             let mut visited = Vec::new();
-            let _: ControlFlow<()> = index.visit_within(query, epsilon, |i| {
+            let _: ControlFlow<()> = index.visit_within(query, max_distance, |i| {
                 visited.push(i);
                 ControlFlow::Continue(())
             });
-            assert_eq!(visited, expected, "eps={epsilon}");
+            assert_eq!(visited, expected, "eps={max_distance}");
 
-            assert_eq!(index.any_within(query, epsilon), !expected.is_empty());
+            assert_eq!(index.any_within(query, max_distance), !expected.is_empty());
         }
     }
 }
@@ -183,16 +186,16 @@ fn view_matches_owned() {
     let index = build(&boxes);
     let bytes = index.to_bytes();
     let view = Index3DView::from_bytes(&bytes).unwrap();
-    for epsilon in [0.0, 2.5, 20.0] {
+    for max_distance in [0.0, 2.5, 20.0] {
         let query = Box3D::new(20.0, 20.0, 20.0, 25.0, 25.0, 25.0);
         assert_eq!(
-            as_set(view.search_within(query, epsilon)),
-            as_set(index.search_within(query, epsilon)),
-            "eps={epsilon}"
+            as_set(view.search_within(query, max_distance)),
+            as_set(index.search_within(query, max_distance)),
+            "eps={max_distance}"
         );
         assert_eq!(
-            view.any_within(query, epsilon),
-            index.any_within(query, epsilon)
+            view.any_within(query, max_distance),
+            index.any_within(query, max_distance)
         );
     }
 }
@@ -218,24 +221,24 @@ mod simd {
         let bytes = index.to_bytes();
         let view = SimdIndex3DView::from_bytes(&bytes).unwrap();
 
-        for epsilon in [0.0, 1.5, 15.0] {
+        for max_distance in [0.0, 1.5, 15.0] {
             for query in [
                 Box3D::new(30.0, 30.0, 30.0, 33.0, 33.0, 33.0),
                 Box3D::new(70.0, 70.0, 70.0, 70.0, 70.0, 70.0),
             ] {
-                let expected = naive_within(&boxes, query, epsilon);
+                let expected = naive_within(&boxes, query, max_distance);
                 assert_eq!(
-                    as_set(index.search_within(query, epsilon)),
+                    as_set(index.search_within(query, max_distance)),
                     expected,
-                    "eps={epsilon}"
+                    "eps={max_distance}"
                 );
                 assert_eq!(
-                    as_set(view.search_within(query, epsilon)),
+                    as_set(view.search_within(query, max_distance)),
                     expected,
-                    "eps={epsilon}"
+                    "eps={max_distance}"
                 );
-                assert_eq!(index.any_within(query, epsilon), !expected.is_empty());
-                assert_eq!(view.any_within(query, epsilon), !expected.is_empty());
+                assert_eq!(index.any_within(query, max_distance), !expected.is_empty());
+                assert_eq!(view.any_within(query, max_distance), !expected.is_empty());
             }
         }
     }

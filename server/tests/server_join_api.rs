@@ -154,7 +154,7 @@ async fn join_pairs_match_distances() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 4);
 
-    // Distinct points never touch, so epsilon = 0 is empty here.
+    // Distinct points never touch, so max_distance = 0 is empty here.
     let (status, json) = get_json(app.clone(), "/collections/places/join/roads?within=0").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["numberMatched"], 0);
@@ -302,7 +302,7 @@ async fn join_cross_dimension_rejected() {
 
 #[tokio::test]
 async fn join_3d_collections() {
-    // A 5x5x5 grid against an identical copy: epsilon = 5 pairs only the
+    // A 5x5x5 grid against an identical copy: max_distance = 5 pairs only the
     // co-located entries, one per grid point.
     let app = router(two_collection_state(
         grid_3d_geojson().as_bytes(),
@@ -338,7 +338,7 @@ async fn anti_join_reports_entries_with_no_partner() {
         "roads",
     ));
 
-    // a0-b0 = 1, a1-b1 = 2, a2-b2 = 1: at epsilon = 2 every entry is paired.
+    // a0-b0 = 1, a1-b1 = 2, a2-b2 = 1: at max_distance = 2 every entry is paired.
     let (status, json) =
         get_json(app.clone(), "/collections/places/anti-join/roads?within=2").await;
     assert_eq!(status, StatusCode::OK);
@@ -469,7 +469,7 @@ async fn anti_join_cross_dimension_rejected() {
 // ---------------------------------------------------------------------------
 
 /// Four points: a chain 0-1-2 each 3.0 from the next, and one far away.
-/// At epsilon = 3 the chain is one component even though its ends are 6.0
+/// At max_distance = 3 the chain is one component even though its ends are 6.0
 /// apart — proximity is not transitive, and this is exactly the case that
 /// shows why the labels are not clusters.
 fn chain_geojson() -> &'static [u8] {
@@ -518,7 +518,7 @@ async fn components_label_the_chain_and_the_isolated_entry() {
     assert_eq!(json["componentCount"], 4);
     assert_eq!(labels(&json), vec![0, 1, 2, 3]);
 
-    // Distinct points never touch, so epsilon = 0 is all singletons too.
+    // Distinct points never touch, so max_distance = 0 is all singletons too.
     let (status, json) = get_json(app.clone(), "/collections/places/components?within=0").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["componentCount"], 4);

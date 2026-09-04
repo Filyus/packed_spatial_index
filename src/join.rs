@@ -27,7 +27,7 @@ use crate::tree_access::{TreeAccess, leaf_range};
 /// `covers(leaf, subtree)` is the whole-subtree fast path: every item under
 /// `subtree` pairs with the single item `leaf`. For overlap that is the leaf
 /// containing the subtree box; for a distance bound it is the *farthest-corner*
-/// distance being within `epsilon`, because items inside the subtree box can
+/// distance being within `max_distance`, because items inside the subtree box can
 /// sit anywhere in it — the plain box distance (a lower bound) is not enough.
 pub(crate) trait PairTest<B: Copy> {
     fn keeps(&self, a: B, b: B) -> bool;
@@ -59,20 +59,20 @@ impl PairTest<Box3D> for OverlapTest {
     }
 }
 
-/// Box-to-box distance at most `epsilon`: the `join_within` semantics.
+/// Box-to-box distance at most `max_distance`: the `join_within` semantics.
 #[derive(Clone, Copy)]
 pub(crate) struct DistanceTest {
     eps_squared: f64,
 }
 
 impl DistanceTest {
-    /// A negative or NaN `epsilon` matches nothing (distances are never
+    /// A negative or NaN `max_distance` matches nothing (distances are never
     /// negative), which falls out of comparing against `-1.0`.
     #[inline]
-    pub(crate) fn new(epsilon: f64) -> Self {
+    pub(crate) fn new(max_distance: f64) -> Self {
         Self {
-            eps_squared: if epsilon >= 0.0 {
-                epsilon * epsilon
+            eps_squared: if max_distance >= 0.0 {
+                max_distance * max_distance
             } else {
                 -1.0
             },
@@ -334,18 +334,18 @@ where
     }
 }
 
-/// Visit every item of `tree` whose box lies within `epsilon` of `query`: the
+/// Visit every item of `tree` whose box lies within `max_distance` of `query`: the
 /// radius query, single-tree sibling of the `join_within` family.
 ///
 /// Node prune and whole-subtree accept are deliberately different tests. A node
-/// is descended when its box is within `epsilon` — items sit inside their node
+/// is descended when its box is within `max_distance` — items sit inside their node
 /// box, and shrinking a box only pushes it farther from an external query, so
 /// the node distance is a lower bound and prunes soundly. It never *accepts*
 /// for the same reason: the sufficient condition is the node's *farthest*
-/// corner being within `epsilon`, which is what `covers` tests.
+/// corner being within `max_distance`, which is what `covers` tests.
 ///
 /// A cheaper node prune was tried and lost: overlap against the query grown by
-/// `epsilon` is a valid necessary condition (the L-infinity ball contains the
+/// `max_distance` is a valid necessary condition (the L-infinity ball contains the
 /// L2 one) and costs four compares where the exact distance costs two axis
 /// gaps and two multiplies, but the extra subtrees it descends cost 1.2x-2.2x
 /// more than the predicate saves across uniform and clustered data at every
@@ -553,7 +553,7 @@ where
 /// is no closer than the best pair found the answer is settled and everything
 /// still queued can be dropped unexamined. That early exit is the whole point —
 /// there is one answer, not a stream, and a `join_within` would have to guess
-/// an `epsilon` that contains it.
+/// an `max_distance` that contains it.
 ///
 /// Ties: the pair reported among several at the same distance is traversal
 /// order and is not part of the API.

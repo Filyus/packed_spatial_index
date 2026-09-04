@@ -103,9 +103,9 @@ see [docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
 | Ordered region | [`search_ordered`][search_ordered], [`search_ordered_into`][search_ordered_into], [`visit_ordered`][visit_ordered] — the same region shapes, emitted in nondecreasing order of a `\|box\| -> f64` key (e.g. [`view_depth_3d`][view_depth_3d] for front-to-back), so a budget can stop the traversal |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
 | Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
-| Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`visit_within`][visit_within], [`any_within`][any_within] — every item whose box lies within `epsilon` of a query box, `epsilon = 0.0` reproducing `search` |
+| Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`visit_within`][visit_within], [`any_within`][any_within] — every item whose box lies within `max_distance` of a query box, `max_distance = 0.0` reproducing `search` |
 | Distance join (ε-join) | [`join_within`][join_within], [`join_within_with`][join_within_with], [`self_join_within`][self_join_within], [`self_join_within_with`][self_join_within_with], [`anti_join_within`][anti_join_within], [`self_join_within_components`][self_join_within_components] |
-| Closest pair | [`closest_pair`][closest_pair], [`self_closest_pair`][self_closest_pair] — the single nearest pair of items between two indexes (or within one), with no `epsilon` to guess |
+| Closest pair | [`closest_pair`][closest_pair], [`self_closest_pair`][self_closest_pair] — the single nearest pair of items between two indexes (or within one), with no `max_distance` to guess |
 | Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
 
 The range / overlap methods accept `Box2D` / `Box3D` queries and borrowed

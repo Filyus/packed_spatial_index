@@ -53,7 +53,7 @@
 //!   [`join_with`](Index2D::join_with) between two indexes,
 //!   [`self_join`](Index2D::self_join) /
 //!   [`self_join_with`](Index2D::self_join_with) within one, and the distance
-//!   forms: [`join_within`](Index2D::join_within) for pairs within `epsilon`,
+//!   forms: [`join_within`](Index2D::join_within) for pairs within `max_distance`,
 //!   [`anti_join_within`](Index2D::anti_join_within) for the unpaired items,
 //!   and [`self_join_within_components`](Index2D::self_join_within_components)
 //!   for the components of the distance graph.

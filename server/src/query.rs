@@ -621,13 +621,13 @@ pub fn search_response(
 /// a misspelled name would otherwise resolve to a default and silently answer
 /// a different question. There is no `offset` — the pair stream has no
 /// resumable cursor, so a page other than the first `limit` would cost a full
-/// rerun; pair volumes are the caller's to shrink with a smaller `epsilon`.
+/// rerun; pair volumes are the caller's to shrink with a smaller `max_distance`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JoinParams {
     /// Distance bound as a number, in coordinate units. Required. A pair
     /// matches when the Euclidean distance between the two entries' boxes is
-    /// at most `epsilon`; `0` answers exactly the intersecting pairs; negative
+    /// at most `max_distance`; `0` answers exactly the intersecting pairs; negative
     /// or NaN is rejected.
     #[serde(default)]
     pub within: Option<String>,
@@ -674,7 +674,7 @@ pub struct JoinPair {
 
 /// Distance join `GET /collections/{id}/join/{other}`.
 ///
-/// Every pair of entries whose boxes lie within `epsilon` of each other —
+/// Every pair of entries whose boxes lie within `max_distance` of each other —
 /// "which places are within 500 m of which roads", where `search` can only
 /// answer one side at a time. Runs the core `join_within` on in-memory owned
 /// indexes of both artifacts (loaded from the artifact files on first use and
@@ -687,7 +687,7 @@ pub fn join_response(
     other: &Collection,
     params: JoinParams,
 ) -> Result<JoinResponse, ServerError> {
-    let epsilon = parse_epsilon(params.within.as_deref())?;
+    let max_distance = parse_max_distance(params.within.as_deref())?;
     let limit = join_limit(params.limit.as_deref())?;
     let count_mode = parse_count_mode(params.count.as_deref())?;
 
@@ -713,20 +713,20 @@ pub fn join_response(
             (collection.id() != other.id()).then(|| other.join_index()),
         ) {
             (JoinIndex::D2(index), None) => {
-                let _ = index.self_join_within_with(epsilon, |a, b| emit(a, b));
+                let _ = index.self_join_within_with(max_distance, |a, b| emit(a, b));
             }
             (JoinIndex::D3(index), None) => {
-                let _ = index.self_join_within_with(epsilon, |a, b| emit(a, b));
+                let _ = index.self_join_within_with(max_distance, |a, b| emit(a, b));
             }
             (JoinIndex::D2(a), Some(views)) => match views? {
                 JoinIndex::D2(b) => {
-                    let _ = a.join_within_with(b, epsilon, |a, b| emit(a, b));
+                    let _ = a.join_within_with(b, max_distance, |a, b| emit(a, b));
                 }
                 JoinIndex::D3(_) => return Err(dimension_mismatch(collection, other)),
             },
             (JoinIndex::D3(a), Some(views)) => match views? {
                 JoinIndex::D3(b) => {
-                    let _ = a.join_within_with(b, epsilon, |a, b| emit(a, b));
+                    let _ = a.join_within_with(b, max_distance, |a, b| emit(a, b));
                 }
                 JoinIndex::D2(_) => return Err(dimension_mismatch(collection, other)),
             },
@@ -736,7 +736,7 @@ pub fn join_response(
     Ok(JoinResponse {
         collection_id: collection.id().to_owned(),
         join_collection_id: other.id().to_owned(),
-        within: epsilon,
+        within: max_distance,
         count: count_mode,
         number_matched: total.get(),
         number_returned: pairs.len(),
@@ -753,7 +753,7 @@ pub fn join_response(
 #[serde(deny_unknown_fields)]
 pub struct AntiJoinParams {
     /// Distance bound as a number, in coordinate units. Required. An entry is
-    /// reported when *no* entry of `other` lies within `epsilon` of it;
+    /// reported when *no* entry of `other` lies within `max_distance` of it;
     /// negative or NaN is rejected.
     #[serde(default)]
     pub within: Option<String>,
@@ -783,13 +783,13 @@ pub struct AntiJoinResponse {
     pub number_matched: usize,
     /// Returned entries after the limit.
     pub number_returned: usize,
-    /// Entry ordinals of `collectionId` with no partner within `epsilon`.
+    /// Entry ordinals of `collectionId` with no partner within `max_distance`.
     pub items: Vec<usize>,
 }
 
 /// Distance anti-join `GET /collections/{id}/anti-join/{other}`.
 ///
-/// The entries of `id` that have *no* entry of `other` within `epsilon` — the
+/// The entries of `id` that have *no* entry of `other` within `max_distance` — the
 /// noise side of [`join_response`], "which towers no cable comes near". One
 /// pruned descent into `other` per entry of `id`.
 ///
@@ -808,12 +808,12 @@ pub fn anti_join_response(
 ) -> Result<AntiJoinResponse, ServerError> {
     if collection.id() == other.id() {
         return Err(ServerError::UnsupportedQuery(format!(
-            "`{}` cannot be anti-joined with itself: every entry is at distance zero from itself, so the answer is always empty; for entries with no *other* entry within epsilon use /collections/{}/components",
+            "`{}` cannot be anti-joined with itself: every entry is at distance zero from itself, so the answer is always empty; for entries with no *other* entry within max_distance use /collections/{}/components",
             collection.id(),
             collection.id()
         )));
     }
-    let epsilon = parse_epsilon(params.within.as_deref())?;
+    let max_distance = parse_max_distance(params.within.as_deref())?;
     let limit = join_limit(params.limit.as_deref())?;
     let count_mode = parse_count_mode(params.count.as_deref())?;
 
@@ -836,10 +836,10 @@ pub fn anti_join_response(
         };
         match (collection.join_index()?, other.join_index()?) {
             (JoinIndex::D2(a), JoinIndex::D2(b)) => {
-                let _ = a.anti_join_within_with(b, epsilon, &mut emit);
+                let _ = a.anti_join_within_with(b, max_distance, &mut emit);
             }
             (JoinIndex::D3(a), JoinIndex::D3(b)) => {
-                let _ = a.anti_join_within_with(b, epsilon, &mut emit);
+                let _ = a.anti_join_within_with(b, max_distance, &mut emit);
             }
             _ => return Err(dimension_mismatch(collection, other)),
         }
@@ -848,7 +848,7 @@ pub fn anti_join_response(
     Ok(AntiJoinResponse {
         collection_id: collection.id().to_owned(),
         join_collection_id: other.id().to_owned(),
-        within: epsilon,
+        within: max_distance,
         count: count_mode,
         number_matched: total,
         number_returned: items.len(),
@@ -866,7 +866,7 @@ pub fn anti_join_response(
 #[serde(deny_unknown_fields)]
 pub struct ComponentsParams {
     /// Distance bound as a number, in coordinate units. Required. Two entries
-    /// are connected when their boxes lie within `epsilon` of each other;
+    /// are connected when their boxes lie within `max_distance` of each other;
     /// negative or NaN is rejected.
     #[serde(default)]
     pub within: Option<String>,
@@ -897,13 +897,13 @@ pub struct ComponentsResponse {
 /// Proximity components `GET /collections/{id}/components?within=`.
 ///
 /// Labels every entry with the smallest entry ordinal in its component of the
-/// `epsilon`-proximity graph — the graph whose edges are the pairs
+/// `max_distance`-proximity graph — the graph whose edges are the pairs
 /// [`join_response`] reports for this collection against itself. An entry with
 /// no neighbour is its own label. There is no `{other}` segment: a component
 /// is a property of one graph, and the graph here is the collection's own.
 ///
 /// **The labels identify components; they are not clusters.** Distance
-/// proximity is not transitive — a chain of entries each within `epsilon` of
+/// proximity is not transitive — a chain of entries each within `max_distance` of
 /// the next is one component no matter how far its ends lie apart — so this
 /// reports exactly what the graph defines, and whether a chained component
 /// should stay merged is the caller's call.
@@ -915,12 +915,12 @@ pub fn components_response(
     collection: &Collection,
     params: ComponentsParams,
 ) -> Result<ComponentsResponse, ServerError> {
-    let epsilon = parse_epsilon(params.within.as_deref())?;
+    let max_distance = parse_max_distance(params.within.as_deref())?;
     let count_mode = parse_count_mode(params.count.as_deref())?;
 
     let labels = match collection.join_index()? {
-        JoinIndex::D2(index) => index.self_join_within_components(epsilon),
-        JoinIndex::D3(index) => index.self_join_within_components(epsilon),
+        JoinIndex::D2(index) => index.self_join_within_components(max_distance),
+        JoinIndex::D3(index) => index.self_join_within_components(max_distance),
     };
     let item_count = labels.len();
     // A component's label is the smallest ordinal in it, so the distinct
@@ -934,7 +934,7 @@ pub fn components_response(
 
     Ok(ComponentsResponse {
         collection_id: collection.id().to_owned(),
-        within: epsilon,
+        within: max_distance,
         count: count_mode,
         item_count,
         component_count,
@@ -954,22 +954,22 @@ fn dimension_mismatch(collection: &Collection, other: &Collection) -> ServerErro
     ))
 }
 
-fn parse_epsilon(raw: Option<&str>) -> Result<f64, ServerError> {
+fn parse_max_distance(raw: Option<&str>) -> Result<f64, ServerError> {
     let raw = raw.ok_or_else(|| {
         ServerError::InvalidWithin(
             "within is required: the distance bound in coordinate units, e.g. within=500"
                 .to_string(),
         )
     })?;
-    let epsilon: f64 = raw
+    let max_distance: f64 = raw
         .parse()
         .map_err(|_| ServerError::InvalidWithin(format!("`{raw}` is not a number")))?;
-    if !epsilon.is_finite() || epsilon < 0.0 {
+    if !max_distance.is_finite() || max_distance < 0.0 {
         return Err(ServerError::InvalidWithin(format!(
             "within must be a finite non-negative number, got `{raw}`"
         )));
     }
-    Ok(epsilon)
+    Ok(max_distance)
 }
 
 fn join_limit(raw: Option<&str>) -> Result<Option<usize>, ServerError> {

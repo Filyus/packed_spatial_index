@@ -23,9 +23,9 @@ the method for each need; the notes after it explain the reasoning.
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
-| Everything within a distance of one place | `search_within(query, epsilon)` / `search_within_into` / `visit_within` / `any_within` | `search` on an `epsilon`-inflated box and then filtering the hits |
-| The single closest pair, with no distance to guess | `closest_pair(&other)` / `self_closest_pair()` | `join_within` with a guessed `epsilon`, widened until it is non-empty |
-| All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_with` (`self_join_within` within one index, `anti_join_within` for the unpaired items, `self_join_within_components` for groups) | joining indexes of `epsilon`-inflated boxes and filtering |
+| Everything within a distance of one place | `search_within(query, max_distance)` / `search_within_into` / `visit_within` / `any_within` | `search` on an `max_distance`-inflated box and then filtering the hits |
+| The single closest pair, with no distance to guess | `closest_pair(&other)` / `self_closest_pair()` | `join_within` with a guessed `max_distance`, widened until it is non-empty |
+| All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_with` (`self_join_within` within one index, `anti_join_within` for the unpaired items, `self_join_within_components` for groups) | joining indexes of `max_distance`-inflated boxes and filtering |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
 | The per-item blob back, not just the id | `payload(id)` / `search_payloads(query)` on a view, or `search_payloads` on a streaming reader | a side table keyed by id |
@@ -389,9 +389,9 @@ costs bytes, an over-small one costs a whole extra round.
 "which boxes are within 500 m of it" — the same distance the ε-join uses, one
 tree instead of a pair, and no `k` to invent. The distance is between boxes
 (`Box2D::distance_to_box`, or the `sqrt`-free `distance_squared_to_box`): zero
-when the boxes overlap, edges inclusive, so `epsilon = 0.0` reproduces `search`
+when the boxes overlap, edges inclusive, so `max_distance = 0.0` reproduces `search`
 exactly. A degenerate query box (`min == max`) is a point. A negative or NaN
-`epsilon` matches nothing. Results come back in traversal order, as from
+`max_distance` matches nothing. Results come back in traversal order, as from
 `search`.
 
 ```rust
@@ -415,14 +415,14 @@ indexes and views. The `f32` and streaming frontends carry no distance
 operations yet.
 
 Two node tests, deliberately different. A node is descended when its box is
-within `epsilon` — items sit inside their node box, so the node distance is a
+within `max_distance` — items sit inside their node box, so the node distance is a
 lower bound and prunes soundly. It never *accepts*, for the same reason: an
 item inside a passing node box can be farther than the node box is. The
-sufficient test is the node's *farthest* corner being within `epsilon`, and a
+sufficient test is the node's *farthest* corner being within `max_distance`, and a
 node passing that has its whole subtree emitted without per-item tests.
 
 Measured on 1 million boxes against the workaround it replaces — `search` on
-the `epsilon`-inflated query box, then an exact distance filter over the
+the `max_distance`-inflated query box, then an exact distance filter over the
 candidates — pinned to one core, arm order alternated per round, control arm
 0.99–1.07×: at ~10 hits per query `search_within` runs 1.25–1.5× faster on
 uniform data and level with the workaround on clustered point queries, at ~100
@@ -432,7 +432,7 @@ pruning happens inside the traversal, where the workaround must materialize
 every candidate and gather its geometry back to filter it.
 
 A cheaper node prune was tried and rejected: overlapping against the query
-grown by `epsilon` is a valid necessary condition and costs four compares where
+grown by `max_distance` is a valid necessary condition and costs four compares where
 the exact distance costs two axis gaps and two multiplies, but the extra
 subtrees it descends cost 1.2–2.2× more than the predicate saves, measured
 with both arms in one binary.
@@ -442,7 +442,8 @@ with both arms in one binary.
 Naming: every method that takes a distance bound ends in `_within`
 (`search_within`, `neighbors_within`, `join_within`, ...), and the HTTP
 parameter and CLI flag are `within=` / `--within`. "ε-join" is the literature
-name for the same operation; `epsilon` never appears in a method name.
+name for the same operation; the word `epsilon` appears nowhere in the API,
+and the bound parameter is `max_distance` throughout.
 `radius` is reserved for the spherical lon/lat query, where it is literally a
 circle on the sphere.
 
@@ -450,10 +451,10 @@ circle on the sphere.
 people actually ask — "which pairs are within 500 m of each other". The
 distance is between boxes (`Box2D::distance_to_box`, `Box3D::distance_to_box`,
 or the `sqrt`-free `distance_squared_to_box`): zero when the boxes overlap,
-edges inclusive, so `epsilon = 0.0` reproduces `join` exactly. Like every query
+edges inclusive, so `max_distance = 0.0` reproduces `join` exactly. Like every query
 here it is a broad phase — the box distance is a lower bound on the true
 distance between the underlying geometries, so hits are candidates and the
-exact predicate stays with the caller. A negative or NaN `epsilon` matches
+exact predicate stays with the caller. A negative or NaN `max_distance` matches
 nothing.
 
 ```rust
@@ -475,23 +476,23 @@ views, and the SIMD indexes and views):
 
 - `join_within` / `join_within_with`, `self_join_within` /
   `self_join_within_with` — the pair stream. A leaf whose whole subtree lies
-  within `epsilon` is emitted as a range without per-item tests.
+  within `max_distance` is emitted as a range without per-item tests.
 - `anti_join_within` / `anti_join_within_with` — items of `self` with *no*
-  partner within `epsilon`: the noise side of the graph, one pruned search per
+  partner within `max_distance`: the noise side of the graph, one pruned search per
   item. An index queried against itself pairs with itself at distance zero, so
   isolation within one index is a components question, not an anti-join.
 - `self_join_within_components` — one label per item: the smallest item id in
-  its component of the `epsilon`-proximity graph, an isolated item being its
+  its component of the `max_distance`-proximity graph, an isolated item being its
   own label. The labels identify components; they are not clusters. Distance
-  proximity is *not transitive* — a chain of items each within `epsilon` of the
+  proximity is *not transitive* — a chain of items each within `max_distance` of the
   next is one component no matter how far its ends lie apart — so what a
   component "is" (merge, split, keep as noise) stays with the caller. This
   reports what the graph defines, deterministically.
 
 Measured on 100 000 × 100 000 uniform 2D boxes (extent 1000, unit size):
-`join_within` at `epsilon = 2` (324 000 pairs) runs ~2.5× faster than the
-workaround of joining two indexes of `epsilon`-inflated boxes and filtering
-the pairs by exact distance; at `epsilon = 6` (1.6 million pairs) ~3×. The
+`join_within` at `max_distance = 2` (324 000 pairs) runs ~2.5× faster than the
+workaround of joining two indexes of `max_distance`-inflated boxes and filtering
+the pairs by exact distance; at `max_distance = 6` (1.6 million pairs) ~3×. The
 workaround also needs a second, larger index — 6–10 ms extra build and more
 memory in this setup. Against plain `join` the picture splits by data shape:
 on uniform data the distance predicate costs nothing extra —
@@ -503,7 +504,7 @@ being asked.
 ## The closest pair
 
 `closest_pair` answers "which two of these are nearest each other" — one
-answer, no `epsilon` to guess. `join_within` can be walked up to it, but only
+answer, no `max_distance` to guess. `join_within` can be walked up to it, but only
 by picking a bound, finding it empty, and widening; this finds it directly.
 
 ```rust

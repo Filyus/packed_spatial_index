@@ -868,16 +868,16 @@ impl Index3D {
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
-    /// `other` lie within `epsilon` of each other: the Euclidean distance
-    /// between their boxes is at most `epsilon`, zero when the boxes overlap
+    /// `other` lie within `max_distance` of each other: the Euclidean distance
+    /// between their boxes is at most `max_distance`, zero when the boxes overlap
     /// (edges are inclusive).
     ///
     /// This is the distance join — "everything within 500 m", not
     /// "intersecting". Like every query here it is a broad phase: the box
     /// distance is a lower bound on the true distance between the underlying
     /// geometries, so hits are candidates and an exact predicate stays with
-    /// the caller. A negative or NaN `epsilon` matches nothing, and
-    /// `epsilon = 0.0` answers exactly [`Index3D::join`].
+    /// the caller. A negative or NaN `max_distance` matches nothing, and
+    /// `max_distance = 0.0` answers exactly [`Index3D::join`].
     ///
     /// # Example
     ///
@@ -899,34 +899,34 @@ impl Index3D {
     /// // (1, 1) is exactly 2.0 apart, and the bound is inclusive.
     /// assert_eq!(pairs, vec![(0, 0), (1, 1)]);
     /// ```
-    pub fn join_within(&self, other: &Index3D, epsilon: f64) -> Vec<(usize, usize)> {
+    pub fn join_within(&self, other: &Index3D, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_within_with(other, epsilon, |i, j| {
+        let _: ControlFlow<()> = self.join_within_with(other, max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
         out
     }
 
-    /// Visit every pair within `epsilon` between `self` and `other` without
+    /// Visit every pair within `max_distance` between `self` and `other` without
     /// collecting a result `Vec`. See [`Index3D::join_within`].
     ///
     /// Return [`ControlFlow::Break`] for early exit.
     pub fn join_within_with<B, F>(
         &self,
         other: &Index3D,
-        epsilon: f64,
+        max_distance: f64,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        join_core(self, other, DistanceTest::new(epsilon), visitor)
+        join_core(self, other, DistanceTest::new(max_distance), visitor)
     }
 
-    /// Return the ids of every item whose box lies within `epsilon` of
+    /// Return the ids of every item whose box lies within `max_distance` of
     /// `query`: the Euclidean distance between the two boxes is at most
-    /// `epsilon`, zero when they overlap (edges are inclusive).
+    /// `max_distance`, zero when they overlap (edges are inclusive).
     ///
     /// This is the radius query — "everything within 500 m of here" — the
     /// single-index sibling of [`Index3D::join_within`]. Like every query here it
@@ -934,7 +934,7 @@ impl Index3D {
     /// distance between the underlying geometries, so hits are candidates and
     /// an exact predicate stays with the caller.
     ///
-    /// A negative or NaN `epsilon` matches nothing, and `epsilon = 0.0`
+    /// A negative or NaN `max_distance` matches nothing, and `max_distance = 0.0`
     /// answers exactly [`Index3D::search`]. Result order is traversal order and is
     /// not part of the API.
     ///
@@ -958,45 +958,51 @@ impl Index3D {
     /// // item 1 is exactly 2.0 away, and the bound is inclusive.
     /// assert_eq!(hits, vec![0, 1]);
     /// ```
-    pub fn search_within(&self, query: Box3D, epsilon: f64) -> Vec<usize> {
+    pub fn search_within(&self, query: Box3D, max_distance: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        self.search_within_into(query, epsilon, &mut out);
+        self.search_within_into(query, max_distance, &mut out);
         out
     }
 
     /// [`search_within`](Self::search_within) into a reused buffer (cleared
     /// first).
-    pub fn search_within_into(&self, query: Box3D, epsilon: f64, out: &mut Vec<usize>) {
+    pub fn search_within_into(&self, query: Box3D, max_distance: f64, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_within(query, epsilon, |index| {
+        let _: ControlFlow<()> = self.visit_within(query, max_distance, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
     }
 
-    /// Visit every item within `epsilon` of `query` without collecting a
+    /// Visit every item within `max_distance` of `query` without collecting a
     /// result `Vec`. See [`search_within`](Self::search_within).
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn visit_within<B, F>(&self, query: Box3D, epsilon: f64, visitor: F) -> ControlFlow<B>
+    pub fn visit_within<B, F>(&self, query: Box3D, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        within_core(self, query, DistanceTest::new(epsilon), &mut stack, visitor)
+        within_core(
+            self,
+            query,
+            DistanceTest::new(max_distance),
+            &mut stack,
+            visitor,
+        )
     }
 
-    /// Return `true` when at least one item lies within `epsilon` of `query`.
+    /// Return `true` when at least one item lies within `max_distance` of `query`.
     ///
     /// Stops at the first hit, so it takes the prune-only descent: no
     /// whole-subtree accept is computed. See
     /// [`search_within`](Self::search_within).
-    pub fn any_within(&self, query: Box3D, epsilon: f64) -> bool {
-        any_within_core(self, query, DistanceTest::new(epsilon))
+    pub fn any_within(&self, query: Box3D, max_distance: f64) -> bool {
+        any_within_core(self, query, DistanceTest::new(max_distance))
     }
 
     /// Return every unordered pair of distinct items within this index whose
-    /// boxes lie within `epsilon` of each other, each pair exactly once. See
+    /// boxes lie within `max_distance` of each other, each pair exactly once. See
     /// [`Index3D::join_within`] for the distance semantics and
     /// [`Index2D::self_join_within`](crate::Index2D::self_join_within) for
     /// the pair shape.
@@ -1016,9 +1022,9 @@ impl Index3D {
     /// pairs.sort_unstable();
     /// assert_eq!(pairs, vec![(0, 1)]);
     /// ```
-    pub fn self_join_within(&self, epsilon: f64) -> Vec<(usize, usize)> {
+    pub fn self_join_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_within_with(epsilon, |i, j| {
+        let _: ControlFlow<()> = self.self_join_within_with(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -1026,26 +1032,26 @@ impl Index3D {
     }
 
     /// Visit every unordered pair of distinct items within this index whose
-    /// boxes lie within `epsilon` of each other, without collecting a result
+    /// boxes lie within `max_distance` of each other, without collecting a result
     /// `Vec`. See [`Index3D::self_join_within`].
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn self_join_within_with<B, F>(&self, epsilon: f64, visitor: F) -> ControlFlow<B>
+    pub fn self_join_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, DistanceTest::new(epsilon), visitor)
+        self_join_core(self, DistanceTest::new(max_distance), visitor)
     }
 
     /// Return the ids of items of `self` that have no item of `other` within
-    /// `epsilon` — the anti-join, the "noise" side of
+    /// `max_distance` — the anti-join, the "noise" side of
     /// [`Index3D::join_within`]. One pruned search into `other` per item of
     /// `self`. (An index queried against itself pairs with itself at distance
     /// zero; isolated items of one index are a
     /// [`self_join_within_components`](Index3D::self_join_within_components)
     /// question.)
     ///
-    /// A negative or NaN `epsilon` reports every item of `self`: nothing is
+    /// A negative or NaN `max_distance` reports every item of `self`: nothing is
     /// within an empty bound.
     ///
     /// # Example
@@ -1064,38 +1070,38 @@ impl Index3D {
     ///
     /// assert_eq!(a.anti_join_within(&b, 2.0), vec![1]);
     /// ```
-    pub fn anti_join_within(&self, other: &Index3D, epsilon: f64) -> Vec<usize> {
+    pub fn anti_join_within(&self, other: &Index3D, max_distance: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.anti_join_within_with(other, epsilon, |i| {
+        let _: ControlFlow<()> = self.anti_join_within_with(other, max_distance, |i| {
             out.push(i);
             ControlFlow::Continue(())
         });
         out
     }
 
-    /// Visit every item of `self` with no item of `other` within `epsilon`,
+    /// Visit every item of `self` with no item of `other` within `max_distance`,
     /// without collecting a result `Vec`. See [`Index3D::anti_join_within`].
     ///
     /// Return [`ControlFlow::Break`] for early exit.
     pub fn anti_join_within_with<B, F>(
         &self,
         other: &Index3D,
-        epsilon: f64,
+        max_distance: f64,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        anti_join_core(self, other, DistanceTest::new(epsilon), visitor)
+        anti_join_core(self, other, DistanceTest::new(max_distance), visitor)
     }
 
     /// Label every item with the smallest item id in its component of the
-    /// `epsilon`-proximity graph: items are connected when their boxes lie
-    /// within `epsilon` of each other. An item with no neighbour is its own
+    /// `max_distance`-proximity graph: items are connected when their boxes lie
+    /// within `max_distance` of each other. An item with no neighbour is its own
     /// label.
     ///
     /// The labels identify components; they are not clusters. Distance
-    /// proximity is not transitive — a chain of items each within `epsilon`
+    /// proximity is not transitive — a chain of items each within `max_distance`
     /// of the next forms one component no matter how far its ends lie apart —
     /// so this reports exactly what the graph of
     /// [`Index3D::self_join_within`] pairs defines, and the collapse policy
@@ -1114,8 +1120,8 @@ impl Index3D {
     ///
     /// assert_eq!(index.self_join_within_components(1.0), vec![0, 0, 2]);
     /// ```
-    pub fn self_join_within_components(&self, epsilon: f64) -> Vec<usize> {
-        self_join_components_core(self, DistanceTest::new(epsilon))
+    pub fn self_join_within_components(&self, max_distance: f64) -> Vec<usize> {
+        self_join_components_core(self, DistanceTest::new(max_distance))
     }
 
     /// Return the closest pair of items between `self` and `other` as
@@ -1123,7 +1129,7 @@ impl Index3D {
     /// is empty.
     ///
     /// The one-answer end of the distance family: where
-    /// [`Index3D::join_within`] needs an `epsilon` and reports every pair inside
+    /// [`Index3D::join_within`] needs an `max_distance` and reports every pair inside
     /// it, this reports the single nearest pair with no bound to guess. The
     /// traversal is best-first over node pairs and stops as soon as nothing
     /// left on the frontier can beat the pair already found.
@@ -2108,76 +2114,82 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
-    /// `other` lie within `epsilon` of each other. See
+    /// `other` lie within `max_distance` of each other. See
     /// [`Index3D::join_within`].
-    pub fn join_within(&self, other: &Index3DView<'_>, epsilon: f64) -> Vec<(usize, usize)> {
+    pub fn join_within(&self, other: &Index3DView<'_>, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_within_with(other, epsilon, |i, j| {
+        let _: ControlFlow<()> = self.join_within_with(other, max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
         out
     }
 
-    /// Visit every pair within `epsilon` between `self` and `other`. See
+    /// Visit every pair within `max_distance` between `self` and `other`. See
     /// [`Index3D::join_within_with`].
     pub fn join_within_with<B, F>(
         &self,
         other: &Index3DView<'_>,
-        epsilon: f64,
+        max_distance: f64,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        join_core(self, other, DistanceTest::new(epsilon), visitor)
+        join_core(self, other, DistanceTest::new(max_distance), visitor)
     }
 
     /// Return the ids of every item of the view whose box lies within
-    /// `epsilon` of `query`. See [`Index3D::search_within`].
-    pub fn search_within(&self, query: Box3D, epsilon: f64) -> Vec<usize> {
+    /// `max_distance` of `query`. See [`Index3D::search_within`].
+    pub fn search_within(&self, query: Box3D, max_distance: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        self.search_within_into(query, epsilon, &mut out);
+        self.search_within_into(query, max_distance, &mut out);
         out
     }
 
     /// [`search_within`](Self::search_within) into a reused buffer (cleared
     /// first).
-    pub fn search_within_into(&self, query: Box3D, epsilon: f64, out: &mut Vec<usize>) {
+    pub fn search_within_into(&self, query: Box3D, max_distance: f64, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_within(query, epsilon, |index| {
+        let _: ControlFlow<()> = self.visit_within(query, max_distance, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
     }
 
-    /// Visit every item within `epsilon` of `query` without collecting a
+    /// Visit every item within `max_distance` of `query` without collecting a
     /// result `Vec`. See [`search_within`](Self::search_within).
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn visit_within<B, F>(&self, query: Box3D, epsilon: f64, visitor: F) -> ControlFlow<B>
+    pub fn visit_within<B, F>(&self, query: Box3D, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        within_core(self, query, DistanceTest::new(epsilon), &mut stack, visitor)
+        within_core(
+            self,
+            query,
+            DistanceTest::new(max_distance),
+            &mut stack,
+            visitor,
+        )
     }
 
-    /// Return `true` when at least one item lies within `epsilon` of `query`.
+    /// Return `true` when at least one item lies within `max_distance` of `query`.
     ///
     /// Stops at the first hit, so it takes the prune-only descent: no
     /// whole-subtree accept is computed. See
     /// [`search_within`](Self::search_within).
-    pub fn any_within(&self, query: Box3D, epsilon: f64) -> bool {
-        any_within_core(self, query, DistanceTest::new(epsilon))
+    pub fn any_within(&self, query: Box3D, max_distance: f64) -> bool {
+        any_within_core(self, query, DistanceTest::new(max_distance))
     }
 
     /// Return every unordered pair of distinct items within this view whose
-    /// boxes lie within `epsilon` of each other, each pair exactly once. See
+    /// boxes lie within `max_distance` of each other, each pair exactly once. See
     /// [`Index3D::self_join_within`].
-    pub fn self_join_within(&self, epsilon: f64) -> Vec<(usize, usize)> {
+    pub fn self_join_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_within_with(epsilon, |i, j| {
+        let _: ControlFlow<()> = self.self_join_within_with(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2185,45 +2197,45 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Visit every unordered pair of distinct items within this view whose
-    /// boxes lie within `epsilon` of each other. See
+    /// boxes lie within `max_distance` of each other. See
     /// [`Index3D::self_join_within_with`].
-    pub fn self_join_within_with<B, F>(&self, epsilon: f64, visitor: F) -> ControlFlow<B>
+    pub fn self_join_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, DistanceTest::new(epsilon), visitor)
+        self_join_core(self, DistanceTest::new(max_distance), visitor)
     }
 
     /// Return the ids of items of `self` with no item of `other` within
-    /// `epsilon`. See [`Index3D::anti_join_within`].
-    pub fn anti_join_within(&self, other: &Index3DView<'_>, epsilon: f64) -> Vec<usize> {
+    /// `max_distance`. See [`Index3D::anti_join_within`].
+    pub fn anti_join_within(&self, other: &Index3DView<'_>, max_distance: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.anti_join_within_with(other, epsilon, |i| {
+        let _: ControlFlow<()> = self.anti_join_within_with(other, max_distance, |i| {
             out.push(i);
             ControlFlow::Continue(())
         });
         out
     }
 
-    /// Visit every item of `self` with no item of `other` within `epsilon`.
+    /// Visit every item of `self` with no item of `other` within `max_distance`.
     /// See [`Index3D::anti_join_within_with`].
     pub fn anti_join_within_with<B, F>(
         &self,
         other: &Index3DView<'_>,
-        epsilon: f64,
+        max_distance: f64,
         visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        anti_join_core(self, other, DistanceTest::new(epsilon), visitor)
+        anti_join_core(self, other, DistanceTest::new(max_distance), visitor)
     }
 
     /// Label every item with the smallest item id in its component of the
-    /// `epsilon`-proximity graph. See
+    /// `max_distance`-proximity graph. See
     /// [`Index3D::self_join_within_components`].
-    pub fn self_join_within_components(&self, epsilon: f64) -> Vec<usize> {
-        self_join_components_core(self, DistanceTest::new(epsilon))
+    pub fn self_join_within_components(&self, max_distance: f64) -> Vec<usize> {
+        self_join_components_core(self, DistanceTest::new(max_distance))
     }
 
     /// Return the closest pair of items between this view and `other`. See

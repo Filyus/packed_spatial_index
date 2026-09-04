@@ -212,7 +212,7 @@ impl Box2D {
     /// This is a lower bound on the distance between any two points chosen
     /// inside the two boxes, which is what makes a distance join a broad
     /// phase. The square is returned without `sqrt`, so compare it against
-    /// `epsilon * epsilon`.
+    /// `max_distance * max_distance`.
     #[inline]
     pub fn distance_squared_to_box(&self, other: Box2D) -> f64 {
         let dx = axis_gap(self.min_x, self.max_x, other.min_x, other.max_x);
@@ -393,7 +393,7 @@ impl Box3D {
     /// This is a lower bound on the distance between any two points chosen
     /// inside the two boxes, which is what makes a distance join a broad
     /// phase. The square is returned without `sqrt`, so compare it against
-    /// `epsilon * epsilon`.
+    /// `max_distance * max_distance`.
     #[inline]
     pub fn distance_squared_to_box(&self, other: Box3D) -> f64 {
         let dx = axis_gap(self.min_x, self.max_x, other.min_x, other.max_x);

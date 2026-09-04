@@ -7,10 +7,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 ### API
 
 - `gp2psindex join <a.psi> <b.psi> --within N` reports every pair of items
-  whose boxes lie within `epsilon` of each other, the CLI face of the core
+  whose boxes lie within `max_distance` of each other, the CLI face of the core
   crate's distance join. Pairs are written as NDJSON — one `{"a":i,"b":j}` line
   per pair — from inside the join's visitor rather than collected first: the
-  join is output-bound (millions of pairs at a generous `epsilon`), so the pair
+  join is output-bound (millions of pairs at a generous `max_distance`), so the pair
   vector would cost more memory than the two indexes do. `--count` prints the
   pair count and streams nothing.
   Passing the same path twice is a self-join: every unordered pair of distinct

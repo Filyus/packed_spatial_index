@@ -551,7 +551,7 @@ fn join_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let a_path = parsed.required_pos(0, "a.psi")?;
     let b_path = parsed.required_pos(1, "b.psi")?;
     parsed.no_extra_pos(2)?;
-    let epsilon = parse_epsilon(parsed.option("--within")?.as_deref())?;
+    let max_distance = parse_max_distance(parsed.option("--within")?.as_deref())?;
 
     let a_bytes = std::fs::read(a_path)?;
     // The same path twice is a self-join, and reading the file again would only
@@ -569,7 +569,7 @@ fn join_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let count = join_pairs(
         &a_bytes,
         b_bytes.as_deref(),
-        epsilon,
+        max_distance,
         parsed.flag("--count"),
         &mut out,
     )?;
@@ -584,13 +584,13 @@ fn join_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 /// pair, returning how many pairs matched.
 ///
 /// The pairs are written from inside the join's visitor: the join is
-/// output-bound (millions of pairs at a generous `epsilon`), so materializing
+/// output-bound (millions of pairs at a generous `max_distance`), so materializing
 /// the pair vector first would cost more memory than the indexes do. `b` is
 /// `None` for a self-join. Pair order is traversal order and is not an API.
 fn join_pairs<W: std::io::Write>(
     a_bytes: &[u8],
     b_bytes: Option<&[u8]>,
-    epsilon: f64,
+    max_distance: f64,
     count_only: bool,
     out: &mut W,
 ) -> Result<usize, Box<dyn std::error::Error>> {
@@ -609,14 +609,14 @@ fn join_pairs<W: std::io::Write>(
 
     let flow = match b_bytes {
         None => match &a {
-            JoinIndex::D2(a) => a.self_join_within_with(epsilon, &mut emit),
-            JoinIndex::D3(a) => a.self_join_within_with(epsilon, &mut emit),
+            JoinIndex::D2(a) => a.self_join_within_with(max_distance, &mut emit),
+            JoinIndex::D3(a) => a.self_join_within_with(max_distance, &mut emit),
         },
         Some(bytes) => {
             let b = load_join_index(bytes, "b.psi")?;
             match (&a, &b) {
-                (JoinIndex::D2(a), JoinIndex::D2(b)) => a.join_within_with(b, epsilon, &mut emit),
-                (JoinIndex::D3(a), JoinIndex::D3(b)) => a.join_within_with(b, epsilon, &mut emit),
+                (JoinIndex::D2(a), JoinIndex::D2(b)) => a.join_within_with(b, max_distance, &mut emit),
+                (JoinIndex::D3(a), JoinIndex::D3(b)) => a.join_within_with(b, max_distance, &mut emit),
                 _ => {
                     return Err(
                         "a.psi and b.psi are different dimensions; a distance join needs both in 2D or both in 3D"
@@ -650,17 +650,17 @@ fn load_join_index(bytes: &[u8], what: &str) -> Result<JoinIndex, Box<dyn std::e
 ///
 /// Required, finite and non-negative — the same contract as the server's
 /// `within` query parameter, so the two surfaces reject the same inputs.
-fn parse_epsilon(raw: Option<&str>) -> Result<f64, Box<dyn std::error::Error>> {
+fn parse_max_distance(raw: Option<&str>) -> Result<f64, Box<dyn std::error::Error>> {
     let raw = raw.ok_or(
         "--within is required: the distance bound in coordinate units, e.g. --within 500",
     )?;
-    let epsilon: f64 = raw
+    let max_distance: f64 = raw
         .parse()
         .map_err(|_| format!("`{raw}` is not a number"))?;
-    if !epsilon.is_finite() || epsilon < 0.0 {
+    if !max_distance.is_finite() || max_distance < 0.0 {
         return Err(format!("--within must be a finite non-negative number, got `{raw}`").into());
     }
-    Ok(epsilon)
+    Ok(max_distance)
 }
 
 fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -1710,20 +1710,20 @@ mod tests {
     #[test]
     fn epsilon_is_required_finite_and_non_negative() {
         assert!(
-            parse_epsilon(None)
+            parse_max_distance(None)
                 .unwrap_err()
                 .to_string()
                 .contains("required")
         );
         for bad in ["-1", "nan", "inf", "abc"] {
-            let err = parse_epsilon(Some(bad)).unwrap_err().to_string();
+            let err = parse_max_distance(Some(bad)).unwrap_err().to_string();
             assert!(
                 err.contains("finite non-negative") || err.contains("not a number"),
                 "{bad}: {err}"
             );
         }
-        assert_eq!(parse_epsilon(Some("0")).unwrap(), 0.0);
-        assert_eq!(parse_epsilon(Some("2.5")).unwrap(), 2.5);
+        assert_eq!(parse_max_distance(Some("0")).unwrap(), 0.0);
+        assert_eq!(parse_max_distance(Some("2.5")).unwrap(), 2.5);
     }
 
     #[test]

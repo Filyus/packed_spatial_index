@@ -7,26 +7,26 @@ All notable changes to this crate are documented here.
 ### Search
 
 - Added the distance join (ε-join): `join_within` / `join_within_with` report
-  every pair `(i, j)` whose boxes lie within `epsilon` of each other — the
+  every pair `(i, j)` whose boxes lie within `max_distance` of each other — the
   "within 500 m" question `join` could only answer as "intersecting, filter
   yourself". The distance is box-to-box Euclidean (`Box2D::distance_to_box` /
   `Box3D::distance_to_box`, now public with the `sqrt`-free
   `distance_squared_to_box`): zero when the boxes overlap, edges inclusive, so
-  `epsilon = 0.0` reproduces `join` exactly, and a negative or NaN `epsilon`
+  `max_distance = 0.0` reproduces `join` exactly, and a negative or NaN `max_distance`
   matches nothing. The traversal is the join's dual-tree descent with the prune
-  test swapped for the distance (two node boxes farther apart than `epsilon`
+  test swapped for the distance (two node boxes farther apart than `max_distance`
   cannot hold a closer pair — items sit inside their node boxes, so shrinking a
   box only pushes it farther), plus a leaf fast path: when the *farthest-corner*
-  distance from a leaf to a whole subtree is within `epsilon`, the subtree is
+  distance from a leaf to a whole subtree is within `max_distance`, the subtree is
   emitted as a range without per-item tests. The plain box distance would not
   do there — items inside a passing node box can be farther than the node box
   is. On every type that carries `join`: the owned `f64` indexes, their views,
   and the SIMD indexes and views (streaming and `f32` carry no join at all, so
   nothing new is missing there). Measured on 100 000 × 100 000 uniform unit
-  boxes, pinned, interleaved on a quiet machine: at `epsilon = 2` (324 k
+  boxes, pinned, interleaved on a quiet machine: at `max_distance = 2` (324 k
   pairs) `join_within` is ~2–2.5× faster than the workaround of joining two
-  indexes of `epsilon`-inflated boxes and filtering the pairs by exact
-  distance, at `epsilon = 6` (1.6 M pairs) ~3× in 2D and ~2–3× in 3D — and
+  indexes of `max_distance`-inflated boxes and filtering the pairs by exact
+  distance, at `max_distance = 6` (1.6 M pairs) ~3× in 2D and ~2–3× in 3D — and
   the workaround needs the second, inflated index built and kept around. Against plain `join` — the same pairs with the predicate
   swapped — the branchless per-axis `max` distance test measures at or below
   the overlap test on uniform data (`join_within(0.0)` runs 0.5–1.0× of
@@ -34,9 +34,9 @@ All notable changes to this crate are documented here.
   where almost nothing matches).
   The family also ships the two folds the pair stream implies:
   `anti_join_within` / `anti_join_within_with` report the items of `self`
-  with no partner within `epsilon` (one pruned search into `other` per item),
+  with no partner within `max_distance` (one pruned search into `other` per item),
   and `self_join_within_components` labels every item with the smallest item
-  id in its component of the `epsilon`-proximity graph, an isolated item being
+  id in its component of the `max_distance`-proximity graph, an isolated item being
   its own label. The labels identify components; they are not clusters —
   distance proximity is not transitive, so whether a chained component should
   stay merged is the caller's call, and the method reports exactly what the
@@ -73,11 +73,11 @@ All notable changes to this crate are documented here.
 
 - Added the radius query: `search_within` / `search_within_into` /
   `visit_within` / `any_within` report every item whose box lies within
-  `epsilon` of a query box — "everything within 500 m of here", without
+  `max_distance` of a query box — "everything within 500 m of here", without
   pretending to need a `k`. It is the single-index sibling of the ε-join, with
   the same predicate and the same semantics: box-to-box Euclidean distance,
-  zero when the boxes overlap, edges inclusive, so `epsilon = 0.0` reproduces
-  `search` exactly and a negative or NaN `epsilon` matches nothing. A
+  zero when the boxes overlap, edges inclusive, so `max_distance = 0.0` reproduces
+  `search` exactly and a negative or NaN `max_distance` matches nothing. A
   degenerate query box (`min == max`, a point) works. Result order is traversal
   order, as for `search`. On the eight types that carry `join_within`: the
   owned `f64` indexes, their views, and the SIMD indexes and views (`f32` and
@@ -88,7 +88,7 @@ All notable changes to this crate are documented here.
   anywhere inside their node box and shrinking a box only pushes it farther
   from an external query.
   Measured against the workaround it replaces — `search` on the
-  `epsilon`-inflated query box, then an exact distance filter over the
+  `max_distance`-inflated query box, then an exact distance filter over the
   candidates — on 1 M boxes, pinned to one core, best-of-3 with the arm order
   alternated per round, ten paired rounds after a discarded warm-up, control
   arm 0.99–1.07× (spread ±0.1): at ~10 hits/query `search_within` is 1.25–1.5×
@@ -178,20 +178,20 @@ All notable changes to this crate are documented here.
 
 - Added the distance join endpoint: `GET /collections/{id}/join/{other}`
   answers every pair of entries between two collections whose boxes lie within
-  `epsilon` — "which places are within 500 m of which roads", the relational
+  `max_distance` — "which places are within 500 m of which roads", the relational
   question a per-collection `/search` cannot express. Both artifacts load into
   in-memory owned indexes on first use and stay cached (the core loader now
   accepts the interleaved layout the convert writes by default); the join
   itself is the measured tens-of-milliseconds dual-tree descent, so network
   latency never enters the loop — the client pays one request plus the pair
-  download. `epsilon` is required, in coordinate units, inclusive (`0` answers
+  download. `max_distance` is required, in coordinate units, inclusive (`0` answers
   exactly the intersecting pairs; negative or NaN is rejected). Joining a
   collection with itself reports each unordered pair once. `count=only`
   returns `numberMatched` without pairs; `limit` truncates the returned pairs
   while `numberMatched` keeps counting through, so the total is always true.
   Pairs are `{a, b}` entry ordinals per collection, traversal-ordered (order
   is not part of the API). There is no `offset` — the pair stream has no
-  resumable cursor. Errors: unknown collection 404; missing/invalid `epsilon`,
+  resumable cursor. Errors: unknown collection 404; missing/invalid `max_distance`,
   bad `limit`, unknown parameters 400; a 2D/3D mismatch between the two
   collections 422.
 
@@ -535,7 +535,7 @@ All notable changes to this crate are documented here.
 ### 3D
 
 - `Frustum3D::bounding_box()` now uses a scale-invariant degeneracy test.
-  Previously an absolute determinant epsilon scaled with the product of the
+  Previously an absolute determinant max_distance scaled with the product of the
   three plane-normal magnitudes, so a valid frustum whose (non-normalized)
   planes were uniformly scaled down could be wrongly reported degenerate
   (`None`). The check now compares the normalized triple product of the

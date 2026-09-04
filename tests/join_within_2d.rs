@@ -25,11 +25,11 @@ fn build(boxes: &[Box2D]) -> Index2D {
     builder.finish().unwrap()
 }
 
-fn naive_epsilon_join(a: &[Box2D], b: &[Box2D], epsilon: f64) -> BTreeSet<(usize, usize)> {
+fn naive_epsilon_join(a: &[Box2D], b: &[Box2D], max_distance: f64) -> BTreeSet<(usize, usize)> {
     let mut out = BTreeSet::new();
     for (i, box_a) in a.iter().enumerate() {
         for (j, box_b) in b.iter().enumerate() {
-            if box_a.distance_to_box(*box_b) <= epsilon {
+            if box_a.distance_to_box(*box_b) <= max_distance {
                 out.insert((i, j));
             }
         }
@@ -37,11 +37,11 @@ fn naive_epsilon_join(a: &[Box2D], b: &[Box2D], epsilon: f64) -> BTreeSet<(usize
     out
 }
 
-fn naive_self_epsilon_join(boxes: &[Box2D], epsilon: f64) -> BTreeSet<(usize, usize)> {
+fn naive_self_epsilon_join(boxes: &[Box2D], max_distance: f64) -> BTreeSet<(usize, usize)> {
     let mut out = BTreeSet::new();
     for i in 0..boxes.len() {
         for j in (i + 1)..boxes.len() {
-            if boxes[i].distance_to_box(boxes[j]) <= epsilon {
+            if boxes[i].distance_to_box(boxes[j]) <= max_distance {
                 out.insert((i, j));
             }
         }
@@ -49,8 +49,8 @@ fn naive_self_epsilon_join(boxes: &[Box2D], epsilon: f64) -> BTreeSet<(usize, us
     out
 }
 
-fn naive_anti_join(a: &[Box2D], b: &[Box2D], epsilon: f64) -> BTreeSet<usize> {
-    let paired: BTreeSet<usize> = naive_epsilon_join(a, b, epsilon)
+fn naive_anti_join(a: &[Box2D], b: &[Box2D], max_distance: f64) -> BTreeSet<usize> {
+    let paired: BTreeSet<usize> = naive_epsilon_join(a, b, max_distance)
         .into_iter()
         .map(|(i, _)| i)
         .collect();
@@ -62,9 +62,9 @@ fn sorted_ids(mut ids: Vec<usize>) -> Vec<usize> {
     ids
 }
 
-/// Components of the epsilon-proximity graph over brute-force pairs, labeled
+/// Components of the max_distance-proximity graph over brute-force pairs, labeled
 /// by smallest member id.
-fn naive_components(boxes: &[Box2D], epsilon: f64) -> Vec<usize> {
+fn naive_components(boxes: &[Box2D], max_distance: f64) -> Vec<usize> {
     let mut parent: Vec<usize> = (0..boxes.len()).collect();
     fn find(parent: &[usize], mut x: usize) -> usize {
         while parent[x] != x {
@@ -74,7 +74,7 @@ fn naive_components(boxes: &[Box2D], epsilon: f64) -> Vec<usize> {
     }
     for i in 0..boxes.len() {
         for j in (i + 1)..boxes.len() {
-            if boxes[i].distance_to_box(boxes[j]) <= epsilon {
+            if boxes[i].distance_to_box(boxes[j]) <= max_distance {
                 let (ra, rb) = (find(&parent, i), find(&parent, j));
                 if ra < rb {
                     parent[rb] = ra;
@@ -96,7 +96,7 @@ fn normalized(pairs: Vec<(usize, usize)>) -> BTreeSet<(usize, usize)> {
 #[test]
 fn epsilon_join_matches_naive_pairs() {
     let mut rng = StdRng::seed_from_u64(111);
-    for (n, m, max_size, epsilon) in [
+    for (n, m, max_size, max_distance) in [
         (0, 7, 4.0, 2.0),
         (1, 1, 4.0, 0.0),
         (37, 5, 8.0, 5.0),
@@ -108,21 +108,21 @@ fn epsilon_join_matches_naive_pairs() {
         let a = build(&boxes_a);
         let b = build(&boxes_b);
 
-        let expected = naive_epsilon_join(&boxes_a, &boxes_b, epsilon);
-        let actual: BTreeSet<_> = a.join_within(&b, epsilon).into_iter().collect();
+        let expected = naive_epsilon_join(&boxes_a, &boxes_b, max_distance);
+        let actual: BTreeSet<_> = a.join_within(&b, max_distance).into_iter().collect();
         assert_eq!(
-            a.join_within(&b, epsilon).len(),
+            a.join_within(&b, max_distance).len(),
             expected.len(),
-            "duplicate pairs reported (n={n} m={m} eps={epsilon})"
+            "duplicate pairs reported (n={n} m={m} eps={max_distance})"
         );
-        assert_eq!(actual, expected, "n={n} m={m} eps={epsilon}");
+        assert_eq!(actual, expected, "n={n} m={m} eps={max_distance}");
     }
 }
 
 #[test]
 fn epsilon_self_join_matches_naive_pairs() {
     let mut rng = StdRng::seed_from_u64(222);
-    for (n, max_size, epsilon) in [
+    for (n, max_size, max_distance) in [
         (0, 4.0, 2.0),
         (1, 4.0, 2.0),
         (33, 8.0, 4.0),
@@ -131,11 +131,11 @@ fn epsilon_self_join_matches_naive_pairs() {
         let boxes = random_boxes(&mut rng, n, 100.0, max_size);
         let index = build(&boxes);
 
-        let expected = naive_self_epsilon_join(&boxes, epsilon);
+        let expected = naive_self_epsilon_join(&boxes, max_distance);
         assert_eq!(
-            normalized(index.self_join_within(epsilon)),
+            normalized(index.self_join_within(max_distance)),
             expected,
-            "n={n} eps={epsilon}"
+            "n={n} eps={max_distance}"
         );
     }
 }
@@ -159,7 +159,7 @@ fn epsilon_zero_equals_overlap_join() {
 
 #[test]
 fn epsilon_boundary_is_inclusive() {
-    // Exactly epsilon apart on x, overlapping spans on y.
+    // Exactly max_distance apart on x, overlapping spans on y.
     let a = build(&[Box2D::new(0.0, 0.0, 1.0, 1.0)]);
     let b = build(&[Box2D::new(3.0, 0.0, 4.0, 1.0)]);
     assert_eq!(a.join_within(&b, 2.0), vec![(0, 0)]);
@@ -173,20 +173,20 @@ fn epsilon_invalid_matches_nothing() {
     let a = build(&boxes);
     let b = build(&random_boxes(&mut rng, 30, 50.0, 4.0));
 
-    for epsilon in [-1.0, f64::NAN] {
-        assert!(a.join_within(&b, epsilon).is_empty());
-        assert!(a.self_join_within(epsilon).is_empty());
+    for max_distance in [-1.0, f64::NAN] {
+        assert!(a.join_within(&b, max_distance).is_empty());
+        assert!(a.self_join_within(max_distance).is_empty());
         // The anti-join flips it around: nothing is within the bound, so
         // every item of `a` is reported, and every item is its own component.
         assert_eq!(
-            a.anti_join_within(&b, epsilon).len(),
+            a.anti_join_within(&b, max_distance).len(),
             boxes.len(),
-            "eps={epsilon}"
+            "eps={max_distance}"
         );
         assert_eq!(
-            a.self_join_within_components(epsilon),
+            a.self_join_within_components(max_distance),
             (0..boxes.len()).collect::<Vec<_>>(),
-            "eps={epsilon}"
+            "eps={max_distance}"
         );
     }
 }
@@ -228,13 +228,13 @@ fn epsilon_join_with_supports_early_exit() {
 #[test]
 fn epsilon_components_match_naive_union_find() {
     let mut rng = StdRng::seed_from_u64(777);
-    for (max_size, epsilon) in [(8.0, 2.0), (8.0, 5.0), (20.0, 10.0)] {
+    for (max_size, max_distance) in [(8.0, 2.0), (8.0, 5.0), (20.0, 10.0)] {
         let boxes = random_boxes(&mut rng, 300, 100.0, max_size);
         let index = build(&boxes);
         assert_eq!(
-            index.self_join_within_components(epsilon),
-            naive_components(&boxes, epsilon),
-            "max_size={max_size} eps={epsilon}"
+            index.self_join_within_components(max_distance),
+            naive_components(&boxes, max_distance),
+            "max_size={max_size} eps={max_distance}"
         );
     }
 }
@@ -259,17 +259,17 @@ fn epsilon_chain_is_one_component() {
 #[test]
 fn epsilon_anti_join_matches_naive() {
     let mut rng = StdRng::seed_from_u64(888);
-    for epsilon in [0.5, 3.0, 10.0] {
+    for max_distance in [0.5, 3.0, 10.0] {
         let boxes_a = random_boxes(&mut rng, 250, 100.0, 5.0);
         let boxes_b = random_boxes(&mut rng, 180, 100.0, 5.0);
         let a = build(&boxes_a);
         let b = build(&boxes_b);
         assert_eq!(
-            sorted_ids(a.anti_join_within(&b, epsilon)),
-            naive_anti_join(&boxes_a, &boxes_b, epsilon)
+            sorted_ids(a.anti_join_within(&b, max_distance)),
+            naive_anti_join(&boxes_a, &boxes_b, max_distance)
                 .into_iter()
                 .collect::<Vec<_>>(),
-            "eps={epsilon}"
+            "eps={max_distance}"
         );
     }
 }
@@ -286,19 +286,22 @@ fn view_epsilon_family_matches_owned() {
     let view_a = Index2DView::from_bytes(&bytes_a).unwrap();
     let view_b = Index2DView::from_bytes(&bytes_b).unwrap();
 
-    for epsilon in [0.0, 2.5] {
-        let owned: BTreeSet<_> = a.join_within(&b, epsilon).into_iter().collect();
-        let viewed: BTreeSet<_> = view_a.join_within(&view_b, epsilon).into_iter().collect();
-        assert_eq!(owned, viewed, "eps={epsilon}");
+    for max_distance in [0.0, 2.5] {
+        let owned: BTreeSet<_> = a.join_within(&b, max_distance).into_iter().collect();
+        let viewed: BTreeSet<_> = view_a
+            .join_within(&view_b, max_distance)
+            .into_iter()
+            .collect();
+        assert_eq!(owned, viewed, "eps={max_distance}");
         assert_eq!(
-            normalized(view_a.self_join_within(epsilon)),
-            normalized(a.self_join_within(epsilon)),
-            "eps={epsilon}"
+            normalized(view_a.self_join_within(max_distance)),
+            normalized(a.self_join_within(max_distance)),
+            "eps={max_distance}"
         );
         assert_eq!(
-            view_a.anti_join_within(&view_b, epsilon),
-            a.anti_join_within(&b, epsilon),
-            "eps={epsilon}"
+            view_a.anti_join_within(&view_b, max_distance),
+            a.anti_join_within(&b, max_distance),
+            "eps={max_distance}"
         );
     }
     assert_eq!(
@@ -323,29 +326,29 @@ mod simd {
     #[test]
     fn simd_epsilon_family_matches_naive() {
         let mut rng = StdRng::seed_from_u64(1010);
-        for epsilon in [0.0, 1.5, 5.0] {
+        for max_distance in [0.0, 1.5, 5.0] {
             let boxes_a = random_boxes(&mut rng, 450, 100.0, 4.0);
             let boxes_b = random_boxes(&mut rng, 350, 100.0, 4.0);
             let a = build_simd(&boxes_a);
             let b = build_simd(&boxes_b);
 
-            let expected = naive_epsilon_join(&boxes_a, &boxes_b, epsilon);
-            let actual: BTreeSet<_> = a.join_within(&b, epsilon).into_iter().collect();
-            assert_eq!(actual, expected, "eps={epsilon}");
+            let expected = naive_epsilon_join(&boxes_a, &boxes_b, max_distance);
+            let actual: BTreeSet<_> = a.join_within(&b, max_distance).into_iter().collect();
+            assert_eq!(actual, expected, "eps={max_distance}");
 
-            let expected_self = naive_self_epsilon_join(&boxes_a, epsilon);
-            assert_eq!(normalized(a.self_join_within(epsilon)), expected_self);
+            let expected_self = naive_self_epsilon_join(&boxes_a, max_distance);
+            assert_eq!(normalized(a.self_join_within(max_distance)), expected_self);
 
             assert_eq!(
-                sorted_ids(a.anti_join_within(&b, epsilon)),
-                naive_anti_join(&boxes_a, &boxes_b, epsilon)
+                sorted_ids(a.anti_join_within(&b, max_distance)),
+                naive_anti_join(&boxes_a, &boxes_b, max_distance)
                     .into_iter()
                     .collect::<Vec<_>>()
             );
             assert_eq!(
-                a.self_join_within_components(epsilon),
-                naive_components(&boxes_a, epsilon),
-                "eps={epsilon}"
+                a.self_join_within_components(max_distance),
+                naive_components(&boxes_a, max_distance),
+                "eps={max_distance}"
             );
         }
     }
@@ -362,17 +365,20 @@ mod simd {
         let view_a = SimdIndex2DView::from_bytes(&bytes_a).unwrap();
         let view_b = SimdIndex2DView::from_bytes(&bytes_b).unwrap();
 
-        for epsilon in [0.0, 3.0] {
-            let owned: BTreeSet<_> = a.join_within(&b, epsilon).into_iter().collect();
-            let viewed: BTreeSet<_> = view_a.join_within(&view_b, epsilon).into_iter().collect();
-            assert_eq!(owned, viewed, "eps={epsilon}");
+        for max_distance in [0.0, 3.0] {
+            let owned: BTreeSet<_> = a.join_within(&b, max_distance).into_iter().collect();
+            let viewed: BTreeSet<_> = view_a
+                .join_within(&view_b, max_distance)
+                .into_iter()
+                .collect();
+            assert_eq!(owned, viewed, "eps={max_distance}");
             assert_eq!(
-                normalized(view_a.self_join_within(epsilon)),
-                normalized(a.self_join_within(epsilon))
+                normalized(view_a.self_join_within(max_distance)),
+                normalized(a.self_join_within(max_distance))
             );
             assert_eq!(
-                view_a.anti_join_within(&view_b, epsilon),
-                a.anti_join_within(&b, epsilon)
+                view_a.anti_join_within(&view_b, max_distance),
+                a.anti_join_within(&b, max_distance)
             );
         }
         assert_eq!(

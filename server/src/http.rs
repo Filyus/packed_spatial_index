@@ -48,11 +48,11 @@ pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router
         // be empty there.
         .route("/collections/{id}/search", get(search).post(search_post))
         // Distance join: every pair of entries between two collections whose
-        // boxes lie within an `epsilon` distance. Joining a collection with
+        // boxes lie within an `max_distance` distance. Joining a collection with
         // itself is the self join: each unordered pair once.
         .route("/collections/{id}/join/{other}", get(join))
         // The noise side of the same graph: entries of `id` with no entry of
-        // `other` within `epsilon`. `other` may not equal `id` — see
+        // `other` within `max_distance`. `other` may not equal `id` — see
         // `anti_join_response`.
         .route("/collections/{id}/anti-join/{other}", get(anti_join))
         // Connected components of one collection's own proximity graph. No
@@ -240,7 +240,7 @@ async fn search(
 }
 
 /// Distance join between two collections: every pair of entries whose boxes
-/// lie within `epsilon`. `other` may equal `id` — the self join reports each
+/// lie within `max_distance`. `other` may equal `id` — the self join reports each
 /// unordered pair once. See `join_response` for the semantics.
 async fn join(
     State(state): State<ServerState>,
@@ -259,7 +259,7 @@ async fn join(
 }
 
 /// Distance anti-join: entries of `id` with no entry of `other` within
-/// `epsilon`. `other` may not equal `id`. See `anti_join_response`.
+/// `max_distance`. `other` may not equal `id`. See `anti_join_response`.
 async fn anti_join(
     State(state): State<ServerState>,
     Path((id, other)): Path<(String, String)>,
@@ -276,7 +276,7 @@ async fn anti_join(
     ))
 }
 
-/// Components of one collection's `epsilon`-proximity graph. See
+/// Components of one collection's `max_distance`-proximity graph. See
 /// `components_response`.
 async fn components(
     State(state): State<ServerState>,

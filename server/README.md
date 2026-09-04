@@ -240,7 +240,7 @@ object listing the accepted `predicates`, `levels`, `payloadModes`, and
 ## Distance joins
 
 Three endpoints over one idea: the *ε-proximity graph*, whose nodes are index
-entries and whose edges join two entries whose boxes lie within `epsilon` of
+entries and whose edges join two entries whose boxes lie within `max_distance` of
 each other. The distance is box-to-box Euclidean in the artifact's coordinate
 units — zero when the boxes overlap, inclusive at the bound, so `within=0`
 asks the plain overlap question. `within` is required on all three and must be
@@ -253,7 +253,7 @@ candidates and the exact predicate stays with the caller.
 
 ### GET /collections/{id}/join/{other}
 
-The edges. Every pair of entries within `epsilon`, as `pairs: [{a, b}]` where
+The edges. Every pair of entries within `max_distance`, as `pairs: [{a, b}]` where
 `a` is an entry ordinal in `id` and `b` one in `other`. Joining a collection
 with itself reports each unordered pair once.
 
@@ -264,12 +264,12 @@ GET /collections/towers/join/cables?within=500&limit=100
 `limit` truncates the returned array; `numberMatched` always reports the true
 total, because the traversal runs to completion either way. `count=only`
 returns the total with no pairs. There is no `offset`: the pair stream has no
-resumable cursor, so a later page would cost a full rerun — shrink `epsilon`
+resumable cursor, so a later page would cost a full rerun — shrink `max_distance`
 instead.
 
 ### GET /collections/{id}/anti-join/{other}
 
-The complement: entries of `id` with *no* entry of `other` within `epsilon`,
+The complement: entries of `id` with *no* entry of `other` within `max_distance`,
 as `items: [ordinals]`. "Which towers no cable comes near." `limit` and
 `count` behave exactly as on `/join`.
 
@@ -293,7 +293,7 @@ GET /collections/towers/components?within=50
 ```
 
 **The labels identify components; they are not clusters.** Distance proximity
-is not transitive — a chain of entries each within `epsilon` of the next is one
+is not transitive — a chain of entries each within `max_distance` of the next is one
 component no matter how far its ends lie apart — so this reports exactly what
 the graph defines, and whether a chained component should stay merged is the
 caller's decision.

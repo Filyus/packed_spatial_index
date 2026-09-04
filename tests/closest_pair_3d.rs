@@ -137,7 +137,7 @@ fn overlapping_boxes_are_zero_apart() {
 #[test]
 fn touching_boxes_are_zero_apart() {
     // Edges are inclusive everywhere in this crate, so a shared edge is a
-    // distance of exactly zero, not an epsilon above it.
+    // distance of exactly zero, not an max_distance above it.
     let a = build(&[Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)]);
     let b = build(&[Box3D::new(1.0, 0.0, 0.0, 2.0, 1.0, 1.0)]);
     assert_eq!(a.closest_pair(&b), Some((0, 0, 0.0)));
@@ -190,7 +190,7 @@ fn closest_pair_is_symmetric_in_distance() {
     }
 }
 
-/// The closest pair is the smallest epsilon at which the join is non-empty.
+/// The closest pair is the smallest max_distance at which the join is non-empty.
 #[test]
 fn closest_pair_agrees_with_join_epsilon() {
     let mut rng = StdRng::seed_from_u64(5205);

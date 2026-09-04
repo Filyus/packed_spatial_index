@@ -23,6 +23,7 @@ the method for each need; the notes after it explain the reasoning.
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
+| All pairs within a distance — "within 500 m", not "intersecting" | `join_epsilon` / `join_epsilon_with` (`self_join_epsilon` within one index, `anti_join_epsilon` for the unpaired items, `self_join_epsilon_components` for groups) | joining indexes of `epsilon`-inflated boxes and filtering |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
 | The per-item blob back, not just the id | `payload(id)` / `search_payloads(query)` on a view, or `search_payloads` on a streaming reader | a side table keyed by id |
@@ -379,6 +380,60 @@ typical. A useful first estimate costs no I/O at all, since `open` caches the
 upper levels: a node's *far*-corner depth is an upper bound on the nearest depth
 of anything inside it. Widen generously rather than tightly — an over-large cap
 costs bytes, an over-small one costs a whole extra round.
+
+## Join by distance (ε-join)
+
+`join` answers "which boxes intersect". `join_epsilon` answers the question
+people actually ask — "which pairs are within 500 m of each other". The
+distance is between boxes (`Box2D::distance_to_box`, `Box3D::distance_to_box`,
+or the `sqrt`-free `distance_squared_to_box`): zero when the boxes overlap,
+edges inclusive, so `epsilon = 0.0` reproduces `join` exactly. Like every query
+here it is a broad phase — the box distance is a lower bound on the true
+distance between the underlying geometries, so hits are candidates and the
+exact predicate stays with the caller. A negative or NaN `epsilon` matches
+nothing.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut b = Index2DBuilder::new(3);
+# b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
+# b.add(Box2D::new(200.0, 200.0, 201.0, 201.0));
+# let towers = b.finish()?;
+let mut pairs = towers.join_epsilon(&towers, 5.0);
+pairs.sort_unstable();
+assert_eq!(pairs, vec![(0, 1)]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+The family shares the `join` descent with the prune test swapped for the
+distance, on every type that carries `join` (the owned `f64` indexes, their
+views, and the SIMD indexes and views):
+
+- `join_epsilon` / `join_epsilon_with`, `self_join_epsilon` /
+  `self_join_epsilon_with` — the pair stream. A leaf whose whole subtree lies
+  within `epsilon` is emitted as a range without per-item tests.
+- `anti_join_epsilon` / `anti_join_epsilon_with` — items of `self` with *no*
+  partner within `epsilon`: the noise side of the graph, one pruned search per
+  item. An index queried against itself pairs with itself at distance zero, so
+  isolation within one index is a components question, not an anti-join.
+- `self_join_epsilon_components` — one label per item: the smallest item id in
+  its component of the `epsilon`-proximity graph, an isolated item being its
+  own label. The labels identify components; they are not clusters. Distance
+  proximity is *not transitive* — a chain of items each within `epsilon` of the
+  next is one component no matter how far its ends lie apart — so what a
+  component "is" (merge, split, keep as noise) stays with the caller. This
+  reports what the graph defines, deterministically.
+
+Measured on 100 000 × 100 000 uniform 2D boxes (extent 1000, unit size):
+`join_epsilon` at `epsilon = 2` (324 000 pairs) runs ~3× faster than the
+workaround of joining two indexes of `epsilon`-inflated boxes and filtering
+the pairs by exact distance; at `epsilon = 6` (1.6 million pairs) ~4×. The
+workaround also needs a second, larger index — 5 ms extra build and more
+memory in this setup. On pair-rich inputs the distance predicate costs about
+the same as the overlap predicate (a branchless `max` chain per axis); on
+near-empty inputs the plain `join` stays the cheaper tool, so pick by the
+question being asked.
 
 ## Find boxes that contain a point
 

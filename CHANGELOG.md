@@ -6,6 +6,40 @@ All notable changes to this crate are documented here.
 
 ### Search
 
+- Added the distance join (ε-join): `join_epsilon` / `join_epsilon_with` report
+  every pair `(i, j)` whose boxes lie within `epsilon` of each other — the
+  "within 500 m" question `join` could only answer as "intersecting, filter
+  yourself". The distance is box-to-box Euclidean (`Box2D::distance_to_box` /
+  `Box3D::distance_to_box`, now public with the `sqrt`-free
+  `distance_squared_to_box`): zero when the boxes overlap, edges inclusive, so
+  `epsilon = 0.0` reproduces `join` exactly, and a negative or NaN `epsilon`
+  matches nothing. The traversal is the join's dual-tree descent with the prune
+  test swapped for the distance (two node boxes farther apart than `epsilon`
+  cannot hold a closer pair — items sit inside their node boxes, so shrinking a
+  box only pushes it farther), plus a leaf fast path: when the *farthest-corner*
+  distance from a leaf to a whole subtree is within `epsilon`, the subtree is
+  emitted as a range without per-item tests. The plain box distance would not
+  do there — items inside a passing node box can be farther than the node box
+  is. On every type that carries `join`: the owned `f64` indexes, their views,
+  and the SIMD indexes and views (streaming and `f32` carry no join at all, so
+  nothing new is missing there). Measured on 100 000 × 100 000 uniform unit
+  boxes, pinned: at `epsilon = 2` (324 k pairs) `join_epsilon` is ~3× faster
+  than the workaround of joining two indexes of `epsilon`-inflated boxes and
+  filtering the pairs by exact distance, at `epsilon = 6` (1.6 M pairs) ~4× in
+  2D and ~3× in 3D — and the workaround needs the second, inflated index built
+  and kept around. Against plain `join` on pair-rich inputs the branchless
+  per-axis `max` distance test measures at parity with the branchless overlap
+  test (0.8–1.1×); on near-empty inputs plain `join` stays the cheaper tool.
+  The family also ships the two folds the pair stream implies:
+  `anti_join_epsilon` / `anti_join_epsilon_with` report the items of `self`
+  with no partner within `epsilon` (one pruned search into `other` per item),
+  and `self_join_epsilon_components` labels every item with the smallest item
+  id in its component of the `epsilon`-proximity graph, an isolated item being
+  its own label. The labels identify components; they are not clusters —
+  distance proximity is not transitive, so whether a chained component should
+  stay merged is the caller's call, and the method reports exactly what the
+  graph defines.
+
 - Added `search_ordered(region, key, max_results, max_key)` (with `_into` and
   `visit_ordered`) on the owned `f64` indexes and their views. It answers the
   same set as `search` but emits it in nondecreasing order of a key you supply,

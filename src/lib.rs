@@ -52,7 +52,11 @@
 //! * **Spatial join** — [`join`](Index2D::join) /
 //!   [`join_with`](Index2D::join_with) between two indexes,
 //!   [`self_join`](Index2D::self_join) /
-//!   [`self_join_with`](Index2D::self_join_with) within one.
+//!   [`self_join_with`](Index2D::self_join_with) within one, and the distance
+//!   forms: [`join_epsilon`](Index2D::join_epsilon) for pairs within `epsilon`,
+//!   [`anti_join_epsilon`](Index2D::anti_join_epsilon) for the unpaired items,
+//!   and [`self_join_epsilon_components`](Index2D::self_join_epsilon_components)
+//!   for the components of the distance graph.
 //! # Quick Start
 //! ```
 //! use packed_spatial_index::{Index2DBuilder, Box2D};

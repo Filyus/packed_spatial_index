@@ -24,6 +24,7 @@ the method for each need; the notes after it explain the reasoning.
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
 | Everything within a distance of one place | `search_within(query, epsilon)` / `search_within_into` / `visit_within` / `any_within` | `search` on an `epsilon`-inflated box and then filtering the hits |
+| The single closest pair, with no distance to guess | `closest_pair(&other)` / `self_closest_pair()` | `join_epsilon` with a guessed `epsilon`, widened until it is non-empty |
 | All pairs within a distance — "within 500 m", not "intersecting" | `join_epsilon` / `join_epsilon_with` (`self_join_epsilon` within one index, `anti_join_epsilon` for the unpaired items, `self_join_epsilon_components` for groups) | joining indexes of `epsilon`-inflated boxes and filtering |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
@@ -491,6 +492,64 @@ on uniform data the distance predicate costs nothing extra —
 0.5–1.0× of `join` — while on clustered data plain `join` stays the cheaper
 tool (1.1–2.9×, worst where almost nothing matches), so pick by the question
 being asked.
+
+## The closest pair
+
+`closest_pair` answers "which two of these are nearest each other" — one
+answer, no `epsilon` to guess. `join_epsilon` can be walked up to it, but only
+by picking a bound, finding it empty, and widening; this finds it directly.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut b = Index2DBuilder::new(3);
+# b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
+# b.add(Box2D::new(3.5, 0.0, 4.5, 1.0));
+# let towers = b.finish()?;
+let (i, j, distance) = towers.self_closest_pair().unwrap();
+assert_eq!((i.min(j), i.max(j)), (1, 2));
+assert_eq!(distance, 0.0); // items 1 and 2 overlap
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+`closest_pair(&other)` does the same across two indexes, returning
+`(item_of_self, item_of_other, distance)`. Both return `None` when there is no
+pair to report — an empty index either side, or fewer than two items for the
+self form. An item is never paired with itself. The distance is between boxes,
+zero when they overlap, so like everything here it is a broad phase and a lower
+bound on the distance between the underlying geometries. Which pair is
+reported among several at the same distance is traversal order.
+
+This is a different traversal from the joins: a best-first frontier of *node
+pairs* keyed by the pair's box distance, which is a lower bound on any item
+pair beneath it. The first time the frontier's head is no closer than the best
+pair already found, everything still queued can be dropped unexamined — the
+early exit is the whole point of having the operation at all.
+
+That exit only helps once `best` is finite, so the descent seeds it first with
+a real pair: a handful of items walked greedily down the other tree for the
+cross form, and a sweep of adjacent entries in the leaf array for the self
+form, where spatial sort order already puts near things near. Both stop the
+moment they find an overlapping pair, which cannot be beaten. The seed is
+worth far more than it costs — on a million non-overlapping points it took the
+query from 1.58 s to 0.39 s.
+
+Measured on 1 M boxes against the workaround the shipped API otherwise forces —
+one `neighbors_of_box(item, 1)` per item, keeping the minimum — pinned to one
+core, arm order alternated per round, ten paired rounds, control arm
+0.98-1.03×:
+
+| data | `closest_pair` | vs the kNN loop | `self_closest_pair` | vs the loop |
+| --- | --- | --- | --- | --- |
+| uniform points, no overlaps | 386 ms | 9.2× | 68 ms | 62× |
+| clustered boxes | 12.4 ms | 294× | ~0 | — |
+
+The two rows are the two regimes. Where no pair overlaps, the descent has to
+work for its answer and wins by a single-digit factor on the cross form. Where
+some pair is zero apart — clustered or dense box data, which is most real data
+— the seed usually finds it outright and the query returns in microseconds
+whatever the index size; the ratio there is large enough to be meaningless to
+quote, which is the honest way to read those cells rather than a headline.
 
 ## Find boxes that contain a point
 

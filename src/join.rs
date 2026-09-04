@@ -9,6 +9,8 @@
 //! the packed layout shared by every f64 index and byte-view type, and over a
 //! [`PairTest`] that decides which entry pairs can hold output.
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
 use crate::geometry::{Box2D, Box3D};
@@ -370,6 +372,377 @@ where
         |node| test.covers(query, node),
         visitor,
     )
+}
+
+/// Box bounds a closest-pair descent can measure between.
+///
+/// Squared, because the descent only ever compares distances against each
+/// other and against the running best — the ordering is the same and the
+/// square root is paid once, on the one answer that comes back.
+pub(crate) trait PairDistance: Copy {
+    fn distance_squared_between(self, other: Self) -> f64;
+}
+
+impl PairDistance for Box2D {
+    #[inline]
+    fn distance_squared_between(self, other: Self) -> f64 {
+        self.distance_squared_to_box(other)
+    }
+}
+
+impl PairDistance for Box3D {
+    #[inline]
+    fn distance_squared_between(self, other: Self) -> f64 {
+        self.distance_squared_to_box(other)
+    }
+}
+
+/// One entry pair on the closest-pair frontier, ordered so [`BinaryHeap`]
+/// (a max-heap) pops the *smallest* lower bound first.
+#[derive(Clone, Copy)]
+struct PairState {
+    dist_squared: f64,
+    a_pos: usize,
+    a_level: usize,
+    b_pos: usize,
+    b_level: usize,
+}
+
+impl PartialEq for PairState {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for PairState {}
+
+impl Ord for PairState {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reversed on distance to make the max-heap a min-heap. The position
+        // tie-break only keeps the order total and deterministic; which of two
+        // equally distant pairs is expanded first does not affect the answer's
+        // distance.
+        other
+            .dist_squared
+            .total_cmp(&self.dist_squared)
+            .then_with(|| other.a_pos.cmp(&self.a_pos))
+            .then_with(|| other.b_pos.cmp(&self.b_pos))
+    }
+}
+
+impl PartialOrd for PairState {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// The running best pair of a closest-pair descent.
+struct Best {
+    dist_squared: f64,
+    pair: Option<(usize, usize)>,
+}
+
+impl Best {
+    #[inline]
+    fn offer(&mut self, dist_squared: f64, i: usize, j: usize) {
+        if dist_squared < self.dist_squared {
+            self.dist_squared = dist_squared;
+            self.pair = Some((i, j));
+        }
+    }
+
+    #[inline]
+    fn finish(self) -> Option<(usize, usize, f64)> {
+        let (i, j) = self.pair?;
+        Some((i, j, self.dist_squared.sqrt()))
+    }
+}
+
+/// Seed `best` with a real pair before the frontier opens, by walking a sample
+/// of `a`'s items down `b` greedily — at each node taking the child closest to
+/// the item's box.
+///
+/// Costs one root-to-leaf walk per sample and changes no answer: every offer
+/// is an actual item pair, so it can only start `best` lower than infinity.
+/// That matters because the descent prunes against `best`, which otherwise
+/// stays infinite until the first leaf-leaf pair is popped — on dense data
+/// with no overlapping pair that is deep into the traversal, and until then
+/// nothing is pruned at all.
+fn seed_best<T, U>(a: &T, b: &U, best: &mut Best)
+where
+    T: TreeAccess,
+    U: TreeAccess<Bounds = T::Bounds>,
+    T::Bounds: PairDistance,
+{
+    const SAMPLES: usize = 16;
+    let n = a.tree_num_items();
+    // Spread the samples across the leaf array rather than taking a prefix:
+    // the leaves are in spatial-sort order, so a prefix is one corner of `a`.
+    let step = (n / SAMPLES).max(1);
+    for a_pos in (0..n).step_by(step) {
+        let bounds = a.tree_bounds(a_pos);
+        let mut pos = b.tree_num_nodes() - 1;
+        let mut level = b.tree_level_count() - 1;
+        while level > 0 {
+            let child_level = level - 1;
+            let start = b.tree_index(pos);
+            let end = (start + b.tree_node_size()).min(b.tree_level_bound(child_level));
+            let mut nearest = start;
+            let mut nearest_dist = f64::INFINITY;
+            for child in start..end {
+                let dist = bounds.distance_squared_between(b.tree_bounds(child));
+                if dist < nearest_dist {
+                    nearest_dist = dist;
+                    nearest = child;
+                }
+            }
+            pos = nearest;
+            level = child_level;
+        }
+        best.offer(
+            bounds.distance_squared_between(b.tree_bounds(pos)),
+            a.tree_index(a_pos),
+            b.tree_index(pos),
+        );
+        if best.dist_squared == 0.0 {
+            // Nothing can beat zero, so the remaining samples cannot tighten
+            // anything and the descent will exit on its first pop.
+            return;
+        }
+    }
+}
+
+/// Seed `best` for the self case from neighbours in the leaf array.
+///
+/// The leaves are in spatial-sort order, so consecutive entries are usually
+/// close; a sweep of adjacent pairs is one pass over the leaf bounds and
+/// typically lands within a small factor of the answer. Same guarantee as
+/// [`seed_best`]: every offer is a real pair of distinct items, so it can only
+/// tighten the bound the descent prunes against.
+fn seed_self_best<T>(tree: &T, best: &mut Best)
+where
+    T: TreeAccess,
+    T::Bounds: PairDistance,
+{
+    let n = tree.tree_num_items();
+    let mut previous = tree.tree_bounds(0);
+    for pos in 1..n {
+        let bounds = tree.tree_bounds(pos);
+        best.offer(
+            previous.distance_squared_between(bounds),
+            tree.tree_index(pos - 1),
+            tree.tree_index(pos),
+        );
+        if best.dist_squared == 0.0 {
+            // Two items overlap: nothing can beat zero, so stop sweeping.
+            return;
+        }
+        previous = bounds;
+    }
+}
+
+/// The closest pair of items between `a` and `b`, as `(item_a, item_b,
+/// distance)`, or `None` when either tree is empty.
+///
+/// Best-first over *entry pairs* rather than the stack descent the joins use:
+/// the frontier is a heap keyed by the pair's box-to-box distance, which is a
+/// lower bound on any item pair beneath it, so the first time the heap's head
+/// is no closer than the best pair found the answer is settled and everything
+/// still queued can be dropped unexamined. That early exit is the whole point —
+/// there is one answer, not a stream, and a `join_epsilon` would have to guess
+/// an `epsilon` that contains it.
+///
+/// Ties: the pair reported among several at the same distance is traversal
+/// order and is not part of the API.
+pub(crate) fn closest_pair_core<T, U>(a: &T, b: &U) -> Option<(usize, usize, f64)>
+where
+    T: TreeAccess,
+    U: TreeAccess<Bounds = T::Bounds>,
+    T::Bounds: PairDistance,
+{
+    if a.tree_num_items() == 0 || b.tree_num_items() == 0 {
+        return None;
+    }
+
+    let a_root = a.tree_num_nodes() - 1;
+    let b_root = b.tree_num_nodes() - 1;
+    let mut best = Best {
+        dist_squared: f64::INFINITY,
+        pair: None,
+    };
+    seed_best(a, b, &mut best);
+    let mut heap: BinaryHeap<PairState> = BinaryHeap::with_capacity(64);
+    heap.push(PairState {
+        dist_squared: a
+            .tree_bounds(a_root)
+            .distance_squared_between(b.tree_bounds(b_root)),
+        a_pos: a_root,
+        a_level: a.tree_level_count() - 1,
+        b_pos: b_root,
+        b_level: b.tree_level_count() - 1,
+    });
+
+    while let Some(state) = heap.pop() {
+        // The head is the smallest lower bound left, so nothing queued can
+        // beat the best already found.
+        if state.dist_squared >= best.dist_squared {
+            break;
+        }
+        if state.a_level == 0 && state.b_level == 0 {
+            best.offer(
+                state.dist_squared,
+                a.tree_index(state.a_pos),
+                b.tree_index(state.b_pos),
+            );
+            continue;
+        }
+        expand_closest_pair(a, b, state, &best, &mut heap);
+    }
+    best.finish()
+}
+
+/// Expand the higher-level side of `state` onto the frontier, dropping child
+/// pairs that already cannot beat `best`.
+#[inline]
+fn expand_closest_pair<T, U>(
+    a: &T,
+    b: &U,
+    state: PairState,
+    best: &Best,
+    heap: &mut BinaryHeap<PairState>,
+) where
+    T: TreeAccess,
+    U: TreeAccess<Bounds = T::Bounds>,
+    T::Bounds: PairDistance,
+{
+    if state.a_level >= state.b_level {
+        let child_level = state.a_level - 1;
+        let start = a.tree_index(state.a_pos);
+        let end = (start + a.tree_node_size()).min(a.tree_level_bound(child_level));
+        let b_bounds = b.tree_bounds(state.b_pos);
+        for pos in start..end {
+            let dist_squared = a.tree_bounds(pos).distance_squared_between(b_bounds);
+            if dist_squared >= best.dist_squared {
+                continue;
+            }
+            heap.push(PairState {
+                dist_squared,
+                a_pos: pos,
+                a_level: child_level,
+                b_pos: state.b_pos,
+                b_level: state.b_level,
+            });
+        }
+    } else {
+        let child_level = state.b_level - 1;
+        let start = b.tree_index(state.b_pos);
+        let end = (start + b.tree_node_size()).min(b.tree_level_bound(child_level));
+        let a_bounds = a.tree_bounds(state.a_pos);
+        for pos in start..end {
+            let dist_squared = a_bounds.distance_squared_between(b.tree_bounds(pos));
+            if dist_squared >= best.dist_squared {
+                continue;
+            }
+            heap.push(PairState {
+                dist_squared,
+                a_pos: state.a_pos,
+                a_level: state.a_level,
+                b_pos: pos,
+                b_level: child_level,
+            });
+        }
+    }
+}
+
+/// The closest pair of *distinct* items within one tree, as `(i, j, distance)`,
+/// or `None` for a tree with fewer than two items.
+///
+/// Same frontier as [`closest_pair_core`], with the diagonal handled the way
+/// [`self_join_core`] handles it: an entry paired with itself expands into
+/// child pairs `i <= j`, so each unordered pair is reached once and an item is
+/// never paired with itself. The order of the two ids within the pair, and
+/// which of several equally close pairs is reported, are traversal order and
+/// not part of the API.
+pub(crate) fn self_closest_pair_core<T>(tree: &T) -> Option<(usize, usize, f64)>
+where
+    T: TreeAccess,
+    T::Bounds: PairDistance,
+{
+    if tree.tree_num_items() < 2 {
+        return None;
+    }
+
+    let root = tree.tree_num_nodes() - 1;
+    let root_level = tree.tree_level_count() - 1;
+    let mut best = Best {
+        dist_squared: f64::INFINITY,
+        pair: None,
+    };
+    seed_self_best(tree, &mut best);
+    let mut heap: BinaryHeap<PairState> = BinaryHeap::with_capacity(64);
+    heap.push(PairState {
+        dist_squared: 0.0,
+        a_pos: root,
+        a_level: root_level,
+        b_pos: root,
+        b_level: root_level,
+    });
+
+    while let Some(state) = heap.pop() {
+        if state.dist_squared >= best.dist_squared {
+            break;
+        }
+        let diagonal = state.a_pos == state.b_pos && state.a_level == state.b_level;
+        if state.a_level == 0 && state.b_level == 0 {
+            // The diagonal at leaf level is one item against itself: not a pair.
+            if !diagonal {
+                best.offer(
+                    state.dist_squared,
+                    tree.tree_index(state.a_pos),
+                    tree.tree_index(state.b_pos),
+                );
+            }
+            continue;
+        }
+        if diagonal {
+            let child_level = state.a_level - 1;
+            let start = tree.tree_index(state.a_pos);
+            let end = (start + tree.tree_node_size()).min(tree.tree_level_bound(child_level));
+            for i in start..end {
+                let bounds_i = tree.tree_bounds(i);
+                // `(i, i)` carries the pairs *within* that child; skip it at
+                // leaf level, where it would be an item against itself.
+                if child_level > 0 {
+                    heap.push(PairState {
+                        dist_squared: 0.0,
+                        a_pos: i,
+                        a_level: child_level,
+                        b_pos: i,
+                        b_level: child_level,
+                    });
+                }
+                for j in (i + 1)..end {
+                    let dist_squared = bounds_i.distance_squared_between(tree.tree_bounds(j));
+                    if dist_squared >= best.dist_squared {
+                        continue;
+                    }
+                    heap.push(PairState {
+                        dist_squared,
+                        a_pos: i,
+                        a_level: child_level,
+                        b_pos: j,
+                        b_level: child_level,
+                    });
+                }
+            }
+        } else {
+            expand_closest_pair(tree, tree, state, &best, &mut heap);
+        }
+    }
+    best.finish()
 }
 
 /// Is there an item of `tree` pairing with `bounds` under `test`? One pruned

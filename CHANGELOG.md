@@ -42,6 +42,35 @@ All notable changes to this crate are documented here.
   stay merged is the caller's call, and the method reports exactly what the
   graph defines.
 
+- Added the closest pair: `closest_pair(&other)` returns the nearest pair of
+  items between two indexes as `(item_of_self, item_of_other, distance)`, and
+  `self_closest_pair()` the nearest pair of *distinct* items within one, or
+  `None` when there is no pair to report. The one-answer end of the distance
+  family — where `join_epsilon` needs a bound and reports everything inside it,
+  this needs none. The distance is between boxes, zero when they overlap, so
+  it is a broad phase like everything else here; which pair is reported among
+  several at the same distance is traversal order. On the same eight types that
+  carry `join_epsilon`.
+  A different traversal from the joins: a best-first frontier of *node pairs*
+  keyed by the pair's box distance, which is a lower bound on any item pair
+  beneath it, so the first time the head is no closer than the best pair found,
+  everything still queued is dropped unexamined. That exit only bites once the
+  bound is finite, so the descent seeds it with a real pair first — sixteen
+  items walked greedily down the other tree for the cross form, a sweep of
+  adjacent leaf-array entries for the self form, where spatial sort order
+  already puts near things near — both stopping at the first overlapping pair,
+  which cannot be beaten.
+  Measured on 1 M boxes against the workaround the API otherwise forces (one
+  `neighbors_of_box(item, 1)` per item, keeping the minimum), pinned to one
+  core, arm order alternated per round, ten paired rounds, control arm
+  0.98–1.03×: on uniform points with no overlapping pair — the case with no
+  early answer to find — `closest_pair` runs 386 ms against 9.2× that for the
+  loop, and `self_closest_pair` 68 ms at 62×. On clustered box data, where some
+  pair is zero apart, the seed usually finds it outright and the query returns
+  in microseconds regardless of index size. The seed is what makes the first
+  case tolerable: without it the same query measured 1.58 s and only 2.3× the
+  loop.
+
 - Added the radius query: `search_within` / `search_within_into` /
   `visit_within` / `any_within` report every item whose box lies within
   `epsilon` of a query box — "everything within 500 m of here", without

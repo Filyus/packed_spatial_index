@@ -24,8 +24,8 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
 use crate::geometry::{Box2D, Overlaps2D, Point2D};
 use crate::join::{
-    DistanceTest, OverlapTest, anti_join_core, any_within_core, join_core,
-    self_join_components_core, self_join_core, within_core,
+    DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core, join_core,
+    self_closest_pair_core, self_join_components_core, self_join_core, within_core,
 };
 use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first, metric_knn,
@@ -1248,6 +1248,71 @@ impl Index2D {
         self_join_components_core(self, DistanceTest::new(epsilon))
     }
 
+    /// Return the closest pair of items between `self` and `other` as
+    /// `(item_of_self, item_of_other, distance)`, or `None` when either index
+    /// is empty.
+    ///
+    /// The one-answer end of the distance family: where
+    /// [`Index2D::join_epsilon`] needs an `epsilon` and reports every pair inside
+    /// it, this reports the single nearest pair with no bound to guess. The
+    /// traversal is best-first over node pairs and stops as soon as nothing
+    /// left on the frontier can beat the pair already found.
+    ///
+    /// The distance is between boxes (`sqrt` of
+    /// [`Box2D::distance_squared_to_box`](crate::Box2D::distance_squared_to_box)),
+    /// zero when they overlap — a broad phase, like every query here, so it is
+    /// a lower bound on the distance between the underlying geometries. Which
+    /// pair is reported among several at the same distance is traversal order
+    /// and is not part of the API.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut a = Index2DBuilder::new(1);
+    /// a.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// let a = a.finish().unwrap();
+    ///
+    /// let mut b = Index2DBuilder::new(2);
+    /// b.add(Box2D::new(90.0, 0.0, 91.0, 1.0));
+    /// b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
+    /// let b = b.finish().unwrap();
+    ///
+    /// assert_eq!(a.closest_pair(&b), Some((0, 1, 2.0)));
+    /// ```
+    pub fn closest_pair(&self, other: &Index2D) -> Option<(usize, usize, f64)> {
+        closest_pair_core(self, other)
+    }
+
+    /// Return the closest pair of *distinct* items within this index as
+    /// `(i, j, distance)`, or `None` for fewer than two items.
+    ///
+    /// See [`Index2D::closest_pair`] for the distance semantics. An item is never
+    /// paired with itself; the order of the two ids, and which of several
+    /// equally close pairs is reported, are traversal order and not part of
+    /// the API.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut builder = Index2DBuilder::new(3);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
+    /// builder.add(Box2D::new(3.5, 0.0, 4.5, 1.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// // Items 1 and 2 overlap, so they are zero apart.
+    /// let (i, j, distance) = index.self_closest_pair().unwrap();
+    /// assert_eq!((i.min(j), i.max(j)), (1, 2));
+    /// assert_eq!(distance, 0.0);
+    /// ```
+    pub fn self_closest_pair(&self) -> Option<(usize, usize, f64)> {
+        self_closest_pair_core(self)
+    }
+
     fn collect_neighbors_with_queues(
         &self,
         query: NeighborQuery2D,
@@ -2427,6 +2492,18 @@ impl<'a> Index2DView<'a> {
     /// [`Index2D::self_join_epsilon_components`].
     pub fn self_join_epsilon_components(&self, epsilon: f64) -> Vec<usize> {
         self_join_components_core(self, DistanceTest::new(epsilon))
+    }
+
+    /// Return the closest pair of items between this view and `other`. See
+    /// [`Index2D::closest_pair`].
+    pub fn closest_pair(&self, other: &Index2DView<'_>) -> Option<(usize, usize, f64)> {
+        closest_pair_core(self, other)
+    }
+
+    /// Return the closest pair of distinct items within this view. See
+    /// [`Index2D::self_closest_pair`].
+    pub fn self_closest_pair(&self) -> Option<(usize, usize, f64)> {
+        self_closest_pair_core(self)
     }
 
     fn collect_neighbors_with_queues(

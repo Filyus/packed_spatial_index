@@ -1,0 +1,12 @@
+[package]
+name = "knnjoin-bench"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+packed_spatial_index = { path = "../.." }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

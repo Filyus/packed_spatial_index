@@ -25,7 +25,7 @@ use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACI
 use crate::geometry::{Box2D, Overlaps2D, Point2D};
 use crate::join::{
     DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core, join_core,
-    self_closest_pair_core, self_join_components_core, self_join_core, within_core,
+    knn_join_core, self_closest_pair_core, self_join_components_core, self_join_core, within_core,
 };
 use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first, metric_knn,
@@ -1313,6 +1313,51 @@ impl Index2D {
         self_closest_pair_core(self)
     }
 
+    /// Return, for every item of `self`, the `k` items of `other` nearest to
+    /// it — one row per item of `self`, indexed by item id, each row nearest
+    /// first.
+    ///
+    /// The bulk form of [`Index2D::neighbors_of_box`]: the same answer that loop
+    /// gives, in one dual-tree descent instead of one search per item. A node
+    /// pair is dropped when the distance between the two boxes already exceeds
+    /// the `k`th distance of *every* item under the `self` node, so one test
+    /// discards a block of items against a block of candidates; the per-item
+    /// loop cannot, because each of its searches restarts at the root of
+    /// `other` knowing nothing.
+    ///
+    /// A row is shorter than `k` only when `other` holds fewer than `k` items;
+    /// `k = 0` or an empty index either side gives empty rows. Distances are
+    /// between boxes, zero when they overlap — a broad phase, so the rows are
+    /// candidates. Ties at the `k`th distance are broken by traversal order and
+    /// are not part of the API.
+    ///
+    /// There is no visitor form, deliberately: a row is only final when the
+    /// traversal ends, so anything emitted earlier could still be evicted.
+    /// The result is `k` ids per item of `self` and is sized accordingly.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut a = Index2DBuilder::new(2);
+    /// a.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// a.add(Box2D::new(20.0, 0.0, 21.0, 1.0));
+    /// let a = a.finish().unwrap();
+    ///
+    /// let mut b = Index2DBuilder::new(3);
+    /// b.add(Box2D::new(2.0, 0.0, 3.0, 1.0));
+    /// b.add(Box2D::new(5.0, 0.0, 6.0, 1.0));
+    /// b.add(Box2D::new(23.0, 0.0, 24.0, 1.0));
+    /// let b = b.finish().unwrap();
+    ///
+    /// // Item 0 is nearest b0 then b1; item 1 is nearest b2.
+    /// assert_eq!(a.knn_join(&b, 2), vec![vec![0, 1], vec![2, 1]]);
+    /// ```
+    pub fn knn_join(&self, other: &Index2D, k: usize) -> Vec<Vec<usize>> {
+        knn_join_core(self, other, k)
+    }
+
     fn collect_neighbors_with_queues(
         &self,
         query: NeighborQuery2D,
@@ -2504,6 +2549,12 @@ impl<'a> Index2DView<'a> {
     /// [`Index2D::self_closest_pair`].
     pub fn self_closest_pair(&self) -> Option<(usize, usize, f64)> {
         self_closest_pair_core(self)
+    }
+
+    /// Return, for every item of this view, the `k` items of `other` nearest to
+    /// it. See [`Index2D::knn_join`].
+    pub fn knn_join(&self, other: &Index2DView<'_>, k: usize) -> Vec<Vec<usize>> {
+        knn_join_core(self, other, k)
     }
 
     fn collect_neighbors_with_queues(

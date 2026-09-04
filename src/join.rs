@@ -745,6 +745,276 @@ where
     best.finish()
 }
 
+/// Dual-tree k-nearest-neighbour join: for every item of `a`, the `k` items of
+/// `b` nearest to it.
+///
+/// The state is carried in one struct because the descent is recursive and
+/// every level needs all of it.
+struct KnnJoin<'t, T, U> {
+    a: &'t T,
+    b: &'t U,
+    k: usize,
+    /// Per leaf *position* of `a`, the `k` best so far as squared distances in
+    /// ascending order — `counts[pos]` of the `k` slots are live. Flat rather
+    /// than a heap per item: `k` is small, an insertion into a sorted run of
+    /// `k` costs no more than a sift, and it leaves the rows already ordered.
+    dists: Vec<f64>,
+    ids: Vec<usize>,
+    counts: Vec<usize>,
+    /// Per *entry* position of `a`, an upper bound on the kth squared distance
+    /// of any item under it: the item's own worst for a leaf, the max over
+    /// children for a node. Infinite until a subtree has `k` candidates, which
+    /// is why nothing prunes at the start of the descent.
+    bounds: Vec<f64>,
+    /// One reusable child buffer per tree level, so ordering `b`'s children
+    /// allocates once for the whole join instead of once per node pair.
+    scratch: Vec<Vec<(f64, usize)>>,
+}
+
+impl<T, U> KnnJoin<'_, T, U>
+where
+    T: TreeAccess,
+    U: TreeAccess<Bounds = T::Bounds>,
+    T::Bounds: PairDistance,
+{
+    #[inline]
+    fn worst(&self, pos: usize) -> f64 {
+        if self.counts[pos] < self.k {
+            f64::INFINITY
+        } else {
+            self.dists[pos * self.k + self.k - 1]
+        }
+    }
+
+    /// Insert one candidate into leaf `pos`'s row, keeping it sorted and at
+    /// most `k` long.
+    #[inline]
+    fn offer(&mut self, pos: usize, dist_squared: f64, id: usize) {
+        let k = self.k;
+        let base = pos * k;
+        let count = self.counts[pos];
+        if count == k && dist_squared >= self.dists[base + k - 1] {
+            return;
+        }
+        // Shift the entries that lose to this one up by a slot; when the row is
+        // already full that overwrites the last, which is the one being evicted.
+        let mut i = count.min(k - 1);
+        while i > 0 && self.dists[base + i - 1] > dist_squared {
+            self.dists[base + i] = self.dists[base + i - 1];
+            self.ids[base + i] = self.ids[base + i - 1];
+            i -= 1;
+        }
+        self.dists[base + i] = dist_squared;
+        self.ids[base + i] = id;
+        if count < k {
+            self.counts[pos] = count + 1;
+        }
+    }
+
+    /// Give every row a finite bound before the descent starts.
+    ///
+    /// `worst` is infinite until a row holds `k` entries, so without this the
+    /// bound prunes nothing until each item has collected `k` candidates the
+    /// slow way — at `k = 50` that is most of the traversal, which is where
+    /// the unseeded version lost to the per-item loop outright.
+    ///
+    /// Each item walks greedily down `b` taking the nearest child at every
+    /// level, then measures the window of `k` leaves around where it landed;
+    /// that window is spatially local because `b`'s leaf array is in spatial
+    /// sort order, the same property the closest-pair seed uses. Its `k`th
+    /// distance is a real item's distance and therefore a valid upper bound on
+    /// the true `k`th.
+    ///
+    /// The candidates themselves are deliberately *not* kept. The descent
+    /// visits every leaf pair the bound does not prune, including these, and
+    /// `offer` has no way to recognise a duplicate — seeding the rows rather
+    /// than the bound puts the same item in a row twice.
+    fn seed(&mut self) {
+        let n = self.a.tree_num_items();
+        let items_b = self.b.tree_num_items();
+        if items_b < self.k {
+            // No window can hold `k`, so there is no bound to be had.
+            return;
+        }
+        let root = self.b.tree_num_nodes() - 1;
+        let root_level = self.b.tree_level_count() - 1;
+        let mut window: Vec<f64> = Vec::with_capacity(self.k);
+        for a_pos in 0..n {
+            let bounds = self.a.tree_bounds(a_pos);
+            let mut pos = root;
+            let mut level = root_level;
+            while level > 0 {
+                let child_level = level - 1;
+                let start = self.b.tree_index(pos);
+                let end =
+                    (start + self.b.tree_node_size()).min(self.b.tree_level_bound(child_level));
+                let mut nearest = start;
+                let mut nearest_dist = f64::INFINITY;
+                for child in start..end {
+                    let dist = bounds.distance_squared_between(self.b.tree_bounds(child));
+                    if dist < nearest_dist {
+                        nearest_dist = dist;
+                        nearest = child;
+                    }
+                }
+                pos = nearest;
+                level = child_level;
+            }
+            let from = pos.saturating_sub(self.k / 2).min(items_b - self.k);
+            window.clear();
+            for leaf in from..from + self.k {
+                window.push(bounds.distance_squared_between(self.b.tree_bounds(leaf)));
+            }
+            window.sort_unstable_by(f64::total_cmp);
+            self.bounds[a_pos] = window[self.k - 1];
+        }
+        self.refresh_bounds(self.a.tree_num_nodes() - 1, self.a.tree_level_count() - 1);
+    }
+
+    /// Recompute a node's bound from its children, bottom-up. Needed once
+    /// after seeding, which only writes leaf bounds.
+    fn refresh_bounds(&mut self, pos: usize, level: usize) -> f64 {
+        if level == 0 {
+            return self.bounds[pos];
+        }
+        let child_level = level - 1;
+        let start = self.a.tree_index(pos);
+        let end = (start + self.a.tree_node_size()).min(self.a.tree_level_bound(child_level));
+        let mut widest = 0.0f64;
+        for child in start..end {
+            widest = widest.max(self.refresh_bounds(child, child_level));
+        }
+        self.bounds[pos] = widest;
+        widest
+    }
+
+    fn descend(
+        &mut self,
+        a_pos: usize,
+        a_level: usize,
+        b_pos: usize,
+        b_level: usize,
+        depth: usize,
+    ) {
+        let dist_squared = self
+            .a
+            .tree_bounds(a_pos)
+            .distance_squared_between(self.b.tree_bounds(b_pos));
+        // The node distance is a lower bound on any item pair beneath, and
+        // `bounds[a_pos]` an upper bound on what those items already have.
+        if dist_squared > self.bounds[a_pos] {
+            return;
+        }
+
+        if a_level == 0 && b_level == 0 {
+            self.offer(a_pos, dist_squared, self.b.tree_index(b_pos));
+            // Both the seeded bound and `worst` are valid upper bounds on the
+            // true kth distance, so the tighter of the two is one as well.
+            self.bounds[a_pos] = self.bounds[a_pos].min(self.worst(a_pos));
+            return;
+        }
+
+        if a_level >= b_level {
+            let child_level = a_level - 1;
+            let start = self.a.tree_index(a_pos);
+            let end = (start + self.a.tree_node_size()).min(self.a.tree_level_bound(child_level));
+            for child in start..end {
+                self.descend(child, child_level, b_pos, b_level, depth + 1);
+            }
+            // The subtree's bound is the worst of its children's, so a later
+            // node pair is pruned only when it can help none of them.
+            let mut widest = 0.0f64;
+            for child in start..end {
+                widest = widest.max(self.bounds[child]);
+            }
+            self.bounds[a_pos] = widest;
+        } else {
+            let child_level = b_level - 1;
+            let start = self.b.tree_index(b_pos);
+            let end = (start + self.b.tree_node_size()).min(self.b.tree_level_bound(child_level));
+            let a_bounds = self.a.tree_bounds(a_pos);
+
+            // Nearest child first: each one visited tightens `bounds[a_pos]`,
+            // so taking them in order lets the closest candidates prune the
+            // rest. Without the ordering the same subtrees are visited, just
+            // with a bound that is still loose when it matters.
+            let mut children = std::mem::take(&mut self.scratch[depth]);
+            children.clear();
+            for child in start..end {
+                children.push((
+                    a_bounds.distance_squared_between(self.b.tree_bounds(child)),
+                    child,
+                ));
+            }
+            children.sort_unstable_by(|x, y| x.0.total_cmp(&y.0));
+            for i in 0..children.len() {
+                let (dist, child) = children[i];
+                // Sorted, so once one child is out of range so is every child
+                // after it.
+                if dist > self.bounds[a_pos] {
+                    break;
+                }
+                self.descend(a_pos, a_level, child, child_level, depth + 1);
+            }
+            self.scratch[depth] = children;
+        }
+    }
+}
+
+/// For every item of `a`, the `k` items of `b` nearest to it, nearest first,
+/// as one row per item of `a` indexed by `a`'s item ids.
+///
+/// A row is shorter than `k` only when `b` holds fewer than `k` items. Ties at
+/// the `k`th distance are broken by traversal order and are not part of the
+/// API.
+///
+/// One dual-tree descent instead of one nearest-neighbour query per item: a
+/// node pair is dropped when the distance between the two boxes already
+/// exceeds the kth distance of *every* item under the `a` node, so one test
+/// discards a whole block of items against a whole block of candidates. The
+/// per-item loop cannot do that — it starts each of its `n` searches at the
+/// root of `b` knowing nothing.
+///
+/// There is no visitor form. The rows are only final once the traversal ends;
+/// anything emitted earlier could still be evicted by a later candidate.
+pub(crate) fn knn_join_core<T, U>(a: &T, b: &U, k: usize) -> Vec<Vec<usize>>
+where
+    T: TreeAccess,
+    U: TreeAccess<Bounds = T::Bounds>,
+    T::Bounds: PairDistance,
+{
+    let n = a.tree_num_items();
+    let mut out = vec![Vec::new(); n];
+    if n == 0 || b.tree_num_items() == 0 || k == 0 {
+        return out;
+    }
+
+    let mut join = KnnJoin {
+        a,
+        b,
+        k,
+        dists: vec![f64::INFINITY; n * k],
+        ids: vec![0usize; n * k],
+        counts: vec![0usize; n],
+        bounds: vec![f64::INFINITY; a.tree_num_nodes()],
+        scratch: vec![Vec::new(); a.tree_level_count() + b.tree_level_count() + 2],
+    };
+    join.seed();
+    join.descend(
+        a.tree_num_nodes() - 1,
+        a.tree_level_count() - 1,
+        b.tree_num_nodes() - 1,
+        b.tree_level_count() - 1,
+        0,
+    );
+
+    for pos in 0..n {
+        let base = pos * k;
+        out[a.tree_index(pos)] = join.ids[base..base + join.counts[pos]].to_vec();
+    }
+    out
+}
+
 /// Is there an item of `tree` pairing with `bounds` under `test`? One pruned
 /// descent: a node box failing the test drops its whole subtree (items inside
 /// it are farther still), and leaves are tested exactly. There is no fast

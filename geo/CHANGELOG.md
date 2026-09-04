@@ -33,6 +33,10 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   `{"item":i,"label":l}` line per item, the label being the smallest item id
   in the item's connected component; `--count` prints the number of unpaired
   items or of components and streams nothing.
+- `gp2psindex closest-pair <a.psi> <b.psi>` prints the single nearest pair and
+  its box-to-box distance as one JSON line, or `null` when there is none; the
+  same path twice reports the nearest pair of distinct items within one
+  artifact. The CLI face of the server's `/closest-pair/{other}`.
 - `gp2psindex query` takes `--polygon` (GeoJSON MultiPolygon coordinates, 2D
   only; the polygon drives the index traversal itself, so it needs no payload,
   `--count` works over it and `--exact` refines the survivors against source

@@ -70,6 +70,7 @@ Windows) shuts down after in-flight requests finish.
 - `POST /collections/{id}/search` — the same search as a JSON body
 - `GET /collections/{id}/join/{other}?within=&limit=&count=`
 - `GET /collections/{id}/anti-join/{other}?within=&limit=&count=`
+- `GET /collections/{id}/closest-pair/{other}`
 - `GET /collections/{id}/components?within=&count=`
 - `GET /collections/{id}/nearest?point=x,y[,z]&k=&metric=planar|spherical&within=&nonplanar=`
 
@@ -279,6 +280,24 @@ zero from itself, so the literal answer is always empty; the question people
 mean there — entries with no *other* entry nearby — is what `/components`
 answers, where an isolated entry is its own label. The endpoint says so rather
 than quietly answering a different question for one case.
+
+### GET /collections/{id}/closest-pair/{other}
+
+The single nearest pair between two collections and its distance — the one
+member of the family that needs no `within`, and so also the answer to "how
+small a `within` would find anything". `other` may equal `id`: the self form
+reports the nearest pair of *distinct* entries.
+
+```
+GET /collections/towers/closest-pair/cables
+{"collectionId":"towers","joinCollectionId":"cables","pair":{"a":17,"b":3,"distance":12.5}}
+```
+
+`pair` is `null` when a collection is empty, or the self form has fewer than
+two entries. The distance is box-to-box in coordinate units, zero when the
+boxes overlap; ties fall to traversal order, which is not part of the
+interface. Takes no parameters; an unknown one is refused (400) like
+everywhere else. A 2D/3D mismatch is 422.
 
 ### GET /collections/{id}/components
 

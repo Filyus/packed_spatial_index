@@ -72,6 +72,11 @@ usage:
        with NO item of b.psi within the bound. The two paths must differ --
        against itself every item is at distance zero from itself; the
        question meant there is what `components` answers)
+  gp2psindex closest-pair <a.psi> <b.psi>
+      (the single nearest pair and its distance, as one JSON line
+       {\"a\":i,\"b\":j,\"distance\":d}; the same path twice reports the
+       nearest pair of distinct items within one artifact. Prints null when
+       there is no pair. The join with no --within to guess)
   gp2psindex components <a.psi> --within N
       [--count]
         (print the number of components, then stop)
@@ -133,6 +138,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, Box<dyn std::error::Error>> {
         "join" => join_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "anti-join" => anti_join_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "components" => components_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
+        "closest-pair" => closest_pair_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         "query" => query_cmd(&args[1..]).map(|()| ExitCode::SUCCESS),
         _ => Err(format!("unknown command `{command}`").into()),
     }
@@ -740,6 +746,59 @@ fn anti_join_items<W: std::io::Write>(
         return Err(err.into());
     }
     Ok(total)
+}
+
+fn closest_pair_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = Parsed::new(args);
+    parsed.no_unknown_flags(&[])?;
+    let a_path = parsed.required_pos(0, "a.psi")?;
+    let b_path = parsed.required_pos(1, "b.psi")?;
+    parsed.no_extra_pos(2)?;
+
+    let a_bytes = std::fs::read(a_path)?;
+    let same = std::fs::canonicalize(a_path).ok() == std::fs::canonicalize(b_path).ok()
+        || a_path == b_path;
+    let b_bytes = if same {
+        None
+    } else {
+        Some(std::fs::read(b_path)?)
+    };
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    match closest_pair(&a_bytes, b_bytes.as_deref())? {
+        Some((a, b, distance)) => writeln!(out, "{{\"a\":{a},\"b\":{b},\"distance\":{distance}}}")?,
+        None => writeln!(out, "null")?,
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// `(a, b, distance)` of a closest pair, or `None` when there is no pair.
+type ClosestPair = Option<(usize, usize, f64)>;
+
+/// The nearest pair between `a` and `b`, or of distinct items within `a`
+/// when `b` is `None`.
+fn closest_pair(
+    a_bytes: &[u8],
+    b_bytes: Option<&[u8]>,
+) -> Result<ClosestPair, Box<dyn std::error::Error>> {
+    let a = load_join_index(a_bytes, "a.psi")?;
+    Ok(match b_bytes {
+        None => match &a {
+            JoinIndex::D2(a) => a.self_closest_pair(),
+            JoinIndex::D3(a) => a.self_closest_pair(),
+        },
+        Some(bytes) => match (&a, &load_join_index(bytes, "b.psi")?) {
+            (JoinIndex::D2(a), JoinIndex::D2(b)) => a.closest_pair(b),
+            (JoinIndex::D3(a), JoinIndex::D3(b)) => a.closest_pair(b),
+            _ => {
+                return Err(
+                    "a.psi and b.psi are different dimensions; a closest pair needs both in 2D or both in 3D"
+                        .into(),
+                );
+            }
+        },
+    })
 }
 
 fn components_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -2031,6 +2090,27 @@ mod tests {
         let err = anti_join_cmd(&[path.clone(), path, "--within=1".to_string()]).unwrap_err();
         assert!(err.to_string().contains("components"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn closest_pair_between_and_within() {
+        let a = artifact_2d(&[(0.0, 0.0), (10.0, 0.0)]);
+        let b = artifact_2d(&[(50.0, 0.0), (13.0, 0.0)]);
+        assert_eq!(closest_pair(&a, Some(&b)).unwrap(), Some((1, 1, 3.0)));
+
+        // Within a: 0 and 1 are 10 apart, 2 is 1 from item 1.
+        let a = artifact_2d(&[(0.0, 0.0), (10.0, 0.0), (11.0, 0.0)]);
+        let (i, j, d) = closest_pair(&a, None).unwrap().unwrap();
+        assert_eq!((i.min(j), i.max(j), d), (1, 2, 1.0));
+
+        // One item has no distinct partner; an empty other side has no pair.
+        let one = artifact_2d(&[(0.0, 0.0)]);
+        assert_eq!(closest_pair(&one, None).unwrap(), None);
+
+        let three_d = artifact_3d(&[(0.0, 0.0, 0.0)]);
+        let err = closest_pair(&a, Some(&three_d)).unwrap_err();
+        assert!(err.to_string().contains("different dimensions"), "{err}");
     }
 
     #[cfg(feature = "geojson")]

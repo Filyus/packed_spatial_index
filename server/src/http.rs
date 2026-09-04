@@ -12,9 +12,9 @@ use tracing::Level;
 use crate::{
     ServerError, ServerState,
     query::{
-        AntiJoinParams, CollectionDetail, CollectionSummary, ComponentsParams, JoinParams,
-        NearestParams, SearchParams, anti_join_response, components_response, items_response,
-        join_response, nearest_response, search_response,
+        AntiJoinParams, ClosestPairParams, CollectionDetail, CollectionSummary, ComponentsParams,
+        JoinParams, NearestParams, SearchParams, anti_join_response, closest_pair_response,
+        components_response, items_response, join_response, nearest_response, search_response,
     },
 };
 
@@ -55,6 +55,9 @@ pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router
         // `other` within `max_distance`. `other` may not equal `id` — see
         // `anti_join_response`.
         .route("/collections/{id}/anti-join/{other}", get(anti_join))
+        // The single nearest pair between two collections, or within one
+        // when `other` equals `id`: the join with no bound to guess.
+        .route("/collections/{id}/closest-pair/{other}", get(closest_pair))
         // Connected components of one collection's own proximity graph. No
         // `{other}` segment: a component is a property of one graph.
         .route("/collections/{id}/components", get(components))
@@ -259,6 +262,24 @@ async fn join(
         .ok_or(ServerError::CollectionNotFound(other))?;
     Ok(Json(
         query_blocking(move || join_response(&collection, &other, params)).await?,
+    ))
+}
+
+/// The single nearest pair between `id` and `other`, or within `id` when
+/// they are the same. See `closest_pair_response`.
+async fn closest_pair(
+    State(state): State<ServerState>,
+    Path((id, other)): Path<(String, String)>,
+    ValidQuery(params): ValidQuery<ClosestPairParams>,
+) -> Result<Json<crate::query::ClosestPairResponse>, ServerError> {
+    let collection = state
+        .collection(&id)
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
+    let other = state
+        .collection(&other)
+        .ok_or(ServerError::CollectionNotFound(other))?;
+    Ok(Json(
+        query_blocking(move || closest_pair_response(&collection, &other, params)).await?,
     ))
 }
 

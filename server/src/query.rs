@@ -1190,6 +1190,76 @@ fn parse_optional_max_distance(raw: Option<&str>) -> Result<Option<f64>, ServerE
     raw.map(|raw| parse_max_distance(Some(raw))).transpose()
 }
 
+/// Query parameters accepted by `/collections/{id}/closest-pair/{other}`:
+/// none. The struct exists so an unknown parameter is refused like everywhere
+/// else, rather than silently ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClosestPairParams {}
+
+/// The closest pair, when both collections hold at least one entry (and, for
+/// the self form, at least two).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosestPairItem {
+    /// Entry ordinal in `collectionId`.
+    pub a: usize,
+    /// Entry ordinal in `joinCollectionId`.
+    pub b: usize,
+    /// Box-to-box distance in coordinate units, zero when the boxes overlap.
+    pub distance: f64,
+}
+
+/// `/collections/{id}/closest-pair/{other}` response envelope.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosestPairResponse {
+    /// Collection the `a` side is drawn from.
+    pub collection_id: String,
+    /// Collection the `b` side is drawn from; equals `collectionId` for the
+    /// self form.
+    pub join_collection_id: String,
+    /// The nearest pair, or `null` when there is none to report.
+    pub pair: Option<ClosestPairItem>,
+}
+
+/// Closest pair `GET /collections/{id}/closest-pair/{other}`.
+///
+/// The one member of the join family that needs no bound: where `/join`
+/// reports everything within `within`, this reports the single nearest pair
+/// and its distance, so it is also the answer to "how small a `within` would
+/// find anything". `other` may equal `id` — the self form reports the nearest
+/// pair of *distinct* entries. Best-first over pairs of nodes on the same
+/// cached owned indexes; the distance is between boxes, in coordinate units,
+/// so it is a lower bound on the geometries' distance and exact for points.
+///
+/// `pair` is `null` when a collection is empty, or the self form has fewer
+/// than two entries. Ties are broken by traversal order, which is not part of
+/// the interface.
+pub fn closest_pair_response(
+    collection: &Collection,
+    other: &Collection,
+    _params: ClosestPairParams,
+) -> Result<ClosestPairResponse, ServerError> {
+    let found = if collection.id() == other.id() {
+        match collection.join_index()? {
+            JoinIndex::D2(index) => index.self_closest_pair(),
+            JoinIndex::D3(index) => index.self_closest_pair(),
+        }
+    } else {
+        match (collection.join_index()?, other.join_index()?) {
+            (JoinIndex::D2(a), JoinIndex::D2(b)) => a.closest_pair(b),
+            (JoinIndex::D3(a), JoinIndex::D3(b)) => a.closest_pair(b),
+            _ => return Err(dimension_mismatch(collection, other)),
+        }
+    };
+    Ok(ClosestPairResponse {
+        collection_id: collection.id().to_owned(),
+        join_collection_id: other.id().to_owned(),
+        pair: found.map(|(a, b, distance)| ClosestPairItem { a, b, distance }),
+    })
+}
+
 fn dimension_mismatch(collection: &Collection, other: &Collection) -> ServerError {
     ServerError::UnsupportedQuery(format!(
         "`{}` and `{}` are different dimensions; a distance join needs both collections in 2D or both in 3D",

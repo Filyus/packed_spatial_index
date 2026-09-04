@@ -408,6 +408,15 @@ The labels identify components, not clusters: proximity is not transitive, so
 a chain of items each within the bound of the next is one component however
 far apart its ends lie.
 
+`closest-pair` is the member of the family with no bound to guess: the single
+nearest pair and its distance, or `null` when there is none. The same path
+twice reports the nearest pair of distinct items within one artifact.
+
+```text
+gp2psindex closest-pair towers.psi cables.psi
+{"a":17,"b":3,"distance":12.5}
+```
+
 ## Scope
 
 ### Inputs

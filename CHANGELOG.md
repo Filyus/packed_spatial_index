@@ -203,6 +203,11 @@ All notable changes to this crate are documented here.
   lon/lat content, the same opt-in a `radius` search takes. `within` caps the
   distance in the metric's units. `capabilities.nearestMetrics` advertises
   the metrics a collection accepts.
+- Added `GET /collections/{id}/closest-pair/{other}`: the single nearest pair
+  between two collections (or within one, when `other` equals `id`) and its
+  distance — the join family's member that needs no bound, over the same
+  cached owned indexes. `pair` is `null` when there is nothing to report;
+  a 2D/3D mismatch is 422.
 
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 

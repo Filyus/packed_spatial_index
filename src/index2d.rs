@@ -1132,6 +1132,20 @@ impl Index2D {
         any_within_core(self, query, DistanceTest::new(max_distance))
     }
 
+    /// Count the items within `max_distance` of `query`.
+    ///
+    /// The same traversal as [`visit_within`](Self::visit_within) with a
+    /// counter in place of a buffer, so nothing is allocated. Mirrors
+    /// [`count`](Self::count) for the overlap query.
+    pub fn count_within(&self, query: Box2D, max_distance: f64) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_within(query, max_distance, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
+
     /// Return every unordered pair of distinct items within this index whose
     /// boxes lie within `max_distance` of each other, each pair exactly once. See
     /// [`Index2D::join_within`] for the distance semantics and
@@ -2450,6 +2464,20 @@ impl<'a> Index2DView<'a> {
     /// [`search_within`](Self::search_within).
     pub fn any_within(&self, query: Box2D, max_distance: f64) -> bool {
         any_within_core(self, query, DistanceTest::new(max_distance))
+    }
+
+    /// Count the items within `max_distance` of `query`.
+    ///
+    /// The same traversal as [`visit_within`](Self::visit_within) with a
+    /// counter in place of a buffer, so nothing is allocated. Mirrors
+    /// [`count`](Self::count) for the overlap query.
+    pub fn count_within(&self, query: Box2D, max_distance: f64) -> usize {
+        let mut count = 0usize;
+        let _: ControlFlow<()> = self.visit_within(query, max_distance, |_| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
     }
 
     /// Return every unordered pair of distinct items within this view whose

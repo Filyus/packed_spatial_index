@@ -126,7 +126,7 @@ fn negative_and_nan_max_distance_match_nothing() {
 }
 
 #[test]
-fn into_visit_and_any_agree_with_search_within() {
+fn into_visit_any_and_count_agree_with_search_within() {
     let mut rng = StdRng::seed_from_u64(2104);
     let boxes = random_boxes(&mut rng, 400, 100.0, 4.0);
     let index = build(&boxes);
@@ -148,6 +148,7 @@ fn into_visit_and_any_agree_with_search_within() {
             assert_eq!(visited, expected, "eps={max_distance}");
 
             assert_eq!(index.any_within(query, max_distance), !expected.is_empty());
+            assert_eq!(index.count_within(query, max_distance), expected.len());
         }
     }
 }
@@ -175,6 +176,7 @@ fn empty_index_matches_nothing() {
             .is_empty()
     );
     assert!(!index.any_within(Box2D::new(0.0, 0.0, 1.0, 1.0), 10.0));
+    assert_eq!(index.count_within(Box2D::new(0.0, 0.0, 1.0, 1.0), 10.0), 0);
 }
 
 #[test]
@@ -194,6 +196,10 @@ fn view_matches_owned() {
         assert_eq!(
             view.any_within(query, max_distance),
             index.any_within(query, max_distance)
+        );
+        assert_eq!(
+            view.count_within(query, max_distance),
+            index.count_within(query, max_distance)
         );
     }
 }
@@ -237,6 +243,8 @@ mod simd {
                 );
                 assert_eq!(index.any_within(query, max_distance), !expected.is_empty());
                 assert_eq!(view.any_within(query, max_distance), !expected.is_empty());
+                assert_eq!(index.count_within(query, max_distance), expected.len());
+                assert_eq!(view.count_within(query, max_distance), expected.len());
             }
         }
     }

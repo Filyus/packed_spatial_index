@@ -17,13 +17,13 @@ the method for each need; the notes after it explain the reasoning.
 | Every hit in a hot loop, no reallocation | `search_into(query, &mut vec)` (your `Vec`, cleared per call) or `search_with(query, &mut workspace)` (a reusable `SearchWorkspace`, returns a `&[usize]`) | `search`, which allocates a fresh `Vec` per query |
 | To stop part-way through the hits | `search_iter(query)` on the owned `f64` indexes — a lazy iterator, so `.take(k)` / `.find(..)` end the traversal — or `visit` returning `ControlFlow::Break` | collecting everything and then breaking |
 | To fold or aggregate hits (sum, min, push elsewhere) | `visit(query, ..)` | `search` followed by a loop |
-| The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `visit_neighbors` — same alloc-vs-buffer choice as above | sorting search results by distance |
+| The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `visit_neighbors` — same alloc-vs-buffer choice as above. `neighbors_within` adds a distance cap to the *k*; when there is no *k*, use `search_within` below, which skips the heap and the sort | sorting search results by distance |
 | The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
 | Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `visit_ordered` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
-| Everything within a distance of one place | `search_within(query, max_distance)` / `search_within_into` / `visit_within` / `any_within` | `search` on an `max_distance`-inflated box and then filtering the hits |
+| Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `visit_within` / `any_within` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
 | The single closest pair, with no distance to guess | `closest_pair(&other)` / `self_closest_pair()` | `join_within` with a guessed `max_distance`, widened until it is non-empty |
 | All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_with` (`self_join_within` within one index, `anti_join_within` for the unpaired items, `self_join_within_components` for groups) | joining indexes of `max_distance`-inflated boxes and filtering |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
@@ -408,8 +408,10 @@ assert_eq!(near, vec![0, 1]);
 ```
 
 `search_within_into` fills a buffer you own, `visit_within` folds without one
-(return `ControlFlow::Break` to stop early), and `any_within` answers "is there
-anything near here" without collecting. All four are on the same eight types
+(return `ControlFlow::Break` to stop early), `any_within` answers "is there
+anything near here" without collecting and `count_within` counts during the
+traversal, allocating nothing — the same five forms `search` has. All five are
+on the same eight types
 that carry `join_within`: the owned `f64` indexes, their views, and the SIMD
 indexes and views. The `f32` and streaming frontends carry no distance
 operations yet.

@@ -103,7 +103,7 @@ see [docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
 | Ordered region | [`search_ordered`][search_ordered], [`search_ordered_into`][search_ordered_into], [`visit_ordered`][visit_ordered] — the same region shapes, emitted in nondecreasing order of a `\|box\| -> f64` key (e.g. [`view_depth_3d`][view_depth_3d] for front-to-back), so a budget can stop the traversal |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
 | Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
-| Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`visit_within`][visit_within], [`any_within`][any_within] — every item whose box lies within `max_distance` of a query box, `max_distance = 0.0` reproducing `search` |
+| Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`visit_within`][visit_within], [`any_within`][any_within], [`count_within`][count_within] — every item whose box lies within `max_distance` of a query box, `max_distance = 0.0` reproducing `search` |
 | Distance join (ε-join) | [`join_within`][join_within], [`join_within_with`][join_within_with], [`self_join_within`][self_join_within], [`self_join_within_with`][self_join_within_with], [`anti_join_within`][anti_join_within], [`self_join_within_components`][self_join_within_components] |
 | Closest pair | [`closest_pair`][closest_pair], [`self_closest_pair`][self_closest_pair] — the single nearest pair of items between two indexes (or within one), with no `max_distance` to guess |
 | Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
@@ -328,6 +328,7 @@ Licensed under the Apache License, Version 2.0.
 [search_within_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within_into
 [visit_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_within
 [any_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any_within
+[count_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.count_within
 [closest_pair]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.closest_pair
 [self_closest_pair]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_closest_pair
 [join_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_within

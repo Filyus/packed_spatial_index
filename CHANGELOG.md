@@ -72,7 +72,7 @@ All notable changes to this crate are documented here.
   loop.
 
 - Added the radius query: `search_within` / `search_within_into` /
-  `visit_within` / `any_within` report every item whose box lies within
+  `visit_within` / `any_within` / `count_within` report every item whose box lies within
   `max_distance` of a query box — "everything within 500 m of here", without
   pretending to need a `k`. It is the single-index sibling of the ε-join, with
   the same predicate and the same semantics: box-to-box Euclidean distance,

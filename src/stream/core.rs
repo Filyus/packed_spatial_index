@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::estimate::{Estimate, subtree_leaf_range};
 use crate::persistence::{
     CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PFIX_DESC_LEN, PYLD_DESC_LEN,
     PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PFIX, TAG_PYLD, TAG_TREE, TREE_DESC_LEN,
@@ -505,6 +506,119 @@ impl<R: RangeReader> StreamCore<R> {
             )?;
             level -= 1;
         }
+    }
+
+    /// The lowest level whose nodes the cached directory holds entirely.
+    /// An estimate stopping at this level or above reads nothing.
+    pub(crate) fn directory_floor(&self) -> usize {
+        if self.num_nodes == 0 {
+            return 0;
+        }
+        crate::traversal::upper_bound_level(&self.level_bounds, self.dir_node_start)
+    }
+
+    /// Bracket and estimate a window's hit count from node boxes, descending
+    /// level by level exactly as [`traverse`](Self::traverse) does but never
+    /// below `stop_level`. Levels the directory caches cost no reads; the
+    /// budget is charged only for levels fetched below it.
+    pub(crate) fn estimate<O, C, Fr>(
+        &self,
+        stop_level: usize,
+        overlaps: O,
+        contains: C,
+        fraction: Fr,
+    ) -> Result<Estimate, StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        C: Fn(&[u8]) -> bool,
+        Fr: Fn(&[u8]) -> f64,
+    {
+        let mut out = Estimate {
+            lower: 0,
+            upper: 0,
+            estimate: 0.0,
+            nodes_tested: 0,
+        };
+        if self.num_items == 0 {
+            return Ok(out);
+        }
+
+        let mut budget = Budget::new(self.limits);
+        let mut frontier = vec![self.num_nodes - 1];
+        let mut level = self.level_count - 1;
+        let mut boxes = Vec::new();
+        let mut indices = Vec::new();
+        let mut scratch = Vec::new();
+        let mut survivors: Vec<usize> = Vec::new();
+
+        loop {
+            self.gather(
+                &frontier,
+                self.box0,
+                self.box_stride,
+                &self.dir_boxes,
+                &mut boxes,
+                &mut scratch,
+                &mut budget,
+            )?;
+            let level_start = if level == 0 {
+                0
+            } else {
+                self.level_bounds[level - 1]
+            };
+            survivors.clear();
+            indices.clear();
+            for (i, &pos) in frontier.iter().enumerate() {
+                let slot = i * self.box_stride;
+                let record = &boxes[slot..slot + self.record];
+                out.nodes_tested += 1;
+                if !overlaps(record) {
+                    continue;
+                }
+                let (start, end) =
+                    subtree_leaf_range(pos, level, level_start, self.node_size, self.num_items);
+                let size = end - start;
+                if level == 0 || contains(record) {
+                    out.lower += size;
+                    out.upper += size;
+                    out.estimate += size as f64;
+                    continue;
+                }
+                if level <= stop_level {
+                    out.upper += size;
+                    out.estimate += size as f64 * fraction(record);
+                    continue;
+                }
+                survivors.push(pos);
+                if self.interleaved {
+                    indices.extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
+                }
+            }
+            if survivors.is_empty() {
+                break;
+            }
+            if !self.interleaved {
+                self.gather(
+                    &survivors,
+                    self.idx0,
+                    8,
+                    &self.dir_indices,
+                    &mut indices,
+                    &mut scratch,
+                    &mut budget,
+                )?;
+            }
+            frontier = expand_frontier(
+                &self.level_bounds,
+                self.node_size,
+                level,
+                survivors.len(),
+                &indices,
+            )?;
+            level -= 1;
+        }
+        out.estimate = out.estimate.clamp(out.lower as f64, out.upper as f64);
+        Ok(out)
     }
 
     /// Visit the insertion id of every leaf whose box satisfies `overlaps`.

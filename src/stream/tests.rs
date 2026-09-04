@@ -2112,3 +2112,89 @@ fn async_f32_region_matches_sync() {
     async_3d_hits.sort_unstable();
     assert_eq!(sync_3d_hits, async_3d_hits);
 }
+
+#[test]
+fn estimate_brackets_count_and_the_directory_levels_cost_no_reads() {
+    // 4096 items, node_size 16: levels 0..=3 with 4096, 256, 16, 1 nodes. The
+    // default directory budget caches the top levels but not the leaves.
+    let bytes = build_bytes(4096, 16);
+    let owned = crate::Index2D::from_bytes(&bytes).unwrap();
+    // Cache only the top two levels (17 nodes): the leaves and level 1 stay
+    // on the reader.
+    let idx = StreamIndex2D::open_with_limits(
+        CountingReader::new(SliceReader::new(bytes)),
+        StreamLimits {
+            directory_budget_bytes: Some(24 * 48),
+            ..StreamLimits::default()
+        },
+    )
+    .unwrap();
+    let floor = idx.directory_floor();
+    assert_eq!(floor, 2, "top two levels cached: floor {floor}");
+
+    for window in [
+        Box2D::new(100.0, 100.0, 900.0, 900.0),
+        Box2D::new(0.0, 0.0, 5000.0, 5000.0),
+        Box2D::new(2000.0, 2000.0, 2010.0, 2010.0),
+        Box2D::new(9000.0, 9000.0, 9100.0, 9100.0),
+    ] {
+        let exact = owned.count(window);
+        let before = *idx.core.reader.reads.borrow();
+        let free = idx.estimate_count(window, floor).unwrap();
+        assert_eq!(
+            *idx.core.reader.reads.borrow(),
+            before,
+            "an estimate at the directory floor must not read"
+        );
+        assert!(
+            free.lower <= exact && exact <= free.upper,
+            "{window:?}: {free:?} vs {exact}"
+        );
+        assert_eq!(free, owned.estimate_count(window, floor));
+
+        // Below the floor it reads, and the bracket closes.
+        let refined = idx.estimate_count(window, 0).unwrap();
+        assert_eq!((refined.lower, refined.upper), (exact, exact));
+        assert!(refined.spread() <= free.spread());
+    }
+}
+
+#[test]
+fn estimate_at_the_floor_reads_nothing_even_for_the_whole_extent() {
+    let bytes = build_bytes(4096, 16);
+    let idx = StreamIndex2D::open_with_limits(
+        CountingReader::new(SliceReader::new(bytes)),
+        StreamLimits {
+            directory_budget_bytes: Some(24 * 48),
+            ..StreamLimits::default()
+        },
+    )
+    .unwrap();
+    let after_open = *idx.core.reader.reads.borrow();
+    let est = idx
+        .estimate_count(Box2D::new(-1.0, -1.0, 1e9, 1e9), idx.directory_floor())
+        .unwrap();
+    assert_eq!((est.lower, est.upper), (4096, 4096));
+    assert_eq!(*idx.core.reader.reads.borrow(), after_open);
+}
+
+#[test]
+fn estimate_honours_the_read_budget_below_the_floor() {
+    let bytes = build_bytes(4096, 16);
+    let idx = StreamIndex2D::open_with_limits(
+        SliceReader::new(bytes),
+        StreamLimits {
+            max_reads: Some(0),
+            directory_budget_bytes: Some(24 * 48),
+            ..StreamLimits::default()
+        },
+    )
+    .unwrap();
+    // A window that cuts the tree needs leaf reads at level 0, and none are allowed.
+    let window = Box2D::new(100.0, 100.0, 900.0, 900.0);
+    let err = idx.estimate_count(window, 0).unwrap_err();
+    assert!(matches!(err, StreamError::LimitExceeded), "{err:?}");
+    // At the floor the same query reads nothing, so a zero budget is enough.
+    let est = idx.estimate_count(window, idx.directory_floor()).unwrap();
+    assert!(est.lower <= 801 && 801 <= est.upper, "{est:?}");
+}

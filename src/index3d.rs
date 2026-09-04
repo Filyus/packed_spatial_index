@@ -6,6 +6,7 @@
 
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
+use crate::estimate::{Estimate, box_fraction_3d, estimate_core};
 use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box3D, Overlaps3D, Point3D},
@@ -1045,6 +1046,45 @@ impl Index3D {
             ControlFlow::Continue(())
         });
         count
+    }
+
+    /// Bracket and estimate how many items `query` would hit, from node boxes
+    /// alone. See [`Estimate`] and the crate's `estimate` module docs.
+    ///
+    /// Nodes the window contains count whole, nodes it misses are dropped,
+    /// and nodes it cuts are expanded while their level is above `stop_level`
+    /// and scored by the fraction of their box inside the window once it is
+    /// not. `stop_level = 0` examines leaf boxes, so `lower == upper == count`;
+    /// `stop_level = 1` never touches a leaf and is the cheapest bracket that
+    /// still resolves single nodes. Levels count up from the leaves.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index3DBuilder, Box3D};
+    ///
+    /// let mut builder = Index3DBuilder::new(64).node_size(4);
+    /// for i in 0..64 {
+    ///     let v = i as f64;
+    ///     builder.add(Box3D::new(v, v, v, v + 0.5, v + 0.5, v + 0.5));
+    /// }
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let window = Box3D::new(10.0, 10.0, 10.0, 30.2, 30.2, 30.2);
+    /// let exact = index.count(window);
+    /// let est = index.estimate_count(window, 1);
+    /// assert!(est.lower <= exact && exact <= est.upper);
+    /// assert!(est.lower as f64 <= est.estimate && est.estimate <= est.upper as f64);
+    /// assert_eq!(index.estimate_count(window, 0).lower, exact);
+    /// ```
+    pub fn estimate_count(&self, query: Box3D, stop_level: usize) -> Estimate {
+        estimate_core(
+            self,
+            stop_level,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+            |node| box_fraction_3d(node, query),
+        )
     }
 
     /// Return every unordered pair of distinct items within this index whose
@@ -2242,6 +2282,45 @@ impl<'a> Index3DView<'a> {
             ControlFlow::Continue(())
         });
         count
+    }
+
+    /// Bracket and estimate how many items `query` would hit, from node boxes
+    /// alone. See [`Estimate`] and the crate's `estimate` module docs.
+    ///
+    /// Nodes the window contains count whole, nodes it misses are dropped,
+    /// and nodes it cuts are expanded while their level is above `stop_level`
+    /// and scored by the fraction of their box inside the window once it is
+    /// not. `stop_level = 0` examines leaf boxes, so `lower == upper == count`;
+    /// `stop_level = 1` never touches a leaf and is the cheapest bracket that
+    /// still resolves single nodes. Levels count up from the leaves.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index3DBuilder, Box3D};
+    ///
+    /// let mut builder = Index3DBuilder::new(64).node_size(4);
+    /// for i in 0..64 {
+    ///     let v = i as f64;
+    ///     builder.add(Box3D::new(v, v, v, v + 0.5, v + 0.5, v + 0.5));
+    /// }
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let window = Box3D::new(10.0, 10.0, 10.0, 30.2, 30.2, 30.2);
+    /// let exact = index.count(window);
+    /// let est = index.estimate_count(window, 1);
+    /// assert!(est.lower <= exact && exact <= est.upper);
+    /// assert!(est.lower as f64 <= est.estimate && est.estimate <= est.upper as f64);
+    /// assert_eq!(index.estimate_count(window, 0).lower, exact);
+    /// ```
+    pub fn estimate_count(&self, query: Box3D, stop_level: usize) -> Estimate {
+        estimate_core(
+            self,
+            stop_level,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+            |node| box_fraction_3d(node, query),
+        )
     }
 
     /// Return every unordered pair of distinct items within this view whose

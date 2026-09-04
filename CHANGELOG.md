@@ -71,6 +71,20 @@ All notable changes to this crate are documented here.
   case tolerable: without it the same query measured 1.58 s and only 2.3× the
   loop.
 
+- Added selectivity estimation: `estimate_count(query, stop_level)` on every
+  in-memory `f64` index and view (owned, byte view, SIMD, SIMD view, 2D and
+  3D) and on the four streaming readers, returning an `Estimate` with an
+  exact `[lower, upper]` bracket on the window's hit count and a point
+  estimate inside it. A packed tree is its own histogram: a node at level
+  `L` covers `node_size^L` leaves by construction, so nodes the window
+  contains count whole, nodes it misses drop, and nodes it cuts are expanded
+  down to `stop_level` and then scored by the fraction of their box inside
+  the window. `stop_level = 0` reproduces `count` exactly; descending never
+  widens the bracket; `nodes_tested` is the whole cost. On the streaming
+  readers the levels the directory caches cost no reads, so an estimate at
+  or above the new `directory_floor()` is a local answer to whether a query
+  is worth its round trips, before the first is paid; below the floor each
+  level is one coalesced gather charged to the read budget like a search.
 - Added `Index2D::leaf_order` / `Index3D::leaf_order`: the item ids in the
   order the packed tree stores them, which is the Hilbert order the builder
   sorted by. The array was always there; the accessor exists because the

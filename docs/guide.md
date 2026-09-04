@@ -13,6 +13,7 @@ the method for each need; the notes after it explain the reasoning.
 | A `bool` — "is anything in this box?" | `any(query)` — stops at the first hit, allocates nothing | `!search(query).is_empty()`, which collects every hit first |
 | Any one hit | `first(query) -> Option<usize>` | `search(query).first().copied()` |
 | Just how many hits there are | `count(query)` — counts during the traversal, allocates nothing | `search(query).len()`, which builds a `Vec` to throw away |
+| Roughly how many, before paying for the query | `estimate_count(query, stop_level)` — an exact `[lower, upper]` bracket from node boxes plus a point estimate; on a streaming reader, free of reads at or above `directory_floor()` | running `count` and hoping it is cheap |
 | Every hit, one call, simplest code | `search(query) -> Vec<usize>` | — |
 | Every hit in a hot loop, no reallocation | `search_into(query, &mut vec)` (your `Vec`, cleared per call) or `search_with(query, &mut workspace)` (a reusable `SearchWorkspace`, returns a `&[usize]`) | `search`, which allocates a fresh `Vec` per query |
 | To stop part-way through the hits | `search_iter(query)` on the owned `f64` indexes — a lazy iterator, so `.take(k)` / `.find(..)` end the traversal — or `visit` returning `ControlFlow::Break` | collecting everything and then breaking |
@@ -382,6 +383,62 @@ typical. A useful first estimate costs no I/O at all, since `open` caches the
 upper levels: a node's *far*-corner depth is an upper bound on the nearest depth
 of anything inside it. Widen generously rather than tightly — an over-large cap
 costs bytes, an over-small one costs a whole extra round.
+
+## Estimate before you query
+
+`count` walks to the leaves. `estimate_count` stops above them and answers
+from node boxes alone, which a packed tree can do exactly: a node at level
+`L` covers `node_size^L` leaves by construction, so the number of items
+under any node is known without reading it. The answer is a bracket, and the
+bracket is exact whatever the data does:
+
+- `lower` — items under nodes the window contains: guaranteed hits;
+- `upper` — items under nodes the window overlaps: the most it can hit;
+- `estimate` — `lower` plus, for each node the window's edge cuts, its size
+  scaled by the fraction of its box inside the window. This is the one
+  assumption, that items spread uniformly inside a node box, and it is the
+  only number here that can be wrong.
+
+```rust
+use packed_spatial_index::{Box2D, Index2DBuilder};
+
+let mut builder = Index2DBuilder::new(10_000).node_size(16);
+for i in 0..10_000 {
+    let x = (i % 100) as f64;
+    let y = (i / 100) as f64;
+    builder.add(Box2D::new(x, y, x + 0.5, y + 0.5));
+}
+let index = builder.finish()?;
+
+let window = Box2D::new(10.0, 10.0, 60.0, 60.0);
+let est = index.estimate_count(window, 1); // never touches a leaf
+let exact = index.count(window);
+assert!(est.lower <= exact && exact <= est.upper);
+assert!(est.nodes_tested < 10_000 / 16); // cheaper than the leaf level
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+`stop_level` is the lowest level examined, counting up from the leaves. `1`
+is the cheapest bracket that still resolves single nodes; `0` examines leaf
+boxes and is `count` with a bracket of width zero. Descending further can
+only tighten the bracket and never widen it, and `nodes_tested` is the whole
+cost, so an estimate can be refined by budget: stop high, and go one level
+lower while `spread()` is larger than you can act on.
+
+Where this changes behaviour is the streaming readers. The upper levels are
+the directory `open` already cached, so `estimate_count` with a `stop_level`
+at or above `directory_floor()` reads nothing: it is a local answer to "is
+this window worth its round trips" before the first one is paid, the point of
+decision every other streaming query lacks. Below the floor each level costs
+one coalesced gather, charged to the read budget exactly like a search, so
+the same call is also a budgeted refinement.
+
+The bracket is on boxes, like everything here: `upper` bounds the candidates
+a window returns, not the geometries it truly touches, and for lines and
+polygons the two differ. And on clustered data the point estimate can sit
+anywhere inside the bracket — a node that spans a city and the desert beside
+it is scored as if the items were spread across both. Trust `lower` and
+`upper`; use `estimate` for what it is.
 
 ## Search by distance (radius query)
 

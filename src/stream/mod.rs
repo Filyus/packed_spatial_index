@@ -21,6 +21,7 @@
 //! at untrusted data. Available behind the `stream` feature. See [`RangeReader`]
 //! for implementing a remote (e.g. HTTP range) source.
 
+use crate::estimate::{Estimate, box_fraction_2d, box_fraction_3d};
 use crate::geometry::{Box2D, Box3D, Overlaps2D, Overlaps3D};
 use crate::persistence::{read_f32_le_unchecked, read_f64_le_unchecked};
 
@@ -176,6 +177,33 @@ impl<R: RangeReader> StreamIndex2D<R> {
         let mut count = 0usize;
         self.visit(query, |_| count += 1)?;
         Ok(count)
+    }
+
+    /// The lowest tree level the cached directory holds entirely, counting up
+    /// from the leaves. [`estimate_count`](Self::estimate_count) with a
+    /// `stop_level` at or above it reads nothing.
+    pub fn directory_floor(&self) -> usize {
+        self.core.directory_floor()
+    }
+
+    /// Bracket and estimate how many items `query` would hit, from node boxes,
+    /// without walking to the leaves. See [`Estimate`](crate::Estimate).
+    ///
+    /// Descends level by level like `search`, stopping at `stop_level`: a
+    /// node the window contains counts whole, one it cuts at the stop level
+    /// is scored by the fraction of its box inside the window. Levels the
+    /// directory caches cost no reads, so with
+    /// `stop_level >= directory_floor()` this is a purely local answer —
+    /// the place to decide whether a query is worth its round trips before
+    /// paying for them. Below the floor each level is one coalesced gather,
+    /// charged to the read budget like a search.
+    pub fn estimate_count(&self, query: Box2D, stop_level: usize) -> Result<Estimate, StreamError> {
+        self.core.estimate(
+            stop_level,
+            |record| parse_box2d(record).overlaps(query),
+            |record| query.contains(parse_box2d(record)),
+            |record| box_fraction_2d(parse_box2d(record), query),
+        )
     }
 
     /// Stream the indices of every item whose box intersects `query`.
@@ -471,6 +499,33 @@ impl<R: RangeReader> StreamIndex3D<R> {
         Ok(count)
     }
 
+    /// The lowest tree level the cached directory holds entirely, counting up
+    /// from the leaves. [`estimate_count`](Self::estimate_count) with a
+    /// `stop_level` at or above it reads nothing.
+    pub fn directory_floor(&self) -> usize {
+        self.core.directory_floor()
+    }
+
+    /// Bracket and estimate how many items `query` would hit, from node boxes,
+    /// without walking to the leaves. See [`Estimate`](crate::Estimate).
+    ///
+    /// Descends level by level like `search`, stopping at `stop_level`: a
+    /// node the window contains counts whole, one it cuts at the stop level
+    /// is scored by the fraction of its box inside the window. Levels the
+    /// directory caches cost no reads, so with
+    /// `stop_level >= directory_floor()` this is a purely local answer —
+    /// the place to decide whether a query is worth its round trips before
+    /// paying for them. Below the floor each level is one coalesced gather,
+    /// charged to the read budget like a search.
+    pub fn estimate_count(&self, query: Box3D, stop_level: usize) -> Result<Estimate, StreamError> {
+        self.core.estimate(
+            stop_level,
+            |record| parse_box3d(record).overlaps(query),
+            |record| query.contains(parse_box3d(record)),
+            |record| box_fraction_3d(parse_box3d(record), query),
+        )
+    }
+
     /// Stream the indices of every item whose box intersects `query`.
     ///
     /// Builds a `Vec` per call: to count the hits use [`count`](Self::count), to
@@ -733,6 +788,33 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
         Ok(count)
     }
 
+    /// The lowest tree level the cached directory holds entirely, counting up
+    /// from the leaves. [`estimate_count`](Self::estimate_count) with a
+    /// `stop_level` at or above it reads nothing.
+    pub fn directory_floor(&self) -> usize {
+        self.core.directory_floor()
+    }
+
+    /// Bracket and estimate how many items `query` would hit, from node boxes,
+    /// without walking to the leaves. See [`Estimate`](crate::Estimate).
+    ///
+    /// Descends level by level like `search`, stopping at `stop_level`: a
+    /// node the window contains counts whole, one it cuts at the stop level
+    /// is scored by the fraction of its box inside the window. Levels the
+    /// directory caches cost no reads, so with
+    /// `stop_level >= directory_floor()` this is a purely local answer —
+    /// the place to decide whether a query is worth its round trips before
+    /// paying for them. Below the floor each level is one coalesced gather,
+    /// charged to the read budget like a search.
+    pub fn estimate_count(&self, query: Box2D, stop_level: usize) -> Result<Estimate, StreamError> {
+        self.core.estimate(
+            stop_level,
+            |record| parse_box2d_f32(record).overlaps(query),
+            |record| query.contains(parse_box2d_f32(record)),
+            |record| box_fraction_2d(parse_box2d_f32(record), query),
+        )
+    }
+
     /// Stream the indices of every item whose (rounded) box intersects `query`.
     ///
     /// Builds a `Vec` per call: to count the hits use [`count`](Self::count), to
@@ -953,6 +1035,33 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
         let mut count = 0usize;
         self.visit(query, |_| count += 1)?;
         Ok(count)
+    }
+
+    /// The lowest tree level the cached directory holds entirely, counting up
+    /// from the leaves. [`estimate_count`](Self::estimate_count) with a
+    /// `stop_level` at or above it reads nothing.
+    pub fn directory_floor(&self) -> usize {
+        self.core.directory_floor()
+    }
+
+    /// Bracket and estimate how many items `query` would hit, from node boxes,
+    /// without walking to the leaves. See [`Estimate`](crate::Estimate).
+    ///
+    /// Descends level by level like `search`, stopping at `stop_level`: a
+    /// node the window contains counts whole, one it cuts at the stop level
+    /// is scored by the fraction of its box inside the window. Levels the
+    /// directory caches cost no reads, so with
+    /// `stop_level >= directory_floor()` this is a purely local answer —
+    /// the place to decide whether a query is worth its round trips before
+    /// paying for them. Below the floor each level is one coalesced gather,
+    /// charged to the read budget like a search.
+    pub fn estimate_count(&self, query: Box3D, stop_level: usize) -> Result<Estimate, StreamError> {
+        self.core.estimate(
+            stop_level,
+            |record| parse_box3d_f32(record).overlaps(query),
+            |record| query.contains(parse_box3d_f32(record)),
+            |record| box_fraction_3d(parse_box3d_f32(record), query),
+        )
     }
 
     /// Stream the indices of every item whose (rounded) box intersects `query`.

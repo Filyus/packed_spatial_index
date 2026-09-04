@@ -77,34 +77,11 @@ impl DistanceTest {
     }
 }
 
-/// Branchless per-axis gap between two boxes' intervals: zero when they
-/// overlap. Same value as `geometry::axis_gap`, without the branches — the
-/// join's prune phase runs this on every child pair, where a mispredicted
-/// branch costs more than the extra arithmetic.
-#[inline]
-fn gap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
-    (a_min - b_max).max(b_min - a_max).max(0.0)
-}
-
-/// Squared box-to-box distance for the join's prune test. Branchless variant
-/// of [`Box2D::distance_squared_to_box`] — see [`gap`].
-#[inline]
-fn distance_squared_2d(a: Box2D, b: Box2D) -> f64 {
-    let dx = gap(a.min_x, a.max_x, b.min_x, b.max_x);
-    let dy = gap(a.min_y, a.max_y, b.min_y, b.max_y);
-    dx * dx + dy * dy
-}
-
-#[inline]
-fn distance_squared_3d(a: Box3D, b: Box3D) -> f64 {
-    let dx = gap(a.min_x, a.max_x, b.min_x, b.max_x);
-    let dy = gap(a.min_y, a.max_y, b.min_y, b.max_y);
-    let dz = gap(a.min_z, a.max_z, b.min_z, b.max_z);
-    dx * dx + dy * dy + dz * dz
-}
-
 /// Square of the farthest-corner distance between two boxes: an upper bound on
 /// the distance between any point of one and any point of the other.
+///
+/// Join-specific math, kept local: only the leaf fast path needs the far
+/// corner, and `geometry` carries no upper-bound primitive.
 #[inline]
 fn far_distance_squared_2d(a: Box2D, b: Box2D) -> f64 {
     let dx = (b.max_x - a.min_x).max(a.max_x - b.min_x);
@@ -123,7 +100,7 @@ fn far_distance_squared_3d(a: Box3D, b: Box3D) -> f64 {
 impl PairTest<Box2D> for DistanceTest {
     #[inline]
     fn keeps(&self, a: Box2D, b: Box2D) -> bool {
-        distance_squared_2d(a, b) <= self.eps_squared
+        a.distance_squared_to_box(b) <= self.eps_squared
     }
     #[inline]
     fn covers(&self, leaf: Box2D, subtree: Box2D) -> bool {
@@ -134,7 +111,7 @@ impl PairTest<Box2D> for DistanceTest {
 impl PairTest<Box3D> for DistanceTest {
     #[inline]
     fn keeps(&self, a: Box3D, b: Box3D) -> bool {
-        distance_squared_3d(a, b) <= self.eps_squared
+        a.distance_squared_to_box(b) <= self.eps_squared
     }
     #[inline]
     fn covers(&self, leaf: Box3D, subtree: Box3D) -> bool {

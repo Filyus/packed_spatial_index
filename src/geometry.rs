@@ -666,15 +666,14 @@ fn axis_distance(point: f64, min: f64, max: f64) -> f64 {
 
 /// Separation between the intervals `[a_min, a_max]` and `[b_min, b_max]`
 /// along one axis; `0.0` when they overlap or touch.
+///
+/// Branchless: both directed gaps are computed and the larger one wins, which
+/// measures at parity with the branchy form on the box-kNN queries that call
+/// this per node and lets the distance join run its prune phase without a
+/// mispredicting branch per child pair.
 #[inline]
 fn axis_gap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
-    if a_max < b_min {
-        b_min - a_max
-    } else if b_max < a_min {
-        a_min - b_max
-    } else {
-        0.0
-    }
+    (a_min - b_max).max(b_min - a_max).max(0.0)
 }
 
 /// Whether `query` covers the whole tree rooted at `root`, so a search may emit

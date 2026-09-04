@@ -272,8 +272,8 @@ async fn contract_collections_summary_shape() {
                     "payloadModes": ["none", "summary", "full"],
                     "identityModes": ["ref"],
                     "countModes": ["records", "only"],
-                    "queryShapes": ["bbox", "polygon"]
-                    "nearestMetrics": ["planar", "spherical"],
+                    "queryShapes": ["bbox", "polygon"],
+                    "nearestMetrics": ["planar", "spherical"]
                 }
             }
         ]),

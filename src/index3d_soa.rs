@@ -12,8 +12,8 @@ use wide::f64x4;
 mod raycast;
 mod serialization;
 
-#[cfg(target_arch = "x86_64")]
 use crate::estimate::{Estimate, box_fraction_3d, estimate_core};
+#[cfg(target_arch = "x86_64")]
 use crate::leftpack::leftpack4;
 use crate::{
     build::BuildError,

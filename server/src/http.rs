@@ -12,8 +12,9 @@ use tracing::Level;
 use crate::{
     ServerError, ServerState,
     query::{
-        CollectionDetail, CollectionSummary, JoinParams, SearchParams, items_response,
-        join_response, search_response,
+        AntiJoinParams, CollectionDetail, CollectionSummary, ComponentsParams, JoinParams,
+        SearchParams, anti_join_response, components_response, items_response, join_response,
+        search_response,
     },
 };
 
@@ -50,6 +51,13 @@ pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router
         // boxes lie within an `epsilon` distance. Joining a collection with
         // itself is the self join: each unordered pair once.
         .route("/collections/{id}/join/{other}", get(join))
+        // The noise side of the same graph: entries of `id` with no entry of
+        // `other` within `epsilon`. `other` may not equal `id` — see
+        // `anti_join_response`.
+        .route("/collections/{id}/anti-join/{other}", get(anti_join))
+        // Connected components of one collection's own proximity graph. No
+        // `{other}` segment: a component is a property of one graph.
+        .route("/collections/{id}/components", get(components))
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(route_not_found)
         // Layered outside the fallbacks so a 404 or 405 is logged too.
@@ -247,6 +255,39 @@ async fn join(
         .ok_or_else(|| ServerError::CollectionNotFound(other))?;
     Ok(Json(
         query_blocking(move || join_response(&collection, &other, params)).await?,
+    ))
+}
+
+/// Distance anti-join: entries of `id` with no entry of `other` within
+/// `epsilon`. `other` may not equal `id`. See `anti_join_response`.
+async fn anti_join(
+    State(state): State<ServerState>,
+    Path((id, other)): Path<(String, String)>,
+    ValidQuery(params): ValidQuery<AntiJoinParams>,
+) -> Result<Json<crate::query::AntiJoinResponse>, ServerError> {
+    let collection = state
+        .collection(&id)
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
+    let other = state
+        .collection(&other)
+        .ok_or_else(|| ServerError::CollectionNotFound(other))?;
+    Ok(Json(
+        query_blocking(move || anti_join_response(&collection, &other, params)).await?,
+    ))
+}
+
+/// Components of one collection's `epsilon`-proximity graph. See
+/// `components_response`.
+async fn components(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    ValidQuery(params): ValidQuery<ComponentsParams>,
+) -> Result<Json<crate::query::ComponentsResponse>, ServerError> {
+    let collection = state
+        .collection(&id)
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
+    Ok(Json(
+        query_blocking(move || components_response(&collection, params)).await?,
     ))
 }
 

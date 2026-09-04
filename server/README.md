@@ -68,6 +68,9 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections/{id}/items?bbox=minx,miny,maxx,maxy|radius=|polygon=&limit=&offset=&predicate=`
 - `GET /collections/{id}/search?bbox=minx,miny,maxx,maxy|frustum=|radius=|polygon=&limit=&offset=&predicate=&nonplanar=&level=&payload=&identity=&count=`
 - `POST /collections/{id}/search` — the same search as a JSON body
+- `GET /collections/{id}/join/{other}?epsilon=&limit=&count=`
+- `GET /collections/{id}/anti-join/{other}?epsilon=&limit=&count=`
+- `GET /collections/{id}/components?epsilon=&count=`
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with
@@ -233,3 +236,69 @@ back to the source feature.
 Collection metadata reports the artifact `payloadKind` plus a `capabilities`
 object listing the accepted `predicates`, `levels`, `payloadModes`, and
 `identityModes`, and whether `/items` is available.
+
+## Distance joins
+
+Three endpoints over one idea: the *ε-proximity graph*, whose nodes are index
+entries and whose edges join two entries whose boxes lie within `epsilon` of
+each other. The distance is box-to-box Euclidean in the artifact's coordinate
+units — zero when the boxes overlap, inclusive at the bound, so `epsilon=0`
+asks the plain overlap question. `epsilon` is required on all three and must be
+a finite non-negative number (`invalid_epsilon` otherwise). Both collections
+must be the same dimensionality; 2D against 3D is `unsupported_query` (422).
+
+Like every query here these are a broad phase: the box distance is a lower
+bound on the true distance between the underlying geometries, so results are
+candidates and the exact predicate stays with the caller.
+
+### GET /collections/{id}/join/{other}
+
+The edges. Every pair of entries within `epsilon`, as `pairs: [{a, b}]` where
+`a` is an entry ordinal in `id` and `b` one in `other`. Joining a collection
+with itself reports each unordered pair once.
+
+```
+GET /collections/towers/join/cables?epsilon=500&limit=100
+```
+
+`limit` truncates the returned array; `numberMatched` always reports the true
+total, because the traversal runs to completion either way. `count=only`
+returns the total with no pairs. There is no `offset`: the pair stream has no
+resumable cursor, so a later page would cost a full rerun — shrink `epsilon`
+instead.
+
+### GET /collections/{id}/anti-join/{other}
+
+The complement: entries of `id` with *no* entry of `other` within `epsilon`,
+as `items: [ordinals]`. "Which towers no cable comes near." `limit` and
+`count` behave exactly as on `/join`.
+
+`other` may not equal `id` (422). Against itself every entry is at distance
+zero from itself, so the literal answer is always empty; the question people
+mean there — entries with no *other* entry nearby — is what `/components`
+answers, where an isolated entry is its own label. The endpoint says so rather
+than quietly answering a different question for one case.
+
+### GET /collections/{id}/components
+
+The connected components of one collection's own graph — there is no `{other}`
+segment, because a component is a property of a single graph. Every entry gets
+a label: the smallest entry ordinal in its component. An entry with no
+neighbour is its own label.
+
+```
+GET /collections/towers/components?epsilon=50
+{"collectionId":"towers","epsilon":50.0,"count":"records",
+ "itemCount":4,"componentCount":2,"labels":[0,0,0,3]}
+```
+
+**The labels identify components; they are not clusters.** Distance proximity
+is not transitive — a chain of entries each within `epsilon` of the next is one
+component no matter how far its ends lie apart — so this reports exactly what
+the graph defines, and whether a chained component should stay merged is the
+caller's decision.
+
+There is no `limit`: `labels` has one entry per index entry by definition, so a
+truncated labelling would not be a labelling of anything. A large collection
+therefore returns a large body; `count=only` returns `componentCount` alone
+when that is all you need.

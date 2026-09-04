@@ -708,8 +708,10 @@ pub fn join_response(
             }
             ControlFlow::<()>::Continue(())
         };
-        match (collection.join_index()?, (collection.id() != other.id()).then(|| other.join_index()))
-        {
+        match (
+            collection.join_index()?,
+            (collection.id() != other.id()).then(|| other.join_index()),
+        ) {
             (JoinIndex::D2(index), None) => {
                 let _ = index.self_join_epsilon_with(epsilon, |a, b| emit(a, b));
             }
@@ -739,6 +741,208 @@ pub fn join_response(
         number_matched: total.get(),
         number_returned: pairs.len(),
         pairs,
+    })
+}
+
+/// Query parameters accepted by `/collections/{id}/anti-join/{other}`.
+///
+/// The same three as the join, and unknown parameters are rejected the same
+/// way: the result is a subset of one collection's entries, so `limit` and
+/// `count` mean exactly what they mean there.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AntiJoinParams {
+    /// Distance bound as a number, in coordinate units. Required. An entry is
+    /// reported when *no* entry of `other` lies within `epsilon` of it;
+    /// negative or NaN is rejected.
+    #[serde(default)]
+    pub epsilon: Option<String>,
+    /// Maximum returned entries, 1..=10 000. `numberMatched` always reports
+    /// the true total — the traversal counts through even when collecting
+    /// stops.
+    #[serde(default)]
+    pub limit: Option<String>,
+    /// Set to `only` to return `numberMatched` without any entries.
+    #[serde(default)]
+    pub count: Option<String>,
+}
+
+/// `/collections/{id}/anti-join/{other}` response envelope.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AntiJoinResponse {
+    /// Collection whose entries are reported.
+    pub collection_id: String,
+    /// Collection searched for partners.
+    pub join_collection_id: String,
+    /// Effective distance bound.
+    pub epsilon: f64,
+    /// Count mode: `records` (default) or `only`.
+    pub count: CountMode,
+    /// Total unpaired entries, before any limit.
+    pub number_matched: usize,
+    /// Returned entries after the limit.
+    pub number_returned: usize,
+    /// Entry ordinals of `collectionId` with no partner within `epsilon`.
+    pub items: Vec<usize>,
+}
+
+/// Distance anti-join `GET /collections/{id}/anti-join/{other}`.
+///
+/// The entries of `id` that have *no* entry of `other` within `epsilon` — the
+/// noise side of [`join_response`], "which towers no cable comes near". One
+/// pruned descent into `other` per entry of `id`.
+///
+/// `other` may not equal `id`. Against itself every entry pairs with itself at
+/// distance zero, so the literal answer is always empty; the question people
+/// mean there — which entries have no *other* entry nearby — is what
+/// `/components` answers, where an isolated entry is its own label. Rather
+/// than quietly redefine the operation for one case, this rejects it and says
+/// where to go. (The alternative was to define the self form as isolation and
+/// skip the diagonal; that would have made `anti-join` mean two different
+/// things depending on its arguments.)
+pub fn anti_join_response(
+    collection: &Collection,
+    other: &Collection,
+    params: AntiJoinParams,
+) -> Result<AntiJoinResponse, ServerError> {
+    if collection.id() == other.id() {
+        return Err(ServerError::UnsupportedQuery(format!(
+            "`{}` cannot be anti-joined with itself: every entry is at distance zero from itself, so the answer is always empty; for entries with no *other* entry within epsilon use /collections/{}/components",
+            collection.id(),
+            collection.id()
+        )));
+    }
+    let epsilon = parse_epsilon(params.epsilon.as_deref())?;
+    let limit = join_limit(params.limit.as_deref())?;
+    let count_mode = parse_count_mode(params.count.as_deref())?;
+
+    // Same shape as the join: the traversal always runs to completion, so
+    // `numberMatched` is the true total and the cap only bounds collection.
+    let cap = if count_mode == CountMode::Only {
+        0
+    } else {
+        limit.unwrap_or(usize::MAX)
+    };
+    let mut total = 0usize;
+    let mut items: Vec<usize> = Vec::new();
+    {
+        let mut emit = |i: usize| {
+            total += 1;
+            if items.len() < cap {
+                items.push(i);
+            }
+            ControlFlow::<()>::Continue(())
+        };
+        match (collection.join_index()?, other.join_index()?) {
+            (JoinIndex::D2(a), JoinIndex::D2(b)) => {
+                let _ = a.anti_join_epsilon_with(b, epsilon, &mut emit);
+            }
+            (JoinIndex::D3(a), JoinIndex::D3(b)) => {
+                let _ = a.anti_join_epsilon_with(b, epsilon, &mut emit);
+            }
+            _ => return Err(dimension_mismatch(collection, other)),
+        }
+    }
+
+    Ok(AntiJoinResponse {
+        collection_id: collection.id().to_owned(),
+        join_collection_id: other.id().to_owned(),
+        epsilon,
+        count: count_mode,
+        number_matched: total,
+        number_returned: items.len(),
+        items,
+    })
+}
+
+/// Query parameters accepted by `/collections/{id}/components`.
+///
+/// There is no `limit`: `labels` has one entry per index entry by definition,
+/// so a limit would return a truncated labelling, which is not a labelling of
+/// anything. `count=only` is the cheap form when only the component count is
+/// wanted.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentsParams {
+    /// Distance bound as a number, in coordinate units. Required. Two entries
+    /// are connected when their boxes lie within `epsilon` of each other;
+    /// negative or NaN is rejected.
+    #[serde(default)]
+    pub epsilon: Option<String>,
+    /// Set to `only` to return `componentCount` without the labels.
+    #[serde(default)]
+    pub count: Option<String>,
+}
+
+/// `/collections/{id}/components` response envelope.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentsResponse {
+    /// Collection the components are over.
+    pub collection_id: String,
+    /// Effective distance bound.
+    pub epsilon: f64,
+    /// Count mode: `records` (default) or `only`.
+    pub count: CountMode,
+    /// Number of index entries, and so of labels in `records` mode.
+    pub item_count: usize,
+    /// Number of distinct components.
+    pub component_count: usize,
+    /// One label per entry, by entry ordinal: the smallest entry ordinal in
+    /// that entry's component. Empty in `count=only` mode.
+    pub labels: Vec<usize>,
+}
+
+/// Proximity components `GET /collections/{id}/components?epsilon=`.
+///
+/// Labels every entry with the smallest entry ordinal in its component of the
+/// `epsilon`-proximity graph — the graph whose edges are the pairs
+/// [`join_response`] reports for this collection against itself. An entry with
+/// no neighbour is its own label. There is no `{other}` segment: a component
+/// is a property of one graph, and the graph here is the collection's own.
+///
+/// **The labels identify components; they are not clusters.** Distance
+/// proximity is not transitive — a chain of entries each within `epsilon` of
+/// the next is one component no matter how far its ends lie apart — so this
+/// reports exactly what the graph defines, and whether a chained component
+/// should stay merged is the caller's call.
+///
+/// `labels` is one entry per index entry, so a large collection returns a
+/// large body; `count=only` returns just `componentCount`, which is the
+/// distinct labels counted without shipping them.
+pub fn components_response(
+    collection: &Collection,
+    params: ComponentsParams,
+) -> Result<ComponentsResponse, ServerError> {
+    let epsilon = parse_epsilon(params.epsilon.as_deref())?;
+    let count_mode = parse_count_mode(params.count.as_deref())?;
+
+    let labels = match collection.join_index()? {
+        JoinIndex::D2(index) => index.self_join_epsilon_components(epsilon),
+        JoinIndex::D3(index) => index.self_join_epsilon_components(epsilon),
+    };
+    let item_count = labels.len();
+    // A component's label is the smallest ordinal in it, so the distinct
+    // labels are exactly the components — and every label is its own
+    // component's representative, so counting the fixed points is enough.
+    let component_count = labels
+        .iter()
+        .enumerate()
+        .filter(|&(index, &label)| index == label)
+        .count();
+
+    Ok(ComponentsResponse {
+        collection_id: collection.id().to_owned(),
+        epsilon,
+        count: count_mode,
+        item_count,
+        component_count,
+        labels: if count_mode == CountMode::Only {
+            Vec::new()
+        } else {
+            labels
+        },
     })
 }
 

@@ -11,7 +11,10 @@ use tracing::Level;
 
 use crate::{
     ServerError, ServerState,
-    query::{CollectionDetail, CollectionSummary, SearchParams, items_response, search_response},
+    query::{
+        CollectionDetail, CollectionSummary, JoinParams, SearchParams, items_response,
+        join_response, search_response,
+    },
 };
 
 /// Build the HTTP router.
@@ -43,6 +46,10 @@ pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router
         // large for a URL. See `search_post` for why the query string must
         // be empty there.
         .route("/collections/{id}/search", get(search).post(search_post))
+        // Distance join: every pair of entries between two collections whose
+        // boxes lie within an `epsilon` distance. Joining a collection with
+        // itself is the self join: each unordered pair once.
+        .route("/collections/{id}/join/{other}", get(join))
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(route_not_found)
         // Layered outside the fallbacks so a 404 or 405 is logged too.
@@ -221,6 +228,25 @@ async fn search(
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
     Ok(Json(
         query_blocking(move || search_response(&collection, params)).await?,
+    ))
+}
+
+/// Distance join between two collections: every pair of entries whose boxes
+/// lie within `epsilon`. `other` may equal `id` — the self join reports each
+/// unordered pair once. See `join_response` for the semantics.
+async fn join(
+    State(state): State<ServerState>,
+    Path((id, other)): Path<(String, String)>,
+    ValidQuery(params): ValidQuery<JoinParams>,
+) -> Result<Json<crate::query::JoinResponse>, ServerError> {
+    let collection = state
+        .collection(&id)
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
+    let other = state
+        .collection(&other)
+        .ok_or_else(|| ServerError::CollectionNotFound(other))?;
+    Ok(Json(
+        query_blocking(move || join_response(&collection, &other, params)).await?,
     ))
 }
 

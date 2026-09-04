@@ -1,4 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use std::ops::ControlFlow;
+
 use packed_spatial_index_geo::geo_types::{Coord, LineString, MultiPolygon, Polygon};
 use packed_spatial_index_geo::{
     Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, Frustum3D, GeoArtifactIndex,
@@ -10,7 +12,7 @@ use packed_spatial_index_geo::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{Collection, ServerError};
+use crate::{Collection, ServerError, collection::JoinIndex};
 
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 10_000;
@@ -611,6 +613,174 @@ pub fn search_response(
         number_returned: outcome.records.len(),
         matches: outcome.records,
     })
+}
+
+/// Query parameters accepted by `/collections/{id}/join/{other}`.
+///
+/// Unknown parameters are rejected rather than ignored, like everywhere else:
+/// a misspelled name would otherwise resolve to a default and silently answer
+/// a different question. There is no `offset` — the pair stream has no
+/// resumable cursor, so a page other than the first `limit` would cost a full
+/// rerun; pair volumes are the caller's to shrink with a smaller `epsilon`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JoinParams {
+    /// Distance bound as a number, in coordinate units. Required. A pair
+    /// matches when the Euclidean distance between the two entries' boxes is
+    /// at most `epsilon`; `0` answers exactly the intersecting pairs; negative
+    /// or NaN is rejected.
+    #[serde(default)]
+    pub epsilon: Option<String>,
+    /// Maximum returned pairs, 1..=10 000. `numberMatched` always reports the
+    /// true total — the traversal counts through even when collecting stops.
+    #[serde(default)]
+    pub limit: Option<String>,
+    /// Set to `only` to return `numberMatched` without any pairs.
+    #[serde(default)]
+    pub count: Option<String>,
+}
+
+/// `/collections/{id}/join/{other}` response envelope.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinResponse {
+    /// Collection whose entries form the left side of every pair.
+    pub collection_id: String,
+    /// Collection whose entries form the right side of every pair. Equal to
+    /// `collectionId` for a self join, which reports each unordered pair once.
+    pub join_collection_id: String,
+    /// Effective distance bound.
+    pub epsilon: f64,
+    /// Count mode: `records` (default) or `only`.
+    pub count: CountMode,
+    /// Total matched pairs, before any limit.
+    pub number_matched: usize,
+    /// Returned pairs after the limit.
+    pub number_returned: usize,
+    /// Matched pairs.
+    pub pairs: Vec<JoinPair>,
+}
+
+/// One distance-join pair. Both sides are index entry ordinals — stable for
+/// one artifact build, not across rebuilds, exactly like `/search`'s
+/// `entryId`.
+#[derive(Debug, Serialize)]
+pub struct JoinPair {
+    /// Entry ordinal in the left collection.
+    pub a: usize,
+    /// Entry ordinal in the right collection.
+    pub b: usize,
+}
+
+/// Distance join `GET /collections/{id}/join/{other}`.
+///
+/// Every pair of entries whose boxes lie within `epsilon` of each other —
+/// "which places are within 500 m of which roads", where `search` can only
+/// answer one side at a time. Runs the core `join_epsilon` on in-memory owned
+/// indexes of both artifacts (loaded from the artifact files on first use and
+/// cached; the core loader accepts the interleaved layout the convert writes
+/// by default). The traversal itself measures in tens of milliseconds per
+/// 100 000 x 100 000 entries. Joining a collection with itself reports each
+/// unordered pair once.
+pub fn join_response(
+    collection: &Collection,
+    other: &Collection,
+    params: JoinParams,
+) -> Result<JoinResponse, ServerError> {
+    let epsilon = parse_epsilon(params.epsilon.as_deref())?;
+    let limit = join_limit(params.limit.as_deref())?;
+    let count_mode = parse_count_mode(params.count.as_deref())?;
+
+    // The traversal always counts through, so `numberMatched` is the true
+    // total; collection stops at the cap, or immediately in `count=only`.
+    let cap = if count_mode == CountMode::Only {
+        0
+    } else {
+        limit.unwrap_or(usize::MAX)
+    };
+    let total = std::cell::Cell::new(0usize);
+    let mut pairs: Vec<JoinPair> = Vec::new();
+    {
+        let mut emit = |a: usize, b: usize| {
+            total.set(total.get() + 1);
+            if pairs.len() < cap {
+                pairs.push(JoinPair { a, b });
+            }
+            ControlFlow::<()>::Continue(())
+        };
+        match (collection.join_index()?, (collection.id() != other.id()).then(|| other.join_index()))
+        {
+            (JoinIndex::D2(index), None) => {
+                let _ = index.self_join_epsilon_with(epsilon, |a, b| emit(a, b));
+            }
+            (JoinIndex::D3(index), None) => {
+                let _ = index.self_join_epsilon_with(epsilon, |a, b| emit(a, b));
+            }
+            (JoinIndex::D2(a), Some(views)) => match views? {
+                JoinIndex::D2(b) => {
+                    let _ = a.join_epsilon_with(b, epsilon, |a, b| emit(a, b));
+                }
+                JoinIndex::D3(_) => return Err(dimension_mismatch(collection, other)),
+            },
+            (JoinIndex::D3(a), Some(views)) => match views? {
+                JoinIndex::D3(b) => {
+                    let _ = a.join_epsilon_with(b, epsilon, |a, b| emit(a, b));
+                }
+                JoinIndex::D2(_) => return Err(dimension_mismatch(collection, other)),
+            },
+        }
+    }
+
+    Ok(JoinResponse {
+        collection_id: collection.id().to_owned(),
+        join_collection_id: other.id().to_owned(),
+        epsilon,
+        count: count_mode,
+        number_matched: total.get(),
+        number_returned: pairs.len(),
+        pairs,
+    })
+}
+
+fn dimension_mismatch(collection: &Collection, other: &Collection) -> ServerError {
+    ServerError::UnsupportedQuery(format!(
+        "`{}` and `{}` are different dimensions; a distance join needs both collections in 2D or both in 3D",
+        collection.id(),
+        other.id()
+    ))
+}
+
+fn parse_epsilon(raw: Option<&str>) -> Result<f64, ServerError> {
+    let raw = raw.ok_or_else(|| {
+        ServerError::InvalidEpsilon(
+            "epsilon is required: the distance bound in coordinate units, e.g. epsilon=500"
+                .to_string(),
+        )
+    })?;
+    let epsilon: f64 = raw
+        .parse()
+        .map_err(|_| ServerError::InvalidEpsilon(format!("`{raw}` is not a number")))?;
+    if !epsilon.is_finite() || epsilon < 0.0 {
+        return Err(ServerError::InvalidEpsilon(format!(
+            "epsilon must be a finite non-negative number, got `{raw}`"
+        )));
+    }
+    Ok(epsilon)
+}
+
+fn join_limit(raw: Option<&str>) -> Result<Option<usize>, ServerError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let limit: usize = raw
+        .parse()
+        .map_err(|_| ServerError::InvalidLimit(format!("`{raw}` is not a number")))?;
+    if limit == 0 || limit > MAX_LIMIT {
+        return Err(ServerError::InvalidLimit(format!(
+            "limit must be between 1 and {MAX_LIMIT}"
+        )));
+    }
+    Ok(Some(limit))
 }
 
 /// Search `/items`.

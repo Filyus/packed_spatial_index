@@ -1,10 +1,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
-use packed_spatial_index::{FileReader, RangeReader, StreamLimits};
+use packed_spatial_index::{FileReader, Index2D, Index3D, RangeReader, StreamLimits};
 use packed_spatial_index_geo::{
     CoordinateDims, GeoArtifactDirectory, GeoArtifactIndex, GeoArtifactManifest, PayloadPlan,
     open_geo_index,
@@ -53,6 +53,12 @@ pub struct Collection {
     artifact_path: PathBuf,
     directory: GeoArtifactDirectory,
     limits: StreamLimits,
+    /// An in-memory owned index for queries the streaming artifact does not
+    /// carry (the distance join), loaded once on the first request that needs
+    /// it. Artifacts are immutable per the catalog contract, so the index never
+    /// goes stale; a failed load is remembered too, so a broken file costs one
+    /// attempt, not one per request.
+    join_index: OnceLock<Result<JoinIndex, String>>,
 }
 
 impl Collection {
@@ -75,6 +81,7 @@ impl Collection {
             artifact_path: config.artifact,
             directory,
             limits,
+            join_index: OnceLock::new(),
         })
     }
 
@@ -151,6 +158,46 @@ impl Collection {
             PayloadPlan::RowWkb | PayloadPlan::FeatureJson { .. }
         )
     }
+
+    /// An in-memory owned index for the distance join, loaded once and cached.
+    ///
+    /// The load reads the whole artifact and parses it with the core owned
+    /// loader, which accepts both serializable layouts — including the
+    /// interleaved layout the `geo` convert writes by default. The
+    /// dimensionality comes from the `geoM` manifest.
+    pub(crate) fn join_index(&self) -> Result<&JoinIndex, ServerError> {
+        self.join_index
+            .get_or_init(|| {
+                let bytes = std::fs::read(&self.artifact_path).map_err(|e| e.to_string())?;
+                let index = match self.manifest().dims {
+                    CoordinateDims::Xy | CoordinateDims::Xym => JoinIndex::D2(
+                        Index2D::from_bytes(&bytes)
+                            .map_err(|e| format!("artifact failed to load: {e}"))?,
+                    ),
+                    CoordinateDims::Xyz | CoordinateDims::Xyzm => JoinIndex::D3(
+                        Index3D::from_bytes(&bytes)
+                            .map_err(|e| format!("artifact failed to load: {e}"))?,
+                    ),
+                    CoordinateDims::Unknown => {
+                        return Err(format!(
+                            "collection `{}` has unknown dimensions; a distance join needs a 2D or 3D artifact",
+                            self.id
+                        ));
+                    }
+                };
+                Ok(index)
+            })
+            .as_ref()
+            .map_err(|e| ServerError::QueryTask(e.clone()))
+    }
+}
+
+/// An owned core index over a collection's whole artifact, dimension-dispatched.
+pub(crate) enum JoinIndex {
+    /// 2D artifact.
+    D2(Index2D),
+    /// 3D artifact.
+    D3(Index3D),
 }
 
 #[cfg(test)]

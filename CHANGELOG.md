@@ -103,6 +103,42 @@ All notable changes to this crate are documented here.
   now calls the public `Box2D::distance_squared_to_box` /
   `Box3D::distance_squared_to_box` like box kNN does.
 
+### Persistence
+
+- Owned indexes load interleaved artifacts. `Index2D::from_bytes` /
+  `Index3D::from_bytes` accepted only the SoA layout; the interleaved one —
+  each node's index stored next to its box, the streaming reader's
+  one-gather-per-level layout, and what the `geo` convert writes by default —
+  was rejected, so an interleaved artifact could not be loaded into an
+  in-memory index at all. The owned loaders now transpose it into the same
+  in-memory columns and answer identically (pinned by test across sizes,
+  including empty and single-item trees); SoA bytes load unchanged, and any
+  payload chunk is ignored exactly as before. Zero-copy views still require
+  SoA — their columns must alias the bytes as they lie — and the streaming
+  reader keeps its single-gather path; the transpose exists for the owned,
+  in-memory case, which is what the server's new distance join needs.
+
+### Server
+
+- Added the distance join endpoint: `GET /collections/{id}/join/{other}`
+  answers every pair of entries between two collections whose boxes lie within
+  `epsilon` — "which places are within 500 m of which roads", the relational
+  question a per-collection `/search` cannot express. Both artifacts load into
+  in-memory owned indexes on first use and stay cached (the core loader now
+  accepts the interleaved layout the convert writes by default); the join
+  itself is the measured tens-of-milliseconds dual-tree descent, so network
+  latency never enters the loop — the client pays one request plus the pair
+  download. `epsilon` is required, in coordinate units, inclusive (`0` answers
+  exactly the intersecting pairs; negative or NaN is rejected). Joining a
+  collection with itself reports each unordered pair once. `count=only`
+  returns `numberMatched` without pairs; `limit` truncates the returned pairs
+  while `numberMatched` keeps counting through, so the total is always true.
+  Pairs are `{a, b}` entry ordinals per collection, traversal-ordered (order
+  is not part of the API). There is no `offset` — the pair stream has no
+  resumable cursor. Errors: unknown collection 404; missing/invalid `epsilon`,
+  bad `limit`, unknown parameters 400; a 2D/3D mismatch between the two
+  collections 422.
+
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 
 ### Search

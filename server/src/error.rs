@@ -59,6 +59,9 @@ pub enum ServerError {
     /// The client supplied an invalid polygon query.
     #[error("invalid polygon: {0}")]
     InvalidPolygon(String),
+    /// The client supplied an invalid distance-join epsilon.
+    #[error("invalid epsilon: {0}")]
+    InvalidEpsilon(String),
     /// The client supplied a query the artifact's edge/encoding model rejects.
     /// 422, not 500: these describe a client request that cannot be satisfied
     /// by this collection, not a server-side fault.
@@ -142,7 +145,8 @@ impl ServerError {
             | ServerError::InvalidCount(_)
             | ServerError::InvalidFrustum(_)
             | ServerError::InvalidRadius(_)
-            | ServerError::InvalidPolygon(_) => StatusCode::BAD_REQUEST,
+            | ServerError::InvalidPolygon(_)
+            | ServerError::InvalidEpsilon(_) => StatusCode::BAD_REQUEST,
             ServerError::CollectionNotFound(_) | ServerError::RouteNotFound(_) => {
                 StatusCode::NOT_FOUND
             }
@@ -176,6 +180,7 @@ impl ServerError {
             ServerError::InvalidFrustum(_) => "invalid_frustum",
             ServerError::InvalidRadius(_) => "invalid_radius",
             ServerError::InvalidPolygon(_) => "invalid_polygon",
+            ServerError::InvalidEpsilon(_) => "invalid_epsilon",
             ServerError::CollectionNotFound(_) => "collection_not_found",
             ServerError::RouteNotFound(_) => "not_found",
             ServerError::MethodNotAllowed(_) => "method_not_allowed",

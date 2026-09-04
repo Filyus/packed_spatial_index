@@ -430,10 +430,12 @@ Measured on 100 000 × 100 000 uniform 2D boxes (extent 1000, unit size):
 workaround of joining two indexes of `epsilon`-inflated boxes and filtering
 the pairs by exact distance; at `epsilon = 6` (1.6 million pairs) ~4×. The
 workaround also needs a second, larger index — 5 ms extra build and more
-memory in this setup. On pair-rich inputs the distance predicate costs about
-the same as the overlap predicate (a branchless `max` chain per axis); on
-near-empty inputs the plain `join` stays the cheaper tool, so pick by the
-question being asked.
+memory in this setup. Against plain `join` the picture splits by data shape:
+on uniform data the distance predicate costs nothing extra —
+`join_epsilon(0.0)`, the same pairs with the predicate swapped, measures
+0.5–1.0× of `join` — while on clustered data plain `join` stays the cheaper
+tool (1.1–2.9×, worst where almost nothing matches), so pick by the question
+being asked.
 
 ## Find boxes that contain a point
 

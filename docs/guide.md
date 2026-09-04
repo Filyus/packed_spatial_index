@@ -708,6 +708,99 @@ All of these — default, box and custom-metric kNN — run on the same best-fir
 **distance-browsing** traversal; [docs/knn.md](internals/knn.md) explains the two-queue
 technique and why it is the one collect kernel.
 
+## The leaf order as a resource
+
+The builder sorts items along a Hilbert curve and the tree stores the leaves in
+that order. That is usually described as an implementation detail behind the
+query speed, but it is also a property of the file you now have, and three
+things follow from it with no new traversal at all. `leaf_order()` on an owned
+index returns the item ids in that order; the streaming readers report the
+same order as `leaf_rank` on every payload prefix they visit.
+
+**Every m-th leaf is a spatially stratified sample.** Neighbours on the curve
+are neighbours in space, so taking one item in every m walks the whole extent
+at a uniform density instead of drawing lots. For a preview, a level of detail,
+or a quick estimate it is a better sample than a random one: no two picks land
+on top of each other and no region is skipped.
+
+```rust
+use packed_spatial_index::{Box2D, Index2DBuilder};
+
+let mut builder = Index2DBuilder::new(1000);
+for i in 0..1000 {
+    let x = (i % 40) as f64;
+    let y = (i / 40) as f64;
+    builder.add(Box2D::new(x, y, x + 0.5, y + 0.5));
+}
+let index = builder.finish()?;
+
+// One item in every ten, spread evenly over the extent.
+let preview: Vec<usize> = index.leaf_order().iter().copied().step_by(10).collect();
+assert_eq!(preview.len(), 100);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+**A prefix of the order already covers the extent coarsely.** The curve visits
+the whole space in the first pass and refines on later ones, so loading the
+leaves in leaf order is progressive loading: after any prefix, what is loaded
+is a coarse version of everything, not a detailed version of one corner. A
+streaming reader that reads leaves in rank order gets this for free; there is
+no separate pyramid to build.
+
+**Equal slices of the order are compact pieces.** Cutting the leaf array into k
+runs of equal length gives k parts that are each spatially compact and
+together disjoint — a deterministic partition for sharding or for handing work
+to threads, with no partitioning algorithm and no clustering step. The parts
+are not equal in area, only in count, which is what balances the work.
+
+All three hold for one built index. A rebuild may sort differently, so the
+order is a resource of the file, not of the data.
+
+## Time as an axis
+
+Nothing in the index knows what its axes mean, so a 3D index over `(x, y, t)`
+turns the existing 3D queries into spatiotemporal ones with no new code. Each
+item is a box in space and an interval in time; a moving object is the box
+that sweeps from where it was to where it went during its interval.
+
+- **A window is "in this area during this interval".** `search` with a
+  `Box3D` whose z-range is the time range.
+- **A ray is a constant-velocity trajectory.** `Ray3D` from `(x0, y0, t0)`
+  along `(vx, vy, 1)` is a point moving at `(vx, vy)` starting at `t0`, and
+  `raycast_closest` answers "what does it hit first, and when": the ray
+  parameter *is* the event time, because the direction's t-component is 1 and
+  `t` is measured in units of the direction length (see `Ray3D::new`). All hits
+  in `raycast` are every encounter along the way, and their `t` values are
+  when.
+- **A frustum is a light cone.** Six planes around "where it can get to from
+  here at bounded speed" select everything reachable, and `search_ordered`
+  with the time axis as the key returns it soonest-first.
+
+The one thing to decide is the scale of the time axis relative to space. The
+kNN distance and the frustum tests mix the axes numerically, so a second and
+a metre should be made comparable by scaling `t` before it goes into the box
+(a top speed is a natural unit: divide time by it, and a box of side one in
+every axis is "one metre or the time to cover it"). Range and ray queries do
+not care about the scale.
+
+## Is the index going to perform on this data?
+
+Not every distribution suits a packed tree equally: lines, road networks and
+coastlines sit thinly in a plane, and their node boxes overlap far more than
+uniform points' do, so a window query visits more nodes per hit. Two things
+exist for judging that before or after building.
+
+The counts a packed tree stores are no help: how many nodes each level has is
+a function of the item count and `node_size` alone, so a box-counting
+dimension read off the node counts is a constant. What varies with the data is
+how much the node *boxes* overlap, and the honest measure of that is what a
+query actually tests. The doc-hidden `search_visited(query)` returns
+`(hits, box_tests)` for a window; the tests-per-hit ratio over a few
+representative windows is the diagnostic. A ratio that stays small means the
+tree prunes well; one that grows as windows shrink means the node boxes overlap
+and small queries pay for it. The builder's `node_size` is the knob when they
+do: a smaller node tightens the boxes at the cost of a deeper tree.
+
 ## Runnable examples
 
 ```bash

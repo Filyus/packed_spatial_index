@@ -71,6 +71,18 @@ All notable changes to this crate are documented here.
   case tolerable: without it the same query measured 1.58 s and only 2.3× the
   loop.
 
+- Added `Index2D::leaf_order` / `Index3D::leaf_order`: the item ids in the
+  order the packed tree stores them, which is the Hilbert order the builder
+  sorted by. The array was always there; the accessor exists because the
+  order is a resource of the built file — every m-th entry is a spatially
+  stratified sample, a prefix covers the extent coarsely, equal slices are
+  compact partitions — and the guide now says so ("The leaf order as a
+  resource"), together with two other notes on properties the index already
+  has: a 3D index over `(x, y, t)` makes the existing ray a constant-velocity
+  trajectory with `t` as the event time ("Time as an axis"), and the visited
+  counts the doc-hidden `_visited` query siblings return are the honest
+  diagnostic for whether a distribution suits a packed tree, since node counts
+  per level are fixed by construction.
 - Added the radius query: `search_within` / `search_within_into` /
   `visit_within` / `any_within` / `count_within` report every item whose box lies within
   `max_distance` of a query box — "everything within 500 m of here", without

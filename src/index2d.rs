@@ -102,6 +102,38 @@ impl Index2D {
         self.node_size
     }
 
+    /// The item ids in leaf order: the order the packed tree stores them, which
+    /// is the order along the Hilbert curve the builder sorted by.
+    ///
+    /// Positions along this slice are the *leaf ranks* the streaming readers
+    /// report; the values are the insertion ids every query returns. The
+    /// order is a property of the built index and a resource in its own
+    /// right — every m-th entry is a spatially stratified sample, a prefix
+    /// covers the whole extent coarsely, and equal slices are compact
+    /// pieces — see the guide's "The leaf order as a resource". Stable for
+    /// one built index; a rebuild may order differently.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Box2D};
+    ///
+    /// let mut builder = Index2DBuilder::new(3);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(9.0, 9.0, 10.0, 10.0));
+    /// builder.add(Box2D::new(0.0, 9.0, 1.0, 10.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let order = index.leaf_order();
+    /// assert_eq!(order.len(), 3);
+    /// let mut ids = order.to_vec();
+    /// ids.sort_unstable();
+    /// assert_eq!(ids, vec![0, 1, 2]); // a permutation of the insertion ids
+    /// ```
+    pub fn leaf_order(&self) -> &[usize] {
+        &self.indices[..self.num_items]
+    }
+
     /// Serialize this index into the stable little-endian `PSINDEX` format.
     ///
     /// # Example

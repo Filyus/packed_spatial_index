@@ -191,6 +191,101 @@ pub(crate) fn parse_index(
     Ok((parsed, payload))
 }
 
+/// An owned tree transposed out of a container's `TREE` chunk: boxes as raw
+/// little-endian records and indices as raw little-endian `u64`s, in the same
+/// order and encoding as the SoA sections, so callers reuse their usual
+/// column-copy helpers.
+pub(crate) struct OwnedTree {
+    pub(crate) node_size: usize,
+    pub(crate) num_items: usize,
+    pub(crate) num_nodes: usize,
+    pub(crate) level_bounds: Vec<usize>,
+    pub(crate) entries: Vec<u8>,
+    pub(crate) indices: Vec<u8>,
+}
+
+/// Parse a container's `TREE` chunk into owned columns, accepting both
+/// serializable layouts. The SoA sections copy verbatim; the interleaved
+/// layout — each node's index stored next to its box, which is what lets the
+/// streaming reader fetch a level in one gather — is transposed, because an
+/// in-memory index wants plain columns. This is how an interleaved artifact
+/// (the `geo` convert default) loads into an owned index; a zero-copy view
+/// still requires SoA. Any payload chunk is ignored.
+pub(crate) fn parse_index_owned(
+    bytes: &[u8],
+    dimensions: usize,
+    coord_bytes: usize,
+) -> Result<OwnedTree, LoadError> {
+    let chunks = parse_container(bytes, &[TAG_TREE])?;
+    let tree_ref = find_chunk(&chunks, TAG_TREE).ok_or(LoadError::InvalidTree)?;
+    let (desc, node_data) =
+        parse_tree_chunk(&bytes[tree_ref.offset..tree_ref.offset + tree_ref.len])?;
+    if desc.dimensions != dimensions || desc.coord_bytes != coord_bytes {
+        return Err(LoadError::UnsupportedVersion);
+    }
+
+    let (num_nodes, level_count) = expected_tree_shape(desc.num_items, desc.node_size)?;
+    let record = dimensions
+        .checked_mul(2 * coord_bytes)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let entries_len = num_nodes
+        .checked_mul(record)
+        .ok_or(LoadError::IntegerOverflow)?;
+    let indices_len = num_nodes.checked_mul(8).ok_or(LoadError::IntegerOverflow)?;
+    let level_bounds = derive_level_bounds(desc.num_items, desc.node_size, level_count);
+
+    let (entries, indices) = if desc.interleaved {
+        let stride = record.checked_add(8).ok_or(LoadError::IntegerOverflow)?;
+        let node_len = num_nodes
+            .checked_mul(stride)
+            .ok_or(LoadError::IntegerOverflow)?;
+        if node_data.len() != node_len {
+            return Err(LoadError::InvalidTree);
+        }
+        let mut entries = Vec::with_capacity(entries_len);
+        let mut indices = Vec::with_capacity(indices_len);
+        for pos in 0..num_nodes {
+            let base = pos * stride;
+            entries.extend_from_slice(&node_data[base..base + record]);
+            indices.extend_from_slice(&node_data[base + record..base + stride]);
+        }
+        (entries, indices)
+    } else {
+        let node_len = entries_len
+            .checked_add(indices_len)
+            .ok_or(LoadError::IntegerOverflow)?;
+        if node_data.len() != node_len {
+            return Err(LoadError::InvalidTree);
+        }
+        (
+            node_data[..entries_len].to_vec(),
+            node_data[entries_len..].to_vec(),
+        )
+    };
+
+    // The transposed columns are laid out exactly like the SoA sections, so
+    // the shared pointer validation applies unchanged.
+    let parsed = ParsedTree {
+        node_size: desc.node_size,
+        num_items: desc.num_items,
+        num_nodes,
+        level_count,
+        level_bounds: level_bounds.clone(),
+        entries: &entries,
+        indices: &indices,
+    };
+    validate_tree_indices(&parsed)?;
+
+    Ok(OwnedTree {
+        node_size: desc.node_size,
+        num_items: desc.num_items,
+        num_nodes,
+        level_bounds,
+        entries,
+        indices,
+    })
+}
+
 /// Validate leaf and internal child pointers against the derived level bounds.
 fn validate_tree_indices(p: &ParsedTree<'_>) -> Result<(), LoadError> {
     for pos in 0..p.num_items {

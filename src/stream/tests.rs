@@ -1296,15 +1296,31 @@ fn interleaved_uses_fewer_reads_than_soa() {
 }
 
 #[test]
-fn interleaved_rejected_by_soa_loaders() {
-    // An interleaved file is streaming-targeted; the in-memory loaders and
-    // views read the SoA layout only and must reject it cleanly.
+fn interleaved_owned_loader_transposes_views_still_reject() {
+    // The interleaved layout is the streaming artifact default (the geo
+    // convert writes it), and an owned index loads it by transposing into
+    // columns, answering exactly like the original. A zero-copy view still
+    // needs SoA and rejects it cleanly.
+    for &n in &[0usize, 1, 100, 1000] {
+        let (owned, _) = random_owned(n, 0x1 ^ n as u64);
+        let bytes = owned.to_bytes_interleaved();
+        let loaded = crate::Index2D::from_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("interleaved bytes must load into an owned index: {e}"));
+        assert_eq!(loaded.num_items(), owned.num_items(), "n={n}");
+        for q in [
+            Box2D::new(400.0, 400.0, 460.0, 460.0),
+            Box2D::new(-1.0, -1.0, 2000.0, 2000.0),
+        ] {
+            let mut want = owned.search(q);
+            let mut got = loaded.search(q);
+            want.sort_unstable();
+            got.sort_unstable();
+            assert_eq!(got, want, "n={n}");
+        }
+    }
+
     let (owned, _) = random_owned(100, 0x1);
     let bytes = owned.to_bytes_interleaved();
-    assert!(matches!(
-        crate::Index2D::from_bytes(&bytes),
-        Err(LoadError::UnsupportedVersion)
-    ));
     assert!(matches!(
         crate::Index2DView::from_bytes(&bytes),
         Err(LoadError::UnsupportedVersion)

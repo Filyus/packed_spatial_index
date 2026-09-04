@@ -31,8 +31,8 @@ use crate::neighbors::{
 };
 use crate::ordered::{collect_ordered, visit_ordered};
 use crate::persistence::{
-    LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, payload_slice,
-    read_f64_le_unchecked, read_u64_le_unchecked,
+    LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, parse_index_owned,
+    payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
 };
 use crate::range::{visit_overlaps, visit_region};
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
@@ -261,24 +261,23 @@ impl Index2D {
         builder.finish()
     }
 
-    /// Load an owned index from bytes previously produced by [`Index2D::to_bytes`].
+    /// Load an owned index from bytes previously produced by
+    /// [`Index2D::to_bytes`] or an interleaved serialization such as
+    /// `to_bytes_interleaved` (stream feature).
+    ///
+    /// Both layouts load into the same in-memory columns; the interleaved one
+    /// is transposed on the way in. An index-only writer's bytes and files
+    /// carrying a payload both load — the payload is ignored, use a view or
+    /// the streaming reader to read it back.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
-        let view = Index2DView::from_bytes(bytes)?;
-
-        let mut level_bounds = Vec::with_capacity(view.level_count);
-        for i in 0..view.level_count {
-            level_bounds.push(view.level_bound_unchecked(i));
-        }
-
-        let entries = copy_box2d_entries(view.entries, view.num_nodes);
-        let indices = copy_u64_indices(view.indices, view.num_nodes);
+        let tree = parse_index_owned(bytes, 2, 8)?;
 
         Ok(Self {
-            node_size: view.node_size,
-            num_items: view.num_items,
-            level_bounds,
-            entries,
-            indices,
+            node_size: tree.node_size,
+            num_items: tree.num_items,
+            level_bounds: tree.level_bounds,
+            entries: copy_box2d_entries(&tree.entries, tree.num_nodes),
+            indices: copy_u64_indices(&tree.indices, tree.num_nodes),
         })
     }
 

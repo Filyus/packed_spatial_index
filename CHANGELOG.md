@@ -23,11 +23,11 @@ All notable changes to this crate are documented here.
   is. On every type that carries `join`: the owned `f64` indexes, their views,
   and the SIMD indexes and views (streaming and `f32` carry no join at all, so
   nothing new is missing there). Measured on 100 000 × 100 000 uniform unit
-  boxes, pinned: at `epsilon = 2` (324 k pairs) `join_epsilon` is ~3× faster
-  than the workaround of joining two indexes of `epsilon`-inflated boxes and
-  filtering the pairs by exact distance, at `epsilon = 6` (1.6 M pairs) ~4× in
-  2D and ~3× in 3D — and the workaround needs the second, inflated index built
-  and kept around. Against plain `join` — the same pairs with the predicate
+  boxes, pinned, interleaved on a quiet machine: at `epsilon = 2` (324 k
+  pairs) `join_epsilon` is ~2–2.5× faster than the workaround of joining two
+  indexes of `epsilon`-inflated boxes and filtering the pairs by exact
+  distance, at `epsilon = 6` (1.6 M pairs) ~3× in 2D and ~2–3× in 3D — and
+  the workaround needs the second, inflated index built and kept around. Against plain `join` — the same pairs with the predicate
   swapped — the branchless per-axis `max` distance test measures at or below
   the overlap test on uniform data (`join_epsilon(0.0)` runs 0.5–1.0× of
   `join`, both dimensions) and above it on clustered data (1.1–2.9×, worst
@@ -86,22 +86,22 @@ All notable changes to this crate are documented here.
   overlapping. The value is unchanged — only the codegen — and the winners are
   the callers that run it per traversal step. Box kNN (`neighbors_of_box`)
   computes a box-to-box distance at every node pop and leaf test; on 200 000
-  boxes, pinned, best-of-8, three interleaved runs per build (run-to-run
-  spread 2–4%):
+  boxes, pinned, best-of-8, three interleaved rounds of the two builds
+  (paired per-round differences; within-build spread 1–2%):
 
-  | query    | branchy        | branchless     |
-  | ---      | ---:           | ---:           |
-  | 2D, k=1  | 0.92–0.95 µs   | 0.85–0.86 µs   |
-  | 2D, k=10 | 2.24–2.34 µs   | 2.10–2.17 µs   |
-  | 3D, k=1  | 1.47–1.51 µs   | 1.20–1.21 µs   |
-  | 3D, k=10 | 4.06–4.22 µs   | 3.71–3.96 µs   |
+  | query    | branchy        | branchless     | paired Δ          |
+  | ---      | ---:           | ---:           | ---:              |
+  | 2D, k=1  | 0.91–0.93 µs   | 0.76–0.78 µs   | −16–17%           |
+  | 2D, k=10 | 2.19–2.29 µs   | 1.92–1.99 µs   | −12–13%           |
+  | 3D, k=1  | 1.45–1.50 µs   | 1.09–1.14 µs   | −24–26%           |
+  | 3D, k=10 | 4.00–4.10 µs   | 3.43–3.51 µs   | −12–14%           |
 
-  Point kNN is untouched — it uses the point distance, not the box gap. The
-  change also collapses the box-to-box distance to one implementation: the
-  distance join's prune phase (previous entry) had carried a private
-  branchless copy to dodge the branchy form; it now calls the public
-  `Box2D::distance_squared_to_box` / `Box3D::distance_squared_to_box` like
-  box kNN does.
+  All twelve paired readings negative. Point kNN is untouched — it uses the
+  point distance, not the box gap. The change also collapses the box-to-box
+  distance to one implementation: the distance join's prune phase (previous
+  entry) had carried a private branchless copy to dodge the branchy form; it
+  now calls the public `Box2D::distance_squared_to_box` /
+  `Box3D::distance_squared_to_box` like box kNN does.
 
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 

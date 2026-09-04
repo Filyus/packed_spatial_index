@@ -426,10 +426,10 @@ views, and the SIMD indexes and views):
   reports what the graph defines, deterministically.
 
 Measured on 100 000 × 100 000 uniform 2D boxes (extent 1000, unit size):
-`join_epsilon` at `epsilon = 2` (324 000 pairs) runs ~3× faster than the
+`join_epsilon` at `epsilon = 2` (324 000 pairs) runs ~2.5× faster than the
 workaround of joining two indexes of `epsilon`-inflated boxes and filtering
-the pairs by exact distance; at `epsilon = 6` (1.6 million pairs) ~4×. The
-workaround also needs a second, larger index — 5 ms extra build and more
+the pairs by exact distance; at `epsilon = 6` (1.6 million pairs) ~3×. The
+workaround also needs a second, larger index — 6–10 ms extra build and more
 memory in this setup. Against plain `join` the picture splits by data shape:
 on uniform data the distance predicate costs nothing extra —
 `join_epsilon(0.0)`, the same pairs with the predicate swapped, measures

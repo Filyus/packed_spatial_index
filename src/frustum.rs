@@ -151,6 +151,14 @@ impl Frustum3D {
     /// be normalized — the pyramid's shape is what matters, not the ray's
     /// parameterization (the hit keys stay in the ray's direction-length units).
     ///
+    /// `half_angle` is the **half** of the cone's opening, the angular radius
+    /// the pyramid spans on each side of the ray: a box at depth `t` is inside
+    /// when its perpendicular offset is at most `t * tan(half_angle)`. From the
+    /// pixel's full angular size `delta` (what one pixel of the viewport
+    /// subtends), pass `half_angle = delta / 2`; from a perspective projection
+    /// with vertical FOV `fov` over a viewport `h` pixels tall,
+    /// `delta = 2 * atan(2 * tan(fov / 2) / h)`.
+    ///
     /// Fails when the ray's direction is zero or non-finite, when `half_angle`
     /// is not in `(0°, 90°)`, or when `near` is negative, non-finite, or at or
     /// beyond the ray's `max_distance` (the pyramid would be empty).

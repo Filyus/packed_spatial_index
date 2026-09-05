@@ -311,29 +311,17 @@ on the owned `Index3D` and the zero-copy `Index3DView`; SIMD frontends keep
 tie-free (no on-ray degeneracy) and correct for render-order culling.
 
 ```rust
-# use packed_spatial_index::{Box3D, Frustum3D, Index3DBuilder, Point3D, Ray3D};
+# use packed_spatial_index::{Frustum3D, Index3DBuilder, Point3D, Ray3D};
 # let mut b = Index3DBuilder::new(2);
 # b.add(Box3D::new(10.0, -0.5, -0.5, 11.0, 0.5, 0.5));
 # b.add(Box3D::new(2.0, -0.5, -0.5, 3.0, 0.5, 0.5));
 # let index = b.finish()?;
 # let origin = Point3D { x: -1.0, y: 0.0, z: 0.0 };
-# let dir = [1.0, 0.0, 0.0];
-# let half_angle = 0.05_f64.to_radians();
-# let (sa, ca) = (half_angle.sin(), half_angle.cos());
-# let cross = |a: [f64; 3], c: [f64; 3]| [a[1]*c[2]-a[2]*c[1], a[2]*c[0]-a[0]*c[2], a[0]*c[1]-a[1]*c[0]];
-# let norm = |a: [f64; 3]| { let l = (a[0]*a[0]+a[1]*a[1]+a[2]*a[2]).sqrt(); [a[0]/l, a[1]/l, a[2]/l] };
-# let u = norm(cross(dir, [0.0, 0.0, 1.0]));
-# let v = norm(cross(u, dir));
-# let side = |e: [f64; 3]| -> [f64; 4] {
-#     let n = norm([sa*dir[0]-ca*e[0], sa*dir[1]-ca*e[1], sa*dir[2]-ca*e[2]]);
-#     [n[0], n[1], n[2], -(n[0]*origin.x + n[1]*origin.y + n[2]*origin.z)]
-# };
-# let near = [dir[0], dir[1], dir[2], -(dir[0]*origin.x + dir[1]*origin.y + dir[2]*origin.z) + 1.0];
-# let far = [-dir[0], -dir[1], -dir[2], dir[0]*origin.x + dir[1]*origin.y + dir[2]*origin.z + 40000.0];
-# let pixel = Frustum3D::from_planes([side(u), side([-u[0], -u[1], -u[2]]), side(v), side([-v[0], -v[1], -v[2]]), near, far]);
-# let ray = Ray3D::new(origin, dir[0], dir[1], dir[2], 1.0e9);
-// the pixel's frustum and central ray (construction above, gluPickMatrix-style
-// matrices work too — any Overlaps3D region is accepted)
+// the clicked pixel's central ray; the direction need not be normalized
+let ray = Ray3D::new(origin, 1.0, 0.0, 0.0, 1.0e9);
+// half the pixel's angular size (see below), and the near distance
+let pixel = Frustum3D::try_from_ray(ray, 0.05_f64.to_radians(), 1.0)?;
+
 let hits = index.search_pick(pixel, ray, 1);
 if let Some(hit) = hits.first() {
     // hit.index: the candidate; hit.distance_squared == 0.0 means the ray
@@ -342,6 +330,17 @@ if let Some(hit) = hits.first() {
 # let _ = hits;
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
+
+`Frustum3D::try_from_ray` builds that pyramid; a `gluPickMatrix`-style scaled
+view-projection through `Frustum3D::from_view_projection` works too, as does
+any `Overlaps3D` region. The half-angle is the **half** of the pixel cone's
+opening, its angular radius: a box at depth `t` is inside when its
+perpendicular offset stays under `t * tan(half_angle)`. From the pixel's full
+angular size `delta` pass `half_angle = delta / 2`; from a perspective
+projection with vertical FOV `fov` over a viewport `h` pixels tall,
+`delta = 2 * atan(2 * tan(fov / 2) / h)`. Dragged-rectangle selection takes
+the frustum of the rectangle's corner rays instead; the gluPickMatrix route
+keeps the exact screen rectangle.
 
 #### Where the narrow phase stops
 

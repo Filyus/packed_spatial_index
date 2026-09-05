@@ -73,7 +73,7 @@ Windows) shuts down after in-flight requests finish.
 - `GET /collections/{id}/closest-pair/{other}`
 - `GET /collections/{id}/components?within=&count=`
 - `GET /collections/{id}/nearest?point=x,y[,z]&k=&metric=planar|spherical&within=&nonplanar=`
-- `GET /collections/{id}/pick?origin=x,y,z&dir=dx,dy,dz&halfAngle=deg&near=&limit=` — 3D only
+- `GET /collections/{id}/pick?origin=x,y,z&dir=dx,dy,dz&halfAngle=deg&near=&limit=` — 3D only; `halfAngle` is the pixel cone's angular *radius* in degrees (half its opening)
 
 `/search` is the artifact-native endpoint; it works for every payload kind
 (`none`, `row_ref`, `row_wkb`, `feature_json`) and returns a JSON envelope with

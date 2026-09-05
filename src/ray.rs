@@ -329,12 +329,21 @@ impl Ray3D {
     /// Used by [`Index3D::search_pick`](crate::Index3D::search_pick) as the
     /// perpendicular component of its ordering key.
     pub fn distance_squared_to_box(self, bounds: Box3D) -> f64 {
+        // `enter_t` carries the same guards, and answers `None` under all of
+        // them; the miss path re-checks them for callers that skip it.
+        if self.enter_t(bounds).is_some() {
+            return 0.0;
+        }
+        self.distance_squared_to_missed_box(bounds)
+    }
+
+    /// [`Self::distance_squared_to_box`] for a box the caller has already found
+    /// the segment to miss — the same closed form without the entry test, which
+    /// the pick key would otherwise pay twice per node.
+    pub(crate) fn distance_squared_to_missed_box(self, bounds: Box3D) -> f64 {
         if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
         {
             return f64::INFINITY;
-        }
-        if self.enter_t(bounds).is_some() {
-            return 0.0;
         }
         let org = [self.origin.x, self.origin.y, self.origin.z];
         let dir = [self.dir_x, self.dir_y, self.dir_z];
@@ -345,8 +354,13 @@ impl Ray3D {
         let mut ts = [0.0f64; 8];
         let mut nt = 2usize;
         ts[1] = self.max_distance;
+        // An axis is "moving" relative to the direction's own magnitude: the
+        // direction need not be a unit vector, so an absolute floor would call
+        // every axis of a uniformly small direction stationary and merge the
+        // pieces its crossings separate.
+        let eps = 1e-12 * dir[0].abs().max(dir[1].abs()).max(dir[2].abs());
         for a in 0..3 {
-            if dir[a].abs() > 1e-12 {
+            if dir[a].abs() > eps {
                 let t0 = (lo[a] - org[a]) / dir[a];
                 let t1 = (hi[a] - org[a]) / dir[a];
                 for t in [t0, t1] {

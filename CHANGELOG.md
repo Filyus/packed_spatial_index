@@ -6,6 +6,29 @@ All notable changes to this crate are documented here.
 
 ### Search
 
+- Added the ordered pick: `search_pick(region, ray, max_results)` —
+  with `search_pick_into`, `search_pick_with` (a reusable `PickWorkspace`) and
+  the streaming `visit_pick` — returns a region's candidates in the order a
+  click means, on `Index3D` and `Index3DView`. The key is lexicographic:
+  squared perpendicular distance from `ray` to the item's box first, ties by
+  the ray's entry `t`, so every box the ray pierces comes before every box it
+  only grazes, and the pierced ones run near-to-far. A single scalar cannot
+  express that — distance alone ties every pierced box at zero, depth alone
+  puts a box grazing the pixel edge ahead of the box on the ray. Each
+  `PickHit3D` carries both components. The perpendicular component is the new
+  public `Ray3D::distance_squared_to_box`: the exact, allocation-free minimum
+  of the convex piecewise-quadratic point-to-box distance along the segment,
+  solved in closed form over the slab breakpoints rather than searched. Both
+  components are lower bounds on the geometry inside the box, which is what
+  makes the best-first descent sound and what sets the narrow phase's stopping
+  rule — not "take the first candidate the ray really hits", but "stop when the
+  next candidate's `entry_t` passes the best exact `t`" (the guide carries the
+  loop). That break, not the traversal, is where picking pays: exact tests run
+  only on the candidates that can still win. Measured on 200 000 boxes with a
+  0.05° pixel half-angle, `max_results = 1` costs 5.4 µs, ~2.2× a full `search`
+  plus a sort on the same key; past k ≈ 10 in a dense region the heap loses to
+  collect-and-sort, as with every ordered query. Wide-frustum depth ordering
+  needs nothing new — `search_ordered` with `view_depth_3d` already serves it.
 - Added the distance join (ε-join): `join_within` / `join_within_with` report
   every pair `(i, j)` whose boxes lie within `max_distance` of each other — the
   "within 500 m" question `join` could only answer as "intersecting, filter

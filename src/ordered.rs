@@ -115,7 +115,8 @@ pub(crate) fn pick_key<Q: crate::geometry::Overlaps3D>(
     }
     Some(match ray.enter_t(b) {
         Some(t) => (0.0, t),
-        None => (ray.distance_squared_to_box(b), f64::INFINITY),
+        // The entry test above is the miss proof, so skip its repetition.
+        None => (ray.distance_squared_to_missed_box(b), f64::INFINITY),
     })
 }
 
@@ -139,7 +140,7 @@ pub struct PickHit3D {
 /// (perpendicular distance², entry t), then leaves before internal entries,
 /// then lower position (Hilbert leaf order) — the same tie discipline as
 /// [`crate::neighbors::NeighborState`].
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct PickState {
     index: usize,
     is_leaf: bool,
@@ -168,79 +169,77 @@ impl PartialOrd for PickState {
     }
 }
 
-/// Best-first pick descent over the shared tree layout, mirroring
-/// [`metric_knn::collect_neighbors`] but with a lexicographic two-component
-/// key. The key closure returns `None` for a pruned entry (region miss) and
-/// `(perp2, entry_t)` for a kept one.
-pub(crate) fn collect_pick<T: TreeAccess<Bounds = crate::geometry::Box3D>>(
-    tree: &T,
-    max_results: usize,
-    key: impl Fn(T::Bounds) -> Option<(f64, f64)>,
-    results: &mut Vec<PickHit3D>,
-    queue: &mut BinaryHeap<PickState>,
-) {
-    queue.clear();
-    results.clear();
-    if tree.tree_num_items() == 0 || max_results == 0 {
-        return;
+/// Reusable buffers for [`Index3D::search_pick_with`](crate::Index3D::search_pick_with):
+/// the result vector and the best-first priority queue, so a pick loop that
+/// runs once per click (or once per pixel of a lasso) allocates nothing after
+/// the first query. The sibling of
+/// [`NeighborWorkspace`](crate::NeighborWorkspace) for the pick descent.
+///
+/// # Example
+///
+/// ```
+/// use packed_spatial_index::{Box3D, Index3DBuilder, PickWorkspace, Point3D, Ray3D};
+///
+/// let mut builder = Index3DBuilder::new(2);
+/// builder.add(Box3D::new(2.0, -0.5, -0.5, 3.0, 0.5, 0.5));
+/// builder.add(Box3D::new(10.0, -0.5, -0.5, 11.0, 0.5, 0.5));
+/// let index = builder.finish().unwrap();
+///
+/// let ray = Ray3D::new(Point3D { x: -1.0, y: 0.0, z: 0.0 }, 1.0, 0.0, 0.0, 1.0e4);
+/// let region = Box3D::new(0.0, -1.0, -1.0, 12.0, 1.0, 1.0);
+///
+/// let mut workspace = PickWorkspace::new();
+/// let hits = index.search_pick_with(region, ray, 1, &mut workspace);
+/// assert_eq!(hits[0].index, 0);
+/// assert_eq!(workspace.results()[0].index, 0);
+/// ```
+#[derive(Debug, Default)]
+pub struct PickWorkspace {
+    pub(crate) results: Vec<PickHit3D>,
+    pub(crate) queue: BinaryHeap<PickState>,
+}
+
+impl PickWorkspace {
+    /// Create an empty workspace.
+    pub fn new() -> Self {
+        Self::default()
     }
-    let num_nodes = tree.tree_num_nodes();
-    let node_size = tree.tree_node_size();
-    let mut node_index = num_nodes - 1;
-    loop {
-        let end = (node_index + node_size).min(level_end_of(tree, node_index));
-        let is_leaf = node_index < tree.tree_num_items();
-        for pos in node_index..end {
-            if let Some((perp2, entry_t)) = key(tree.tree_bounds(pos)) {
-                queue.push(PickState {
-                    index: tree.tree_index(pos),
-                    is_leaf,
-                    perp2,
-                    entry_t,
-                });
-            }
+
+    /// Create a workspace with preallocated result and priority-queue capacity.
+    pub fn with_capacity(results: usize, queue: usize) -> Self {
+        Self {
+            results: Vec::with_capacity(results),
+            queue: BinaryHeap::with_capacity(queue),
         }
-        let mut continue_search = false;
-        while let Some(state) = queue.pop() {
-            if state.is_leaf {
-                results.push(PickHit3D {
-                    index: state.index,
-                    distance_squared: state.perp2,
-                    entry_t: state.entry_t,
-                });
-                if results.len() == max_results {
-                    return;
-                }
-            } else {
-                node_index = state.index;
-                continue_search = true;
-                break;
-            }
-        }
-        if !continue_search {
-            return;
-        }
+    }
+
+    /// Hits from the latest pick that used this workspace.
+    pub fn results(&self) -> &[PickHit3D] {
+        &self.results
     }
 }
 
-/// [`collect_pick`] for a visitor; the visitor may break early. Streaming:
-/// hits are visited as the heap pops them, so a break stops the traversal.
+/// Best-first pick descent over the shared tree layout, mirroring
+/// [`metric_knn::visit_neighbors`] but with a lexicographic two-component key.
+/// The key closure returns `None` for a pruned entry (region miss) and
+/// `(perp2, entry_t)` for a kept one. Streaming: hits reach the visitor as the
+/// heap pops them, so a break stops the traversal.
 pub(crate) fn visit_pick<T, B>(
     tree: &T,
     max_results: usize,
     key: impl Fn(crate::geometry::Box3D) -> Option<(f64, f64)>,
+    queue: &mut BinaryHeap<PickState>,
     visitor: &mut impl FnMut(PickHit3D) -> ControlFlow<B>,
 ) -> ControlFlow<B>
 where
     T: TreeAccess<Bounds = crate::geometry::Box3D>,
 {
+    queue.clear();
     if tree.tree_num_items() == 0 || max_results == 0 {
         return ControlFlow::Continue(());
     }
     let num_nodes = tree.tree_num_nodes();
     let node_size = tree.tree_node_size();
-    let mut queue: BinaryHeap<PickState> =
-        BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
     let mut node_index = num_nodes - 1;
     let mut visited = 0usize;
     loop {
@@ -281,4 +280,20 @@ where
             return ControlFlow::Continue(());
         }
     }
+}
+
+/// [`visit_pick`] collecting into `results` (cleared first) — the same descent,
+/// with a visitor that only pushes.
+pub(crate) fn collect_pick<T: TreeAccess<Bounds = crate::geometry::Box3D>>(
+    tree: &T,
+    max_results: usize,
+    key: impl Fn(T::Bounds) -> Option<(f64, f64)>,
+    results: &mut Vec<PickHit3D>,
+    queue: &mut BinaryHeap<PickState>,
+) {
+    results.clear();
+    let _ = visit_pick(tree, max_results, key, queue, &mut |hit| {
+        results.push(hit);
+        ControlFlow::<()>::Continue(())
+    });
 }

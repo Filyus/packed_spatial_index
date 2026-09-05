@@ -18,7 +18,10 @@ use crate::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first,
         metric_knn,
     },
-    ordered::{PickHit3D, collect_ordered, collect_pick, pick_key, visit_ordered, visit_pick},
+    ordered::{
+        PickHit3D, PickWorkspace, collect_ordered, collect_pick, pick_key, visit_ordered,
+        visit_pick,
+    },
     persistence::{
         LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, parse_index_owned,
         payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -682,6 +685,18 @@ impl Index3D {
     /// ray-geometry tests belong to the caller (see
     /// [`Ray3D::closest_triangle`](crate::Ray3D::closest_triangle)).
     ///
+    /// Being lower bounds is what sets the narrow phase's **stopping rule**,
+    /// and it is not "keep the first candidate whose geometry the ray hits". A
+    /// box's `entry_t` can undershoot the `t` of the geometry inside it, so a
+    /// later candidate can still hold a nearer hit — as long as its `entry_t`
+    /// is below the best exact `t` found so far. Run exact tests down the
+    /// stream and stop at the first candidate with `hit.entry_t > best_t`
+    /// (candidates the ray misses carry [`f64::INFINITY`], so they end the scan
+    /// on their own); [`visit_pick`](Self::visit_pick) makes that a
+    /// [`ControlFlow::Break`] and never walks the rest of the region. Picking
+    /// the *nearest to the cursor* rather than the frontmost is the same rule
+    /// with `distance_squared` in place of `entry_t`.
+    ///
     /// Each [`PickHit3D`] carries its key. The order is deterministic; boxes
     /// with equal keys keep Hilbert leaf order. Prefer this over
     /// [`search_ordered`](Self::search_ordered) when the natural order is "distance from the ray,
@@ -718,7 +733,9 @@ impl Index3D {
         results
     }
 
-    /// [`search_pick`](Self::search_pick) into a reused buffer (cleared first).
+    /// [`search_pick`](Self::search_pick) into a reused result buffer (cleared
+    /// first). The priority queue is still allocated per call; to reuse that
+    /// too, use [`search_pick_with`](Self::search_pick_with).
     pub fn search_pick_into<Q>(
         &self,
         region: Q,
@@ -737,8 +754,34 @@ impl Index3D {
         );
     }
 
+    /// [`search_pick`](Self::search_pick) reusing a [`PickWorkspace`] — result
+    /// buffer and priority queue both — so a repeated pick allocates nothing
+    /// after the first query. Returns a borrow of the workspace's results.
+    pub fn search_pick_with<'w, Q>(
+        &self,
+        region: Q,
+        ray: Ray3D,
+        max_results: usize,
+        workspace: &'w mut PickWorkspace,
+    ) -> &'w [PickHit3D]
+    where
+        Q: Overlaps3D,
+    {
+        collect_pick(
+            self,
+            max_results,
+            |b| pick_key(&region, ray, b),
+            &mut workspace.results,
+            &mut workspace.queue,
+        );
+        &workspace.results
+    }
+
     /// Visit the items [`search_pick`](Self::search_pick) would return, in the
     /// same order; the visitor may return [`ControlFlow::Break`] to stop early.
+    /// This is the streaming form the narrow phase wants: exact tests run as
+    /// candidates arrive, and the break ends the traversal without collecting
+    /// the rest of the region.
     pub fn visit_pick<Q, B, F>(&self, region: Q, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps3D,
@@ -748,6 +791,7 @@ impl Index3D {
             self,
             usize::MAX,
             |b| pick_key(&region, ray, b),
+            &mut BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY),
             &mut visitor,
         )
     }
@@ -2115,11 +2159,23 @@ impl<'a> Index3DView<'a> {
     /// ray-geometry tests belong to the caller (see
     /// [`Ray3D::closest_triangle`](crate::Ray3D::closest_triangle)).
     ///
+    /// Being lower bounds is what sets the narrow phase's **stopping rule**,
+    /// and it is not "keep the first candidate whose geometry the ray hits". A
+    /// box's `entry_t` can undershoot the `t` of the geometry inside it, so a
+    /// later candidate can still hold a nearer hit — as long as its `entry_t`
+    /// is below the best exact `t` found so far. Run exact tests down the
+    /// stream and stop at the first candidate with `hit.entry_t > best_t`
+    /// (candidates the ray misses carry [`f64::INFINITY`], so they end the scan
+    /// on their own); [`visit_pick`](Self::visit_pick) makes that a
+    /// [`ControlFlow::Break`] and never walks the rest of the region. Picking
+    /// the *nearest to the cursor* rather than the frontmost is the same rule
+    /// with `distance_squared` in place of `entry_t`.
+    ///
     /// Each [`PickHit3D`] carries its key. The order is deterministic; boxes
     /// with equal keys keep Hilbert leaf order. Prefer this over
-    /// [`Index3D::search_pick`](crate::Index3D::search_pick) when the natural order is "distance from the ray,
-    /// ties by depth": a single scalar key cannot express that lexicographic
-    /// order.
+    /// [`search_ordered`](Self::search_ordered) when the natural order is
+    /// "distance from the ray, ties by depth": a single scalar key cannot
+    /// express that lexicographic order.
     ///
     /// # Example
     ///
@@ -2151,7 +2207,9 @@ impl<'a> Index3DView<'a> {
         results
     }
 
-    /// [`search_pick`](Self::search_pick) into a reused buffer (cleared first).
+    /// [`search_pick`](Self::search_pick) into a reused result buffer (cleared
+    /// first). The priority queue is still allocated per call; to reuse that
+    /// too, use [`search_pick_with`](Self::search_pick_with).
     pub fn search_pick_into<Q>(
         &self,
         region: Q,
@@ -2170,8 +2228,34 @@ impl<'a> Index3DView<'a> {
         );
     }
 
+    /// [`search_pick`](Self::search_pick) reusing a [`PickWorkspace`] — result
+    /// buffer and priority queue both — so a repeated pick allocates nothing
+    /// after the first query. Returns a borrow of the workspace's results.
+    pub fn search_pick_with<'w, Q>(
+        &self,
+        region: Q,
+        ray: Ray3D,
+        max_results: usize,
+        workspace: &'w mut PickWorkspace,
+    ) -> &'w [PickHit3D]
+    where
+        Q: Overlaps3D,
+    {
+        collect_pick(
+            self,
+            max_results,
+            |b| pick_key(&region, ray, b),
+            &mut workspace.results,
+            &mut workspace.queue,
+        );
+        &workspace.results
+    }
+
     /// Visit the items [`search_pick`](Self::search_pick) would return, in the
     /// same order; the visitor may return [`ControlFlow::Break`] to stop early.
+    /// This is the streaming form the narrow phase wants: exact tests run as
+    /// candidates arrive, and the break ends the traversal without collecting
+    /// the rest of the region.
     pub fn visit_pick<Q, B, F>(&self, region: Q, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps3D,
@@ -2181,6 +2265,7 @@ impl<'a> Index3DView<'a> {
             self,
             usize::MAX,
             |b| pick_key(&region, ray, b),
+            &mut BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY),
             &mut visitor,
         )
     }

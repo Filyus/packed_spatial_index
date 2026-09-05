@@ -3,13 +3,16 @@
 //! Oracles are deliberately independent of the implementation: the reference
 //! ray-to-box squared distance is a brute-force scan over the ray parameter
 //! (the distance function is convex, so a fine ternary search is exact), and
-//! the reference order is a sort of the full `search` output.
+//! the reference order is a sort of the full `search` output. Comparing the
+//! reported key against that reference *value* subsumes an admissibility check
+//! against the box's own points: a bound that never over-states is implied by a
+//! bound that matches the exact answer.
 
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 use packed_spatial_index::{
-    Box3D, Frustum3D, Index3D, Index3DBuilder, Index3DView, Point3D, Ray3D,
+    Box3D, Frustum3D, Index3D, Index3DBuilder, Index3DView, PickWorkspace, Point3D, Ray3D,
 };
 
 // ---------------------------------------------------------------- helpers
@@ -308,36 +311,6 @@ fn matches_brute_force_oracle() {
                 "query {q}: t"
             );
         }
-
-        // admissibility of the reported keys against true geometry points
-        for h in &hits {
-            let b = boxes[h.index];
-            let corners = [
-                [b.min_x, b.min_y, b.min_z],
-                [b.max_x, b.max_y, b.max_z],
-                [b.min_x, b.max_y, b.max_z],
-                [b.max_x, b.min_y, b.max_z],
-            ];
-            let truth = corners
-                .iter()
-                .map(|c| {
-                    let v = [c[0] - ORIGIN[0], c[1] - ORIGIN[1], c[2] - ORIGIN[2]];
-                    // projection onto the ray: depth, and perpendicular offset
-                    let depth = v[0] * dir[0] + v[1] * dir[1] + v[2] * dir[2];
-                    let perp = [
-                        v[0] - depth * dir[0],
-                        v[1] - depth * dir[1],
-                        v[2] - depth * dir[2],
-                    ];
-                    (
-                        depth,
-                        perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2],
-                    )
-                })
-                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
-                .unwrap();
-            let _ = truth; // corner-level check folded into the oracle compare above
-        }
     }
 }
 
@@ -428,6 +401,45 @@ fn view_matches_owned() {
     });
     assert!(matches!(cf, ControlFlow::Continue(())));
     assert_eq!(visited, view.search_pick(fr, ray, usize::MAX));
+}
+
+#[test]
+fn workspace_matches_and_is_reused() {
+    let mut rng = SimpleRng::new(77);
+    let boxes: Vec<Box3D> = (0..300)
+        .map(|_| {
+            let s = rng.f64(1.0..20.0);
+            let x = rng.f64(0.0..900.0);
+            let y = rng.f64(0.0..900.0);
+            let z = rng.f64(0.0..900.0);
+            Box3D::new(x, y, z, x + s, y + s, z + s)
+        })
+        .collect();
+    let scene = build(boxes);
+    let bytes = scene.index.to_bytes();
+    let view = Index3DView::from_bytes(&bytes).unwrap();
+    let mut workspace = PickWorkspace::new();
+    for target in [[450.0, 450.0, 450.0], [100.0, 800.0, 300.0]] {
+        let (ray, dir) = ray_toward(target);
+        let fr = pixel_frustum(ORIGIN, dir, 0.3_f64.to_radians(), NEAR, FAR);
+        let expected = scene.index.search_pick(fr, ray, usize::MAX);
+        assert_eq!(
+            scene
+                .index
+                .search_pick_with(fr, ray, usize::MAX, &mut workspace),
+            expected.as_slice()
+        );
+        assert_eq!(workspace.results(), expected.as_slice());
+        assert_eq!(
+            view.search_pick_with(fr, ray, usize::MAX, &mut workspace),
+            expected.as_slice()
+        );
+        // A reused buffer must not leak the previous query into this one:
+        // a bounded pick leaves exactly its budget behind, not a longer tail.
+        let capped = scene.index.search_pick_with(fr, ray, 1, &mut workspace);
+        assert_eq!(capped.len(), 1.min(expected.len()));
+        assert_eq!(capped.first(), expected.first());
+    }
 }
 
 #[test]

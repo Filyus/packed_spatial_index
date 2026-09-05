@@ -21,7 +21,7 @@ the method for each need; the notes after it explain the reasoning.
 | The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `visit_neighbors` — same alloc-vs-buffer choice as above. `neighbors_within` adds a distance cap to the *k*; when there is no *k*, use `search_within` below, which skips the heap and the sort | sorting search results by distance |
 | The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
 | Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `visit_ordered` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
-| The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `visit_pick` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
+| The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `visit_pick` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express; `search_pick_into` / `search_pick_with` reuse the buffers | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
@@ -342,6 +342,42 @@ if let Some(hit) = hits.first() {
 # let _ = hits;
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
+
+#### Where the narrow phase stops
+
+The keys are *lower bounds*, and that decides the stopping rule — which is not
+"take the first candidate whose geometry the ray actually hits". A box is
+entered at or before the geometry inside it, so a candidate further down the
+stream can still hold a nearer hit, as long as its `entry_t` is below the best
+exact `t` found so far. The rule is therefore:
+
+```rust,ignore
+let mut best: Option<(usize, f64)> = None;
+index.visit_pick(pixel, ray, |hit| {
+    // Every remaining candidate enters no earlier than this one, so once the
+    // box order passes the best exact hit, nothing left can beat it.
+    if best.is_some_and(|(_, t)| hit.entry_t > t) {
+        return ControlFlow::Break(());
+    }
+    if let Some(t) = exact_test(hit.index, ray) {
+        if best.is_none_or(|(_, b)| t < b) {
+            best = Some((hit.index, t));
+        }
+    }
+    ControlFlow::Continue(())
+});
+```
+
+Boxes the ray misses carry `entry_t == f64::INFINITY`, so they end the scan on
+their own the moment a real hit exists. Picking the *nearest to the cursor*
+instead of the frontmost is the same loop with `distance_squared` in place of
+`entry_t`. This is where picking actually pays: the break keeps the exact tests
+down to the few candidates that can still win, rather than the whole frustum.
+
+For a pick that runs per click — or per pixel of a lasso — `search_pick_with`
+takes a `PickWorkspace` and reuses both the result buffer and the priority
+queue, so only the first query allocates. `search_pick_into` reuses the results
+alone.
 
 `Ray3D::distance_squared_to_box` — the exact, allocation-free lower bound the
 key uses for boxes the ray misses — is public, so a custom pick over another

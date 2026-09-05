@@ -166,7 +166,7 @@ pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
 pub use neighbors::{
     EARTH_RADIUS_M, NeighborWorkspace, haversine_distance_2d, view_depth_2d, view_depth_3d,
 };
-pub use ordered::PickHit3D;
+pub use ordered::{PickHit3D, PickWorkspace};
 pub use persistence::{FileMetadata, LoadError, PayloadError, read_metadata};
 pub use polygon::ConvexPolygon2D;
 pub use ray::{Ray2D, Ray3D};

@@ -13,8 +13,9 @@ use crate::{
     ServerError, ServerState,
     query::{
         AntiJoinParams, ClosestPairParams, CollectionDetail, CollectionSummary, ComponentsParams,
-        JoinParams, NearestParams, SearchParams, anti_join_response, closest_pair_response,
-        components_response, items_response, join_response, nearest_response, search_response,
+        JoinParams, NearestParams, PickParams, SearchParams, anti_join_response,
+        closest_pair_response, components_response, items_response, join_response,
+        nearest_response, pick_response, search_response,
     },
 };
 
@@ -65,6 +66,10 @@ pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router
         // spherical metric. See `nearest_response` for how the metric is
         // chosen.
         .route("/collections/{id}/nearest", get(nearest))
+        // The click's ordered broad phase over a 3D collection: a ray plus a
+        // pixel frustum, candidates ordered on-ray-first near-to-far. See
+        // `pick_response`.
+        .route("/collections/{id}/pick", get(pick))
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(route_not_found)
         // Layered outside the fallbacks so a 404 or 405 is logged too.
@@ -327,6 +332,20 @@ async fn nearest(
         .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
     Ok(Json(
         query_blocking(move || nearest_response(&collection, params)).await?,
+    ))
+}
+
+/// The click's ordered broad phase. See `pick_response`.
+async fn pick(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    ValidQuery(params): ValidQuery<PickParams>,
+) -> Result<Json<crate::query::PickResponse>, ServerError> {
+    let collection = state
+        .collection(&id)
+        .ok_or_else(|| ServerError::CollectionNotFound(id.clone()))?;
+    Ok(Json(
+        query_blocking(move || pick_response(&collection, params)).await?,
     ))
 }
 

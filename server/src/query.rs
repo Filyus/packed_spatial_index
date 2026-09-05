@@ -1,7 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::ops::ControlFlow;
 
-use packed_spatial_index::{EARTH_RADIUS_M, Point2D, Point3D, haversine_distance_2d};
+use packed_spatial_index::{EARTH_RADIUS_M, Point2D, Point3D, Ray3D, haversine_distance_2d};
 use packed_spatial_index_geo::geo_types::{Coord, LineString, MultiPolygon, Polygon};
 use packed_spatial_index_geo::{
     Box2D, Box3D, CoordinateDims, CrsInfo, EdgeModel, FeatureRef, Frustum3D, GeoArtifactIndex,
@@ -1172,6 +1172,199 @@ pub fn nearest_response(
         number_returned: items.len(),
         items,
     })
+}
+
+
+/// Query parameters accepted by `/collections/{id}/pick`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickParams {
+    /// The ray origin as `x,y,z`, in the collection's coordinates — the
+    /// camera position (the frustum's apex). Required.
+    #[serde(default)]
+    pub origin: Option<String>,
+    /// The ray direction as `dx,dy,dz`; need not be normalized, must not be
+    /// zero. Required.
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// The click's angular tolerance: the pixel frustum's half-angle in
+    /// degrees, `(0, 90)`. Required — a pick with no tolerance is a raycast,
+    /// not this endpoint.
+    #[serde(default, rename = "halfAngle")]
+    pub half_angle: Option<String>,
+    /// Distance along the ray where the frustum starts, in coordinate units.
+    /// Defaults to `0`.
+    #[serde(default)]
+    pub near: Option<String>,
+    /// How many candidates, 1..=10 000. Defaults to `1` — the click's answer.
+    #[serde(default)]
+    pub limit: Option<String>,
+}
+
+/// One `/pick` answer.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickItem {
+    /// Entry ordinal in the collection.
+    pub entry: usize,
+    /// Squared perpendicular distance from the ray to the entry's box, in
+    /// direction-length units squared; `0.0` when the ray pierces the box.
+    /// A lower bound on the distance to the entry's real geometry.
+    pub distance_squared: f64,
+    /// Ray entry parameter of the box, in direction-length units
+    /// ([`f64::INFINITY`] when the ray misses the box). A lower bound on the
+    /// `t` of the geometry inside.
+    pub entry_t: f64,
+}
+
+/// `/collections/{id}/pick` response envelope.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickResponse {
+    /// Collection searched.
+    pub collection_id: String,
+    /// Effective ray origin.
+    pub origin: Vec<f64>,
+    /// Effective ray direction, as given.
+    pub dir: Vec<f64>,
+    /// Effective half-angle, in degrees.
+    pub half_angle_deg: f64,
+    /// Effective near distance.
+    pub near: f64,
+    /// Requested candidate count.
+    pub limit: usize,
+    /// Number of candidates returned.
+    pub number_returned: usize,
+    /// Candidates in pick order: boxes the ray pierces first (near-to-far),
+    /// then boxes it only grazes by increasing perpendicular distance.
+    pub items: Vec<PickItem>,
+}
+
+/// `/collections/{id}/pick`: the click's ordered broad phase over a 3D
+/// collection. See [`pick_response`].
+pub fn pick_response(
+    collection: &Collection,
+    params: PickParams,
+) -> Result<PickResponse, ServerError> {
+    let manifest = collection.manifest();
+    if !matches!(manifest.dims, CoordinateDims::Xyz | CoordinateDims::Xyzm) {
+        return Err(ServerError::UnsupportedQuery(format!(
+            "collection `{}` is 2D; a pick is a 3D question (a ray and a pixel frustum)",
+            collection.id()
+        )));
+    }
+    let origin = parse_point(params.origin.as_deref(), 3)?;
+    let dir = parse_dir(params.dir.as_deref())?;
+    let half_angle_deg = parse_half_angle(params.half_angle.as_deref())?;
+    let near = match params.near.as_deref() {
+        None => 0.0,
+        Some(raw) => raw
+            .parse::<f64>()
+            .map_err(|_| ServerError::InvalidFrustum(format!("`{raw}` is not a number")))?,
+    };
+    let limit = match params.limit.as_deref() {
+        None => 1,
+        Some(raw) => parse_limit(raw)?,
+    };
+
+    let ray = Ray3D::new(
+        Point3D::new(origin[0], origin[1], origin[2]),
+        dir[0],
+        dir[1],
+        dir[2],
+        f64::INFINITY,
+    );
+    let half_angle = half_angle_deg.to_radians();
+    let frustum = Frustum3D::try_from_ray(ray, half_angle, near)
+        .map_err(|e| ServerError::InvalidFrustum(e.to_string()))?;
+
+    let JoinIndex::D3(index) = collection.join_index()? else {
+        return Err(ServerError::UnsupportedQuery(
+            "a pick needs a 3D collection".to_string(),
+        ));
+    };
+    let items: Vec<PickItem> = index
+        .search_pick(frustum, ray, limit)
+        .into_iter()
+        .map(|hit| PickItem {
+            entry: hit.index,
+            distance_squared: hit.distance_squared,
+            entry_t: hit.entry_t,
+        })
+        .collect();
+
+    Ok(PickResponse {
+        collection_id: collection.id().to_owned(),
+        origin,
+        dir,
+        half_angle_deg,
+        near,
+        limit,
+        number_returned: items.len(),
+        items,
+    })
+}
+
+/// Three finite numbers, not all zero — a ray direction.
+fn parse_dir(raw: Option<&str>) -> Result<Vec<f64>, ServerError> {
+    let raw = raw.ok_or_else(|| {
+        ServerError::InvalidQuery("dir is required: dx,dy,dz of the pick ray".to_string())
+    })?;
+    let mut dir = Vec::with_capacity(3);
+    for part in raw.split(',') {
+        let part = part.trim();
+        let value: f64 = part
+            .parse()
+            .map_err(|_| ServerError::InvalidQuery(format!("`{part}` is not a number")))?;
+        if !value.is_finite() {
+            return Err(ServerError::InvalidQuery(format!("`{part}` is not finite")));
+        }
+        dir.push(value);
+    }
+    if dir.len() != 3 {
+        return Err(ServerError::InvalidQuery(format!(
+            "dir must have 3 components (dx,dy,dz), got {}",
+            dir.len()
+        )));
+    }
+    if dir.iter().all(|&d| d == 0.0) {
+        return Err(ServerError::InvalidQuery(
+            "dir must not be all zeros: a zero direction is a point, not a ray".to_string(),
+        ));
+    }
+    Ok(dir)
+}
+
+/// The click's angular tolerance in degrees, `(0, 90)`.
+fn parse_half_angle(raw: Option<&str>) -> Result<f64, ServerError> {
+    let raw = raw.ok_or_else(|| {
+        ServerError::InvalidFrustum(
+            "halfAngle is required: the pixel frustum's half-angle in degrees, in (0, 90),              e.g. halfAngle=0.5"
+                .to_string(),
+        )
+    })?;
+    let value: f64 = raw
+        .parse()
+        .map_err(|_| ServerError::InvalidFrustum(format!("`{raw}` is not a number")))?;
+    if !(value > 0.0 && value < 90.0) || !value.is_finite() {
+        return Err(ServerError::InvalidFrustum(format!(
+            "halfAngle must be in (0, 90) degrees, got `{raw}`"
+        )));
+    }
+    Ok(value)
+}
+
+/// `/pick`'s candidate count: optional, defaults to 1.
+fn parse_limit(raw: &str) -> Result<usize, ServerError> {
+    let limit: usize = raw
+        .parse()
+        .map_err(|_| ServerError::InvalidLimit(format!("`{raw}` is not a number")))?;
+    if limit == 0 || limit > MAX_LIMIT {
+        return Err(ServerError::InvalidLimit(format!(
+            "limit must be between 1 and {MAX_LIMIT}"
+        )));
+    }
+    Ok(limit)
 }
 
 fn parse_point(raw: Option<&str>, dims: usize) -> Result<Vec<f64>, ServerError> {

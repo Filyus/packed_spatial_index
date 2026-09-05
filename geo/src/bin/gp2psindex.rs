@@ -21,10 +21,10 @@ use packed_spatial_index_geo::{
     FeatureRef, FeatureRows, Frustum3D, GeoArtifact, GeoArtifactIndex, GeoArtifactIndex2D,
     GeoArtifactIndex3D, GeoArtifactManifest, GeoDiscovery, GeoError, GeoQuery2D, GeoQuery3D,
     GeometryProfile, GeometryReadMode, GeometryScan, GeometrySelector, Index2D, Index3D,
-    IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan,
-    PrefixIndexPolicy, PropertyProjection, RangeReader, ScanRequest, SliceReader, SpatialPredicate,
-    StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity, open_geo_index,
-    open_geoparquet,
+    IndexDimsRequest, InspectRequest, NonPlanarExactPolicy, NullPolicy, PayloadPlan, Point3D,
+    PrefixIndexPolicy, PropertyProjection, RangeReader, Ray3D, ScanRequest, SliceReader,
+    SpatialPredicate, StoragePrecision, ValidateRequest, ValidationReport, ValidationSeverity,
+    open_geo_index, open_geoparquet,
 };
 #[cfg(feature = "geojson")]
 use packed_spatial_index_geo::{convert_geojson_stream, open_geojson};
@@ -115,6 +115,13 @@ usage:
       [--allow-source-mismatch]
       (against a 3D index: --bbox takes xmin,ymin,zmin,xmax,ymax,zmax, or
        --frustum takes 24 numbers -- six inward-pointing planes as a,b,c,d;
+       --pick takes ox,oy,oz,dx,dy,dz -- a click's ray, whose candidates it
+       prints in \"on the ray first, near-to-far\" order as NDJSON
+       {\"entry\":i,\"distanceSquared\":d,\"entryT\":t}; needs --half-angle deg,
+       the pixel frustum's tolerance in (0,90); --limit k stops after k
+       candidates. --pick is an index-entry question, so it refuses
+       --count/--estimate/--offset/--exact/--predicate and prints no
+       features from the source.
        --radius/--polygon/--exact/--predicate/--treat-nonplanar-as-planar
        are 2D-only.
        --count and --limit/--offset describe the index's own match set, so
@@ -889,6 +896,8 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "--radius",
         "--polygon",
         "--frustum",
+        "--pick",
+        "--half-angle",
         "--exact",
         "--predicate",
         "--treat-nonplanar-as-planar",
@@ -914,6 +923,11 @@ fn query_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let bytes = std::fs::read(index_path)?;
+
+    if let Some(pick_raw) = parsed.option("--pick")? {
+        return pick_cmd(&parsed, &bytes, &pick_raw);
+    }
+
     let artifact = open_geo_index(SliceReader::new(bytes))?;
     let manifest = artifact.manifest().clone();
 
@@ -1094,6 +1108,111 @@ fn query_cmd_2d<R: RangeReader>(
         .into_iter()
         .map(|m| m.feature)
         .collect())
+}
+
+/// `query --pick`: the click's ordered broad phase over a 3D artifact.
+///
+/// The artifact is loaded through the core owned loader (the container is
+/// already in memory), because pick is a best-first descent: the streaming
+/// readers answer it per node with a read, the same reason they carry no
+/// `search_ordered`. Prints one NDJSON line per candidate, in pick order.
+fn pick_cmd(
+    parsed: &Parsed<'_>,
+    bytes: &[u8],
+    pick_raw: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for flag in ["--count", "--estimate", "--exact"] {
+        if parsed.flag(flag) {
+            return Err(format!("--pick is an index-entry question; drop {flag}").into());
+        }
+    }
+    for flag in [
+        "--bbox",
+        "--frustum",
+        "--radius",
+        "--polygon",
+        "--offset",
+        "--predicate",
+    ] {
+        if parsed.option(flag)?.is_some() {
+            return Err(format!("--pick is an index-entry question; drop {flag}").into());
+        }
+    }
+    let (origin, dir) = parse_pick_ray(pick_raw)?;
+    let half_angle_deg = parse_half_angle(parsed.option("--half-angle")?.as_deref())?;
+    let max_results = parsed
+        .option("--limit")?
+        .map(parse_page_number)
+        .transpose()?;
+    let ray = Ray3D::new(
+        Point3D::new(origin[0], origin[1], origin[2]),
+        dir[0],
+        dir[1],
+        dir[2],
+        f64::INFINITY,
+    );
+    let frustum = Frustum3D::try_from_ray(ray, half_angle_deg.to_radians(), 0.0)
+        .map_err(|e| format!("--pick: {e}"))?;
+    let index = Index3D::from_bytes(bytes)
+        .map_err(|e| format!("the artifact did not load as a 3D index: {e}"))?;
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    for hit in index.search_pick(frustum, ray, max_results.unwrap_or(usize::MAX)) {
+        writeln!(
+            out,
+            "{{\"entry\":{},\"distanceSquared\":{},\"entryT\":{}}}",
+            hit.index, hit.distance_squared, hit.entry_t
+        )?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// Parse `--pick`: six numbers, `ox,oy,oz,dx,dy,dz`, direction not all zero.
+fn parse_pick_ray(raw: &str) -> Result<([f64; 3], [f64; 3]), Box<dyn std::error::Error>> {
+    let numbers: Vec<f64> = raw
+        .split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<f64>()
+                .map_err(|_| format!("--pick value `{part}` is not a number").into())
+                .and_then(|v| {
+                    if v.is_finite() {
+                        Ok(v)
+                    } else {
+                        Err(format!("--pick value `{part}` is not finite").into())
+                    }
+                })
+        })
+        .collect::<Result<Vec<f64>, Box<dyn std::error::Error>>>()?;
+    if numbers.len() != 6 {
+        return Err(format!(
+            "--pick expects 6 comma-separated numbers (ox,oy,oz,dx,dy,dz), got {}",
+            numbers.len()
+        )
+        .into());
+    }
+    let dir = [numbers[3], numbers[4], numbers[5]];
+    if dir.iter().all(|&d| d == 0.0) {
+        return Err(
+            "--pick direction must not be all zeros: a zero direction is a point, not a ray".into(),
+        );
+    }
+    Ok(([numbers[0], numbers[1], numbers[2]], dir))
+}
+
+/// Parse `--half-angle`: the pixel frustum's tolerance in degrees, `(0, 90)`.
+fn parse_half_angle(raw: Option<&str>) -> Result<f64, Box<dyn std::error::Error>> {
+    let raw = raw.ok_or(
+        "--half-angle is required with --pick: the pixel frustum's half-angle in degrees,          in (0, 90), e.g. --half-angle 0.5",
+    )?;
+    let value: f64 = raw
+        .parse()
+        .map_err(|_| format!("`{raw}` is not a number"))?;
+    if !(value > 0.0 && value < 90.0) || !value.is_finite() {
+        return Err(format!("--half-angle must be in (0, 90) degrees, got `{raw}`").into());
+    }
+    Ok(value)
 }
 
 /// Parse the 2D query geometry from `--bbox`, `--radius` or `--polygon`.
@@ -1882,6 +2001,8 @@ fn option_takes_value(arg: &str) -> bool {
             | "--radius"
             | "--polygon"
             | "--frustum"
+            | "--pick"
+            | "--half-angle"
             | "--limit"
             | "--offset"
             | "--prefix-index"

@@ -6,6 +6,20 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
+- `gp2psindex query --pick ox,oy,oz,dx,dy,dz --half-angle deg` on a 3D
+  artifact: the click's ordered broad phase, the CLI face of the core crate's
+  `search_pick`. Prints one NDJSON line per candidate —
+  `{"entry":i,"distanceSquared":d,"entryT":t}` — in pick order: boxes the ray
+  pierces first (near-to-far), then boxes it only grazes by increasing
+  perpendicular distance. `--limit k` stops the traversal after `k`
+  candidates. The artifact is loaded through the core owned loader (the bytes
+  are already in memory) because pick is a best-first descent, the same reason
+  the streaming readers carry no `search_ordered`; refused with
+  `--count`/`--estimate`/`--offset`/`--exact`/`--predicate` and every query
+  shape.
+
+### API
+
 - `GeoArtifactIndex2D::estimate_entries` / `GeoArtifactIndex3D::estimate_entries`
   and `directory_floor`, the geo faces of the core crate's selectivity
   estimation: an exact `[lower, upper]` bracket on how many index entries a

@@ -27,14 +27,24 @@ All notable changes to this crate are documented here.
   only on the candidates that can still win. Measured on 200 000 boxes with a
   0.05° pixel half-angle, `max_results = 1` costs 5.4 µs, ~2.2× a full `search`
   plus a sort on the same key; past k ≈ 10 in a dense region the heap loses to
-  collect-and-sort, as with every ordered query. `Frustum3D::try_from_ray(ray, half_angle, near)` builds the pixel
-  frustum from the click's central ray and its angular tolerance. Building the
-  key caught a latent shape of the ray-to-box distance: on the infinite-`t`
-  piece the axis probe evaluated `origin + inf * 0.0` for a zero-direction
-  axis, and the resulting NaN read as "inside the slab", silently dropping the
-  perpendicular offset — the probe now stays finite, where the piece's active
-  axis set is constant. Wide-frustum depth ordering
+  collect-and-sort, as with every ordered query. Wide-frustum depth ordering
   needs nothing new — `search_ordered` with `view_depth_3d` already serves it.
+- Added `Frustum3D::try_from_ray(ray, half_angle, near)`: the pixel frustum of
+  a click, built from the ray and its angular tolerance — four side planes
+  through the ray origin at the half-angle, near/far from the near distance
+  and the ray's own `max_distance`. The half-angle is the cone's angular
+  *radius*: a box at depth `t` is inside when its perpendicular offset stays
+  under `t * tan(half_angle)`, so from the pixel's full angular size `delta`
+  pass `half_angle = delta / 2` (the docs carry the projection-matrix
+  conversion too). The direction need not be normalized, and a ray parallel
+  to the reference axis still gets a perpendicular frame. Building it caught
+  the one latent shape of `Ray3D::distance_squared_to_box`: with an infinite
+  `max_distance` the quadratic-piece walk probed the axis set at the midpoint
+  `infinity`, where `origin + inf * 0.0` is NaN for a zero-direction axis,
+  and the NaN compared as inside its slab — the perpendicular offset
+  vanished and an off-ray point box scored distance 0. The probe now stays
+  finite (the active axis set is constant across a piece), pinned by a
+  regression test.
 - Added the distance join (ε-join): `join_within` / `join_within_with` report
   every pair `(i, j)` whose boxes lie within `max_distance` of each other — the
   "within 500 m" question `join` could only answer as "intersecting, filter
@@ -270,6 +280,12 @@ All notable changes to this crate are documented here.
   distance — the join family's member that needs no bound, over the same
   cached owned indexes. `pair` is `null` when there is nothing to report;
   a 2D/3D mismatch is 422.
+- Added `GET /collections/{id}/pick?origin=&dir=&halfAngle=&near=&limit=`: the
+  click's ordered broad phase, the server face of the core `search_pick`.
+  Runs over the cached owned 3D index and returns the candidates with both key
+  components; `limit` defaults to `1`, the click's answer. A 2D collection is
+  `unsupported_query`; a zero direction, a half-angle outside `(0, 90)` and an
+  out-of-range `limit` are 400s.
 
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 

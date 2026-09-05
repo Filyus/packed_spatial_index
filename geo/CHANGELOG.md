@@ -17,9 +17,6 @@ All notable changes to `packed_spatial_index_geo` are documented here.
   the streaming readers carry no `search_ordered`; refused with
   `--count`/`--estimate`/`--offset`/`--exact`/`--predicate` and every query
   shape.
-
-### API
-
 - `GeoArtifactIndex2D::estimate_entries` / `GeoArtifactIndex3D::estimate_entries`
   and `directory_floor`, the geo faces of the core crate's selectivity
   estimation: an exact `[lower, upper]` bracket on how many index entries a

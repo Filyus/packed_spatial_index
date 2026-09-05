@@ -6,286 +6,140 @@ All notable changes to this crate are documented here.
 
 ### Search
 
-- Added the ordered pick: `search_pick(region, ray, max_results)` —
-  with `search_pick_into`, `search_pick_with` (a reusable `PickWorkspace`) and
-  the streaming `visit_pick` — returns a region's candidates in the order a
-  click means, on `Index3D` and `Index3DView`. The key is lexicographic:
-  squared perpendicular distance from `ray` to the item's box first, ties by
-  the ray's entry `t`, so every box the ray pierces comes before every box it
-  only grazes, and the pierced ones run near-to-far. A single scalar cannot
-  express that — distance alone ties every pierced box at zero, depth alone
-  puts a box grazing the pixel edge ahead of the box on the ray. Each
-  `PickHit3D` carries both components. The perpendicular component is the new
-  public `Ray3D::distance_squared_to_box`: the exact, allocation-free minimum
-  of the convex piecewise-quadratic point-to-box distance along the segment,
-  solved in closed form over the slab breakpoints rather than searched. Both
-  components are lower bounds on the geometry inside the box, which is what
-  makes the best-first descent sound and what sets the narrow phase's stopping
-  rule — not "take the first candidate the ray really hits", but "stop when the
-  next candidate's `entry_t` passes the best exact `t`" (the guide carries the
-  loop). That break, not the traversal, is where picking pays: exact tests run
-  only on the candidates that can still win. Measured on 200 000 boxes with a
-  0.05° pixel half-angle, `max_results = 1` costs 5.4 µs, ~2.2× a full `search`
-  plus a sort on the same key; past k ≈ 10 in a dense region the heap loses to
-  collect-and-sort, as with every ordered query. Wide-frustum depth ordering
-  needs nothing new — `search_ordered` with `view_depth_3d` already serves it.
+- Added the ordered pick: `search_pick(region, ray, max_results)` (plus
+  `search_pick_into`, `search_pick_with` with a reusable `PickWorkspace`, and
+  the streaming `visit_pick`) on `Index3D` and `Index3DView`. It returns a
+  region's candidates in the order a click means: squared perpendicular
+  distance from `ray` to the item's box first, ties by the ray's entry `t` —
+  every box the ray pierces before every box it only grazes, the pierced ones
+  near-to-far. A single scalar cannot express that order: distance alone ties
+  every pierced box at zero, depth alone puts a box grazing the pixel edge
+  ahead of the box on the ray. Each `PickHit3D` carries both components; both
+  are lower bounds on the geometry inside the box, which is what sets the
+  narrow phase's stopping rule — stop at the first candidate whose `entry_t`
+  passes the best exact `t` (the guide carries the loop). The perpendicular
+  component is the new public `Ray3D::distance_squared_to_box`. Measured on
+  200 000 boxes: one click costs 5.4 µs, ~2.2× a full `search` plus a sort on
+  the same key, and it is the only variant with the reference order.
 - Added `Frustum3D::try_from_ray(ray, half_angle, near)`: the pixel frustum of
-  a click, built from the ray and its angular tolerance — four side planes
-  through the ray origin at the half-angle, near/far from the near distance
-  and the ray's own `max_distance`. The half-angle is the cone's angular
-  *radius*: a box at depth `t` is inside when its perpendicular offset stays
-  under `t * tan(half_angle)`, so from the pixel's full angular size `delta`
-  pass `half_angle = delta / 2` (the docs carry the projection-matrix
-  conversion too). The direction need not be normalized, and a ray parallel
-  to the reference axis still gets a perpendicular frame. Building it caught
-  the one latent shape of `Ray3D::distance_squared_to_box`: with an infinite
-  `max_distance` the quadratic-piece walk probed the axis set at the midpoint
-  `infinity`, where `origin + inf * 0.0` is NaN for a zero-direction axis,
-  and the NaN compared as inside its slab — the perpendicular offset
-  vanished and an off-ray point box scored distance 0. The probe now stays
-  finite (the active axis set is constant across a piece), pinned by a
-  regression test.
-- Added the distance join (ε-join): `join_within` / `join_within_with` report
-  every pair `(i, j)` whose boxes lie within `max_distance` of each other — the
+  a click, built from the ray and its angular tolerance. The half-angle is the
+  cone's angular radius (a box at depth `t` is inside when its perpendicular
+  offset stays under `t * tan(half_angle)`; from the pixel's full angular size
+  `delta` pass `delta / 2`). The direction need not be normalized. Building it
+  caught the one latent shape of `distance_squared_to_box` — with an infinite
+  `max_distance` a NaN midpoint read as "inside the slab" and dropped the
+  perpendicular offset — fixed and pinned by a regression test.
+- Added the distance join: `join_within` / `join_within_with` report every
+  pair `(i, j)` whose boxes lie within `max_distance` of each other — the
   "within 500 m" question `join` could only answer as "intersecting, filter
-  yourself". The distance is box-to-box Euclidean (`Box2D::distance_to_box` /
-  `Box3D::distance_to_box`, now public with the `sqrt`-free
-  `distance_squared_to_box`): zero when the boxes overlap, edges inclusive, so
-  `max_distance = 0.0` reproduces `join` exactly, and a negative or NaN `max_distance`
-  matches nothing. The traversal is the join's dual-tree descent with the prune
-  test swapped for the distance (two node boxes farther apart than `max_distance`
-  cannot hold a closer pair — items sit inside their node boxes, so shrinking a
-  box only pushes it farther), plus a leaf fast path: when the *farthest-corner*
-  distance from a leaf to a whole subtree is within `max_distance`, the subtree is
-  emitted as a range without per-item tests. The plain box distance would not
-  do there — items inside a passing node box can be farther than the node box
-  is. On every type that carries `join`: the owned `f64` indexes, their views,
-  and the SIMD indexes and views (streaming and `f32` carry no join at all, so
-  nothing new is missing there). Measured on 100 000 × 100 000 uniform unit
-  boxes, pinned, interleaved on a quiet machine: at `max_distance = 2` (324 k
-  pairs) `join_within` is ~2–2.5× faster than the workaround of joining two
-  indexes of `max_distance`-inflated boxes and filtering the pairs by exact
-  distance, at `max_distance = 6` (1.6 M pairs) ~3× in 2D and ~2–3× in 3D — and
-  the workaround needs the second, inflated index built and kept around. Against plain `join` — the same pairs with the predicate
-  swapped — the branchless per-axis `max` distance test measures at or below
-  the overlap test on uniform data (`join_within(0.0)` runs 0.5–1.0× of
-  `join`, both dimensions) and above it on clustered data (1.1–2.9×, worst
-  where almost nothing matches).
-  The family also ships the two folds the pair stream implies:
-  `anti_join_within` / `anti_join_within_with` report the items of `self`
-  with no partner within `max_distance` (one pruned search into `other` per item),
-  and `self_join_within_components` labels every item with the smallest item
-  id in its component of the `max_distance`-proximity graph, an isolated item being
-  its own label. The labels identify components; they are not clusters —
-  distance proximity is not transitive, so whether a chained component should
-  stay merged is the caller's call, and the method reports exactly what the
-  graph defines.
-
-- Added the closest pair: `closest_pair(&other)` returns the nearest pair of
-  items between two indexes as `(item_of_self, item_of_other, distance)`, and
-  `self_closest_pair()` the nearest pair of *distinct* items within one, or
-  `None` when there is no pair to report. The one-answer end of the distance
-  family — where `join_within` needs a bound and reports everything inside it,
-  this needs none. The distance is between boxes, zero when they overlap, so
-  it is a broad phase like everything else here; which pair is reported among
-  several at the same distance is traversal order. On the same eight types that
-  carry `join_within`.
-  A different traversal from the joins: a best-first frontier of *node pairs*
-  keyed by the pair's box distance, which is a lower bound on any item pair
-  beneath it, so the first time the head is no closer than the best pair found,
-  everything still queued is dropped unexamined. That exit only bites once the
-  bound is finite, so the descent seeds it with a real pair first — sixteen
-  items walked greedily down the other tree for the cross form, a sweep of
-  adjacent leaf-array entries for the self form, where spatial sort order
-  already puts near things near — both stopping at the first overlapping pair,
-  which cannot be beaten.
-  Measured on 1 M boxes against the workaround the API otherwise forces (one
-  `neighbors_of_box(item, 1)` per item, keeping the minimum), pinned to one
-  core, arm order alternated per round, ten paired rounds, control arm
-  0.98–1.03×: on uniform points with no overlapping pair — the case with no
-  early answer to find — `closest_pair` runs 386 ms against 9.2× that for the
-  loop, and `self_closest_pair` 68 ms at 62×. On clustered box data, where some
-  pair is zero apart, the seed usually finds it outright and the query returns
-  in microseconds regardless of index size. The seed is what makes the first
-  case tolerable: without it the same query measured 1.58 s and only 2.3× the
-  loop.
-
-- Added selectivity estimation: `estimate_count(query, stop_level)` on every
-  in-memory `f64` index and view (owned, byte view, SIMD, SIMD view, 2D and
-  3D) and on the four streaming readers, returning an `Estimate` with an
-  exact `[lower, upper]` bracket on the window's hit count and a point
-  estimate inside it. A packed tree is its own histogram: a node at level
-  `L` covers `node_size^L` leaves by construction, so nodes the window
-  contains count whole, nodes it misses drop, and nodes it cuts are expanded
-  down to `stop_level` and then scored by the fraction of their box inside
-  the window. `stop_level = 0` reproduces `count` exactly; descending never
-  widens the bracket; `nodes_tested` is the whole cost. On the streaming
-  readers the levels the directory caches cost no reads, so an estimate at
-  or above the new `directory_floor()` is a local answer to whether a query
-  is worth its round trips, before the first is paid; below the floor each
-  level is one coalesced gather charged to the read budget like a search.
+  yourself". The distance is box-to-box Euclidean
+  (`Box2D::distance_to_box` / `Box3D::distance_to_box`, now public): zero when
+  the boxes overlap, edges inclusive, so `max_distance = 0.0` reproduces
+  `join` exactly. The traversal is the join's dual-tree descent with the
+  distance as the prune test, plus a whole-subtree fast path where even the
+  farthest corner is within the bound. Two folds ship with the pair stream:
+  `anti_join_within` (the items with no partner) and
+  `self_join_within_components` (labels of the proximity graph — components,
+  not clusters: proximity is not transitive). On every type that carries
+  `join`. Measured 2–3× the grow-both-indexes-and-filter workaround.
+- Added the closest pair: `closest_pair(&other)` between two indexes and
+  `self_closest_pair()` within one — the one-answer end of the distance
+  family, with no bound to guess. A best-first frontier of node pairs keyed by
+  their box distance (a lower bound on any pair beneath), seeded with a real
+  pair so the descent can stop; on clustered data the seed usually settles the
+  query in microseconds. Broad phase like everything here: the distance is
+  between boxes.
+- Added selectivity estimation: `estimate_count(query, stop_level)` returns an
+  exact `[lower, upper]` bracket on a window's hit count plus a point
+  estimate, read from node boxes — a packed tree is its own histogram. Nodes
+  the window contains count whole, nodes it misses drop, cut nodes expand to
+  `stop_level` and score by their covered fraction; `stop_level = 0`
+  reproduces `count` exactly. On every in-memory `f64` index and view and on
+  the streaming readers, where the cached directory levels cost no reads — an
+  estimate at or above `directory_floor()` answers "is this query worth its
+  round trips" before the first one is paid.
 - Added `Index2D::leaf_order` / `Index3D::leaf_order`: the item ids in the
-  order the packed tree stores them, which is the Hilbert order the builder
-  sorted by. The array was always there; the accessor exists because the
-  order is a resource of the built file — every m-th entry is a spatially
-  stratified sample, a prefix covers the extent coarsely, equal slices are
-  compact partitions — and the guide now says so ("The leaf order as a
-  resource"), together with two other notes on properties the index already
-  has: a 3D index over `(x, y, t)` makes the existing ray a constant-velocity
-  trajectory with `t` as the event time ("Time as an axis"), and the visited
-  counts the doc-hidden `_visited` query siblings return are the honest
-  diagnostic for whether a distribution suits a packed tree, since node counts
-  per level are fixed by construction.
+  order the packed tree stores them — the Hilbert order the builder sorted
+  by. The order is a resource of the built file (a stratified sample every
+  m-th entry, a coarse-covering prefix, compact equal slices); the guide now
+  says so, along with two other properties the index already has ("Time as an
+  axis", and the `_visited` queries as the honest performance diagnostic).
 - Added the radius query: `search_within` / `search_within_into` /
-  `visit_within` / `any_within` / `count_within` report every item whose box lies within
-  `max_distance` of a query box — "everything within 500 m of here", without
-  pretending to need a `k`. It is the single-index sibling of the ε-join, with
-  the same predicate and the same semantics: box-to-box Euclidean distance,
-  zero when the boxes overlap, edges inclusive, so `max_distance = 0.0` reproduces
-  `search` exactly and a negative or NaN `max_distance` matches nothing. A
-  degenerate query box (`min == max`, a point) works. Result order is traversal
-  order, as for `search`. On the eight types that carry `join_within`: the
-  owned `f64` indexes, their views, and the SIMD indexes and views (`f32` and
-  streaming carry no distance operations yet, so the family is still missing
-  there). The traversal is the shared region descent with the distance as the
-  prune test and the *farthest-corner* distance as the whole-subtree accept —
-  the plain node distance prunes but never fast-accepts, because items sit
-  anywhere inside their node box and shrinking a box only pushes it farther
-  from an external query.
-  Measured against the workaround it replaces — `search` on the
-  `max_distance`-inflated query box, then an exact distance filter over the
-  candidates — on 1 M boxes, pinned to one core, best-of-3 with the arm order
-  alternated per round, ten paired rounds after a discarded warm-up, control
-  arm 0.99–1.07× (spread ±0.1): at ~10 hits/query `search_within` is 1.25–1.5×
-  faster on uniform data and a wash on clustered point queries (0.99×), at
-  ~10² hits 2.7–5.3×, and at ~7×10³ hits 8.5–17.5×. The win is not
-  selectivity — the circle-to-square area ratio is only π/4 for a point query
-  — it is that the pruning happens inside the traversal instead of
-  materializing every candidate and gathering its geometry back to filter it.
-
+  `visit_within` / `any_within` / `count_within` report every item whose box
+  lies within `max_distance` of a query box — "everything within 500 m of
+  here", without pretending to need a `k`. Same distance semantics as the
+  ε-join; `max_distance = 0.0` reproduces `search` exactly; a degenerate
+  point query box works. Measured 1.25–1.5× the inflated-bbox workaround at
+  ~10 hits per query, and up to ~17× as the hit count grows.
 - Added `search_ordered(region, key, max_results, max_key)` (with `_into` and
-  `visit_ordered`) on the owned `f64` indexes and their views. It answers the
-  same set as `search` but emits it in nondecreasing order of a key you supply,
-  so `max_results` and the `max_key` cutoff end the traversal instead of
-  filtering its output. The key must be an admissible lower bound — the key of a
-  box never exceeds the key of any item inside it — exactly the contract
-  `neighbors_metric` already asks for, and the two now share one best-first
-  descent whose bound closure returns `None` to prune. The ready-made key is the
-  new `view_depth_2d` / `view_depth_3d`: paired with a `Frustum3D` it makes the
-  frustum query yield objects front to back, which is what a renderer with a
-  budget, a z-prepass, or an occlusion loop needs and what the unordered
-  `search` could only offer as "collect everything, then sort". Ordering
-  *everything* is still `search` plus a sort — the ordered form is for stopping
-  early. Measured on 1M boxes: a budget of 100 is ~186x faster than
-  search-then-sort, 10 000 still ~10x, while ordering the whole result is ~1.8x
-  slower. The query is on every in-memory frontend, SIMD and `f32` included,
-  though the descent is scalar everywhere (a heap pops one node at a time).
-  Streaming readers do not carry it, for the reason kNN and raycast are not
-  streamed: a heap cannot name the next node before the last one's boxes arrive,
-  so its reads are *dependent* where a level-order descent issues a whole level's
-  reads at once — measured, 4 waves against ~132 for a budget of 100. Bytes are
-  not the problem; latency is. A streamed top-k is still available without a
-  heap, by capping the region at a key threshold and sorting the few results —
-  the guide's "top-k over a stream" shows the recipe and measures it at 75 reads
-  against the 313 of the uncapped region query.
-
-- The SIMD and `f32` frontends answer region shapes. Triangles, convex polygons
-  and frusta used to be an `Index2D` / `Index3D` privilege: every SIMD and `f32`
-  entry point took a concrete `Box2D` / `Box3D`, so a renderer on `SimdIndex3D`
-  had to keep a second f64 index to ask for a frustum. All ten types now carry
-  `search_region` / `search_region_into` / `visit_region` / `any_region` /
-  `first_region` / `count_region`, named after the streaming readers that
-  already drew this exact distinction. The `Box` entry points are untouched and
-  stay the specialized fast path. On the `f32` types the shape is tested against
-  the stored box widened back to `f64` — it was rounded outward, so the answer
-  is the same conservative superset those types return everywhere else.
+  `visit_ordered`) on the owned `f64` indexes and their views, also on the
+  SIMD and `f32` frontends: the same set as `search`, emitted in nondecreasing
+  order of an admissible lower-bound key, so a budget ends the traversal
+  instead of filtering its output. The ready-made keys `view_depth_2d` /
+  `view_depth_3d` turn a frustum query into front-to-back render order.
+  Measured on 1M boxes: a budget of 100 is ~186× faster than
+  search-then-sort; ordering the whole result is ~1.8× slower. Streaming
+  readers do not carry it — a heap cannot name the next node before the last
+  one's boxes arrive (4 read waves against ~132 for a budget of 100); the
+  guide's "top-k over a stream" shows the threshold recipe instead.
+- The SIMD and `f32` frontends answer region shapes: triangles, convex
+  polygons and frusta are no longer an `Index2D` / `Index3D` privilege. All
+  ten types carry `search_region` / `search_region_into` / `visit_region` /
+  `any_region` / `first_region` / `count_region`; the `Box` entry points stay
+  the specialized fast path. On `f32` the shape is tested against the stored
+  box widened back to `f64` — the same conservative superset those types
+  return everywhere else.
 
 ### Performance
 
-- Made the per-axis box gap (`axis_gap`) branchless: two directed gaps and a
-  `max` instead of a two-way branch over separated-left / separated-right /
-  overlapping. The value is unchanged — only the codegen — and the winners are
-  the callers that run it per traversal step. Box kNN (`neighbors_of_box`)
-  computes a box-to-box distance at every node pop and leaf test; on 200 000
-  boxes, pinned, best-of-8, three interleaved rounds of the two builds
-  (paired per-round differences; within-build spread 1–2%):
-
-  | query    | branchy        | branchless     | paired Δ          |
-  | ---      | ---:           | ---:           | ---:              |
-  | 2D, k=1  | 0.91–0.93 µs   | 0.76–0.78 µs   | −16–17%           |
-  | 2D, k=10 | 2.19–2.29 µs   | 1.92–1.99 µs   | −12–13%           |
-  | 3D, k=1  | 1.45–1.50 µs   | 1.09–1.14 µs   | −24–26%           |
-  | 3D, k=10 | 4.00–4.10 µs   | 3.43–3.51 µs   | −12–14%           |
-
-  All twelve paired readings negative. Point kNN is untouched — it uses the
-  point distance, not the box gap. The change also collapses the box-to-box
-  distance to one implementation: the distance join's prune phase (previous
-  entry) had carried a private branchless copy to dodge the branchy form; it
-  now calls the public `Box2D::distance_squared_to_box` /
-  `Box3D::distance_squared_to_box` like box kNN does.
+- Made the per-axis box gap branchless (two directed gaps and a `max`). The
+  value is unchanged; the winners are the callers that run it per traversal
+  step — box kNN measures 12–26% faster across 2D/3D and k = 1..10 on 200 000
+  boxes, all twelve paired readings negative. The change also collapses the
+  box-to-box distance to one implementation: the distance join now calls the
+  public `Box2D::distance_squared_to_box` / `Box3D::distance_squared_to_box`
+  like box kNN does.
 
 ### Persistence
 
 - Owned indexes load interleaved artifacts. `Index2D::from_bytes` /
-  `Index3D::from_bytes` accepted only the SoA layout; the interleaved one —
-  each node's index stored next to its box, the streaming reader's
-  one-gather-per-level layout, and what the `geo` convert writes by default —
-  was rejected, so an interleaved artifact could not be loaded into an
-  in-memory index at all. The owned loaders now transpose it into the same
-  in-memory columns and answer identically (pinned by test across sizes,
-  including empty and single-item trees); SoA bytes load unchanged, and any
-  payload chunk is ignored exactly as before. Zero-copy views still require
-  SoA — their columns must alias the bytes as they lie — and the streaming
-  reader keeps its single-gather path; the transpose exists for the owned,
-  in-memory case, which is what the server's new distance join needs.
+  `Index3D::from_bytes` rejected the interleaved layout the `geo` convert
+  writes by default; the loaders now transpose it into the same in-memory
+  columns and answer identically (pinned by test across sizes). Zero-copy
+  views still require SoA — their columns must alias the bytes as they lie —
+  and the streaming reader keeps its single-gather path.
 
 ### Server
 
 - Added the distance join endpoint: `GET /collections/{id}/join/{other}`
   answers every pair of entries between two collections whose boxes lie within
-  `max_distance` — "which places are within 500 m of which roads", the relational
-  question a per-collection `/search` cannot express. Both artifacts load into
-  in-memory owned indexes on first use and stay cached (the core loader now
-  accepts the interleaved layout the convert writes by default); the join
-  itself is the measured tens-of-milliseconds dual-tree descent, so network
-  latency never enters the loop — the client pays one request plus the pair
-  download. `max_distance` is required, in coordinate units, inclusive (`0` answers
-  exactly the intersecting pairs; negative or NaN is rejected). Joining a
-  collection with itself reports each unordered pair once. `count=only`
-  returns `numberMatched` without pairs; `limit` truncates the returned pairs
-  while `numberMatched` keeps counting through, so the total is always true.
-  Pairs are `{a, b}` entry ordinals per collection, traversal-ordered (order
-  is not part of the API). There is no `offset` — the pair stream has no
-  resumable cursor. Errors: unknown collection 404; missing/invalid `max_distance`,
-  bad `limit`, unknown parameters 400; a 2D/3D mismatch between the two
-  collections 422.
+  `max_distance`. Both artifacts load into cached in-memory owned indexes, so
+  the client pays one request plus the pair download; network latency never
+  enters the loop. `count=only` returns `numberMatched` without pairs;
+  `limit` truncates the returned pairs while `numberMatched` keeps counting
+  through. Joining a collection with itself reports each unordered pair once.
+  Errors: unknown collection 404; bad parameters 400; a 2D/3D mismatch 422.
 - Added `GET /collections/{id}/nearest?point=&k=`: the `k` entries nearest a
-  point, nearest first, each with its distance, over the same cached owned
-  index the join family uses. `metric=planar|spherical` chooses the distance
-  and defaults from the artifact's declared edge model; `spherical`
-  (haversine metres over lon/lat, 2D only) on a collection declaring planar
-  edges is refused with 422 unless `nonplanar=treat_as_planar` vouches for
-  lon/lat content, the same opt-in a `radius` search takes. `within` caps the
-  distance in the metric's units. `capabilities.nearestMetrics` advertises
-  the metrics a collection accepts.
+  point, nearest first, each with its distance. `metric=planar|spherical`
+  chooses the distance and defaults from the artifact's declared edge model;
+  `spherical` (haversine metres, 2D only) on planar-edge data is refused with
+  422 unless `nonplanar=treat_as_planar` vouches for lon/lat content.
+  `within` caps the distance.
 - Added `count=estimate` on `/search`: an `estimate` object — exact
-  `[lower, upper]` bracket on the matched entry count, a point estimate,
-  `nodesTested`, `stopLevel` — in place of `numberMatched`, read from the
-  tree levels the server already holds in memory, so it costs no index read.
-  `numberMatched` is absent in that mode (a breaking shape change only for
-  callers that opt in). Bbox only; refuses what `count=only` refuses plus
-  every region shape. `capabilities.countModes` advertises it.
+  `[lower, upper]` bracket, a point estimate, `nodesTested`, `stopLevel` —
+  in place of `numberMatched` (absent in that mode, a breaking shape change
+  only for callers that opt in). Read from the levels the server already
+  holds, so it costs no index read. Bbox only; `capabilities.countModes`
+  advertises it.
 - Added `GET /collections/{id}/closest-pair/{other}`: the single nearest pair
   between two collections (or within one, when `other` equals `id`) and its
-  distance — the join family's member that needs no bound, over the same
-  cached owned indexes. `pair` is `null` when there is nothing to report;
-  a 2D/3D mismatch is 422.
+  distance; `pair` is `null` when there is nothing to report; a 2D/3D mismatch
+  is 422.
 - Added `GET /collections/{id}/pick?origin=&dir=&halfAngle=&near=&limit=`: the
   click's ordered broad phase, the server face of the core `search_pick`.
-  Runs over the cached owned 3D index and returns the candidates with both key
-  components; `limit` defaults to `1`, the click's answer. A 2D collection is
-  `unsupported_query`; a zero direction, a half-angle outside `(0, 90)` and an
-  out-of-range `limit` are 400s.
+  Runs over the cached owned 3D index; `limit` defaults to `1`, the click's
+  answer. A 2D collection is `unsupported_query`; a zero direction, a
+  half-angle outside `(0, 90)` and an out-of-range `limit` are 400s.
 
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.27.0...psi-v0.28.0) - 2026-08-25
 

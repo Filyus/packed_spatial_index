@@ -6,64 +6,47 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ### API
 
-- `gp2psindex query --pick ox,oy,oz,dx,dy,dz --half-angle deg` on a 3D
-  artifact: the click's ordered broad phase, the CLI face of the core crate's
-  `search_pick`. Prints one NDJSON line per candidate —
+- `gp2psindex query --pick ox,oy,oz,dx,dy,dz --half-angle deg [--limit k]` on
+  a 3D artifact: the click's ordered broad phase, the CLI face of the core
+  crate's `search_pick`. Prints one NDJSON line per candidate —
   `{"entry":i,"distanceSquared":d,"entryT":t}` — in pick order: boxes the ray
   pierces first (near-to-far), then boxes it only grazes by increasing
-  perpendicular distance. `--limit k` stops the traversal after `k`
-  candidates. The artifact is loaded through the core owned loader (the bytes
-  are already in memory) because pick is a best-first descent, the same reason
-  the streaming readers carry no `search_ordered`; refused with
-  `--count`/`--estimate`/`--offset`/`--exact`/`--predicate` and every query
+  perpendicular distance. Refused with the aggregate flags and every query
   shape.
 - `GeoArtifactIndex2D::estimate_entries` / `GeoArtifactIndex3D::estimate_entries`
   and `directory_floor`, the geo faces of the core crate's selectivity
   estimation: an exact `[lower, upper]` bracket on how many index entries a
   bbox matches plus a point estimate, read from node boxes; at or above the
-  directory floor it costs no reads. Bbox only — the polygon, radius and
-  frustum shapes prune by region tests node boxes cannot score.
-  `gp2psindex query --bbox … --estimate` prints the bracket as one JSON
-  line; refused with `--count`, `--exact`, `--limit`/`--offset` and every
-  non-bbox shape.
+  directory floor it costs no reads. Bbox only.
+  `gp2psindex query --bbox … --estimate` prints the bracket as one JSON line.
 - `gp2psindex join <a.psi> <b.psi> --within N` reports every pair of items
-  whose boxes lie within `max_distance` of each other, the CLI face of the core
-  crate's distance join. Pairs are written as NDJSON — one `{"a":i,"b":j}` line
-  per pair — from inside the join's visitor rather than collected first: the
-  join is output-bound (millions of pairs at a generous `max_distance`), so the pair
-  vector would cost more memory than the two indexes do. `--count` prints the
-  pair count and streams nothing.
-  Passing the same path twice is a self-join: every unordered pair of distinct
-  items exactly once, an item never paired with itself. Both artifacts are
-  loaded as owned core indexes straight from the interleaved layout `build`
-  writes by default, and both must be the same dimensionality — a 2D artifact
-  joined against a 3D one is refused. Semantics mirror the server's
-  `/collections/{id}/join/{other}` endpoint exactly: the distance is box-to-box
-  Euclidean in the artifacts' coordinate units, zero when the boxes overlap and
-  inclusive at the bound, so `--within 0` reproduces the plain overlap join;
-  `--within` is required and must be a finite non-negative number. Pair order
-  is traversal order and is not part of the interface.
+  whose boxes lie within `max_distance` of each other, the CLI face of the
+  core crate's distance join: one `{"a":i,"b":j}` NDJSON line per pair,
+  streamed from inside the join's visitor (the join is output-bound, so
+  materializing the pairs would cost more memory than the indexes do);
+  `--count` prints the count and streams nothing. The same path twice is a
+  self-join — every unordered pair of distinct items once — and both
+  artifacts must be the same dimensionality. Semantics mirror the server's
+  `/collections/{id}/join/{other}`: box-to-box Euclidean distance in
+  coordinate units, zero when the boxes overlap, inclusive at the bound, so
+  `--within 0` is the plain overlap join.
 - `gp2psindex anti-join <a.psi> <b.psi> --within N` and
   `gp2psindex components <a.psi> --within N`, the CLI faces of the server's
   `/anti-join` and `/components`. The anti-join streams one `{"a":i}` line per
-  item of `a` with no item of `b` within the bound, and refuses the same path
-  twice for the reason the server does: against itself every item is at
-  distance zero from itself, so the literal answer is always empty and the
-  question meant is `components`. Components print one
-  `{"item":i,"label":l}` line per item, the label being the smallest item id
-  in the item's connected component; `--count` prints the number of unpaired
-  items or of components and streams nothing.
+  item of `a` with no item of `b` within the bound (and refuses the same path
+  twice: against itself every item is at distance zero from itself, so the
+  question meant is `components`). Components print one `{"item":i,"label":l}`
+  line per item, the label being the smallest item id in the component;
+  `--count` prints the count and streams nothing.
 - `gp2psindex closest-pair <a.psi> <b.psi>` prints the single nearest pair and
   its box-to-box distance as one JSON line, or `null` when there is none; the
   same path twice reports the nearest pair of distinct items within one
   artifact. The CLI face of the server's `/closest-pair/{other}`.
 - `gp2psindex query` takes `--polygon` (GeoJSON MultiPolygon coordinates, 2D
-  only; the polygon drives the index traversal itself, so it needs no payload,
-  `--count` works over it and `--exact` refines the survivors against source
-  geometry) and, against a 3D index, `--frustum` (24 numbers, six
-  inward-pointing planes as `a,b,c,d`, a plane with a zero normal refused).
-  Both are the shapes the server's `/search` already accepted, validated by
-  the same rules, so the CLI no longer trails its own HTTP surface.
+  only; the polygon drives the index traversal itself, so it needs no payload
+  and `--count` works over it) and, against a 3D index, `--frustum` (24
+  numbers, six inward-pointing planes as `a,b,c,d`). Both are the shapes the
+  server's `/search` already accepted, validated by the same rules.
 
 ## [0.26.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.25.0...psi-geo-v0.26.0) - 2026-08-25
 

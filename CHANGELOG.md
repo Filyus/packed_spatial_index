@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.29.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.28.0...psi-v0.29.0) - 2026-09-05
+
 ### Search
 
 - Added the ordered pick: `search_pick(region, ray, max_results)` (plus

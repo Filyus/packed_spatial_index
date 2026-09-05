@@ -399,9 +399,19 @@ impl Ray3D {
             // closed form on [t0, t1].
             let mut c = [0.0f64; 3];
             let mut m = [0.0f64; 3];
+            // The active set is constant across the piece, so any interior
+            // point identifies it. With an infinite max_distance the last
+            // piece ends at infinity, where `origin + inf * 0.0` is NaN for a
+            // zero-direction axis and would silently read as "inside".
+            let span = t1 - t0;
+            let mid = if span.is_finite() {
+                t0 + 0.5 * span
+            } else {
+                t0 + 1.0
+            };
             let mut active = false;
             for a in 0..3 {
-                let p = org[a] + 0.5 * (t0 + t1) * dir[a];
+                let p = org[a] + mid * dir[a];
                 if p < lo[a] {
                     c[a] = lo[a] - org[a];
                     m[a] = -dir[a];
@@ -477,6 +487,72 @@ fn slab(
     *t_min = (*t_min).max(near);
     *t_max = (*t_max).min(far);
     *t_min <= *t_max
+}
+
+#[cfg(test)]
+mod distance_tests {
+    use super::*;
+    use crate::Point3D;
+
+    #[test]
+    fn infinite_max_distance_still_measures_perpendicular_offset() {
+        // Regression: the last quadratic piece runs to infinity, where
+        // `origin + inf * 0.0` is NaN for a zero-direction axis; the NaN used
+        // to read as "inside the slab" and dropped the perpendicular offset.
+        let ray = Ray3D::new(
+            Point3D {
+                x: -100.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1.0,
+            0.0,
+            0.0,
+            f64::INFINITY,
+        );
+        let point = Box3D::new(20.0, 0.0, 10.0, 20.0, 0.0, 10.0);
+        assert!(ray.enter_t(point).is_none());
+        assert!((ray.distance_squared_to_box(point) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measures_the_segment_end_not_the_infinite_line() {
+        let ray = Ray3D::new(
+            Point3D {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1.0,
+            0.0,
+            0.0,
+            5.0,
+        );
+        let b = Box3D::new(10.0, -1.0, -1.0, 12.0, 1.0, 1.0);
+        let d2 = ray.distance_squared_to_box(b);
+        assert!((d2 - 25.0).abs() < 1e-9, "{d2}"); // endpoint (5,0,0), dx gap 5
+    }
+
+    #[test]
+    fn zero_distance_when_the_segment_enters() {
+        let ray = Ray3D::new(
+            Point3D {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1.0,
+            0.0,
+            0.0,
+            100.0,
+        );
+        let b = Box3D::new(10.0, -1.0, -1.0, 12.0, 1.0, 1.0);
+        assert_eq!(ray.distance_squared_to_box(b), 0.0);
+        // and behind the origin: clamped to t=0
+        let behind = Box3D::new(-12.0, -1.0, -1.0, -10.0, 1.0, 1.0);
+        let d2 = ray.distance_squared_to_box(behind);
+        assert!((d2 - 100.0).abs() < 1e-9, "{d2}"); // origin (0,0,0), dx gap 10
+    }
 }
 
 #[cfg(test)]

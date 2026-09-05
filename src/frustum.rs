@@ -13,6 +13,7 @@
 //! before applying the tighter frustum test.
 
 use crate::geometry::{Box3D, Overlaps3D};
+use crate::ray::Ray3D;
 
 /// The normalized-device-coordinate depth range a projection matrix targets, for
 /// [`Frustum3D::from_view_projection`]. D3D12, Vulkan, Metal and WebGPU clip `z`
@@ -137,6 +138,68 @@ impl Frustum3D {
                 sub(r3, r2), // far
             ],
         }
+    }
+
+    /// The pixel frustum of a pick ray: four side planes through the ray
+    /// origin at `half_angle`, a near plane at `near`, and the far plane at the
+    /// ray's own `max_distance`.
+    ///
+    /// This is the region of [`Index3D::search_pick`](crate::Index3D::search_pick):
+    /// a click in a viewport turns the screen pixel into a truncated pyramid
+    /// through the camera, and this constructor builds it from the pixel's
+    /// central ray plus the click's angular tolerance. The direction need not
+    /// be normalized — the pyramid's shape is what matters, not the ray's
+    /// parameterization (the hit keys stay in the ray's direction-length units).
+    ///
+    /// Fails when the ray's direction is zero or non-finite, when `half_angle`
+    /// is not in `(0°, 90°)`, or when `near` is negative, non-finite, or at or
+    /// beyond the ray's `max_distance` (the pyramid would be empty).
+    pub fn try_from_ray(ray: Ray3D, half_angle: f64, near: f64) -> Result<Self, FrustumRayError> {
+        let dir = [ray.dir_x, ray.dir_y, ray.dir_z];
+        let mag = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        if mag <= 0.0 || !mag.is_finite() {
+            return Err(FrustumRayError::ZeroDirection);
+        }
+        if !(half_angle > 0.0 && half_angle < std::f64::consts::FRAC_PI_2 && half_angle.is_finite())
+        {
+            return Err(FrustumRayError::HalfAngle(half_angle));
+        }
+        if !(near >= 0.0 && near.is_finite() && near < ray.max_distance) {
+            return Err(FrustumRayError::Near(near));
+        }
+        let u = cross3(dir, [0.0, 0.0, 1.0]);
+        // A ray parallel to +z: the z-up reference gives no right vector, so
+        // fall back to x — any frame perpendicular to the direction is fine.
+        let u = if u[0] * u[0] + u[1] * u[1] + u[2] * u[2] > 0.0 {
+            u
+        } else {
+            cross3(dir, [1.0, 0.0, 0.0])
+        };
+        let u = norm3(u);
+        let v = norm3(cross3(u, dir));
+        let o = [ray.origin.x, ray.origin.y, ray.origin.z];
+        let dot = |p: [f64; 3], q: [f64; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+        let (sa, ca) = (half_angle.sin(), half_angle.cos());
+        let side = |e: [f64; 3]| -> [f64; 4] {
+            let n = norm3([
+                sa * dir[0] - ca * e[0],
+                sa * dir[1] - ca * e[1],
+                sa * dir[2] - ca * e[2],
+            ]);
+            [n[0], n[1], n[2], -dot(n, o)]
+        };
+        let near_plane = [dir[0], dir[1], dir[2], -dot(dir, o) - near];
+        let far_plane = [-dir[0], -dir[1], -dir[2], dot(dir, o) + ray.max_distance];
+        Ok(Self {
+            planes: [
+                side(u),
+                side([-u[0], -u[1], -u[2]]),
+                side(v),
+                side([-v[0], -v[1], -v[2]]),
+                near_plane,
+                far_plane,
+            ],
+        })
     }
 
     /// The six planes, in `[left, right, bottom, top, near, far]` order when built
@@ -284,5 +347,174 @@ impl Overlaps3D for Frustum3D {
     #[inline]
     fn contains_box(&self, bx: Box3D) -> bool {
         self.contains_box(bx)
+    }
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn norm3(a: [f64; 3]) -> [f64; 3] {
+    let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    [a[0] / l, a[1] / l, a[2] / l]
+}
+
+/// Why [`Frustum3D::try_from_ray`] refused its inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FrustumRayError {
+    /// The ray's direction is zero or non-finite, so no perpendicular frame
+    /// exists.
+    ZeroDirection,
+    /// The half-angle is not in `(0°, 90°)` (or not finite).
+    HalfAngle(f64),
+    /// The near distance is negative, non-finite, or at or beyond the ray's
+    /// `max_distance`, which would make the pyramid empty.
+    Near(f64),
+}
+
+impl std::fmt::Display for FrustumRayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroDirection => write!(f, "the ray direction is zero or non-finite"),
+            Self::HalfAngle(a) => write!(
+                f,
+                "half-angle must be in (0, pi/2) degrees included, got {a}"
+            ),
+            Self::Near(n) => write!(
+                f,
+                "near must be finite, non-negative and below the ray's max_distance, got {n}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FrustumRayError {}
+
+#[cfg(test)]
+mod ray_ctor_tests {
+    use super::*;
+    use crate::geometry::Point3D;
+    use crate::ray::Ray3D;
+
+    #[test]
+    fn planes_contain_the_axis_and_exclude_off_axis_points() {
+        let ray = Ray3D::new(
+            Point3D {
+                x: -1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            0.0,
+            1.0,
+            0.0,
+            100.0,
+        );
+        let fr = Frustum3D::try_from_ray(ray, 0.1_f64.to_radians(), 1.0).unwrap();
+        // Points along the axis, between near and far, are inside.
+        for t in [1.0f64, 50.0, 99.5] {
+            let p = [ray.origin.x, ray.origin.y + t, ray.origin.z];
+            for plane in fr.planes() {
+                assert!(plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] >= 0.0);
+            }
+        }
+        // Far past max_distance: outside the far plane; behind near: outside.
+        for t in [100.5f64, 0.5] {
+            let p = [ray.origin.x, ray.origin.y + t, ray.origin.z];
+            assert!(!fr.overlaps_box(Box3D::new(
+                p[0] - 0.01,
+                p[1] - 0.01,
+                p[2] - 0.01,
+                p[0] + 0.01,
+                p[1] + 0.01,
+                p[2] + 0.01
+            )));
+        }
+        // Half the tolerance away at half the far distance: inside the side
+        // planes (10 world units sideways at t=50, half-angle 0.1 rad).
+        let fr = Frustum3D::try_from_ray(ray, 0.1, 1.0).unwrap();
+        let side = 50.0 * 0.1f64.tan() * 0.9;
+        assert!(fr.overlaps_box(Box3D::new(
+            ray.origin.x - side - 1.0,
+            51.0,
+            ray.origin.z - 1.0,
+            ray.origin.x - side + 1.0,
+            52.0,
+            ray.origin.z + 1.0
+        )));
+        // Twice the tolerance away: excluded by a side plane.
+        assert!(!fr.overlaps_box(Box3D::new(
+            ray.origin.x - 2.0 * side - 1.0,
+            51.0,
+            ray.origin.z - 1.0,
+            ray.origin.x - 2.0 * side + 1.0,
+            52.0,
+            ray.origin.z + 1.0
+        )));
+    }
+
+    #[test]
+    fn rejects_zero_direction_bad_angle_and_bad_near() {
+        let ray = Ray3D::new(
+            Point3D {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1.0,
+            0.0,
+            0.0,
+            100.0,
+        );
+        assert_eq!(
+            Frustum3D::try_from_ray(
+                Ray3D::new(
+                    Point3D {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                    100.0
+                ),
+                0.1,
+                1.0
+            ),
+            Err(FrustumRayError::ZeroDirection)
+        );
+        assert_eq!(
+            Frustum3D::try_from_ray(ray, 0.0, 1.0),
+            Err(FrustumRayError::HalfAngle(0.0))
+        );
+        assert_eq!(
+            Frustum3D::try_from_ray(ray, 1.0_f64.to_radians(), 100.0),
+            Err(FrustumRayError::Near(100.0))
+        );
+        assert_eq!(
+            Frustum3D::try_from_ray(ray, 1.0_f64.to_radians(), -1.0),
+            Err(FrustumRayError::Near(-1.0))
+        );
+    }
+
+    #[test]
+    fn a_ray_parallel_to_z_still_gets_a_frame() {
+        let ray = Ray3D::new(
+            Point3D {
+                x: 0.0,
+                y: 0.0,
+                z: -10.0,
+            },
+            0.0,
+            0.0,
+            1.0,
+            100.0,
+        );
+        let fr = Frustum3D::try_from_ray(ray, 0.2_f64.to_radians(), 1.0).unwrap();
+        assert!(fr.overlaps_box(Box3D::new(-1.0, -1.0, 49.0, 1.0, 1.0, 51.0)));
     }
 }

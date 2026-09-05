@@ -143,7 +143,7 @@ pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use estimate::Estimate;
-pub use frustum::{ClipSpaceZ, Frustum3D};
+pub use frustum::{ClipSpaceZ, Frustum3D, FrustumRayError};
 pub use geometry::{BoundsError, Box2D, Box3D, Overlaps2D, Overlaps3D, Point2D, Point3D};
 #[doc(hidden)]
 pub use index2d::SearchQuery2D;

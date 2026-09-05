@@ -27,7 +27,13 @@ All notable changes to this crate are documented here.
   only on the candidates that can still win. Measured on 200 000 boxes with a
   0.05° pixel half-angle, `max_results = 1` costs 5.4 µs, ~2.2× a full `search`
   plus a sort on the same key; past k ≈ 10 in a dense region the heap loses to
-  collect-and-sort, as with every ordered query. Wide-frustum depth ordering
+  collect-and-sort, as with every ordered query. `Frustum3D::try_from_ray(ray, half_angle, near)` builds the pixel
+  frustum from the click's central ray and its angular tolerance. Building the
+  key caught a latent shape of the ray-to-box distance: on the infinite-`t`
+  piece the axis probe evaluated `origin + inf * 0.0` for a zero-direction
+  axis, and the resulting NaN read as "inside the slab", silently dropping the
+  perpendicular offset — the probe now stays finite, where the piece's active
+  axis set is constant. Wide-frustum depth ordering
   needs nothing new — `search_ordered` with `view_depth_3d` already serves it.
 - Added the distance join (ε-join): `join_within` / `join_within_with` report
   every pair `(i, j)` whose boxes lie within `max_distance` of each other — the

@@ -21,6 +21,7 @@ the method for each need; the notes after it explain the reasoning.
 | The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `visit_neighbors` — same alloc-vs-buffer choice as above. `neighbors_within` adds a distance cap to the *k*; when there is no *k*, use `search_within` below, which skips the heap and the sort | sorting search results by distance |
 | The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
 | Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `visit_ordered` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
+| The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `visit_pick` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
 | All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
@@ -286,6 +287,65 @@ picking has a second step and the second step is where the accuracy lives:
 The practical shape is: frustum to narrow, ray or exact test to decide. The
 frustum's job is to turn "test every object" into "test the handful the click
 could possibly touch".
+
+### Ordered pick
+
+`search_pick(region, ray, max_results)` fuses those two steps into one ordered
+query: it returns the frustum's candidates sorted by *squared perpendicular
+distance from the ray to the box*, ties broken by the ray's entry parameter
+`t` — boxes the ray passes through come before boxes it only grazes, and along
+the ray near-to-far. Each [`PickHit3D`] carries both key components; the first
+hit is the box the user most likely meant, and with a budget of one the
+traversal stops there.
+
+The order is deliberately **lexicographic**. A flat scalar key cannot express
+it: ordering by ray distance alone ties every box the ray pierces at 0.0 (measured: ~26% of
+top-10 orders wrong, decided by heap accident), and ordering by depth-first
+puts a box grazing the pixel edge ahead of the box on the ray (32–46% wrong).
+The two-component key gives the reference order on every query tested, and
+reaches the first candidate 2–4x faster than collecting the whole frustum and
+sorting it. The crossover is the same as any ordered query: past k≈100 in a
+dense regime the heap loses to `search` plus a sort. The descent is available
+on the owned `Index3D` and the zero-copy `Index3DView`; SIMD frontends keep
+`search_ordered` with `view_depth_3d`, whose flat depth key is already
+tie-free (no on-ray degeneracy) and correct for render-order culling.
+
+```rust
+# use packed_spatial_index::{Box3D, Frustum3D, Index3DBuilder, Point3D, Ray3D};
+# let mut b = Index3DBuilder::new(2);
+# b.add(Box3D::new(10.0, -0.5, -0.5, 11.0, 0.5, 0.5));
+# b.add(Box3D::new(2.0, -0.5, -0.5, 3.0, 0.5, 0.5));
+# let index = b.finish()?;
+# let origin = Point3D { x: -1.0, y: 0.0, z: 0.0 };
+# let dir = [1.0, 0.0, 0.0];
+# let half_angle = 0.05_f64.to_radians();
+# let (sa, ca) = (half_angle.sin(), half_angle.cos());
+# let cross = |a: [f64; 3], c: [f64; 3]| [a[1]*c[2]-a[2]*c[1], a[2]*c[0]-a[0]*c[2], a[0]*c[1]-a[1]*c[0]];
+# let norm = |a: [f64; 3]| { let l = (a[0]*a[0]+a[1]*a[1]+a[2]*a[2]).sqrt(); [a[0]/l, a[1]/l, a[2]/l] };
+# let u = norm(cross(dir, [0.0, 0.0, 1.0]));
+# let v = norm(cross(u, dir));
+# let side = |e: [f64; 3]| -> [f64; 4] {
+#     let n = norm([sa*dir[0]-ca*e[0], sa*dir[1]-ca*e[1], sa*dir[2]-ca*e[2]]);
+#     [n[0], n[1], n[2], -(n[0]*origin.x + n[1]*origin.y + n[2]*origin.z)]
+# };
+# let near = [dir[0], dir[1], dir[2], -(dir[0]*origin.x + dir[1]*origin.y + dir[2]*origin.z) + 1.0];
+# let far = [-dir[0], -dir[1], -dir[2], dir[0]*origin.x + dir[1]*origin.y + dir[2]*origin.z + 40000.0];
+# let pixel = Frustum3D::from_planes([side(u), side([-u[0], -u[1], -u[2]]), side(v), side([-v[0], -v[1], -v[2]]), near, far]);
+# let ray = Ray3D::new(origin, dir[0], dir[1], dir[2], 1.0e9);
+// the pixel's frustum and central ray (construction above, gluPickMatrix-style
+// matrices work too — any Overlaps3D region is accepted)
+let hits = index.search_pick(pixel, ray, 1);
+if let Some(hit) = hits.first() {
+    // hit.index: the candidate; hit.distance_squared == 0.0 means the ray
+    // pierces the box; exact geometry tests belong to the caller.
+}
+# let _ = hits;
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+`Ray3D::distance_squared_to_box` — the exact, allocation-free lower bound the
+key uses for boxes the ray misses — is public, so a custom pick over another
+metric can reuse it (and `Ray3D::enter_t` supplies the `t` component).
 
 ## Front-to-back region queries
 

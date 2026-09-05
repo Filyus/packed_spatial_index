@@ -314,6 +314,114 @@ impl Ray3D {
         hit.then_some(t_min)
     }
 
+    /// Exact squared Euclidean distance from this ray segment to `bounds`,
+    /// or `0.0` when the segment intersects the box.
+    ///
+    /// The minimum of the (convex, piecewise-quadratic) squared point-to-box
+    /// distance along `t in [0, max_distance]`, computed in closed form over the
+    /// slab breakpoints — no iteration, no allocation. This is a lower bound on
+    /// the distance from the ray to anything inside the box, which is what makes
+    /// it a sound best-first ordering key: a box's value can only under-estimate
+    /// the true distance of the geometry the user clicked. A non-finite origin or
+    /// direction, or a negative/NaN `max_distance`, yields [`f64::INFINITY`]
+    /// (the segment touches nothing).
+    ///
+    /// Used by [`Index3D::search_pick`](crate::Index3D::search_pick) as the
+    /// perpendicular component of its ordering key.
+    pub fn distance_squared_to_box(self, bounds: Box3D) -> f64 {
+        if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
+        {
+            return f64::INFINITY;
+        }
+        if self.enter_t(bounds).is_some() {
+            return 0.0;
+        }
+        let org = [self.origin.x, self.origin.y, self.origin.z];
+        let dir = [self.dir_x, self.dir_y, self.dir_z];
+        let lo = [bounds.min_x, bounds.min_y, bounds.min_z];
+        let hi = [bounds.max_x, bounds.max_y, bounds.max_z];
+        // Breakpoints where an axis coordinate crosses a slab boundary,
+        // ascending, always starting at 0 and ending at max_distance.
+        let mut ts = [0.0f64; 8];
+        let mut nt = 2usize;
+        ts[1] = self.max_distance;
+        for a in 0..3 {
+            if dir[a].abs() > 1e-12 {
+                let t0 = (lo[a] - org[a]) / dir[a];
+                let t1 = (hi[a] - org[a]) / dir[a];
+                for t in [t0, t1] {
+                    if t > 0.0 && t < self.max_distance {
+                        let mut i = nt;
+                        ts[nt] = t;
+                        nt += 1;
+                        while i > 1 && ts[i - 1] > ts[i] {
+                            ts.swap(i - 1, i);
+                            i -= 1;
+                        }
+                    }
+                }
+            }
+        }
+        let dist_at = |t: f64| -> f64 {
+            let mut s = 0.0;
+            for a in 0..3 {
+                let p = org[a] + t * dir[a];
+                let h = if p < lo[a] {
+                    lo[a] - p
+                } else if p > hi[a] {
+                    p - hi[a]
+                } else {
+                    0.0
+                };
+                s += h * h;
+            }
+            s
+        };
+        let mut best = f64::INFINITY;
+        for w in 0..nt - 1 {
+            let (t0, t1) = (ts[w], ts[w + 1]);
+            // On this piece each axis is either inside its slab (contributes 0)
+            // or offset linearly: f(t) = sum (c_a + m_a t)^2, minimized in
+            // closed form on [t0, t1].
+            let mut c = [0.0f64; 3];
+            let mut m = [0.0f64; 3];
+            let mut active = false;
+            for a in 0..3 {
+                let p = org[a] + 0.5 * (t0 + t1) * dir[a];
+                if p < lo[a] {
+                    c[a] = lo[a] - org[a];
+                    m[a] = -dir[a];
+                    active = true;
+                } else if p > hi[a] {
+                    c[a] = org[a] - hi[a];
+                    m[a] = dir[a];
+                    active = true;
+                }
+            }
+            if !active {
+                return 0.0; // the segment passes through the box on this piece
+            }
+            let mut a2 = 0.0;
+            let mut a1 = 0.0;
+            let mut a0 = 0.0;
+            for a in 0..3 {
+                a2 += m[a] * m[a];
+                a1 += 2.0 * c[a] * m[a];
+                a0 += c[a] * c[a];
+            }
+            let t_star = if a2 > 0.0 {
+                (-a1 / (2.0 * a2)).clamp(t0, t1)
+            } else {
+                t0
+            };
+            best = best.min((a2 * t_star * t_star + a1 * t_star + a0).max(0.0));
+        }
+        for t in &ts[..nt] {
+            best = best.min(dist_at(*t));
+        }
+        best
+    }
+
     /// The closest triangle in `triangles` hit by this ray segment, as a
     /// [`TriangleHit`] (`index` into the slice and `t` in direction-length
     /// units), or `None` if the ray misses them all, by the Moller-Trumbore test.

@@ -46,6 +46,10 @@
 //!   [`visit_ordered`](Index2D::visit_ordered)). With
 //!   [`view_depth_3d`] as the key, a `Frustum3D` query yields objects front to
 //!   back.
+//! * **Pick (3D)** — the click-in-a-viewport order: [`search_pick`](Index3D::search_pick)
+//!   / [`visit_pick`](Index3D::visit_pick) emit a region's candidates by
+//!   squared distance from a ray, ties by ray entry depth, so the first hit is
+//!   the box under the cursor.
 //! * **Ray segment** — [`raycast`](Index2D::raycast) (all hits),
 //!   [`raycast_closest`](Index2D::raycast_closest) (nearest box entered), and
 //!   [`visit_raycast`](Index2D::visit_raycast).
@@ -162,6 +166,7 @@ pub use index3d_soa::{SimdIndex3D, SimdIndex3DView};
 pub use neighbors::{
     EARTH_RADIUS_M, NeighborWorkspace, haversine_distance_2d, view_depth_2d, view_depth_3d,
 };
+pub use ordered::PickHit3D;
 pub use persistence::{FileMetadata, LoadError, PayloadError, read_metadata};
 pub use polygon::ConvexPolygon2D;
 pub use ray::{Ray2D, Ray3D};

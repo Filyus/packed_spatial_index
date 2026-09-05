@@ -18,12 +18,13 @@ use crate::{
         NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first,
         metric_knn,
     },
-    ordered::{collect_ordered, visit_ordered},
+    ordered::{PickHit3D, collect_ordered, collect_pick, pick_key, visit_ordered, visit_pick},
     persistence::{
         LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, parse_index_owned,
         payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
     },
     range::{visit_overlaps, visit_region},
+    ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree_access::{TreeAccess, leaf_group_range},
     triangle::{Triangle3, blobs_as_records},
@@ -667,6 +668,88 @@ impl Index3D {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
+    /// Up to `max_results` items overlapping `region`, ordered for picking: by
+    /// squared perpendicular distance from `ray` to the item's box first, then
+    /// by the ray's entry parameter `t` — so boxes the ray passes through come
+    /// before boxes it only grazes, and along the ray near-to-far.
+    ///
+    /// This is the click-in-a-viewport query: `region` is the pixel's frustum
+    /// (a narrow [`Frustum3D`](crate::Frustum3D) through the camera apex), `ray`
+    /// is the pixel's central ray, and the first hit is the box the user most
+    /// likely meant. It is a broad phase: both key components are lower bounds
+    /// on the same quantities of the geometry inside the box, so exact
+    /// ray-geometry tests belong to the caller (see
+    /// [`Ray3D::closest_triangle`](crate::Ray3D::closest_triangle)).
+    ///
+    /// Each [`PickHit3D`] carries its key. The order is deterministic; boxes
+    /// with equal keys keep Hilbert leaf order. Prefer this over
+    /// [`search_ordered`](Self::search_ordered) when the natural order is "distance from the ray,
+    /// ties by depth": a single scalar key cannot express that lexicographic
+    /// order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box3D, Index3DBuilder, Point3D, Ray3D};
+    ///
+    /// let mut builder = Index3DBuilder::new(3);
+    /// // Two boxes on the ray at different depths, and one the ray misses.
+    /// builder.add(Box3D::new(10.0, -0.5, -0.5, 11.0, 0.5, 0.5));
+    /// builder.add(Box3D::new(2.0, -0.5, -0.5, 3.0, 0.5, 0.5));
+    /// builder.add(Box3D::new(4.0, 0.3, -0.5, 5.0, 0.9, 0.5));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let ray = Ray3D::new(Point3D { x: -1.0, y: 0.0, z: 0.0 }, 1.0, 0.0, 0.0, 1.0e4);
+    /// // Pixel frustum wide enough to admit all three (not shown; any
+    /// // `Overlaps3D` region works — a `Box3D` here keeps the example short).
+    /// let region = Box3D::new(0.0, -1.0, -1.0, 12.0, 1.0, 1.0);
+    ///
+    /// let hits = index.search_pick(region, ray, 2);
+    /// assert_eq!(hits[0].index, 1); // the near on-ray box first
+    /// assert_eq!(hits[1].index, 0); // then the far on-ray box
+    /// ```
+    pub fn search_pick<Q>(&self, region: Q, ray: Ray3D, max_results: usize) -> Vec<PickHit3D>
+    where
+        Q: Overlaps3D,
+    {
+        let mut results = Vec::new();
+        self.search_pick_into(region, ray, max_results, &mut results);
+        results
+    }
+
+    /// [`search_pick`](Self::search_pick) into a reused buffer (cleared first).
+    pub fn search_pick_into<Q>(
+        &self,
+        region: Q,
+        ray: Ray3D,
+        max_results: usize,
+        results: &mut Vec<PickHit3D>,
+    ) where
+        Q: Overlaps3D,
+    {
+        collect_pick(
+            self,
+            max_results,
+            |b| pick_key(&region, ray, b),
+            results,
+            &mut BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY),
+        );
+    }
+
+    /// Visit the items [`search_pick`](Self::search_pick) would return, in the
+    /// same order; the visitor may return [`ControlFlow::Break`] to stop early.
+    pub fn visit_pick<Q, B, F>(&self, region: Q, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        F: FnMut(PickHit3D) -> ControlFlow<B>,
+    {
+        visit_pick(
+            self,
+            usize::MAX,
+            |b| pick_key(&region, ray, b),
+            &mut visitor,
+        )
     }
 
     /// Return up to `max_results` item indices nearest to the box `query`.
@@ -2018,6 +2101,88 @@ impl<'a> Index3DView<'a> {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
+    /// Up to `max_results` items overlapping `region`, ordered for picking: by
+    /// squared perpendicular distance from `ray` to the item's box first, then
+    /// by the ray's entry parameter `t` — so boxes the ray passes through come
+    /// before boxes it only grazes, and along the ray near-to-far.
+    ///
+    /// This is the click-in-a-viewport query: `region` is the pixel's frustum
+    /// (a narrow [`Frustum3D`](crate::Frustum3D) through the camera apex), `ray`
+    /// is the pixel's central ray, and the first hit is the box the user most
+    /// likely meant. It is a broad phase: both key components are lower bounds
+    /// on the same quantities of the geometry inside the box, so exact
+    /// ray-geometry tests belong to the caller (see
+    /// [`Ray3D::closest_triangle`](crate::Ray3D::closest_triangle)).
+    ///
+    /// Each [`PickHit3D`] carries its key. The order is deterministic; boxes
+    /// with equal keys keep Hilbert leaf order. Prefer this over
+    /// [`Index3D::search_pick`](crate::Index3D::search_pick) when the natural order is "distance from the ray,
+    /// ties by depth": a single scalar key cannot express that lexicographic
+    /// order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box3D, Index3DBuilder, Point3D, Ray3D};
+    ///
+    /// let mut builder = Index3DBuilder::new(3);
+    /// // Two boxes on the ray at different depths, and one the ray misses.
+    /// builder.add(Box3D::new(10.0, -0.5, -0.5, 11.0, 0.5, 0.5));
+    /// builder.add(Box3D::new(2.0, -0.5, -0.5, 3.0, 0.5, 0.5));
+    /// builder.add(Box3D::new(4.0, 0.3, -0.5, 5.0, 0.9, 0.5));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let ray = Ray3D::new(Point3D { x: -1.0, y: 0.0, z: 0.0 }, 1.0, 0.0, 0.0, 1.0e4);
+    /// // Pixel frustum wide enough to admit all three (not shown; any
+    /// // `Overlaps3D` region works — a `Box3D` here keeps the example short).
+    /// let region = Box3D::new(0.0, -1.0, -1.0, 12.0, 1.0, 1.0);
+    ///
+    /// let hits = index.search_pick(region, ray, 2);
+    /// assert_eq!(hits[0].index, 1); // the near on-ray box first
+    /// assert_eq!(hits[1].index, 0); // then the far on-ray box
+    /// ```
+    pub fn search_pick<Q>(&self, region: Q, ray: Ray3D, max_results: usize) -> Vec<PickHit3D>
+    where
+        Q: Overlaps3D,
+    {
+        let mut results = Vec::new();
+        self.search_pick_into(region, ray, max_results, &mut results);
+        results
+    }
+
+    /// [`search_pick`](Self::search_pick) into a reused buffer (cleared first).
+    pub fn search_pick_into<Q>(
+        &self,
+        region: Q,
+        ray: Ray3D,
+        max_results: usize,
+        results: &mut Vec<PickHit3D>,
+    ) where
+        Q: Overlaps3D,
+    {
+        collect_pick(
+            self,
+            max_results,
+            |b| pick_key(&region, ray, b),
+            results,
+            &mut BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY),
+        );
+    }
+
+    /// Visit the items [`search_pick`](Self::search_pick) would return, in the
+    /// same order; the visitor may return [`ControlFlow::Break`] to stop early.
+    pub fn visit_pick<Q, B, F>(&self, region: Q, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        F: FnMut(PickHit3D) -> ControlFlow<B>,
+    {
+        visit_pick(
+            self,
+            usize::MAX,
+            |b| pick_key(&region, ray, b),
+            &mut visitor,
+        )
     }
 
     /// Return up to `max_results` item indices nearest to the box `query`.

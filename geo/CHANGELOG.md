@@ -4,8 +4,17 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.27.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.26.0...psi-geo-v0.27.0) - 2026-09-06
+
 ### API
 
+- Requires `packed_spatial_index` 0.29. That release adds the ordered pick, the
+  radius query, the distance-join family (`join_within`, anti-join, components,
+  closest pair), selectivity estimation and the interleaved-layout owned
+  loader, which the CLI's new verbs read artifacts through. Callers that also
+  depend on `packed_spatial_index` directly must move to 0.29 together with
+  this crate, because the core types in this API — `Box3D`, `Frustum3D`,
+  `Index3D` — come from it.
 - `gp2psindex query --pick ox,oy,oz,dx,dy,dz --half-angle deg [--limit k]` on
   a 3D artifact: the click's ordered broad phase, the CLI face of the core
   crate's `search_pick`. Prints one NDJSON line per candidate —

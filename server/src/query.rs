@@ -1174,7 +1174,6 @@ pub fn nearest_response(
     })
 }
 
-
 /// Query parameters accepted by `/collections/{id}/pick`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

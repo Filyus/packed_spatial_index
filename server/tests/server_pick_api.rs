@@ -121,8 +121,11 @@ async fn orders_on_ray_boxes_first_near_to_far() {
 async fn limit_defaults_to_one_and_truncates_in_order() {
     let app = router(state_over(grid_3d_geojson().as_bytes()));
     let app2 = app.clone();
-    let (status, json) =
-        get_json(app, "/collections/places/pick?origin=-100,0,0&dir=1,0,0&halfAngle=1").await;
+    let (status, json) = get_json(
+        app,
+        "/collections/places/pick?origin=-100,0,0&dir=1,0,0&halfAngle=1",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{json}");
     assert_eq!(json["limit"], 1);
     assert_eq!(entries(&json), vec![0]);
@@ -176,8 +179,11 @@ async fn off_axis_points_are_qualified_by_the_key() {
 #[tokio::test]
 async fn a_2d_collection_is_refused() {
     let app = router(state_over(cities_geojson()));
-    let (status, json) =
-        get_json(app, "/collections/places/pick?origin=0,0,0&dir=1,0,0&halfAngle=1").await;
+    let (status, json) = get_json(
+        app,
+        "/collections/places/pick?origin=0,0,0&dir=1,0,0&halfAngle=1",
+    )
+    .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{json}");
     assert_eq!(json["error"]["code"], "unsupported_query");
     assert!(json["error"]["message"].as_str().unwrap().contains("2D"));
@@ -196,7 +202,11 @@ async fn bad_ray_and_angle_are_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
 
     // missing halfAngle
-    let (status, json) = get_json(app.clone(), "/collections/places/pick?origin=0,0,0&dir=1,0,0").await;
+    let (status, json) = get_json(
+        app.clone(),
+        "/collections/places/pick?origin=0,0,0&dir=1,0,0",
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
 
     // halfAngle out of range

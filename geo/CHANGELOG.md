@@ -4,6 +4,27 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.27.0...psi-geo-v0.28.0) - 2026-09-11
+
+### API
+
+- **Requires `packed_spatial_index` 0.30.** This crate's own API is unchanged —
+  no function it exports was renamed, added or removed — but the core release it
+  now depends on renames a large part of the query surface, and anyone who
+  depends on both has to move them together.
+
+What changed underneath, in one line each:
+
+| in 0.29 | in 0.30 |
+| --- | --- |
+| the call mode led the name (`visit_within`, `any_region`) | it trails it (`search_within_each`, `search_region_any`) |
+| pair queries within one index carried `self_` | they lead with `pairs` |
+| `closest_pair(&other)` / `self_closest_pair()` | `closest_pair_to(&other)` / `closest_pair()` |
+
+The core types in this API — `Box3D`, `Frustum3D`, `Index3D` — come from
+`packed_spatial_index`, so a project pinning an older core alongside this crate
+will not compile. The core changelog carries the full rename table.
+
 ## [0.27.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.26.0...psi-geo-v0.27.0) - 2026-09-06
 
 ### API

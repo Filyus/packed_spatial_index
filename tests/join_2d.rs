@@ -72,14 +72,14 @@ fn join_matches_naive_pairs() {
 }
 
 #[test]
-fn self_join_matches_naive_pairs() {
+fn pairs_matches_naive_enumeration() {
     let mut rng = StdRng::seed_from_u64(202);
     for (n, max_size) in [(0, 4.0), (1, 4.0), (2, 100.0), (33, 8.0), (700, 2.5)] {
         let boxes = random_boxes(&mut rng, n, 100.0, max_size);
         let index = build(&boxes);
 
         let expected = naive_self_join(&boxes);
-        assert_eq!(normalized(index.self_join()), expected, "n={n}");
+        assert_eq!(normalized(index.pairs()), expected, "n={n}");
     }
 }
 
@@ -99,11 +99,11 @@ fn join_with_supports_early_exit() {
     let boxes = random_boxes(&mut rng, 300, 50.0, 5.0);
     let index = build(&boxes);
 
-    let total = index.self_join().len();
+    let total = index.pairs().len();
     assert!(total > 10, "test needs a pair-rich input, got {total}");
 
     let mut seen = 0usize;
-    let flow = index.self_join_with(|_, _| {
+    let flow = index.pairs_with(|_, _| {
         seen += 1;
         if seen == 10 {
             ControlFlow::Break(())
@@ -130,7 +130,7 @@ fn view_join_matches_owned_join() {
     let owned: BTreeSet<_> = a.join(&b).into_iter().collect();
     let viewed: BTreeSet<_> = view_a.join(&view_b).into_iter().collect();
     assert_eq!(owned, viewed);
-    assert_eq!(normalized(view_a.self_join()), normalized(a.self_join()));
+    assert_eq!(normalized(view_a.pairs()), normalized(a.pairs()));
 }
 
 #[cfg(feature = "simd")]
@@ -160,7 +160,7 @@ mod simd {
         assert_eq!(actual, expected);
 
         let expected_self = naive_self_join(&boxes_a);
-        assert_eq!(normalized(a.self_join()), expected_self);
+        assert_eq!(normalized(a.pairs()), expected_self);
     }
 
     #[test]
@@ -178,6 +178,6 @@ mod simd {
         let owned: BTreeSet<_> = a.join(&b).into_iter().collect();
         let viewed: BTreeSet<_> = view_a.join(&view_b).into_iter().collect();
         assert_eq!(owned, viewed);
-        assert_eq!(normalized(view_a.self_join()), normalized(a.self_join()));
+        assert_eq!(normalized(view_a.pairs()), normalized(a.pairs()));
     }
 }

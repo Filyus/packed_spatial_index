@@ -22,8 +22,8 @@ use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
     geometry::{Box3D, Overlaps3D, Point3D, fold_max, fold_min, query_covers_tree_3d},
     join::{
-        DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core, join_core,
-        self_closest_pair_core, self_join_components_core, self_join_core, within_core,
+        DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core,
+        closest_pair_to_core, join_core, pairs_components_core, pairs_core, within_core,
     },
     neighbors::{NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first},
     ordered::{collect_ordered, visit_ordered},
@@ -735,10 +735,10 @@ impl SimdIndex3D {
 
     /// Return every unordered pair of distinct intersecting items within this
     /// index, each pair exactly once. See
-    /// [`Index2D::self_join`](crate::Index2D::self_join).
-    pub fn self_join(&self) -> Vec<(usize, usize)> {
+    /// [`Index2D::pairs`](crate::Index2D::pairs).
+    pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+        let _: ControlFlow<()> = self.pairs_with(|i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -746,12 +746,12 @@ impl SimdIndex3D {
     }
 
     /// Visit every unordered pair of distinct intersecting items within this
-    /// index. See [`Index2D::self_join_with`](crate::Index2D::self_join_with).
-    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    /// index. See [`Index2D::pairs_with`](crate::Index2D::pairs_with).
+    pub fn pairs_with<B, F>(&self, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, OverlapTest, visitor)
+        pairs_core(self, OverlapTest, visitor)
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
@@ -912,10 +912,10 @@ impl SimdIndex3D {
 
     /// Return every unordered pair of distinct items within this index whose
     /// boxes lie within `max_distance` of each other, each pair exactly once. See
-    /// [`Index2D::self_join_within`](crate::Index2D::self_join_within).
-    pub fn self_join_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
+    /// [`Index2D::pairs_within`](crate::Index2D::pairs_within).
+    pub fn pairs_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_within_with(max_distance, |i, j| {
+        let _: ControlFlow<()> = self.pairs_within_with(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -924,12 +924,12 @@ impl SimdIndex3D {
 
     /// Visit every unordered pair of distinct items within this index whose
     /// boxes lie within `max_distance` of each other. See
-    /// [`Index2D::self_join_within_with`](crate::Index2D::self_join_within_with).
-    pub fn self_join_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::pairs_within_with`](crate::Index2D::pairs_within_with).
+    pub fn pairs_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, DistanceTest::new(max_distance), visitor)
+        pairs_core(self, DistanceTest::new(max_distance), visitor)
     }
 
     /// Return the ids of items of `self` with no item of `other` within
@@ -959,9 +959,9 @@ impl SimdIndex3D {
 
     /// Label every item with the smallest item id in its component of the
     /// `max_distance`-proximity graph. See
-    /// [`Index2D::self_join_within_components`](crate::Index2D::self_join_within_components).
-    pub fn self_join_within_components(&self, max_distance: f64) -> Vec<usize> {
-        self_join_components_core(self, DistanceTest::new(max_distance))
+    /// [`Index2D::pairs_within_components`](crate::Index2D::pairs_within_components).
+    pub fn pairs_within_components(&self, max_distance: f64) -> Vec<usize> {
+        pairs_components_core(self, DistanceTest::new(max_distance))
     }
 
     /// Return the closest pair of items between `self` and `other` as
@@ -995,16 +995,16 @@ impl SimdIndex3D {
     /// b.add(Box3D::new(3.0, 0.0, 0.0, 4.0, 1.0, 1.0));
     /// let b = b.finish().unwrap();
     ///
-    /// assert_eq!(a.closest_pair(&b), Some((0, 1, 2.0)));
+    /// assert_eq!(a.closest_pair_to(&b), Some((0, 1, 2.0)));
     /// ```
-    pub fn closest_pair(&self, other: &SimdIndex3D) -> Option<(usize, usize, f64)> {
-        closest_pair_core(self, other)
+    pub fn closest_pair_to(&self, other: &SimdIndex3D) -> Option<(usize, usize, f64)> {
+        closest_pair_to_core(self, other)
     }
 
     /// Return the closest pair of *distinct* items within this index as
     /// `(i, j, distance)`, or `None` for fewer than two items.
     ///
-    /// See [`SimdIndex3D::closest_pair`] for the distance semantics. An item is never
+    /// See [`SimdIndex3D::closest_pair_to`] for the distance semantics. An item is never
     /// paired with itself; the order of the two ids, and which of several
     /// equally close pairs is reported, are traversal order and not part of
     /// the API.
@@ -1021,12 +1021,12 @@ impl SimdIndex3D {
     /// let index = builder.finish().unwrap();
     ///
     /// // Items 1 and 2 overlap, so they are zero apart.
-    /// let (i, j, distance) = index.self_closest_pair().unwrap();
+    /// let (i, j, distance) = index.closest_pair().unwrap();
     /// assert_eq!((i.min(j), i.max(j)), (1, 2));
     /// assert_eq!(distance, 0.0);
     /// ```
-    pub fn self_closest_pair(&self) -> Option<(usize, usize, f64)> {
-        self_closest_pair_core(self)
+    pub fn closest_pair(&self) -> Option<(usize, usize, f64)> {
+        closest_pair_core(self)
     }
 
     fn collect_neighbors_with_queue(
@@ -2468,10 +2468,10 @@ impl<'a> SimdIndex3DView<'a> {
 
     /// Return every unordered pair of distinct intersecting items within this
     /// view, each pair exactly once. See
-    /// [`Index2D::self_join`](crate::Index2D::self_join).
-    pub fn self_join(&self) -> Vec<(usize, usize)> {
+    /// [`Index2D::pairs`](crate::Index2D::pairs).
+    pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+        let _: ControlFlow<()> = self.pairs_with(|i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2479,12 +2479,12 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Visit every unordered pair of distinct intersecting items within this
-    /// view. See [`Index2D::self_join_with`](crate::Index2D::self_join_with).
-    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    /// view. See [`Index2D::pairs_with`](crate::Index2D::pairs_with).
+    pub fn pairs_with<B, F>(&self, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, OverlapTest, visitor)
+        pairs_core(self, OverlapTest, visitor)
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
@@ -2617,10 +2617,10 @@ impl<'a> SimdIndex3DView<'a> {
 
     /// Return every unordered pair of distinct items within this view whose
     /// boxes lie within `max_distance` of each other, each pair exactly once. See
-    /// [`Index2D::self_join_within`](crate::Index2D::self_join_within).
-    pub fn self_join_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
+    /// [`Index2D::pairs_within`](crate::Index2D::pairs_within).
+    pub fn pairs_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_within_with(max_distance, |i, j| {
+        let _: ControlFlow<()> = self.pairs_within_with(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2629,12 +2629,12 @@ impl<'a> SimdIndex3DView<'a> {
 
     /// Visit every unordered pair of distinct items within this view whose
     /// boxes lie within `max_distance` of each other. See
-    /// [`Index2D::self_join_within_with`](crate::Index2D::self_join_within_with).
-    pub fn self_join_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::pairs_within_with`](crate::Index2D::pairs_within_with).
+    pub fn pairs_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, DistanceTest::new(max_distance), visitor)
+        pairs_core(self, DistanceTest::new(max_distance), visitor)
     }
 
     /// Return the ids of items of `self` with no item of `other` within
@@ -2664,21 +2664,21 @@ impl<'a> SimdIndex3DView<'a> {
 
     /// Label every item with the smallest item id in its component of the
     /// `max_distance`-proximity graph. See
-    /// [`Index2D::self_join_within_components`](crate::Index2D::self_join_within_components).
-    pub fn self_join_within_components(&self, max_distance: f64) -> Vec<usize> {
-        self_join_components_core(self, DistanceTest::new(max_distance))
+    /// [`Index2D::pairs_within_components`](crate::Index2D::pairs_within_components).
+    pub fn pairs_within_components(&self, max_distance: f64) -> Vec<usize> {
+        pairs_components_core(self, DistanceTest::new(max_distance))
     }
 
     /// Return the closest pair of items between this view and `other`. See
-    /// [`SimdIndex3D::closest_pair`].
-    pub fn closest_pair(&self, other: &SimdIndex3DView<'_>) -> Option<(usize, usize, f64)> {
-        closest_pair_core(self, other)
+    /// [`SimdIndex3D::closest_pair_to`].
+    pub fn closest_pair_to(&self, other: &SimdIndex3DView<'_>) -> Option<(usize, usize, f64)> {
+        closest_pair_to_core(self, other)
     }
 
     /// Return the closest pair of distinct items within this view. See
-    /// [`SimdIndex3D::self_closest_pair`].
-    pub fn self_closest_pair(&self) -> Option<(usize, usize, f64)> {
-        self_closest_pair_core(self)
+    /// [`SimdIndex3D::closest_pair`].
+    pub fn closest_pair(&self) -> Option<(usize, usize, f64)> {
+        closest_pair_core(self)
     }
 
     fn try_visit<B, F>(

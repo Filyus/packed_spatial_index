@@ -4,9 +4,34 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### API
+
+- **BREAKING:** the pair queries that work within one index drop the `self_`
+  prefix for a `pairs` head, so the operation is the first word of the name:
+  `self_join` is now `pairs`, `self_join_with` is `pairs_with`,
+  `self_join_within` is `pairs_within`, `self_join_within_with` is
+  `pairs_within_with`, and `self_join_within_components` is
+  `pairs_within_components`. `pairs` reports the overlapping pairs, the same
+  way `search` means overlap everywhere else in the crate. The two-index
+  `join`, `join_with`, `join_within`, `join_within_with` and
+  `anti_join_within` are unchanged, as is the `_within` distance vocabulary.
+- **BREAKING:** the closest-pair methods swap names so the short one belongs to
+  the single-index form: `self_closest_pair()` is now `closest_pair()`, and the
+  two-index `closest_pair(&other)` is now `closest_pair_to(&other)`. **Existing
+  callers of `closest_pair(&other)` need attention even though most of them
+  still compile**: passing an index now fails to typecheck, but the name itself
+  survives as the single-index method, so a call that was written to mean "the
+  closest pair between these two" reads as "within this one" if its argument is
+  ever dropped. There is no deprecation window on the old spelling because it
+  is still a live method with a different meaning.
+- The rename is confined to the Rust API. The server's HTTP routes
+  (`/collections/{id}/closest-pair/{other}`, `/join/{other}`,
+  `/anti-join/{other}`, `/components`), its JSON field names, and the
+  `gp2psindex` CLI verbs are a separate contract and keep their spellings.
+
 ### Performance
 
-- The spatial join — `join`, `join_with`, `self_join`, the `join_within` family
+- The spatial join — `join`, `join_with`, `pairs`, the `join_within` family
   and their view and SIMD forms, all of which share one kernel — tests a node's
   children against the other side's box into a bitmask and branches once per
   surviving pair. On 100 000 × 100 000 uniform unit boxes `join` runs 2.6× faster

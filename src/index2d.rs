@@ -25,8 +25,8 @@ use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACI
 use crate::estimate::{Estimate, box_fraction_2d, estimate_core};
 use crate::geometry::{Box2D, Overlaps2D, Point2D};
 use crate::join::{
-    DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core, join_core,
-    self_closest_pair_core, self_join_components_core, self_join_core, within_core,
+    DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core,
+    closest_pair_to_core, join_core, pairs_components_core, pairs_core, within_core,
 };
 use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first, metric_knn,
@@ -1081,15 +1081,15 @@ impl Index2D {
     /// let index = builder.finish().unwrap();
     ///
     /// let pairs: Vec<_> = index
-    ///     .self_join()
+    ///     .pairs()
     ///     .into_iter()
     ///     .map(|(i, j)| (i.min(j), i.max(j)))
     ///     .collect();
     /// assert_eq!(pairs, vec![(0, 1)]);
     /// ```
-    pub fn self_join(&self) -> Vec<(usize, usize)> {
+    pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+        let _: ControlFlow<()> = self.pairs_with(|i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -1100,11 +1100,11 @@ impl Index2D {
     /// index without collecting a result `Vec`.
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    pub fn pairs_with<B, F>(&self, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, OverlapTest, visitor)
+        pairs_core(self, OverlapTest, visitor)
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
@@ -1297,7 +1297,7 @@ impl Index2D {
     /// Return every unordered pair of distinct items within this index whose
     /// boxes lie within `max_distance` of each other, each pair exactly once. See
     /// [`Index2D::join_within`] for the distance semantics and
-    /// [`Index2D::self_join`] for the pair shape.
+    /// [`Index2D::pairs`] for the pair shape.
     ///
     /// # Example
     ///
@@ -1310,13 +1310,13 @@ impl Index2D {
     /// builder.add(Box2D::new(20.0, 20.0, 21.0, 21.0));
     /// let index = builder.finish().unwrap();
     ///
-    /// let mut pairs = index.self_join_within(2.0);
+    /// let mut pairs = index.pairs_within(2.0);
     /// pairs.sort_unstable();
     /// assert_eq!(pairs, vec![(0, 1)]);
     /// ```
-    pub fn self_join_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
+    pub fn pairs_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_within_with(max_distance, |i, j| {
+        let _: ControlFlow<()> = self.pairs_within_with(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -1325,14 +1325,14 @@ impl Index2D {
 
     /// Visit every unordered pair of distinct items within this index whose
     /// boxes lie within `max_distance` of each other, without collecting a result
-    /// `Vec`. See [`Index2D::self_join_within`].
+    /// `Vec`. See [`Index2D::pairs_within`].
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn self_join_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
+    pub fn pairs_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, DistanceTest::new(max_distance), visitor)
+        pairs_core(self, DistanceTest::new(max_distance), visitor)
     }
 
     /// Return the ids of items of `self` that have no item of `other` within
@@ -1340,7 +1340,7 @@ impl Index2D {
     /// [`Index2D::join_within`]. One pruned search into `other` per item of
     /// `self`. (An index queried against itself pairs with itself at distance
     /// zero; isolated items of one index are a
-    /// [`self_join_within_components`](Index2D::self_join_within_components)
+    /// [`pairs_within_components`](Index2D::pairs_within_components)
     /// question.)
     ///
     /// A negative or NaN `max_distance` reports every item of `self`: nothing is
@@ -1396,7 +1396,7 @@ impl Index2D {
     /// proximity is not transitive — a chain of items each within `max_distance`
     /// of the next forms one component no matter how far its ends lie apart —
     /// so this reports exactly what the graph of
-    /// [`Index2D::self_join_within`] pairs defines, and the collapse policy
+    /// [`Index2D::pairs_within`] pairs defines, and the collapse policy
     /// stays with the caller.
     ///
     /// # Example
@@ -1410,10 +1410,10 @@ impl Index2D {
     /// builder.add(Box2D::new(50.0, 50.0, 51.0, 51.0));
     /// let index = builder.finish().unwrap();
     ///
-    /// assert_eq!(index.self_join_within_components(1.0), vec![0, 0, 2]);
+    /// assert_eq!(index.pairs_within_components(1.0), vec![0, 0, 2]);
     /// ```
-    pub fn self_join_within_components(&self, max_distance: f64) -> Vec<usize> {
-        self_join_components_core(self, DistanceTest::new(max_distance))
+    pub fn pairs_within_components(&self, max_distance: f64) -> Vec<usize> {
+        pairs_components_core(self, DistanceTest::new(max_distance))
     }
 
     /// Return the closest pair of items between `self` and `other` as
@@ -1447,16 +1447,16 @@ impl Index2D {
     /// b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
     /// let b = b.finish().unwrap();
     ///
-    /// assert_eq!(a.closest_pair(&b), Some((0, 1, 2.0)));
+    /// assert_eq!(a.closest_pair_to(&b), Some((0, 1, 2.0)));
     /// ```
-    pub fn closest_pair(&self, other: &Index2D) -> Option<(usize, usize, f64)> {
-        closest_pair_core(self, other)
+    pub fn closest_pair_to(&self, other: &Index2D) -> Option<(usize, usize, f64)> {
+        closest_pair_to_core(self, other)
     }
 
     /// Return the closest pair of *distinct* items within this index as
     /// `(i, j, distance)`, or `None` for fewer than two items.
     ///
-    /// See [`Index2D::closest_pair`] for the distance semantics. An item is never
+    /// See [`Index2D::closest_pair_to`] for the distance semantics. An item is never
     /// paired with itself; the order of the two ids, and which of several
     /// equally close pairs is reported, are traversal order and not part of
     /// the API.
@@ -1473,12 +1473,12 @@ impl Index2D {
     /// let index = builder.finish().unwrap();
     ///
     /// // Items 1 and 2 overlap, so they are zero apart.
-    /// let (i, j, distance) = index.self_closest_pair().unwrap();
+    /// let (i, j, distance) = index.closest_pair().unwrap();
     /// assert_eq!((i.min(j), i.max(j)), (1, 2));
     /// assert_eq!(distance, 0.0);
     /// ```
-    pub fn self_closest_pair(&self) -> Option<(usize, usize, f64)> {
-        self_closest_pair_core(self)
+    pub fn closest_pair(&self) -> Option<(usize, usize, f64)> {
+        closest_pair_core(self)
     }
 
     fn collect_neighbors_with_queues(
@@ -2518,10 +2518,10 @@ impl<'a> Index2DView<'a> {
     }
 
     /// Return every unordered pair of distinct intersecting items within this
-    /// view, each pair exactly once. See [`Index2D::self_join`].
-    pub fn self_join(&self) -> Vec<(usize, usize)> {
+    /// view, each pair exactly once. See [`Index2D::pairs`].
+    pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_with(|i, j| {
+        let _: ControlFlow<()> = self.pairs_with(|i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2529,12 +2529,12 @@ impl<'a> Index2DView<'a> {
     }
 
     /// Visit every unordered pair of distinct intersecting items within this
-    /// view. See [`Index2D::self_join_with`].
-    pub fn self_join_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    /// view. See [`Index2D::pairs_with`].
+    pub fn pairs_with<B, F>(&self, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, OverlapTest, visitor)
+        pairs_core(self, OverlapTest, visitor)
     }
 
     /// Return every pair `(i, j)` where item `i` of `self` and item `j` of
@@ -2662,10 +2662,10 @@ impl<'a> Index2DView<'a> {
 
     /// Return every unordered pair of distinct items within this view whose
     /// boxes lie within `max_distance` of each other, each pair exactly once. See
-    /// [`Index2D::self_join_within`].
-    pub fn self_join_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
+    /// [`Index2D::pairs_within`].
+    pub fn pairs_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.self_join_within_with(max_distance, |i, j| {
+        let _: ControlFlow<()> = self.pairs_within_with(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2674,12 +2674,12 @@ impl<'a> Index2DView<'a> {
 
     /// Visit every unordered pair of distinct items within this view whose
     /// boxes lie within `max_distance` of each other. See
-    /// [`Index2D::self_join_within_with`].
-    pub fn self_join_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::pairs_within_with`].
+    pub fn pairs_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
-        self_join_core(self, DistanceTest::new(max_distance), visitor)
+        pairs_core(self, DistanceTest::new(max_distance), visitor)
     }
 
     /// Return the ids of items of `self` with no item of `other` within
@@ -2709,21 +2709,21 @@ impl<'a> Index2DView<'a> {
 
     /// Label every item with the smallest item id in its component of the
     /// `max_distance`-proximity graph. See
-    /// [`Index2D::self_join_within_components`].
-    pub fn self_join_within_components(&self, max_distance: f64) -> Vec<usize> {
-        self_join_components_core(self, DistanceTest::new(max_distance))
+    /// [`Index2D::pairs_within_components`].
+    pub fn pairs_within_components(&self, max_distance: f64) -> Vec<usize> {
+        pairs_components_core(self, DistanceTest::new(max_distance))
     }
 
     /// Return the closest pair of items between this view and `other`. See
-    /// [`Index2D::closest_pair`].
-    pub fn closest_pair(&self, other: &Index2DView<'_>) -> Option<(usize, usize, f64)> {
-        closest_pair_core(self, other)
+    /// [`Index2D::closest_pair_to`].
+    pub fn closest_pair_to(&self, other: &Index2DView<'_>) -> Option<(usize, usize, f64)> {
+        closest_pair_to_core(self, other)
     }
 
     /// Return the closest pair of distinct items within this view. See
-    /// [`Index2D::self_closest_pair`].
-    pub fn self_closest_pair(&self) -> Option<(usize, usize, f64)> {
-        self_closest_pair_core(self)
+    /// [`Index2D::closest_pair`].
+    pub fn closest_pair(&self) -> Option<(usize, usize, f64)> {
+        closest_pair_core(self)
     }
 
     fn collect_neighbors_with_queues(

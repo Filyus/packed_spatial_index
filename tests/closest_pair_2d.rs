@@ -24,7 +24,7 @@ fn build(boxes: &[Box2D]) -> Index2D {
 
 /// Brute-force closest cross pair: the distance only, because which pair wins a
 /// tie is traversal order and not part of the API.
-fn naive_closest(a: &[Box2D], b: &[Box2D]) -> Option<f64> {
+fn naive_closest_pair_to(a: &[Box2D], b: &[Box2D]) -> Option<f64> {
     let mut best = f64::INFINITY;
     for box_a in a {
         for box_b in b {
@@ -34,7 +34,7 @@ fn naive_closest(a: &[Box2D], b: &[Box2D]) -> Option<f64> {
     best.is_finite().then_some(best)
 }
 
-fn naive_self_closest(boxes: &[Box2D]) -> Option<f64> {
+fn naive_closest_pair(boxes: &[Box2D]) -> Option<f64> {
     let mut best = f64::INFINITY;
     for i in 0..boxes.len() {
         for j in (i + 1)..boxes.len() {
@@ -62,7 +62,7 @@ fn check_pair(a: &[Box2D], b: &[Box2D], found: Option<(usize, usize, f64)>, expe
 }
 
 #[test]
-fn closest_pair_matches_brute_force() {
+fn closest_pair_to_matches_brute_force() {
     let mut rng = StdRng::seed_from_u64(4201);
     for (n, m, max_size) in [
         (0, 5, 4.0),
@@ -79,14 +79,14 @@ fn closest_pair_matches_brute_force() {
         check_pair(
             &boxes_a,
             &boxes_b,
-            a.closest_pair(&b),
-            naive_closest(&boxes_a, &boxes_b),
+            a.closest_pair_to(&b),
+            naive_closest_pair_to(&boxes_a, &boxes_b),
         );
     }
 }
 
 #[test]
-fn self_closest_pair_matches_brute_force() {
+fn closest_pair_matches_brute_force() {
     let mut rng = StdRng::seed_from_u64(4202);
     for (n, max_size) in [
         (0, 4.0),
@@ -98,8 +98,8 @@ fn self_closest_pair_matches_brute_force() {
     ] {
         let boxes = random_boxes(&mut rng, n, 100.0, max_size);
         let index = build(&boxes);
-        let found = index.self_closest_pair();
-        let expected = naive_self_closest(&boxes);
+        let found = index.closest_pair();
+        let expected = naive_closest_pair(&boxes);
         match (found, expected) {
             (None, None) => {}
             (Some((i, j, d)), Some(want)) => {
@@ -113,10 +113,10 @@ fn self_closest_pair_matches_brute_force() {
 }
 
 #[test]
-fn single_item_index_has_no_self_pair() {
+fn single_item_index_has_no_pair() {
     let index = build(&[Box2D::new(0.0, 0.0, 1.0, 1.0)]);
-    assert_eq!(index.self_closest_pair(), None);
-    assert_eq!(build(&[]).self_closest_pair(), None);
+    assert_eq!(index.closest_pair(), None);
+    assert_eq!(build(&[]).closest_pair(), None);
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn overlapping_boxes_are_zero_apart() {
         Box2D::new(90.0, 90.0, 91.0, 91.0),
     ];
     let index = build(&boxes);
-    let (i, j, d) = index.self_closest_pair().unwrap();
+    let (i, j, d) = index.closest_pair().unwrap();
     assert_eq!((i.min(j), i.max(j)), (0, 1));
     assert_eq!(d, 0.0);
 }
@@ -138,16 +138,16 @@ fn touching_boxes_are_zero_apart() {
     // distance of exactly zero, not an max_distance above it.
     let a = build(&[Box2D::new(0.0, 0.0, 1.0, 1.0)]);
     let b = build(&[Box2D::new(1.0, 0.0, 2.0, 1.0)]);
-    assert_eq!(a.closest_pair(&b), Some((0, 0, 0.0)));
+    assert_eq!(a.closest_pair_to(&b), Some((0, 0, 0.0)));
 }
 
 #[test]
 fn empty_index_has_no_closest_pair() {
     let a = build(&[Box2D::new(0.0, 0.0, 1.0, 1.0)]);
     let empty = build(&[]);
-    assert_eq!(a.closest_pair(&empty), None);
-    assert_eq!(empty.closest_pair(&a), None);
-    assert_eq!(empty.closest_pair(&empty), None);
+    assert_eq!(a.closest_pair_to(&empty), None);
+    assert_eq!(empty.closest_pair_to(&a), None);
+    assert_eq!(empty.closest_pair_to(&empty), None);
 }
 
 #[test]
@@ -163,12 +163,12 @@ fn view_matches_owned() {
     let view_b = Index2DView::from_bytes(&bytes_b).unwrap();
 
     assert_eq!(
-        view_a.closest_pair(&view_b).map(|(_, _, d)| d),
-        a.closest_pair(&b).map(|(_, _, d)| d)
+        view_a.closest_pair_to(&view_b).map(|(_, _, d)| d),
+        a.closest_pair_to(&b).map(|(_, _, d)| d)
     );
     assert_eq!(
-        view_a.self_closest_pair().map(|(_, _, d)| d),
-        a.self_closest_pair().map(|(_, _, d)| d)
+        view_a.closest_pair().map(|(_, _, d)| d),
+        a.closest_pair().map(|(_, _, d)| d)
     );
 }
 
@@ -182,8 +182,8 @@ fn closest_pair_is_symmetric_in_distance() {
         let a = build(&boxes_a);
         let b = build(&boxes_b);
         assert_eq!(
-            a.closest_pair(&b).map(|(_, _, d)| d),
-            b.closest_pair(&a).map(|(_, _, d)| d)
+            a.closest_pair_to(&b).map(|(_, _, d)| d),
+            b.closest_pair_to(&a).map(|(_, _, d)| d)
         );
     }
 }
@@ -196,7 +196,7 @@ fn closest_pair_agrees_with_join_within() {
     let boxes_b = random_boxes(&mut rng, 200, 100.0, 3.0);
     let a = build(&boxes_a);
     let b = build(&boxes_b);
-    let (_, _, d) = a.closest_pair(&b).unwrap();
+    let (_, _, d) = a.closest_pair_to(&b).unwrap();
     assert!(!a.join_within(&b, d).is_empty(), "empty at the answer");
     if d > 0.0 {
         let just_under = d - d * 1e-9;
@@ -206,8 +206,8 @@ fn closest_pair_agrees_with_join_within() {
         );
     }
 
-    let (_, _, d) = a.self_closest_pair().unwrap();
-    assert!(!a.self_join_within(d).is_empty());
+    let (_, _, d) = a.closest_pair().unwrap();
+    assert!(!a.pairs_within(d).is_empty());
 }
 
 #[cfg(feature = "simd")]
@@ -235,12 +235,17 @@ mod simd {
         let view_a = SimdIndex2DView::from_bytes(&bytes_a).unwrap();
         let view_b = SimdIndex2DView::from_bytes(&bytes_b).unwrap();
 
-        let expected = naive_closest(&boxes_a, &boxes_b);
-        check_pair(&boxes_a, &boxes_b, a.closest_pair(&b), expected);
-        check_pair(&boxes_a, &boxes_b, view_a.closest_pair(&view_b), expected);
+        let expected = naive_closest_pair_to(&boxes_a, &boxes_b);
+        check_pair(&boxes_a, &boxes_b, a.closest_pair_to(&b), expected);
+        check_pair(
+            &boxes_a,
+            &boxes_b,
+            view_a.closest_pair_to(&view_b),
+            expected,
+        );
 
-        let expected_self = naive_self_closest(&boxes_a);
-        assert_eq!(a.self_closest_pair().map(|(_, _, d)| d), expected_self);
-        assert_eq!(view_a.self_closest_pair().map(|(_, _, d)| d), expected_self);
+        let expected_self = naive_closest_pair(&boxes_a);
+        assert_eq!(a.closest_pair().map(|(_, _, d)| d), expected_self);
+        assert_eq!(view_a.closest_pair().map(|(_, _, d)| d), expected_self);
     }
 }

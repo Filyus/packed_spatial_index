@@ -24,10 +24,10 @@ the method for each need; the notes after it explain the reasoning.
 | The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `visit_pick` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express; `search_pick_into` / `search_pick_with` reuse the buffers | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
-| All overlapping pairs between two indexes | `join` / `join_with` (`self_join` within one index) | a query per item |
+| All overlapping pairs between two indexes | `join` / `join_with` (`pairs` within one index) | a query per item |
 | Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `visit_within` / `any_within` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
-| The single closest pair, with no distance to guess | `closest_pair(&other)` / `self_closest_pair()` | `join_within` with a guessed `max_distance`, widened until it is non-empty |
-| All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_with` (`self_join_within` within one index, `anti_join_within` for the unpaired items, `self_join_within_components` for groups) | joining indexes of `max_distance`-inflated boxes and filtering |
+| The single closest pair, with no distance to guess | `closest_pair()` within one index, `closest_pair_to(&other)` between two | `join_within` with a guessed `max_distance`, widened until it is non-empty |
+| All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_with` (`pairs_within` within one index, `anti_join_within` for the unpaired items, `pairs_within_components` for groups) | joining indexes of `max_distance`-inflated boxes and filtering |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
 | The per-item blob back, not just the id | `payload(id)` / `search_payloads(query)` on a view, or `search_payloads` on a streaming reader | a side table keyed by id |
@@ -628,14 +628,14 @@ The family shares the `join` descent with the prune test swapped for the
 distance, on every type that carries `join` (the owned `f64` indexes, their
 views, and the SIMD indexes and views):
 
-- `join_within` / `join_within_with`, `self_join_within` /
-  `self_join_within_with` — the pair stream. A leaf whose whole subtree lies
+- `join_within` / `join_within_with`, `pairs_within` /
+  `pairs_within_with` — the pair stream. A leaf whose whole subtree lies
   within `max_distance` is emitted as a range without per-item tests.
 - `anti_join_within` / `anti_join_within_with` — items of `self` with *no*
   partner within `max_distance`: the noise side of the graph, one pruned search per
   item. An index queried against itself pairs with itself at distance zero, so
   isolation within one index is a components question, not an anti-join.
-- `self_join_within_components` — one label per item: the smallest item id in
+- `pairs_within_components` — one label per item: the smallest item id in
   its component of the `max_distance`-proximity graph, an isolated item being its
   own label. The labels identify components; they are not clusters. Distance
   proximity is *not transitive* — a chain of items each within `max_distance` of the
@@ -668,16 +668,16 @@ by picking a bound, finding it empty, and widening; this finds it directly.
 # b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
 # b.add(Box2D::new(3.5, 0.0, 4.5, 1.0));
 # let towers = b.finish()?;
-let (i, j, distance) = towers.self_closest_pair().unwrap();
+let (i, j, distance) = towers.closest_pair().unwrap();
 assert_eq!((i.min(j), i.max(j)), (1, 2));
 assert_eq!(distance, 0.0); // items 1 and 2 overlap
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
-`closest_pair(&other)` does the same across two indexes, returning
+`closest_pair_to(&other)` does the same across two indexes, returning
 `(item_of_self, item_of_other, distance)`. Both return `None` when there is no
-pair to report — an empty index either side, or fewer than two items for the
-self form. An item is never paired with itself. The distance is between boxes,
+pair to report — an empty index either side, or fewer than two items for
+`closest_pair`. An item is never paired with itself. The distance is between boxes,
 zero when they overlap, so like everything here it is a broad phase and a lower
 bound on the distance between the underlying geometries. Which pair is
 reported among several at the same distance is traversal order.
@@ -701,7 +701,7 @@ one `neighbors_of_box(item, 1)` per item, keeping the minimum — pinned to one
 core, arm order alternated per round, ten paired rounds, control arm
 0.98-1.03×:
 
-| data | `closest_pair` | vs the kNN loop | `self_closest_pair` | vs the loop |
+| data | `closest_pair_to` | vs the kNN loop | `closest_pair` | vs the loop |
 | --- | --- | --- | --- | --- |
 | uniform points, no overlaps | 386 ms | 9.2× | 68 ms | 62× |
 | clustered boxes | 12.4 ms | 294× | ~0 | — |

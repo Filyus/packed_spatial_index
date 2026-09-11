@@ -73,14 +73,14 @@ fn join_matches_naive_pairs_3d() {
 }
 
 #[test]
-fn self_join_matches_naive_pairs_3d() {
+fn pairs_matches_naive_enumeration_3d() {
     let mut rng = StdRng::seed_from_u64(222);
     for (n, max_size) in [(0, 10.0), (1, 10.0), (2, 200.0), (50, 25.0), (600, 6.0)] {
         let boxes = random_boxes(&mut rng, n, 100.0, max_size);
         let index = build(&boxes);
 
         let expected = naive_self_join(&boxes);
-        assert_eq!(normalized(index.self_join()), expected, "n={n}");
+        assert_eq!(normalized(index.pairs()), expected, "n={n}");
     }
 }
 
@@ -99,7 +99,7 @@ fn view_join_matches_owned_join_3d() {
     let owned: BTreeSet<_> = a.join(&b).into_iter().collect();
     let viewed: BTreeSet<_> = view_a.join(&view_b).into_iter().collect();
     assert_eq!(owned, viewed);
-    assert_eq!(normalized(view_a.self_join()), normalized(a.self_join()));
+    assert_eq!(normalized(view_a.pairs()), normalized(a.pairs()));
 }
 
 #[cfg(feature = "simd")]
@@ -129,7 +129,7 @@ mod simd {
         assert_eq!(actual, expected);
 
         let expected_self = naive_self_join(&boxes_a);
-        assert_eq!(normalized(a.self_join()), expected_self);
+        assert_eq!(normalized(a.pairs()), expected_self);
     }
 
     #[test]
@@ -147,6 +147,6 @@ mod simd {
         let owned: BTreeSet<_> = a.join(&b).into_iter().collect();
         let viewed: BTreeSet<_> = view_a.join(&view_b).into_iter().collect();
         assert_eq!(owned, viewed);
-        assert_eq!(normalized(view_a.self_join()), normalized(a.self_join()));
+        assert_eq!(normalized(view_a.pairs()), normalized(a.pairs()));
     }
 }

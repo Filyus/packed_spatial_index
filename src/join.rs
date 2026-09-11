@@ -1,5 +1,5 @@
 //! Pairwise spatial joins: report every intersecting pair of items between two
-//! packed trees, or within one tree (`self_join`), or every pair within a
+//! packed trees, or within one tree (`pairs`), or every pair within a
 //! distance bound (`join_within`).
 //!
 //! The traversal descends both trees simultaneously from the pair of roots. One
@@ -35,7 +35,7 @@ pub(crate) trait PairTest<B: Copy> {
     fn covers(&self, leaf: B, subtree: B) -> bool;
 }
 
-/// Plain box intersection: the `join` / `self_join` semantics.
+/// Plain box intersection: the `join` / `pairs` semantics.
 pub(crate) struct OverlapTest;
 
 impl PairTest<Box2D> for OverlapTest {
@@ -288,7 +288,7 @@ where
 /// Visit every unordered pair of distinct items within `tree` that pair under
 /// `test`, each pair exactly once. The order of the two ids within a pair and
 /// the pair order are traversal order and are not part of the API.
-pub(crate) fn self_join_core<R, T, P, F>(tree: &T, test: P, mut visitor: F) -> ControlFlow<R>
+pub(crate) fn pairs_core<R, T, P, F>(tree: &T, test: P, mut visitor: F) -> ControlFlow<R>
 where
     T: TreeAccess,
     P: PairTest<T::Bounds>,
@@ -490,7 +490,7 @@ impl Best {
 /// stays infinite until the first leaf-leaf pair is popped — on dense data
 /// with no overlapping pair that is deep into the traversal, and until then
 /// nothing is pruned at all.
-fn seed_best<T, U>(a: &T, b: &U, best: &mut Best)
+fn seed_best_to<T, U>(a: &T, b: &U, best: &mut Best)
 where
     T: TreeAccess,
     U: TreeAccess<Bounds = T::Bounds>,
@@ -539,9 +539,9 @@ where
 /// The leaves are in spatial-sort order, so consecutive entries are usually
 /// close; a sweep of adjacent pairs is one pass over the leaf bounds and
 /// typically lands within a small factor of the answer. Same guarantee as
-/// [`seed_best`]: every offer is a real pair of distinct items, so it can only
+/// [`seed_best_to`]: every offer is a real pair of distinct items, so it can only
 /// tighten the bound the descent prunes against.
-fn seed_self_best<T>(tree: &T, best: &mut Best)
+fn seed_best<T>(tree: &T, best: &mut Best)
 where
     T: TreeAccess,
     T::Bounds: PairDistance,
@@ -576,7 +576,7 @@ where
 ///
 /// Ties: the pair reported among several at the same distance is traversal
 /// order and is not part of the API.
-pub(crate) fn closest_pair_core<T, U>(a: &T, b: &U) -> Option<(usize, usize, f64)>
+pub(crate) fn closest_pair_to_core<T, U>(a: &T, b: &U) -> Option<(usize, usize, f64)>
 where
     T: TreeAccess,
     U: TreeAccess<Bounds = T::Bounds>,
@@ -592,7 +592,7 @@ where
         dist_squared: f64::INFINITY,
         pair: None,
     };
-    seed_best(a, b, &mut best);
+    seed_best_to(a, b, &mut best);
     let mut heap: BinaryHeap<PairState> = BinaryHeap::with_capacity(64);
     heap.push(PairState {
         dist_squared: a
@@ -679,13 +679,13 @@ fn expand_closest_pair<T, U>(
 /// The closest pair of *distinct* items within one tree, as `(i, j, distance)`,
 /// or `None` for a tree with fewer than two items.
 ///
-/// Same frontier as [`closest_pair_core`], with the diagonal handled the way
-/// [`self_join_core`] handles it: an entry paired with itself expands into
+/// Same frontier as [`closest_pair_to_core`], with the diagonal handled the way
+/// [`pairs_core`] handles it: an entry paired with itself expands into
 /// child pairs `i <= j`, so each unordered pair is reached once and an item is
 /// never paired with itself. The order of the two ids within the pair, and
 /// which of several equally close pairs is reported, are traversal order and
 /// not part of the API.
-pub(crate) fn self_closest_pair_core<T>(tree: &T) -> Option<(usize, usize, f64)>
+pub(crate) fn closest_pair_core<T>(tree: &T) -> Option<(usize, usize, f64)>
 where
     T: TreeAccess,
     T::Bounds: PairDistance,
@@ -700,7 +700,7 @@ where
         dist_squared: f64::INFINITY,
         pair: None,
     };
-    seed_self_best(tree, &mut best);
+    seed_best(tree, &mut best);
     let mut heap: BinaryHeap<PairState> = BinaryHeap::with_capacity(64);
     heap.push(PairState {
         dist_squared: 0.0,
@@ -825,7 +825,7 @@ where
 /// the proximity graph `test` defines. An item with no pair is its own label.
 /// Deterministic: the label of a component does not depend on the order the
 /// pairs arrive in.
-pub(crate) fn self_join_components_core<T: TreeAccess, P: PairTest<T::Bounds>>(
+pub(crate) fn pairs_components_core<T: TreeAccess, P: PairTest<T::Bounds>>(
     tree: &T,
     test: P,
 ) -> Vec<usize> {
@@ -852,7 +852,7 @@ pub(crate) fn self_join_components_core<T: TreeAccess, P: PairTest<T::Bounds>>(
         }
     }
 
-    let _ = self_join_core::<(), T, P, _>(tree, test, |i, j| {
+    let _ = pairs_core::<(), T, P, _>(tree, test, |i, j| {
         union(&mut parent, i, j);
         ControlFlow::<()>::Continue(())
     });

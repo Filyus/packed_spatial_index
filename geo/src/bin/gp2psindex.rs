@@ -653,8 +653,8 @@ fn join_pairs<W: std::io::Write>(
 
     let flow = match b_bytes {
         None => match &a {
-            JoinIndex::D2(a) => a.self_join_within_with(max_distance, &mut emit),
-            JoinIndex::D3(a) => a.self_join_within_with(max_distance, &mut emit),
+            JoinIndex::D2(a) => a.pairs_within_with(max_distance, &mut emit),
+            JoinIndex::D3(a) => a.pairs_within_with(max_distance, &mut emit),
         },
         Some(bytes) => {
             let b = load_join_index(bytes, "b.psi")?;
@@ -797,12 +797,12 @@ fn closest_pair(
     let a = load_join_index(a_bytes, "a.psi")?;
     Ok(match b_bytes {
         None => match &a {
-            JoinIndex::D2(a) => a.self_closest_pair(),
-            JoinIndex::D3(a) => a.self_closest_pair(),
+            JoinIndex::D2(a) => a.closest_pair(),
+            JoinIndex::D3(a) => a.closest_pair(),
         },
         Some(bytes) => match (&a, &load_join_index(bytes, "b.psi")?) {
-            (JoinIndex::D2(a), JoinIndex::D2(b)) => a.closest_pair(b),
-            (JoinIndex::D3(a), JoinIndex::D3(b)) => a.closest_pair(b),
+            (JoinIndex::D2(a), JoinIndex::D2(b)) => a.closest_pair_to(b),
+            (JoinIndex::D3(a), JoinIndex::D3(b)) => a.closest_pair_to(b),
             _ => {
                 return Err(
                     "a.psi and b.psi are different dimensions; a closest pair needs both in 2D or both in 3D"
@@ -843,8 +843,8 @@ fn component_labels(
     max_distance: f64,
 ) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
     Ok(match load_join_index(bytes, "a.psi")? {
-        JoinIndex::D2(index) => index.self_join_within_components(max_distance),
-        JoinIndex::D3(index) => index.self_join_within_components(max_distance),
+        JoinIndex::D2(index) => index.pairs_within_components(max_distance),
+        JoinIndex::D3(index) => index.pairs_within_components(max_distance),
     })
 }
 
@@ -2145,7 +2145,7 @@ mod tests {
 
     #[cfg(feature = "geojson")]
     #[test]
-    fn self_join_pairs_each_distinct_pair_once() {
+    fn pairs_each_distinct_pair_once() {
         let a = artifact_2d(&[(0.0, 0.0), (1.0, 0.0), (50.0, 0.0)]);
         let mut out = Vec::new();
         let count = join_pairs(&a, None, 1.0, false, &mut out).unwrap();

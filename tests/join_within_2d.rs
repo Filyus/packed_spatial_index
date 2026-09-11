@@ -120,7 +120,7 @@ fn join_within_matches_naive_pairs() {
 }
 
 #[test]
-fn self_join_within_matches_naive_pairs() {
+fn pairs_within_matches_naive_enumeration() {
     let mut rng = StdRng::seed_from_u64(222);
     for (n, max_size, max_distance) in [
         (0, 4.0, 2.0),
@@ -133,7 +133,7 @@ fn self_join_within_matches_naive_pairs() {
 
         let expected = naive_self_within_join(&boxes, max_distance);
         assert_eq!(
-            normalized(index.self_join_within(max_distance)),
+            normalized(index.pairs_within(max_distance)),
             expected,
             "n={n} eps={max_distance}"
         );
@@ -152,9 +152,9 @@ fn max_distance_zero_equals_overlap_join() {
     let joined_at_zero: BTreeSet<_> = a.join_within(&b, 0.0).into_iter().collect();
     assert_eq!(joined, joined_at_zero);
 
-    let self_joined = normalized(a.self_join());
-    let self_joined_at_zero = normalized(a.self_join_within(0.0));
-    assert_eq!(self_joined, self_joined_at_zero);
+    let overlapping_pairs = normalized(a.pairs());
+    let pairs_at_zero = normalized(a.pairs_within(0.0));
+    assert_eq!(overlapping_pairs, pairs_at_zero);
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn max_distance_invalid_matches_nothing() {
 
     for max_distance in [-1.0, f64::NAN] {
         assert!(a.join_within(&b, max_distance).is_empty());
-        assert!(a.self_join_within(max_distance).is_empty());
+        assert!(a.pairs_within(max_distance).is_empty());
         // The anti-join flips it around: nothing is within the bound, so
         // every item of `a` is reported, and every item is its own component.
         assert_eq!(
@@ -184,7 +184,7 @@ fn max_distance_invalid_matches_nothing() {
             "eps={max_distance}"
         );
         assert_eq!(
-            a.self_join_within_components(max_distance),
+            a.pairs_within_components(max_distance),
             (0..boxes.len()).collect::<Vec<_>>(),
             "eps={max_distance}"
         );
@@ -200,7 +200,7 @@ fn max_distance_huge_reports_every_pair() {
     let b = build(&boxes_b);
 
     assert_eq!(a.join_within(&b, 1.0e9).len(), 12 * 9);
-    assert_eq!(a.self_join_within(1.0e9).len(), 12 * 11 / 2);
+    assert_eq!(a.pairs_within(1.0e9).len(), 12 * 11 / 2);
 }
 
 #[test]
@@ -209,11 +209,11 @@ fn join_within_with_supports_early_exit() {
     let boxes = random_boxes(&mut rng, 400, 60.0, 6.0);
     let index = build(&boxes);
 
-    let total = index.self_join_within(5.0).len();
+    let total = index.pairs_within(5.0).len();
     assert!(total > 10, "test needs a pair-rich input, got {total}");
 
     let mut seen = 0usize;
-    let flow = index.self_join_within_with(5.0, |_, _| {
+    let flow = index.pairs_within_with(5.0, |_, _| {
         seen += 1;
         if seen == 10 {
             ControlFlow::Break(())
@@ -232,7 +232,7 @@ fn within_components_match_naive_union_find() {
         let boxes = random_boxes(&mut rng, 300, 100.0, max_size);
         let index = build(&boxes);
         assert_eq!(
-            index.self_join_within_components(max_distance),
+            index.pairs_within_components(max_distance),
             naive_components(&boxes, max_distance),
             "max_size={max_size} eps={max_distance}"
         );
@@ -250,7 +250,7 @@ fn within_chain_is_one_component() {
         Box2D::new(4.0, 0.0, 5.0, 1.0),
     ];
     let index = build(&boxes);
-    assert_eq!(index.self_join_within_components(1.0), vec![0, 0, 0]);
+    assert_eq!(index.pairs_within_components(1.0), vec![0, 0, 0]);
     // Queried against itself every item pairs with itself at distance zero,
     // so the anti-join is empty; isolation is a components question.
     assert!(index.anti_join_within(&index, 1.0).is_empty());
@@ -294,8 +294,8 @@ fn view_within_family_matches_owned() {
             .collect();
         assert_eq!(owned, viewed, "eps={max_distance}");
         assert_eq!(
-            normalized(view_a.self_join_within(max_distance)),
-            normalized(a.self_join_within(max_distance)),
+            normalized(view_a.pairs_within(max_distance)),
+            normalized(a.pairs_within(max_distance)),
             "eps={max_distance}"
         );
         assert_eq!(
@@ -305,8 +305,8 @@ fn view_within_family_matches_owned() {
         );
     }
     assert_eq!(
-        view_a.self_join_within_components(3.0),
-        a.self_join_within_components(3.0)
+        view_a.pairs_within_components(3.0),
+        a.pairs_within_components(3.0)
     );
 }
 
@@ -337,7 +337,7 @@ mod simd {
             assert_eq!(actual, expected, "eps={max_distance}");
 
             let expected_self = naive_self_within_join(&boxes_a, max_distance);
-            assert_eq!(normalized(a.self_join_within(max_distance)), expected_self);
+            assert_eq!(normalized(a.pairs_within(max_distance)), expected_self);
 
             assert_eq!(
                 sorted_ids(a.anti_join_within(&b, max_distance)),
@@ -346,7 +346,7 @@ mod simd {
                     .collect::<Vec<_>>()
             );
             assert_eq!(
-                a.self_join_within_components(max_distance),
+                a.pairs_within_components(max_distance),
                 naive_components(&boxes_a, max_distance),
                 "eps={max_distance}"
             );
@@ -373,8 +373,8 @@ mod simd {
                 .collect();
             assert_eq!(owned, viewed, "eps={max_distance}");
             assert_eq!(
-                normalized(view_a.self_join_within(max_distance)),
-                normalized(a.self_join_within(max_distance))
+                normalized(view_a.pairs_within(max_distance)),
+                normalized(a.pairs_within(max_distance))
             );
             assert_eq!(
                 view_a.anti_join_within(&view_b, max_distance),
@@ -382,8 +382,8 @@ mod simd {
             );
         }
         assert_eq!(
-            view_a.self_join_within_components(4.0),
-            a.self_join_within_components(4.0)
+            view_a.pairs_within_components(4.0),
+            a.pairs_within_components(4.0)
         );
     }
 }

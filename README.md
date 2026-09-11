@@ -102,11 +102,11 @@ see [docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
 | Geographic / custom-metric kNN | [`neighbors_metric`][neighbors_metric], [`neighbors_metric_into`][neighbors_metric_into], [`visit_neighbors_metric`][visit_neighbors_metric] — pass a `\|box\| -> f64` distance (e.g. [`haversine_distance_2d`][haversine_distance_2d] for lon/lat) |
 | Ordered region | [`search_ordered`][search_ordered], [`search_ordered_into`][search_ordered_into], [`visit_ordered`][visit_ordered] — the same region shapes, emitted in nondecreasing order of a `\|box\| -> f64` key (e.g. [`view_depth_3d`][view_depth_3d] for front-to-back), so a budget can stop the traversal |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`visit_raycast`][visit_raycast] |
-| Spatial join | [`join`][join], [`join_with`][join_with], [`self_join`][self_join], [`self_join_with`][self_join_with] |
+| Spatial join | [`join`][join], [`join_with`][join_with] between two indexes; [`pairs`][pairs], [`pairs_with`][pairs_with] for the overlapping pairs within one |
 | Estimate before you query | [`estimate_count`][estimate_count] — an exact `[lower, upper]` bracket on the hit count from node boxes alone, plus a point estimate; the streaming readers answer it from the cached directory without a read |
 | Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`visit_within`][visit_within], [`any_within`][any_within], [`count_within`][count_within] — every item whose box lies within `max_distance` of a query box, `max_distance = 0.0` reproducing `search` |
-| Distance join (ε-join) | [`join_within`][join_within], [`join_within_with`][join_within_with], [`self_join_within`][self_join_within], [`self_join_within_with`][self_join_within_with], [`anti_join_within`][anti_join_within], [`self_join_within_components`][self_join_within_components] |
-| Closest pair | [`closest_pair`][closest_pair], [`self_closest_pair`][self_closest_pair] — the single nearest pair of items between two indexes (or within one), with no `max_distance` to guess |
+| Distance join (ε-join) | [`join_within`][join_within], [`join_within_with`][join_within_with], [`pairs_within`][pairs_within], [`pairs_within_with`][pairs_within_with], [`anti_join_within`][anti_join_within], [`pairs_within_components`][pairs_within_components] |
+| Closest pair | [`closest_pair`][closest_pair] within one index, [`closest_pair_to`][closest_pair_to] between two — the single nearest pair, with no `max_distance` to guess |
 | Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
 
 The range / overlap methods accept `Box2D` / `Box3D` queries and borrowed
@@ -323,22 +323,22 @@ Licensed under the Apache License, Version 2.0.
 [visit_raycast]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_raycast
 [join]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join
 [join_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_with
-[self_join]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_join
-[self_join_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_join_with
+[pairs]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs
+[pairs_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs_with
 [estimate_count]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.estimate_count
 [search_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within
 [search_within_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within_into
 [visit_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit_within
 [any_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any_within
 [count_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.count_within
+[closest_pair_to]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.closest_pair_to
 [closest_pair]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.closest_pair
-[self_closest_pair]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_closest_pair
 [join_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_within
 [join_within_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_within_with
-[self_join_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_join_within
-[self_join_within_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_join_within_with
+[pairs_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs_within
+[pairs_within_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs_within_with
 [anti_join_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.anti_join_within
-[self_join_within_components]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.self_join_within_components
+[pairs_within_components]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs_within_components
 [extent]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.extent
 [search_exact]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html#method.search_exact
 [neighbors_exact]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html#method.neighbors_exact

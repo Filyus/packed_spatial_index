@@ -4,7 +4,7 @@
 //! by sweeping a wide space of inputs:
 //!   * `search` (scalar, view, and SIMD) agrees with a brute-force scan;
 //!   * `neighbors` (kNN) returns the k nearest by distance, tie-safe;
-//!   * `self_join` returns exactly the brute-force set of intersecting pairs;
+//!   * `pairs` returns exactly the brute-force set of intersecting pairs;
 //!   * `raycast` / `raycast_closest` and the triangle / convex-polygon region
 //!     queries agree with their public predicate run over every box;
 //!   * `from_bytes` never panics on arbitrary or mutated byte buffers, even
@@ -92,7 +92,7 @@ fn knn_dists(ids: &[usize], boxes: &[[f64; 4]], px: f64, py: f64) -> Vec<f64> {
     d
 }
 
-/// Pair with the two ids ordered, since `self_join` does not promise an order
+/// Pair with the two ids ordered, since `pairs` does not promise an order
 /// within a pair.
 fn norm(pair: (usize, usize)) -> (usize, usize) {
     if pair.0 <= pair.1 {
@@ -224,21 +224,21 @@ proptest! {
         }
     }
 
-    /// `self_join` returns exactly the brute-force set of intersecting pairs (ids
+    /// `pairs` returns exactly the brute-force set of intersecting pairs (ids
     /// within a pair are order-independent) — scalar index, view, and SIMD index.
     #[test]
-    fn self_join_matches_brute_force(boxes in boxes_strategy()) {
+    fn pairs_matches_brute_force(boxes in boxes_strategy()) {
         let mut expected = brute_force_self_join(&boxes);
         expected.sort_unstable();
 
         let index = build(&boxes);
-        let mut got: Vec<(usize, usize)> = index.self_join().into_iter().map(norm).collect();
+        let mut got: Vec<(usize, usize)> = index.pairs().into_iter().map(norm).collect();
         got.sort_unstable();
         prop_assert_eq!(&got, &expected);
 
         let bytes = index.to_bytes();
         let view = Index2DView::from_bytes(&bytes).unwrap();
-        let mut got_v: Vec<(usize, usize)> = view.self_join().into_iter().map(norm).collect();
+        let mut got_v: Vec<(usize, usize)> = view.pairs().into_iter().map(norm).collect();
         got_v.sort_unstable();
         prop_assert_eq!(&got_v, &expected);
 
@@ -249,7 +249,7 @@ proptest! {
                 builder.add(Box2D::new(b[0], b[1], b[2], b[3]));
             }
             let simd = builder.finish_simd().unwrap();
-            let mut got_s: Vec<(usize, usize)> = simd.self_join().into_iter().map(norm).collect();
+            let mut got_s: Vec<(usize, usize)> = simd.pairs().into_iter().map(norm).collect();
             got_s.sort_unstable();
             prop_assert_eq!(&got_s, &expected);
         }

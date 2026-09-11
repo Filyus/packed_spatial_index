@@ -1,7 +1,7 @@
 //! Property-based correctness and robustness tests for the 3D index.
 //!
 //! Mirrors `proptest_2d.rs`: `search` (scalar, view, SIMD) agrees with a
-//! brute-force scan; `neighbors` (kNN), `self_join`, `raycast` /
+//! brute-force scan; `neighbors` (kNN), `pairs`, `raycast` /
 //! `raycast_closest`, and frustum culling match their brute-force oracle; and
 //! `from_bytes` never panics on arbitrary or mutated byte buffers despite using
 //! `*_unchecked` accessors after header validation.
@@ -203,21 +203,21 @@ proptest! {
         }
     }
 
-    /// `self_join`: exactly the brute-force set of intersecting pairs (ids within
+    /// `pairs`: exactly the brute-force set of intersecting pairs (ids within
     /// a pair are order-independent) — scalar index, view, and SIMD index.
     #[test]
-    fn self_join_matches_brute_force(boxes in boxes_strategy()) {
+    fn pairs_matches_brute_force(boxes in boxes_strategy()) {
         let mut expected = brute_force_self_join(&boxes);
         expected.sort_unstable();
 
         let index = build(&boxes);
-        let mut got: Vec<(usize, usize)> = index.self_join().into_iter().map(norm).collect();
+        let mut got: Vec<(usize, usize)> = index.pairs().into_iter().map(norm).collect();
         got.sort_unstable();
         prop_assert_eq!(&got, &expected);
 
         let bytes = index.to_bytes();
         let view = Index3DView::from_bytes(&bytes).unwrap();
-        let mut got_v: Vec<(usize, usize)> = view.self_join().into_iter().map(norm).collect();
+        let mut got_v: Vec<(usize, usize)> = view.pairs().into_iter().map(norm).collect();
         got_v.sort_unstable();
         prop_assert_eq!(&got_v, &expected);
 
@@ -228,7 +228,7 @@ proptest! {
                 builder.add(box3d(b));
             }
             let simd = builder.finish_simd().unwrap();
-            let mut got_s: Vec<(usize, usize)> = simd.self_join().into_iter().map(norm).collect();
+            let mut got_s: Vec<(usize, usize)> = simd.pairs().into_iter().map(norm).collect();
             got_s.sort_unstable();
             prop_assert_eq!(&got_s, &expected);
         }

@@ -757,10 +757,10 @@ pub fn join_response(
             (collection.id() != other.id()).then(|| other.join_index()),
         ) {
             (JoinIndex::D2(index), None) => {
-                let _ = index.self_join_within_with(max_distance, &mut emit);
+                let _ = index.pairs_within_with(max_distance, &mut emit);
             }
             (JoinIndex::D3(index), None) => {
-                let _ = index.self_join_within_with(max_distance, &mut emit);
+                let _ = index.pairs_within_with(max_distance, &mut emit);
             }
             (JoinIndex::D2(a), Some(views)) => match views? {
                 JoinIndex::D2(b) => {
@@ -963,8 +963,8 @@ pub fn components_response(
     let count_mode = parse_count_mode(params.count.as_deref())?;
 
     let labels = match collection.join_index()? {
-        JoinIndex::D2(index) => index.self_join_within_components(max_distance),
-        JoinIndex::D3(index) => index.self_join_within_components(max_distance),
+        JoinIndex::D2(index) => index.pairs_within_components(max_distance),
+        JoinIndex::D3(index) => index.pairs_within_components(max_distance),
     };
     let item_count = labels.len();
     // A component's label is the smallest ordinal in it, so the distinct
@@ -1468,13 +1468,13 @@ pub fn closest_pair_response(
 ) -> Result<ClosestPairResponse, ServerError> {
     let found = if collection.id() == other.id() {
         match collection.join_index()? {
-            JoinIndex::D2(index) => index.self_closest_pair(),
-            JoinIndex::D3(index) => index.self_closest_pair(),
+            JoinIndex::D2(index) => index.closest_pair(),
+            JoinIndex::D3(index) => index.closest_pair(),
         }
     } else {
         match (collection.join_index()?, other.join_index()?) {
-            (JoinIndex::D2(a), JoinIndex::D2(b)) => a.closest_pair(b),
-            (JoinIndex::D3(a), JoinIndex::D3(b)) => a.closest_pair(b),
+            (JoinIndex::D2(a), JoinIndex::D2(b)) => a.closest_pair_to(b),
+            (JoinIndex::D3(a), JoinIndex::D3(b)) => a.closest_pair_to(b),
             _ => return Err(dimension_mismatch(collection, other)),
         }
     };

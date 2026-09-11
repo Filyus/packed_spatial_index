@@ -61,6 +61,82 @@ fn prefetch_aos_node(entries: &[Box2D], indices: &[usize], node_index: usize, no
     }
 }
 
+/// One traversal-stack slot: the child node index in the high bits, its level in
+/// the low bits, plus a flag for "the query contains this whole subtree". Packing
+/// the pair into one `usize` keeps the crate-wide `Vec<usize>` stack type while
+/// costing every child one push and one pop instead of two.
+mod frame {
+    const LEVEL_BITS: u32 = 8;
+    const LEVEL_MASK: usize = (1 << 7) - 1;
+    pub(super) const CONTAINED: usize = 1 << 7;
+
+    #[inline(always)]
+    pub(super) fn pack(node_index: usize, level: usize) -> usize {
+        debug_assert!(level <= LEVEL_MASK);
+        (node_index << LEVEL_BITS) | level
+    }
+
+    #[inline(always)]
+    pub(super) fn node(frame: usize) -> usize {
+        frame >> LEVEL_BITS
+    }
+
+    #[inline(always)]
+    pub(super) fn level(frame: usize) -> usize {
+        frame & LEVEL_MASK
+    }
+
+    #[inline(always)]
+    pub(super) fn contained(frame: usize) -> bool {
+        frame & CONTAINED != 0
+    }
+}
+
+/// Widest node chunk one overlap mask covers.
+const MASK_CHUNK: usize = u64::BITS as usize;
+
+/// Overlap tests of up to 64 entries folded into a bitmask, bit `i` for entry `i`.
+///
+/// The loop has no data-dependent branch, so LLVM vectorizes it, and the callers
+/// then branch once per *hit* instead of once per entry. Along a query's edge the
+/// per-entry test is right about half the time, which callgrind put at roughly
+/// half of all branch mispredicts in `visit` — LLVM turns the bitwise `&` in
+/// [`Box2D::overlaps`] back into a short-circuit branch there. Writing every
+/// candidate unconditionally instead was measured to lose on narrow queries,
+/// where the rejected-child branch is well predicted and the writes are pure
+/// cost; the mask pays for neither. Measured on the collect paths (`search`,
+/// `search_into`, `search_with`): −25–37% on wide queries, −7–25% on narrow.
+/// The callback paths do not use it; see `visit_with_stack_impl`.
+#[inline(always)]
+fn overlap_mask(entries: &[Box2D], query: Box2D) -> u64 {
+    debug_assert!(entries.len() <= MASK_CHUNK);
+    let mut mask = 0u64;
+    for (i, b) in entries.iter().enumerate() {
+        mask |= u64::from(b.overlaps(query)) << i;
+    }
+    mask
+}
+
+/// Visit the set bits of `mask` from low to high — leaf hits in item order.
+#[inline(always)]
+fn for_each_hit(mut mask: u64, mut f: impl FnMut(usize)) {
+    while mask != 0 {
+        f(mask.trailing_zeros() as usize);
+        mask &= mask - 1;
+    }
+}
+
+/// Visit the set bits of `mask` from high to low — children pushed in reverse so
+/// they pop in forward order.
+#[inline(always)]
+fn for_each_hit_rev(mut mask: u64, mut f: impl FnMut(usize)) {
+    while mask != 0 {
+        let hi = (u64::BITS - 1 - mask.leading_zeros()) as usize;
+        mask &= !(1u64 << hi);
+        f(hi);
+    }
+}
+
 /// Finished static read-only index.
 ///
 /// Search methods return item positions in the original insertion order. The order
@@ -1574,38 +1650,37 @@ impl Index2D {
             let is_leaf = node_index < self.num_items;
             let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
+            let chunks = node_entries
+                .chunks(MASK_CHUNK)
+                .zip(node_indices.chunks(MASK_CHUNK));
 
             if is_leaf {
-                for (b, &index) in node_entries.iter().zip(node_indices) {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    results.push(index);
+                for (boxes, indices) in chunks {
+                    for_each_hit(overlap_mask(boxes, query), |i| results.push(indices[i]));
                 }
             } else {
                 let child_level = level - 1;
-                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    stack.push(index);
-                    stack.push(child_level);
+                for (boxes, indices) in chunks.rev() {
+                    for_each_hit_rev(overlap_mask(boxes, query), |i| {
+                        stack.push(frame::pack(indices[i], child_level));
+                    });
                 }
             }
 
-            if stack.len() > 1 {
-                if PREFETCH {
-                    prefetch_aos_node(
-                        &self.entries,
-                        &self.indices,
-                        stack[stack.len() - 2],
-                        self.node_size,
-                    );
+            match stack.pop() {
+                Some(f) => {
+                    if PREFETCH && let Some(&next) = stack.last() {
+                        prefetch_aos_node(
+                            &self.entries,
+                            &self.indices,
+                            frame::node(next),
+                            self.node_size,
+                        );
+                    }
+                    node_index = frame::node(f);
+                    level = frame::level(f);
                 }
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return;
+                None => return,
             }
         }
     }
@@ -1614,7 +1689,7 @@ impl Index2D {
     /// its leaf range instead of testing the items inside it.
     ///
     /// This is the counting twin of `search_into_stack_contained_impl`: same
-    /// traversal, same `CONTAINED_FLAG` encoding, but a contained node contributes
+    /// traversal, same `frame::CONTAINED` encoding, but a contained node contributes
     /// `end - start` and never touches an entry. `count` used to run the plain
     /// visitor traversal, which tests every item under a contained subtree and
     /// calls a closure for each hit, so a window covering a fraction `f` of an
@@ -1624,9 +1699,6 @@ impl Index2D {
         if self.num_items == 0 {
             return 0;
         }
-
-        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
-        const LEVEL_MASK: usize = !CONTAINED_FLAG;
 
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         let mut total = 0usize;
@@ -1653,27 +1725,24 @@ impl Index2D {
             } else {
                 let child_level = level - 1;
                 let node_indices = &self.indices[node_index..end];
-                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    stack.push(index);
-                    let encoded_level = if query.contains(*b) {
-                        child_level | CONTAINED_FLAG
-                    } else {
-                        child_level
-                    };
-                    stack.push(encoded_level);
+                let chunks = node_entries
+                    .chunks(MASK_CHUNK)
+                    .zip(node_indices.chunks(MASK_CHUNK));
+                for (boxes, indices) in chunks.rev() {
+                    for_each_hit_rev(overlap_mask(boxes, query), |i| {
+                        let flag = usize::from(query.contains(boxes[i])) * frame::CONTAINED;
+                        stack.push(frame::pack(indices[i], child_level) | flag);
+                    });
                 }
             }
 
-            if stack.len() > 1 {
-                let encoded_level = stack.pop().unwrap();
-                level = encoded_level & LEVEL_MASK;
-                contained = (encoded_level & CONTAINED_FLAG) != 0;
-                node_index = stack.pop().unwrap();
-            } else {
-                return total;
+            match stack.pop() {
+                Some(f) => {
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                    contained = frame::contained(f);
+                }
+                None => return total,
             }
         }
     }
@@ -1690,9 +1759,6 @@ impl Index2D {
             return;
         }
 
-        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
-        const LEVEL_MASK: usize = !CONTAINED_FLAG;
-
         let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
         let mut contained = false;
@@ -1702,45 +1768,41 @@ impl Index2D {
             let is_leaf = node_index < self.num_items;
             let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
+            let chunks = node_entries
+                .chunks(MASK_CHUNK)
+                .zip(node_indices.chunks(MASK_CHUNK));
 
             if contained {
                 self.extend_contained_leaf_indices(node_index, end, level, results);
             } else if is_leaf {
-                for (b, &index) in node_entries.iter().zip(node_indices) {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    results.push(index);
+                for (boxes, indices) in chunks {
+                    for_each_hit(overlap_mask(boxes, query), |i| results.push(indices[i]));
                 }
             } else {
                 let child_level = level - 1;
-                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    stack.push(index);
-                    let encoded_level = if query.contains(*b) {
-                        child_level | CONTAINED_FLAG
-                    } else {
-                        child_level
-                    };
-                    stack.push(encoded_level);
+                for (boxes, indices) in chunks.rev() {
+                    for_each_hit_rev(overlap_mask(boxes, query), |i| {
+                        let flag = usize::from(query.contains(boxes[i])) * frame::CONTAINED;
+                        stack.push(frame::pack(indices[i], child_level) | flag);
+                    });
                 }
             }
 
-            if stack.len() > 1 {
-                prefetch_aos_node(
-                    &self.entries,
-                    &self.indices,
-                    stack[stack.len() - 2],
-                    self.node_size,
-                );
-                let encoded_level = stack.pop().unwrap();
-                level = encoded_level & LEVEL_MASK;
-                contained = (encoded_level & CONTAINED_FLAG) != 0;
-                node_index = stack.pop().unwrap();
-            } else {
-                return;
+            match stack.pop() {
+                Some(f) => {
+                    if let Some(&next) = stack.last() {
+                        prefetch_aos_node(
+                            &self.entries,
+                            &self.indices,
+                            frame::node(next),
+                            self.node_size,
+                        );
+                    }
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                    contained = frame::contained(f);
+                }
+                None => return,
             }
         }
     }
@@ -1779,9 +1841,16 @@ impl Index2D {
             let is_leaf = node_index < self.num_items;
             let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
+            let children = node_entries.iter().zip(node_indices);
 
+            // The callback paths keep the branching loops on purpose. `any` and
+            // `first` leave after the first hit, and there the full overlap mask
+            // of every internal node on the way down costs more than the branches
+            // it replaces, which are well predicted while most children miss:
+            // mask-and-iterate measured +40–60% on `any` and lost on narrow
+            // `visit`, while winning every collect path (see `overlap_mask`).
             if is_leaf {
-                for (b, &index) in node_entries.iter().zip(node_indices) {
+                for (b, &index) in children {
                     if !b.overlaps(query) {
                         continue;
                     }
@@ -1789,28 +1858,28 @@ impl Index2D {
                 }
             } else {
                 let child_level = level - 1;
-                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
+                for (b, &index) in children.rev() {
                     if !b.overlaps(query) {
                         continue;
                     }
-                    stack.push(index);
-                    stack.push(child_level);
+                    stack.push(frame::pack(index, child_level));
                 }
             }
 
-            if stack.len() > 1 {
-                if PREFETCH {
-                    prefetch_aos_node(
-                        &self.entries,
-                        &self.indices,
-                        stack[stack.len() - 2],
-                        self.node_size,
-                    );
+            match stack.pop() {
+                Some(f) => {
+                    if PREFETCH && let Some(&next) = stack.last() {
+                        prefetch_aos_node(
+                            &self.entries,
+                            &self.indices,
+                            frame::node(next),
+                            self.node_size,
+                        );
+                    }
+                    node_index = frame::node(f);
+                    level = frame::level(f);
                 }
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return ControlFlow::Continue(());
+                None => return ControlFlow::Continue(()),
             }
         }
     }

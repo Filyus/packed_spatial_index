@@ -4,6 +4,21 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Performance
+
+- The scalar 2D collect paths — `search`, `search_into`, `search_with` and
+  `count` on `Index2D` — test each node's children into a bitmask and then
+  branch once per hit rather than once per child. Along a query's edge the
+  per-child overlap branch is right about half the time, and callgrind put
+  roughly half of the traversal's branch mispredicts on it. Measured on
+  100 000 boxes: −25–37% on queries returning ~44 items, −7–25% on queries
+  returning ~1. The traversal stack also holds one packed `(node, level)`
+  word per child instead of two, on every 2D scalar path including `visit`.
+  The callback paths (`visit`, `any`, `first`) keep the branching loop on
+  purpose: on an early-exit query the full mask per internal node measured
+  +40–60% on `any`, since the rejected-child branch is well predicted while
+  most children miss.
+
 ## [0.29.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.28.0...psi-v0.29.0) - 2026-09-05
 
 ### Search

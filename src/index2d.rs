@@ -36,7 +36,7 @@ use crate::persistence::{
     LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, parse_index_owned,
     payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
 };
-use crate::range::{visit_overlaps, visit_region};
+use crate::range::{collect_region, visit_overlaps, visit_region};
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 use crate::tree_access::{TreeAccess, leaf_group_range};
 use crate::triangle::{Triangle2, blobs_as_records};
@@ -2793,15 +2793,12 @@ impl<'a> Index2DView<'a> {
         stack: &mut Vec<usize>,
     ) {
         results.clear();
-        let _: ControlFlow<()> = visit_region(
+        collect_region(
             self,
             stack,
             |bounds: Box2D| bounds.overlaps(query),
             |bounds: Box2D| query.contains(bounds),
-            |index| {
-                results.push(index);
-                ControlFlow::Continue(())
-            },
+            |index| results.push(index),
         );
     }
 

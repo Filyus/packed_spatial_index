@@ -26,7 +26,7 @@ use crate::{
         LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, parse_index_owned,
         payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
     },
-    range::{visit_overlaps, visit_region},
+    range::{collect_region, visit_overlaps, visit_region},
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree_access::{TreeAccess, leaf_group_range},
@@ -2717,15 +2717,12 @@ impl<'a> Index3DView<'a> {
         stack: &mut Vec<usize>,
     ) {
         results.clear();
-        let _: ControlFlow<()> = visit_region(
+        collect_region(
             self,
             stack,
             |bounds: Box3D| bounds.overlaps(query),
             |bounds: Box3D| query.contains(bounds),
-            |index| {
-                results.push(index);
-                ControlFlow::Continue(())
-            },
+            |index| results.push(index),
         );
     }
 

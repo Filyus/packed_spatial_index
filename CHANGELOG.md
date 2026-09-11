@@ -18,7 +18,11 @@ All notable changes to this crate are documented here.
   33–52% across the planar, uniform and flat-Z datasets and both node sizes,
   which narrows `SimdIndex3D`'s lead on range search from 2.4× to 1.3–1.5×. The
   traversal stack also holds one packed `(node, level)` word per child instead
-  of two, on every scalar path including `visit`.
+  of two, on every scalar path including `visit`. The zero-copy views take the
+  same route through the shared traversal: `Index2DView` / `Index3DView`
+  `search` and `search_with` fell 30–33% on wide queries, which closes most of
+  their gap to the owned index there (390 µs against 370 µs on the same 100 000
+  boxes), and stayed flat on sparse ones.
   The callback paths (`visit`, `any`, `first`) keep the branching loop on
   purpose: on an early-exit query the full mask per internal node measured
   +40–60% on `any`, since the rejected-child branch is well predicted while

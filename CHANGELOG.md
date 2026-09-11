@@ -22,7 +22,9 @@ All notable changes to this crate are documented here.
   same route through the shared traversal: `Index2DView` / `Index3DView`
   `search` and `search_with` fell 30–33% on wide queries, which closes most of
   their gap to the owned index there (390 µs against 370 µs on the same 100 000
-  boxes), and stayed flat on sparse ones.
+  boxes), and stayed flat on sparse ones. The scalar f32 indexes take the same
+  route in their own traversal: `Index2DF32` / `Index3DF32` `search` fell 4–12%
+  and `count` 6–8%, with their early-exit forms unchanged.
   The callback paths (`visit`, `any`, `first`) keep the branching loop on
   purpose: on an early-exit query the full mask per internal node measured
   +40–60% on `any`, since the rejected-child branch is well predicted while

@@ -198,8 +198,9 @@ predicts perfectly. The collect paths therefore fold a node's children into a
 `u64` mask — up to 64 tests, no branches — and then walk the set bits, paying one
 branch per *hit* instead of one per *child*. That is where the 2D and 3D search
 numbers above come from: 25–37% off 2D collect paths on wide queries, 33–52% off
-`Index3D`, 30–33% off the zero-copy views, and most of the narrowing of the SIMD
-indexes' lead on range search.
+`Index3D`, 30–33% off the zero-copy views, 4–12% off the scalar `Index2DF32` /
+`Index3DF32` collect forms, and most of the narrowing of the SIMD indexes' lead
+on range search.
 
 Two boundaries on the technique are measured, and both keep it off the other
 paths:
@@ -366,6 +367,10 @@ Quick selector:
   the same 16/24-byte boxes with no `simd` feature, and the file that
   `StreamIndex2DF32` / `StreamIndex3DF32` streams at half the box bytes over the
   wire. Same hits as `SimdIndex2DF32`, plus `search_exact`.
+
+  Its collect forms take the branch-free node test too: `search` fell 4-12% and
+  `count` 6-8% on 100 000 boxes, with the early-exit forms flat, so the ordering
+  below is unchanged.
 
   It is the memory choice, not the speed one: on a 1M-box spot check range
   queries ran ~30% slower than `Index3D`, `search_exact` ~45% slower, and the

@@ -15,6 +15,7 @@ use crate::{
     builder2d::BuildConfig,
     f32_storage::{Box2DF32, F32Columns2D, columns2d_from_parsed},
     geometry::{Box2D, Overlaps2D},
+    index2d::{MASK_CHUNK, for_each_hit, frame},
     ordered::{collect_ordered, visit_ordered},
     persistence::{LoadError, parse_index},
     range::visit_region,
@@ -2610,13 +2611,7 @@ impl Index2DF32 {
     pub fn search(&self, query: Box2D) -> Vec<usize> {
         let q = Box2DF32::from_box2d_inward(query);
         let mut out = Vec::new();
-        let _ = self.visit_hits(
-            |b| b.overlaps(q),
-            |i, _| {
-                out.push(i);
-                ControlFlow::<()>::Continue(())
-            },
-        );
+        self.collect_hits(|b| b.overlaps(q), |i, _| out.push(i));
         out
     }
 
@@ -2656,11 +2651,9 @@ impl Index2DF32 {
     /// `search(query).len()`, which allocates a `Vec` to throw away. Like
     /// `search`, this counts a conservative superset of the exact answer.
     pub fn count(&self, query: Box2D) -> usize {
+        let q = Box2DF32::from_box2d_inward(query);
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit(query, |_| {
-            count += 1;
-            ControlFlow::Continue(())
-        });
+        self.collect_hits(|b| b.overlaps(q), |_, _| count += 1);
         count
     }
 
@@ -2740,6 +2733,50 @@ impl Index2DF32 {
     /// Shared stack descent: call `visitor` for each leaf item whose stored f32 box
     /// passes `hit`, recursing into internal nodes that pass. Stops early when
     /// `visitor` returns [`ControlFlow::Break`].
+    /// The collect twin of [`visit_hits`](Self::visit_hits), for the forms that
+    /// never stop early: a node's `hit` tests fold into a bitmask and the loop
+    /// branches once per hit instead of once per child. See
+    /// [`crate::index2d`]'s `overlap_mask` for why the early-exit forms keep
+    /// their branches.
+    fn collect_hits(&self, hit: impl Fn(Box2DF32) -> bool, mut emit: impl FnMut(usize, Box2DF32)) {
+        if self.indices.is_empty() {
+            return;
+        }
+        let mut stack: Vec<usize> = Vec::new();
+        let mut node_index = self.indices.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+            let child_level = level.wrapping_sub(1);
+            let mut start = node_index;
+            while start < end {
+                let stop = (start + MASK_CHUNK).min(end);
+                let mut mask = 0u64;
+                for (i, pos) in (start..stop).enumerate() {
+                    mask |= u64::from(hit(self.box_f32_at(pos))) << i;
+                }
+                for_each_hit(mask, |i| {
+                    let pos = start + i;
+                    let index = self.indices[pos];
+                    if is_leaf {
+                        emit(index, self.box_f32_at(pos));
+                    } else {
+                        stack.push(frame::pack(index, child_level));
+                    }
+                });
+                start = stop;
+            }
+            match stack.pop() {
+                Some(f) => {
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                }
+                None => return,
+            }
+        }
+    }
+
     fn visit_hits<B>(
         &self,
         hit: impl Fn(Box2DF32) -> bool,

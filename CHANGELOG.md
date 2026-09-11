@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.30.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.29.0...psi-v0.30.0) - 2026-09-11
+
 ### API
 
 - **BREAKING: query method names now end with the call mode instead of starting

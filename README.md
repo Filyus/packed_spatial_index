@@ -35,7 +35,7 @@ handful of range reads, without loading the whole file.
 
 ```toml
 [dependencies]
-packed_spatial_index = "0.29"
+packed_spatial_index = "0.30"
 ```
 
 Requires Rust 1.89 or newer.

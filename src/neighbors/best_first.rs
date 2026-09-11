@@ -128,6 +128,18 @@ pub(crate) fn collect_neighbors_two_queue(
 }
 
 /// Best-first search for the single nearest item (`max_results == 1` fast path).
+///
+/// Ties go to the smallest item index, which is the rule
+/// [`collect_neighbors_two_queue`] already follows — its item heap orders equal
+/// distances by index (see `NeighborState::cmp`). Both kernels answer the same
+/// question, so they have to answer it the same way: that is what keeps
+/// `neighbors(q, 1)` the prefix of `neighbors(q, k)`.
+///
+/// The rule is why there is no early return once a zero-distance item is found.
+/// Stopping there would answer with whichever tied item the traversal reached
+/// first, and a smaller index can still be sitting in another subtree that is
+/// also at distance zero. The pruning is unaffected: the node loop below already
+/// descends into every node whose distance ties `best_dist`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn nearest_one(
     num_nodes: usize,
@@ -155,11 +167,13 @@ pub(crate) fn nearest_one(
                 continue;
             }
             if is_leaf {
-                if d == 0.0 {
-                    return Some(index_at(pos));
+                let item = index_at(pos);
+                // `d > best_dist` was already skipped, so `d <= best_dist` here
+                // and the tie case is exactly `d == best_dist`.
+                if best_index.is_none_or(|best| d < best_dist || item < best) {
+                    best_dist = d;
+                    best_index = Some(item);
                 }
-                best_dist = d;
-                best_index = Some(index_at(pos));
             } else {
                 queue.push(NeighborNodeState::new(index_at(pos), d));
             }

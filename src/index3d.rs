@@ -392,6 +392,13 @@ impl Index3D {
 
     /// Return up to `max_results` item indices nearest to `point`.
     ///
+    /// Results come back in nondecreasing distance. Items at **equal** distance
+    /// are ordered by item index, smallest first, so growing `max_results` only
+    /// appends: `neighbors(point, k)` is always a prefix of
+    /// `neighbors(point, k + 1)`. Distance is measured to the item's box and is
+    /// zero whenever the point falls inside it, so a point inside several boxes
+    /// ties with all of them.
+    ///
     /// # Example
     ///
     /// ```

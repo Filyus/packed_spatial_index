@@ -511,6 +511,13 @@ impl Index2D {
 
     /// Return up to `max_results` item indices nearest to `point`.
     ///
+    /// Results come back in nondecreasing distance. Items at **equal** distance
+    /// are ordered by item index, smallest first, so growing `max_results` only
+    /// appends: `neighbors(point, k)` is always a prefix of
+    /// `neighbors(point, k + 1)`. Distance is measured to the item's box and is
+    /// zero whenever the point falls inside it, so a point inside several boxes
+    /// ties with all of them.
+    ///
     /// # Example
     ///
     /// ```
@@ -522,6 +529,22 @@ impl Index2D {
     /// let index = builder.finish().unwrap();
     ///
     /// assert_eq!(index.neighbors(Point2D::new(10.25, 10.25), 1), vec![1]);
+    /// ```
+    ///
+    /// Two boxes that both contain the query point are equally near, and the
+    /// smaller item index wins:
+    ///
+    /// ```
+    /// use packed_spatial_index::{Index2DBuilder, Point2D, Box2D};
+    ///
+    /// let mut builder = Index2DBuilder::new(2);
+    /// builder.add(Box2D::new(-1.0, -1.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(-2.0, -2.0, 2.0, 2.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// let origin = Point2D::new(0.0, 0.0);
+    /// assert_eq!(index.neighbors(origin, 1), vec![0]);
+    /// assert_eq!(index.neighbors(origin, 2), vec![0, 1]);
     /// ```
     pub fn neighbors(&self, point: Point2D, max_results: usize) -> Vec<usize> {
         self.neighbors_within(point, max_results, f64::INFINITY)

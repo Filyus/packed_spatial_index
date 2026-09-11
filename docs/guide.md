@@ -820,6 +820,24 @@ assert_eq!(index.neighbors(Point3D::new(5.5, 5.5, 5.5), 1), vec![1]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
+### Equal distances
+
+Distance is measured to the item's box, so it is zero for every box that
+contains the query point, and a point sitting inside several boxes ties with all
+of them. Ties are settled by item index, smallest first. That is what makes
+growing `k` only append: `neighbors(point, k)` is a prefix of
+`neighbors(point, k + 1)` for every `k`, including `k = 1`, which is served by a
+separate single-answer traversal.
+
+The rule costs something in the case that provokes it. Asking for one neighbour
+can no longer stop at the first box it finds containing the point; it has to
+finish the zero-distance set to know which member has the smallest index.
+Measured on 100 000 boxes, that is free while a query point sits inside about
+one box, around 25–40% slower where it sits inside two to six, and about 4.5x
+slower on a deliberately pathological field where every point sits inside some
+three hundred. Even there the single-answer traversal stays well ahead of asking
+for `k` and taking the first.
+
 ## Geographic and custom-metric kNN
 
 `neighbors` orders by squared Euclidean distance. When your coordinates are

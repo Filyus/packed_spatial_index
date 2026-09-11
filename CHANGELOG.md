@@ -4,6 +4,27 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Nearest Neighbors
+
+- Asking for one nearest neighbour now answers the same item as asking for
+  several and taking the first. `max_results == 1` is served by its own
+  traversal, and that traversal settled ties by whichever item it reached first,
+  while every larger `k` settles them by item index — so on a query point that
+  several boxes contain, `neighbors(point, 1)` could disagree with
+  `neighbors(point, 4)[0]`. Both now return the smallest item index among items
+  at equal distance, which makes `neighbors(point, k)` a prefix of
+  `neighbors(point, k + 1)` for every `k`. The rule is now documented, and it
+  holds on all eight `f64` frontends, the scalar `f32` indexes, and the
+  box-query family `neighbors_of_box`; the custom-metric and exact-`f32`
+  kernels never had the special case and are unchanged.
+  The single-answer traversal pays for this: it can no longer stop at the first
+  box it finds containing the point. Measured on 100 000 boxes, that is free
+  while a query point sits inside about one box, 25–40% slower where it sits
+  inside two to six, and about 4.5x slower on a pathological field where every
+  point sits inside some three hundred — a regime in which the old answer was
+  arbitrary anyway. Even there it stays roughly 2.5x ahead of asking for `k`
+  and taking the first.
+
 ### API
 
 - **BREAKING:** the pair queries that work within one index drop the `self_`

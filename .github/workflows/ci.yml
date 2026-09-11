@@ -14,6 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  hygiene:
+    name: repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: dev/ must not be tracked
+        # `.gitignore` only hides untracked files, so it stays silent about
+        # `git add -f` and about files that were already tracked when the ignore
+        # rule arrived. This is the check that actually holds; the `.githooks`
+        # pre-commit hook is the local fast signal and can be bypassed.
+        run: |
+          tracked=$(git ls-files dev/)
+          if [ -n "$tracked" ]; then
+            echo "::error::dev/ holds working notes and must not be tracked:"
+            echo "$tracked" | sed 's/^/  /'
+            echo "Drop them with: git rm --cached -r dev/"
+            exit 1
+          fi
+          echo "dev/ is not tracked"
+
   test:
     name: test (${{ matrix.name }})
     runs-on: ubuntu-latest

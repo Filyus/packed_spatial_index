@@ -1,0 +1,42 @@
+#!/bin/sh
+# Refuse any commit that would put `dev/` into the repository.
+#
+# `.gitignore` alone does not do this: it only hides *untracked* files, so it is
+# silent about `git add -f` and about a file that was already tracked when the
+# ignore rule arrived. That is exactly how `dev/core-query-naming.md` sat in the
+# index for months. This hook looks at what the commit would actually record.
+#
+# Enable once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# CI enforces the same rule, so a bypass (`--no-verify`, or a clone that never
+# ran the line above) is caught before it can land on `main`.
+
+set -e
+
+fail=0
+
+# What this commit adds or changes.
+staged=$(git diff --cached --name-only --diff-filter=ACMR | grep '^dev/' || true)
+if [ -n "$staged" ]; then
+    echo "pre-commit: refusing to commit files under dev/ —" >&2
+    echo "$staged" | sed 's/^/  /' >&2
+    echo "" >&2
+    echo "dev/ holds working notes that stay out of the repository." >&2
+    echo "Unstage them with:  git restore --staged dev/" >&2
+    fail=1
+fi
+
+# Anything already tracked under dev/, even if this commit does not touch it.
+tracked=$(git ls-files dev/ || true)
+if [ -n "$tracked" ]; then
+    echo "pre-commit: dev/ files are already tracked —" >&2
+    echo "$tracked" | sed 's/^/  /' >&2
+    echo "" >&2
+    echo "Drop them from the index (the files stay on disk):" >&2
+    echo "  git rm --cached -r dev/" >&2
+    fail=1
+fi
+
+exit $fail

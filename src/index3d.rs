@@ -40,6 +40,21 @@ mod serializer;
 pub use region::SearchQuery3D;
 pub use serializer::Serializer3D;
 
+use crate::index2d::{MASK_CHUNK, for_each_hit, for_each_hit_rev, frame};
+
+/// Overlap tests of up to 64 entries folded into a bitmask, bit `i` for entry
+/// `i` — the 3D twin of `index2d::overlap_mask`; see there for why the collect
+/// paths branch once per hit instead of once per child.
+#[inline(always)]
+fn overlap_mask3d(entries: &[Box3D], query: Box3D) -> u64 {
+    debug_assert!(entries.len() <= MASK_CHUNK);
+    let mut mask = 0u64;
+    for (i, b) in entries.iter().enumerate() {
+        mask |= u64::from(b.overlaps(query)) << i;
+    }
+    mask
+}
+
 #[inline]
 fn prefetch_aos_node3d(entries: &[Box3D], indices: &[usize], node_index: usize, node_size: usize) {
     if node_index < entries.len() {
@@ -1523,16 +1538,16 @@ impl Index3D {
                     if !b.overlaps(query) {
                         continue;
                     }
-                    stack.push(index);
-                    stack.push(child_level);
+                    stack.push(frame::pack(index, child_level));
                 }
             }
 
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return ControlFlow::Continue(());
+            match stack.pop() {
+                Some(f) => {
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                }
+                None => return ControlFlow::Continue(()),
             }
         }
     }
@@ -1578,9 +1593,6 @@ impl Index3D {
             return 0;
         }
 
-        const CONTAINED_FLAG: usize = 1usize << (usize::BITS - 1);
-        const LEVEL_MASK: usize = !CONTAINED_FLAG;
-
         let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
         let mut total = 0usize;
         let mut node_index = self.entries.len() - 1;
@@ -1606,27 +1618,24 @@ impl Index3D {
             } else {
                 let child_level = level - 1;
                 let node_indices = &self.indices[node_index..end];
-                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    stack.push(index);
-                    let encoded_level = if query.contains(*b) {
-                        child_level | CONTAINED_FLAG
-                    } else {
-                        child_level
-                    };
-                    stack.push(encoded_level);
+                let chunks = node_entries
+                    .chunks(MASK_CHUNK)
+                    .zip(node_indices.chunks(MASK_CHUNK));
+                for (boxes, indices) in chunks.rev() {
+                    for_each_hit_rev(overlap_mask3d(boxes, query), |i| {
+                        let flag = usize::from(query.contains(boxes[i])) * frame::CONTAINED;
+                        stack.push(frame::pack(indices[i], child_level) | flag);
+                    });
                 }
             }
 
-            if stack.len() > 1 {
-                let encoded_level = stack.pop().unwrap();
-                level = encoded_level & LEVEL_MASK;
-                contained = (encoded_level & CONTAINED_FLAG) != 0;
-                node_index = stack.pop().unwrap();
-            } else {
-                return total;
+            match stack.pop() {
+                Some(f) => {
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                    contained = frame::contained(f);
+                }
+                None => return total,
             }
         }
     }
@@ -1648,35 +1657,37 @@ impl Index3D {
             let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
 
+            let chunks = node_entries
+                .chunks(MASK_CHUNK)
+                .zip(node_indices.chunks(MASK_CHUNK));
+
             if is_leaf {
-                for (b, &index) in node_entries.iter().zip(node_indices) {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    results.push(index);
+                for (boxes, indices) in chunks {
+                    for_each_hit(overlap_mask3d(boxes, query), |i| results.push(indices[i]));
                 }
             } else {
                 let child_level = level - 1;
-                for (b, &index) in node_entries.iter().zip(node_indices).rev() {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
-                    stack.push(index);
-                    stack.push(child_level);
+                for (boxes, indices) in chunks.rev() {
+                    for_each_hit_rev(overlap_mask3d(boxes, query), |i| {
+                        stack.push(frame::pack(indices[i], child_level));
+                    });
                 }
             }
 
-            if stack.len() > 1 {
-                prefetch_aos_node3d(
-                    &self.entries,
-                    &self.indices,
-                    stack[stack.len() - 2],
-                    self.node_size,
-                );
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return;
+            match stack.pop() {
+                Some(f) => {
+                    if let Some(&next) = stack.last() {
+                        prefetch_aos_node3d(
+                            &self.entries,
+                            &self.indices,
+                            frame::node(next),
+                            self.node_size,
+                        );
+                    }
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                }
+                None => return,
             }
         }
     }

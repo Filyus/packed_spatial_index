@@ -65,35 +65,35 @@ fn prefetch_aos_node(entries: &[Box2D], indices: &[usize], node_index: usize, no
 /// the low bits, plus a flag for "the query contains this whole subtree". Packing
 /// the pair into one `usize` keeps the crate-wide `Vec<usize>` stack type while
 /// costing every child one push and one pop instead of two.
-mod frame {
+pub(crate) mod frame {
     const LEVEL_BITS: u32 = 8;
     const LEVEL_MASK: usize = (1 << 7) - 1;
-    pub(super) const CONTAINED: usize = 1 << 7;
+    pub(crate) const CONTAINED: usize = 1 << 7;
 
     #[inline(always)]
-    pub(super) fn pack(node_index: usize, level: usize) -> usize {
+    pub(crate) fn pack(node_index: usize, level: usize) -> usize {
         debug_assert!(level <= LEVEL_MASK);
         (node_index << LEVEL_BITS) | level
     }
 
     #[inline(always)]
-    pub(super) fn node(frame: usize) -> usize {
+    pub(crate) fn node(frame: usize) -> usize {
         frame >> LEVEL_BITS
     }
 
     #[inline(always)]
-    pub(super) fn level(frame: usize) -> usize {
+    pub(crate) fn level(frame: usize) -> usize {
         frame & LEVEL_MASK
     }
 
     #[inline(always)]
-    pub(super) fn contained(frame: usize) -> bool {
+    pub(crate) fn contained(frame: usize) -> bool {
         frame & CONTAINED != 0
     }
 }
 
 /// Widest node chunk one overlap mask covers.
-const MASK_CHUNK: usize = u64::BITS as usize;
+pub(crate) const MASK_CHUNK: usize = u64::BITS as usize;
 
 /// Overlap tests of up to 64 entries folded into a bitmask, bit `i` for entry `i`.
 ///
@@ -119,7 +119,7 @@ fn overlap_mask(entries: &[Box2D], query: Box2D) -> u64 {
 
 /// Visit the set bits of `mask` from low to high — leaf hits in item order.
 #[inline(always)]
-fn for_each_hit(mut mask: u64, mut f: impl FnMut(usize)) {
+pub(crate) fn for_each_hit(mut mask: u64, mut f: impl FnMut(usize)) {
     while mask != 0 {
         f(mask.trailing_zeros() as usize);
         mask &= mask - 1;
@@ -129,7 +129,7 @@ fn for_each_hit(mut mask: u64, mut f: impl FnMut(usize)) {
 /// Visit the set bits of `mask` from high to low — children pushed in reverse so
 /// they pop in forward order.
 #[inline(always)]
-fn for_each_hit_rev(mut mask: u64, mut f: impl FnMut(usize)) {
+pub(crate) fn for_each_hit_rev(mut mask: u64, mut f: impl FnMut(usize)) {
     while mask != 0 {
         let hi = (u64::BITS - 1 - mask.leading_zeros()) as usize;
         mask &= !(1u64 << hi);

@@ -6,17 +6,19 @@ All notable changes to this crate are documented here.
 
 ### Performance
 
-- The scalar 2D collect paths — `search`, `search_into`, `search_with` and
-  `count` on `Index2D` — test each node's children into a bitmask and then
-  branch once per hit rather than once per child. Along a query's edge the
+- The scalar collect paths — `search`, `search_into`, `search_with` and
+  `count` on `Index2D` and `Index3D` — test each node's children into a bitmask
+  and then branch once per hit rather than once per child. Along a query's edge the
   per-child overlap branch is right about half the time, and callgrind put
   roughly half of the traversal's branch mispredicts on it. Measured on
   100 000 boxes: −25–37% on queries returning ~44 items, −7–25% on queries
   returning ~1; on the crate's own competitor benches the `Index2D` search rows
   fell 43–49%, putting the scalar index 2.4–3.0× ahead of `static_aabb2d_index`
-  on both generated inputs (`docs/performance.md`). The traversal stack also
-  holds one packed `(node, level)`
-  word per child instead of two, on every 2D scalar path including `visit`.
+  on both generated inputs (`docs/performance.md`). `Index3D` search fell
+  33–52% across the planar, uniform and flat-Z datasets and both node sizes,
+  which narrows `SimdIndex3D`'s lead on range search from 2.4× to 1.3–1.5×. The
+  traversal stack also holds one packed `(node, level)` word per child instead
+  of two, on every scalar path including `visit`.
   The callback paths (`visit`, `any`, `first`) keep the branching loop on
   purpose: on an early-exit query the full mask per internal node measured
   +40–60% on `any`, since the rejected-child branch is well predicted while

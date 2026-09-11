@@ -156,8 +156,8 @@ with `node_size = 16`; search and KNN use 1,000 query boxes or points.
 | Hilbert encode | production 2D LUT vs 3D nibble LUT | 753.19 us | 1.0053 ms | 0.75x |
 | Build | planar XY | 2.2526 ms | 3.8785 ms | 0.58x |
 | Build | uniform XYZ | 2.3997 ms | 4.0482 ms | 0.59x |
-| Search batch | planar XY | 550.49 us | 672.92 us | 0.82x |
-| Search batch | uniform XYZ | 544.18 us | 404.77 us | 1.34x |
+| Search batch | planar XY | 317.39 us | 454.14 us | 0.70x |
+| Search batch | uniform XYZ | 322.08 us | 222.61 us | 1.45x |
 
 | KNN batch | Dataset / mode | `Index2D` | `Index3D` | 3D speed |
 | --- | --- | ---: | ---: | ---: |
@@ -186,8 +186,8 @@ values above `1.00x` mean the SIMD or parallel path is faster.
 
 | Stage | Dataset / mode | Baseline | SIMD / parallel | Speed |
 | --- | --- | ---: | ---: | ---: |
-| Search batch | uniform XYZ | `Index3D` 406.86 us | `SimdIndex3D` 169.39 us | 2.40x |
-| Search batch | flat Z | `Index3D` 1.99 ms | `SimdIndex3D` 846.36 us | 2.35x |
+| Search batch | uniform XYZ | `Index3D` 220.23 us | `SimdIndex3D` 165.02 us | 1.33x |
+| Search batch | flat Z | `Index3D` 1.24 ms | `SimdIndex3D` 842.56 us | 1.47x |
 | Build `finish_simd` | uniform XYZ, 200k boxes | serial 10.03 ms | parallel 6.98 ms | 1.44x |
 
 ## Large-window range search
@@ -361,7 +361,10 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 - scalar `Index2D` search leads `static_aabb2d_index` by 2.4–3.0× on both
   generated inputs, and `Index2D` build is faster as well;
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
-  can be faster when Z meaningfully prunes the tree;
+  is faster when Z meaningfully prunes the tree;
+- the SIMD indexes' lead over the scalar ones on range search narrowed to
+  1.3–1.5× once the scalar collect paths stopped branching per child; the
+  scalar path is now the one to beat on sparse queries too;
 - f32 storage halves box memory; exact callbacks trade source-box lookup for
   exact results;
 - SIMD persistence uses the same canonical bytes as scalar persistence; it pays

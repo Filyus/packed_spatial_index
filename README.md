@@ -50,7 +50,7 @@ let parks = ["Riverside", "Hilltop"];
 let mut builder = Index2DBuilder::new(parks.len());
 builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0)); // Riverside: min_x, min_y, max_x, max_y
 builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0)); // Hilltop
-let index = builder.finish()?;
+let index = builder.finish().unwrap();
 
 // "Which parks fall inside this window?"
 let visible = index.search(Box2D::new(0.0, 0.0, 2.0, 2.0));
@@ -61,7 +61,6 @@ assert_eq!(parks[visible[0]], "Riverside"); // ... is the box you added first
 let me = Point2D::new(5.5, 5.5);
 let nearest = index.neighbors(me, 1);
 assert_eq!(parks[nearest[0]], "Hilltop");
-# Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
 That is the whole shape of it: describe each item with one box, build once, then

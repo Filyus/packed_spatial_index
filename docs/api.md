@@ -44,24 +44,25 @@ Both spellings, on the same boxes:
 ```rust
 use packed_spatial_index::{Box2D, Index2DBuilder, Triangle2D};
 
-let mut builder = Index2DBuilder::new(2);
-builder.add(Box2D::new(0.2, 0.2, 0.3, 0.3));
-builder.add(Box2D::new(9.0, 9.0, 9.5, 9.5));
+let boxes = [
+    Box2D::new(0.2, 0.2, 0.3, 0.3), // inside the triangle
+    Box2D::new(9.0, 9.0, 9.5, 9.5), // outside it, but inside its bounding box
+];
+let build = || {
+    let mut b = Index2DBuilder::new(boxes.len());
+    for &bx in &boxes {
+        b.add(bx);
+    }
+    b
+};
 let tri = Triangle2D::new([0.0, 0.0], [10.0, 0.0], [0.0, 10.0]);
 
-// Owned and view frontends take the shape through `search` itself.
-let index = builder.finish()?;
-assert_eq!(index.search(&tri), vec![0]);
+// Owned indexes and views take the shape through `search` itself.
+assert_eq!(build().finish().unwrap().search(&tri), vec![0]);
 
-# #[cfg(feature = "simd")] {
-// SIMD and f32 frontends keep `search` for boxes and put shapes on `_region`.
-let mut b = Index2DBuilder::new(2);
-b.add(Box2D::new(0.2, 0.2, 0.3, 0.3));
-b.add(Box2D::new(9.0, 9.0, 9.5, 9.5));
-let simd = b.finish_simd()?;
-assert_eq!(simd.search_region(&tri), vec![0]);
-# }
-# Ok::<(), packed_spatial_index::BuildError>(())
+// SIMD and f32 frontends keep `search` for boxes, so shapes go on `_region`.
+#[cfg(feature = "simd")]
+assert_eq!(build().finish_simd().unwrap().search_region(&tri), vec![0]);
 ```
 
 ## Types

@@ -887,12 +887,16 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             let collect =
                 |p: PayloadPrefix<'_>| collect_header(p, &mut headers, &mut short_payload);
             match &self.index {
-                GeoStreamIndex2D::F64(index) => {
-                    index.search_payload_prefixes_region_each(&region, FEATURE_REF_RECORD_LEN, collect)?
-                }
-                GeoStreamIndex2D::F32(index) => {
-                    index.search_payload_prefixes_region_each(&region, FEATURE_REF_RECORD_LEN, collect)?
-                }
+                GeoStreamIndex2D::F64(index) => index.search_payload_prefixes_region_each(
+                    &region,
+                    FEATURE_REF_RECORD_LEN,
+                    collect,
+                )?,
+                GeoStreamIndex2D::F32(index) => index.search_payload_prefixes_region_each(
+                    &region,
+                    FEATURE_REF_RECORD_LEN,
+                    collect,
+                )?,
             }
             return finish_headers(headers, short_payload);
         }
@@ -959,12 +963,16 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             let collect =
                 |p: PayloadPrefix<'_>| collect_header_page(p, &mut page, &mut short_payload);
             match &self.index {
-                GeoStreamIndex2D::F64(index) => {
-                    index.search_payload_prefixes_region_each(&region, FEATURE_REF_RECORD_LEN, collect)?
-                }
-                GeoStreamIndex2D::F32(index) => {
-                    index.search_payload_prefixes_region_each(&region, FEATURE_REF_RECORD_LEN, collect)?
-                }
+                GeoStreamIndex2D::F64(index) => index.search_payload_prefixes_region_each(
+                    &region,
+                    FEATURE_REF_RECORD_LEN,
+                    collect,
+                )?,
+                GeoStreamIndex2D::F32(index) => index.search_payload_prefixes_region_each(
+                    &region,
+                    FEATURE_REF_RECORD_LEN,
+                    collect,
+                )?,
             }
             return finish_match_header_page(page, short_payload);
         }

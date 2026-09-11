@@ -26,7 +26,12 @@ All notable changes to this crate are documented here.
   The callback paths (`visit`, `any`, `first`) keep the branching loop on
   purpose: on an early-exit query the full mask per internal node measured
   +40–60% on `any`, since the rejected-child branch is well predicted while
-  most children miss.
+  most children miss. So do the shape regions and the radius queries, whose
+  per-child predicate is too expensive for the saved branch to show (measured;
+  `docs/performance.md` records where the technique applies). In the window-class
+  tables the effect sorts by what a window does: the per-child rows fell 36–37%,
+  closing the SIMD gap from 2.8× to 1.8× in 2D and 2.4× to 1.6× in 3D, while the
+  rows that are mostly covered-range copying are unchanged.
 
 ## [0.29.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.28.0...psi-v0.29.0) - 2026-09-05
 

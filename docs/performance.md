@@ -190,6 +190,38 @@ values above `1.00x` mean the SIMD or parallel path is faster.
 | Search batch | flat Z | `Index3D` 1.24 ms | `SimdIndex3D` 842.56 us | 1.47x |
 | Build `finish_simd` | uniform XYZ, 200k boxes | serial 10.03 ms | parallel 6.98 ms | 1.44x |
 
+## Branch-free node tests
+
+Along a query's boundary a node's per-child overlap test comes out roughly 50/50,
+and the branch on its result mispredicts; deeper inside or outside the query it
+predicts perfectly. The collect paths therefore fold a node's children into a
+`u64` mask — up to 64 tests, no branches — and then walk the set bits, paying one
+branch per *hit* instead of one per *child*. That is where the 2D and 3D search
+numbers above come from: 25–37% off 2D collect paths on wide queries, 33–52% off
+`Index3D`, 30–33% off the zero-copy views, and most of the narrowing of the SIMD
+indexes' lead on range search.
+
+Two boundaries on the technique are measured, and both keep it off the other
+paths:
+
+- **The callback and early-exit forms keep their branches.** `visit`, `any`,
+  `first` and the search iterators leave at the first hit, so the full mask of
+  every internal node on the way down is fixed overhead they never recover.
+  Measured at +40–60% on `any` and a loss on narrow `visit`.
+- **The per-child test has to be cheap.** The saving is one mispredicted branch,
+  so a predicate that costs many times that swallows it. Routing the shape-region
+  collect paths (convex polygon, frustum) through the same traversal moved
+  nothing outside run-to-run drift: a polygon SAT test is six edge normals
+  against four box corners, an order of magnitude more work than the branch it
+  replaces.
+
+The radius queries (`search_within`, `count_within`) sit exactly on the second
+boundary and split by query width rather than by form: a wide radius keeps most
+children and the mask takes 17–25% off, a narrow radius keeps almost none, the
+branch predicts, and the same change costs 35–43%. Since what separates the two
+is selectivity rather than path shape or tree level, no static placement captures
+the win, and the radius queries keep the branching traversal.
+
 ## Large-window range search
 
 When a query fully contains a tree node, the covered-range fast path collects the
@@ -203,19 +235,26 @@ flat-Z batch above, and the `large` / `thin slab` rows here). Workload: 100,000
 boxes over a 10,000-wide space, 1,000 query boxes per window class. Lower is
 better.
 
+The window classes also separate the two halves of the traversal. The `large`
+and `full extent` rows are almost entirely covered-range copying, so the
+branch-free node test above leaves them where they were; the `small` and
+sliver/slab rows are all per-child testing, and there the scalar column fell
+36–37%, closing the SIMD gap from 2.8× to 1.8× in 2D and from 2.4× to 1.6× in
+3D.
+
 | Window (2D) | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: |
-| small (10–200) | 357.94 us | 127.84 us |
-| large (2,000–5,000) | 6.52 ms | 3.97 ms |
-| wide sliver | 2.48 ms | 0.87 ms |
-| full extent | 11.19 ms | 11.79 ms |
+| small (10–200) | 224.83 us | 123.01 us |
+| large (2,000–5,000) | 6.56 ms | 3.82 ms |
+| wide sliver | 1.62 ms | 0.80 ms |
+| full extent | 11.42 ms | 11.90 ms |
 
 | Window (3D) | `Index3D` | `SimdIndex3D` |
 | --- | ---: | ---: |
-| small (50–300) | 402.71 us | 168.32 us |
-| large (2,000–5,000) | 10.38 ms | 4.12 ms |
-| thin slab | 3.51 ms | 1.27 ms |
-| full extent | 11.65 ms | 11.62 ms |
+| small (50–300) | 258.54 us | 159.40 us |
+| large (2,000–5,000) | 10.90 ms | 4.10 ms |
+| thin slab | 2.28 ms | 1.33 ms |
+| full extent | 12.61 ms | 12.03 ms |
 
 The zero-copy views take this path too: a window that covers a node collects its
 leaf range out of the byte buffer instead of parsing and testing each box in it,
@@ -365,6 +404,10 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 - the SIMD indexes' lead over the scalar ones on range search narrowed to
   1.3–1.5× once the scalar collect paths stopped branching per child; the
   scalar path is now the one to beat on sparse queries too;
+- the branch-free node test behind those collect numbers applies only where the
+  path has no early exit *and* the per-child predicate is cheap; the callback
+  forms, the shape regions and the radius queries measured worse with it and
+  keep their branching traversal;
 - f32 storage halves box memory; exact callbacks trade source-box lookup for
   exact results;
 - SIMD persistence uses the same canonical bytes as scalar persistence; it pays

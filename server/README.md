@@ -53,8 +53,12 @@ collections have no paged path at all, so limits are their only bound.
 ## Run
 
 ```powershell
-cargo run --manifest-path server/Cargo.toml -- --catalog psindex-server.toml
+cargo run --release --manifest-path server/Cargo.toml -- --catalog psindex-server.toml
 ```
+
+`--release` is not optional for anything but a smoke test: the index traversal
+a request runs measures 7.7x slower in a debug build (10 000 count queries over
+100 000 boxes, 19.97 ms against 2.59 ms).
 
 Logging follows `RUST_LOG`; `RUST_LOG=info` prints one line per request with
 method, path, status, and latency. Ctrl-C (or SIGTERM on Unix, Ctrl-Break on

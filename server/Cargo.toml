@@ -33,3 +33,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 packed_spatial_index_geo = { path = "../geo", version = "0.27.0", default-features = false, features = ["geojson"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+
+# The core crate measures itself under these two dials (its own manifest sets
+# them), so the server -- which runs the same traversals per request -- was the
+# one artifact built with neither: no cross-crate LTO into
+# `packed_spatial_index`, sixteen codegen units. Profiles come from whoever
+# roots the build, and this manifest roots the binary.
+[profile.release]
+lto = true
+codegen-units = 1

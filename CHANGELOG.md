@@ -117,6 +117,22 @@ All notable changes to this crate are documented here.
   closing the SIMD gap from 2.8× to 1.8× in 2D and 2.4× to 1.6× in 3D, while the
   rows that are mostly covered-range copying are unchanged.
 
+### Documentation
+
+- The README is a front page again rather than a reference. It keeps the pitch,
+  one worked example and a list of where to go; the method table and the type
+  inventory moved to a new **[API map](docs/api.md)**, and the payload and
+  metadata material moved to [Persistence](docs/persistence.md), which already
+  owned serialization. The example itself now names its data, so the returned
+  `0` is visibly the first box you added rather than a bare number.
+- `docs/api.md`, `docs/guide.md` and `docs/persistence.md` are now compiled as
+  doctests alongside the README, so their examples cannot rot unnoticed. Wiring
+  them up immediately caught four that had: one missing a `Box3D` import and
+  propagating the wrong error type, one asserting a single pair from
+  `join_within(&self, ..)` where joining an index with itself really returns
+  five (self-pairs included, which is what `pairs_within` exists to avoid), and
+  two that only build with `parallel` / `simd` enabled.
+
 ## [0.29.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.28.0...psi-v0.29.0) - 2026-09-05
 
 ### Search

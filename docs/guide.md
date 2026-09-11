@@ -345,7 +345,7 @@ on the owned `Index3D` and the zero-copy `Index3DView`; SIMD frontends keep
 tie-free (no on-ray degeneracy) and correct for render-order culling.
 
 ```rust
-# use packed_spatial_index::{Frustum3D, Index3DBuilder, Point3D, Ray3D};
+# use packed_spatial_index::{Box3D, Frustum3D, Index3DBuilder, Point3D, Ray3D};
 # let mut b = Index3DBuilder::new(2);
 # b.add(Box3D::new(10.0, -0.5, -0.5, 11.0, 0.5, 0.5));
 # b.add(Box3D::new(2.0, -0.5, -0.5, 3.0, 0.5, 0.5));
@@ -362,7 +362,7 @@ if let Some(hit) = hits.first() {
     // pierces the box; exact geometry tests belong to the caller.
 }
 # let _ = hits;
-# Ok::<(), packed_spatial_index::BuildError>(())
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 `Frustum3D::try_from_ray` builds that pyramid; a `gluPickMatrix`-style scaled
@@ -652,7 +652,18 @@ nothing.
 # b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
 # b.add(Box2D::new(200.0, 200.0, 201.0, 201.0));
 # let towers = b.finish()?;
-let mut pairs = towers.join_within(&towers, 5.0);
+# let mut m = Index2DBuilder::new(1);
+# m.add(Box2D::new(6.0, 0.0, 7.0, 1.0));
+# let masts = m.finish()?;
+// every tower within 5 units of a mast. Tower 1 is 2 units away; tower 0 is
+// exactly 5, and the bound is inclusive, so it counts too.
+let mut close = towers.join_within(&masts, 5.0);
+close.sort_unstable();
+assert_eq!(close, vec![(0, 0), (1, 0)]);
+
+// within ONE index, use `pairs_within`: it reports each unordered pair once
+// and never pairs an item with itself, which `join_within(&self, ..)` would.
+let mut pairs = towers.pairs_within(5.0);
 pairs.sort_unstable();
 assert_eq!(pairs, vec![(0, 1)]);
 # Ok::<(), packed_spatial_index::BuildError>(())
@@ -809,19 +820,23 @@ builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
 Parallel builds (with the `parallel` feature):
 
 ```rust
+# #[cfg(feature = "parallel")] {
 # use packed_spatial_index::{DEFAULT_PARALLEL_MIN_ITEMS, Index2DBuilder};
 let builder = Index2DBuilder::new(100_000)
     .parallel(true)
     .parallel_min_items(DEFAULT_PARALLEL_MIN_ITEMS);
+# }
 ```
 
 SIMD and f32 indexes (with `simd` / `f32-storage`):
 
 ```rust
+# #[cfg(feature = "simd")] {
 # use packed_spatial_index::{Index2DBuilder, Box2D};
 let mut builder = Index2DBuilder::new(1);
 builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
 let simd_index = builder.finish_simd()?;       // SimdIndex2D
+# }
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 

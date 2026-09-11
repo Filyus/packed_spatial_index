@@ -40,6 +40,53 @@ add the vectorized queries. The stored f32 boxes are rounded outward, so range
 and ray results are a conservative superset — use `search_exact` (refining
 against your `f64` boxes) when you need exact hits.
 
+## Payload and metadata
+
+`to_bytes` writes the index alone. The `serialize()` builder adds the optional
+pieces — one opaque payload blob per item, plus descriptive metadata
+(coordinate reference system, payload content type, attribution):
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder, read_metadata};
+# let mut b = Index2DBuilder::new(1);
+# b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# let index = b.finish()?;
+let bytes = index
+    .serialize()
+    .crs("EPSG:4326")
+    .payloads(&[b"feature-0".as_slice()])
+    .to_bytes()?;
+
+// Read the metadata back without loading the index.
+assert_eq!(read_metadata(&bytes)?.crs.as_deref(), Some("EPSG:4326"));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The metadata is opaque: the crate stores the strings you give it, verbatim, and
+never parses them. Pair query results with their payloads through the zero-copy
+views or the streaming reader below; the byte layout is in
+[`FORMAT.md`](https://github.com/Filyus/packed_spatial_index/blob/main/FORMAT.md).
+
+### Fixed-width records
+
+When every record is the same size, `.records(stride, ..)` — or `.triangles(..)`
+for `Triangle2D` / `Triangle3D` and the compact `Triangle2DF32` /
+`Triangle3DF32` — stores a **fixed-width** payload. There is no offset table, so
+the file is smaller, a streamed query reads one fewer time, and a view can
+borrow the records as a zero-copy typed slice.
+
+A triangle payload plus an index over each triangle's bounding box
+(`Index3D::from_triangles`) is a streamable mesh BVH: `raycast` finds the
+candidates and `Ray3D::closest_triangle` does the exact hit, testing eight `f32`
+records at a time under `simd`. The [`raycast_mesh`](../examples/raycast_mesh.rs)
+example runs the whole path.
+
+For half the box bytes in memory and on the wire, build the same thing on the
+compact `f32` index — `Index3DF32::from_triangles(..).serialize().triangles(..)`,
+then stream it with `StreamIndex3DF32`. That needs `f32-storage` alone, no
+`simd`. The stored boxes are rounded outward, so range and ray results are a
+conservative superset, and `search_exact` refines them against your `f64` boxes.
+
 ## Large / on-disk indexes (mmap)
 
 Loaded buffers are validated before they can be searched, and the `*View` types

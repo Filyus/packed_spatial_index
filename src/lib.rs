@@ -95,6 +95,18 @@
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
+#[cfg(doctest)]
+#[doc = include_str!("../docs/api.md")]
+struct ApiDoctests;
+
+#[cfg(doctest)]
+#[doc = include_str!("../docs/guide.md")]
+struct GuideDoctests;
+
+#[cfg(doctest)]
+#[doc = include_str!("../docs/persistence.md")]
+struct PersistenceDoctests;
+
 mod build;
 mod builder2d;
 mod builder3d;

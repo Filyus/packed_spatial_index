@@ -23,39 +23,66 @@ of every kind:
   3D picking or rubber-band selection
 
 Queries run on **runtime-dispatched SIMD** — the widest kernel your CPU offers is
-chosen at load time (`AVX-512 → AVX2 → SSE2`), no special build flags. Range
-search runs **~1.6–1.9× over the scalar index on AVX-512** and **~1.3–1.65× on
-AVX2** (it [emulates the missing compress instruction](docs/internals/simd.md) so the win
-holds on older CPUs too). Builds beat comparable Rust indexes too
-([benchmarks](docs/performance.md)). The same bytes load back as **zero-copy**,
-mmap-friendly views; a file can carry an optional per-item **payload** and
-file-level **metadata**; and a **streaming reader** answers a windowed query over a
-100 MB index on object storage in a handful of range reads, without loading the
-whole file.
+chosen at load time (`AVX-512 → AVX2 → SSE2`), no special build flags. The same
+bytes load back as **zero-copy**, mmap-friendly views; a file can carry an
+optional per-item **payload** and file-level **metadata**; and a **streaming
+reader** answers a windowed query over a 100 MB index on object storage in a
+handful of range reads, without loading the whole file.
 
 [Live WASM demo](https://filyus.github.io/packed_spatial_index/)
 
-```rust
-use packed_spatial_index::{Index2DBuilder, Box2D};
-
-let mut builder = Index2DBuilder::new(2);
-builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
-builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
-let index = builder.finish()?;
-
-let hits = index.search(Box2D::new(0.0, 0.0, 2.0, 2.0));
-assert_eq!(hits, vec![0]);
-# Ok::<(), packed_spatial_index::BuildError>(())
-```
-
-## Installation
-
-Requires Rust 1.89 or newer.
+## Quick start
 
 ```toml
 [dependencies]
 packed_spatial_index = "0.29"
 ```
+
+Requires Rust 1.89 or newer.
+
+```rust
+use packed_spatial_index::{Box2D, Index2DBuilder, Point2D};
+
+// Your data stays yours. The index only ever hands back positions into it.
+let parks = ["Riverside", "Hilltop"];
+
+// Build once. One bounding box per item, in the same order as your data.
+let mut builder = Index2DBuilder::new(parks.len());
+builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0)); // Riverside: min_x, min_y, max_x, max_y
+builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0)); // Hilltop
+let index = builder.finish()?;
+
+// "Which parks fall inside this window?"
+let visible = index.search(Box2D::new(0.0, 0.0, 2.0, 2.0));
+assert_eq!(visible, vec![0]);               // position 0 ...
+assert_eq!(parks[visible[0]], "Riverside"); // ... is the box you added first
+
+// "Which park is nearest to me?"
+let me = Point2D::new(5.5, 5.5);
+let nearest = index.neighbors(me, 1);
+assert_eq!(parks[nearest[0]], "Hilltop");
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+That is the whole shape of it: describe each item with one box, build once, then
+ask. Every answer is a position in the order you added things, so you look the
+real record up yourself. That is also why the index stays small no matter what
+your records weigh.
+
+Ray casts, nearest pairs, joins and the region queries all follow this pattern.
+The [API map](docs/api.md) lists every family and type on one page; the
+[guide](docs/guide.md) starts from what you want rather than from a method name.
+
+## Where to go next
+
+- **[API map](docs/api.md)** — every query family and every type, one page.
+- **[Guide](docs/guide.md)** — an *I need … → use …* table, builder configuration, recipes, the naming rule the method names follow.
+- **[When to use it](docs/when-to-use.md)** — where this fits, and where a spatial database fits better.
+- **[Persistence](docs/persistence.md)** — serialize, load, zero-copy views, mmap, payloads and metadata, streaming over a `RangeReader`.
+- **[Performance](docs/performance.md)** — benchmarks against `static_aabb2d_index`, FlatGeobuf and the `bvh` crate, plus the build flags that matter.
+- **[Internals](docs/internals/)** — SIMD kernels, two-queue kNN, traversal prefetch.
+- **[Binary format](FORMAT.md)** — the `PSINDEX` on-disk layout.
+- **[API reference](https://docs.rs/packed_spatial_index)** — per-method docs.
 
 ## When to use it
 
@@ -65,151 +92,10 @@ compact in-memory (or mmap'd) index with reusable buffers for high query
 throughput. It is **not** a dynamic R-tree — there are no insert/delete
 operations after `finish()`.
 
-It also serializes to a single file you can put on object storage and range-query
-from the edge or a browser, with no backend. For where this fits (and where a
-spatial database fits better), see [When to use it](docs/when-to-use.md).
-
-## Performance
-
-Built for throughput on static geometry: fast builds, SIMD range / kNN / raycast
-(AVX2 / AVX-512), and reusable query buffers for tight loops. The
-[Performance](docs/performance.md) page has the full benchmarks against
-`static_aabb2d_index`, FlatGeobuf and the `bvh` crate, showing where it leads and
-where it doesn't — plus [build flags](docs/performance.md#build-flags) for AVX2 /
-AVX-512 codegen (`-C target-cpu=native`).
-
-## Queries at a glance
-
-Every in-memory **f64** query (range, kNN, raycast, join) exists on `Index2D` /
-`Index3D`, the `simd`-feature `SimdIndex2D` / `SimdIndex3D`, and the zero-copy
-views. The compact `f32` indexes and the streaming reader cover a subset (see
-the [coverage matrix](docs/guide.md#coverage-matrix)). Range/ray results are item indices in
-insertion order; result order is unspecified — except for the ordered region
-queries below, whose whole point is the order. For a boolean "any overlap?" reach
-for `any` (no allocation, stops at the first hit) rather than
-`search(..).is_empty()`; `search` returns an owned `Vec`, so in hot loops reuse a
-buffer (`search_into` / `search_with`), count with `count`, or fold with
-`visit`. The guide's
-[I need … → use …](docs/guide.md#choosing-a-query-method) table maps each need
-onto its method — start there rather than reaching for `search` by default, and
-see [docs.rs](https://docs.rs/packed_spatial_index) for full per-method docs.
-
-| Query | Methods |
-| --- | --- |
-| Range / overlap | [`search`][search], [`search_iter`][search_iter], [`search_into`][search_into], [`search_with`][search_with], [`any`][any], [`first`][first], [`count`][count], [`visit`][visit] |
-| Nearest neighbors (point) | [`neighbors`][neighbors], [`neighbors_within`][neighbors_within], [`neighbors_into`][neighbors_into], [`neighbors_with`][neighbors_with], [`neighbors_each`][neighbors_each] |
-| Nearest neighbors (box) | [`neighbors_of_box`][neighbors_of_box], [`neighbors_of_box_within`][neighbors_of_box_within], [`neighbors_of_box_into`][neighbors_of_box_into], [`neighbors_of_box_with`][neighbors_of_box_with], [`neighbors_of_box_each`][neighbors_of_box_each] |
-| Geographic / custom-metric kNN | [`neighbors_metric`][neighbors_metric], [`neighbors_metric_into`][neighbors_metric_into], [`neighbors_metric_each`][neighbors_metric_each] — pass a `\|box\| -> f64` distance (e.g. [`haversine_distance_2d`][haversine_distance_2d] for lon/lat) |
-| Ordered region | [`search_ordered`][search_ordered], [`search_ordered_into`][search_ordered_into], [`search_ordered_each`][search_ordered_each] — the same region shapes, emitted in nondecreasing order of a `\|box\| -> f64` key (e.g. [`view_depth_3d`][view_depth_3d] for front-to-back), so a budget can stop the traversal |
-| Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`raycast_each`][raycast_each] |
-| Spatial join | [`join`][join], [`join_each`][join_each] between two indexes; [`pairs`][pairs], [`pairs_each`][pairs_each] for the overlapping pairs within one |
-| Estimate before you query | [`estimate_count`][estimate_count] — an exact `[lower, upper]` bracket on the hit count from node boxes alone, plus a point estimate; the streaming readers answer it from the cached directory without a read |
-| Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`search_within_each`][search_within_each], [`search_within_any`][search_within_any], [`count_within`][count_within] — every item whose box lies within `max_distance` of a query box, `max_distance = 0.0` reproducing `search` |
-| Distance join (ε-join) | [`join_within`][join_within], [`join_within_each`][join_within_each], [`pairs_within`][pairs_within], [`pairs_within_each`][pairs_within_each], [`anti_join_within`][anti_join_within], [`pairs_within_components`][pairs_within_components] |
-| Closest pair | [`closest_pair`][closest_pair] within one index, [`closest_pair_to`][closest_pair_to] between two — the single nearest pair, with no `max_distance` to guess |
-| Extent / exact | [`extent`][extent], and [`search_exact`][search_exact] / [`neighbors_exact`][neighbors_exact] on the `f32` indexes |
-
-The range / overlap methods accept `Box2D` / `Box3D` queries and borrowed
-region geometry such as `Triangle2D`, `ConvexPolygon2D`, and `Frustum3D`. On the
-SIMD and `f32` frontends the shapes live on a parallel `*_region` family
-(`search_region` / `search_region_each` / `count_region` / `search_region_any` /
-`search_region_first`), so their `Box` entry points keep the SIMD kernel to themselves.
-
-```rust
-# use packed_spatial_index::{Index2DBuilder, Box2D, Point2D, Ray2D};
-# let mut b = Index2DBuilder::new(2);
-# b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
-# b.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
-# let index = b.finish()?;
-let overlaps = index.search(Box2D::new(0.0, 0.0, 2.0, 2.0)); // range query
-let nearest = index.neighbors(Point2D::new(5.5, 5.5), 1);    // kNN
-let hit = index.raycast_closest(Ray2D::new(Point2D::new(-1.0, 0.5), 1.0, 0.0, 10.0));
-assert_eq!(overlaps, vec![0]);
-assert_eq!(nearest, vec![1]);
-assert_eq!(hit, Some((0, 1.0)));
-# Ok::<(), packed_spatial_index::BuildError>(())
-```
-
-## Types at a glance
-
-- **Geometry**: [`Box2D`][Box2D], [`Box3D`][Box3D] (inclusive `overlaps` /
-  `contains` / `contains_point` / `from_point`), [`Point2D`][Point2D],
-  [`Point3D`][Point3D], [`Ray2D`][Ray2D], [`Ray3D`][Ray3D],
-  [`Triangle2D`][Triangle2D] / [`ConvexPolygon2D`][ConvexPolygon2D] (2D region
-  queries), [`Frustum3D`][Frustum3D] (3D culling; [`ClipSpaceZ`][ClipSpaceZ]
-  picks the NDC depth convention for `from_view_projection`).
-- **Builders**: [`Index2DBuilder`][Index2DBuilder],
-  [`Index3DBuilder`][Index3DBuilder] — [`finish`][finish] (scalar f64),
-  [`finish_simd`][finish_simd] (SoA + SIMD), [`finish_f32`][finish_f32] (compact
-  scalar f32), [`finish_simd_f32`][finish_simd_f32] (compact f32 + SIMD).
-- **Indexes**: [`Index2D`][Index2D] / [`Index3D`][Index3D] (scalar f64),
-  [`SimdIndex2D`][SimdIndex2D] / [`SimdIndex3D`][SimdIndex3D] (SIMD f64),
-  [`Index2DF32`][Index2DF32] / [`Index3DF32`][Index3DF32] (half-memory scalar
-  f32), [`SimdIndex2DF32`][SimdIndex2DF32] / [`SimdIndex3DF32`][SimdIndex3DF32]
-  (half-memory f32 + SIMD).
-- **Views**: zero-copy [`Index2DView`][Index2DView] /
-  [`Index3DView`][Index3DView] (and SIMD / f32 view variants) over serialized
-  bytes.
-- **Streaming**: [`StreamIndex2D`][StreamIndex2D] / [`StreamIndex3D`][StreamIndex3D]
-  (and compact `StreamIndex2DF32` / `StreamIndex3DF32`) query a serialized index
-  over a `RangeReader` without loading it whole (`stream` feature). A windowed
-  query over a 100 MB index served from object storage costs only a handful of
-  range reads. See the [Cloudflare Worker + R2 example](wasm-demo/worker).
-- **Distance metrics**: [`haversine_distance_2d`][haversine_distance_2d] and the
-  [`EARTH_RADIUS_M`][EARTH_RADIUS_M] constant feed great-circle distances into the
-  custom-metric kNN closures.
-- **Ordering keys**: [`view_depth_2d`][view_depth_2d] /
-  [`view_depth_3d`][view_depth_3d] give depth along a view axis, the ready-made
-  key for a front-to-back `search_ordered`.
-- **Workspaces**: [`SearchWorkspace`][SearchWorkspace] /
-  [`NeighborWorkspace`][NeighborWorkspace] reuse buffers in loops.
-- **Sorting / errors**: [`SortKey2D`][SortKey2D] / [`SortKey3D`][SortKey3D]
-  (default `Hilbert`), [`BoundsError`][BoundsError], [`BuildError`][BuildError],
-  [`LoadError`][LoadError].
-
-A full **coverage matrix** (which index type answers which query, and why some
-cells are empty by design) is in the [guide](docs/guide.md#coverage-matrix).
-
-## Serialization & metadata
-
-`to_bytes` / `from_bytes` round-trip an index; the `serialize()` builder adds the
-optional pieces — one opaque payload blob per item and descriptive metadata
-(coordinate reference system, payload content type, attribution):
-
-```rust
-# use packed_spatial_index::{Box2D, Index2DBuilder, read_metadata};
-# let mut b = Index2DBuilder::new(1);
-# b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
-# let index = b.finish()?;
-let bytes = index
-    .serialize()
-    .crs("EPSG:4326")
-    .payloads(&[b"feature-0".as_slice()])
-    .to_bytes()?;
-
-// Read the metadata back without loading the index.
-assert_eq!(read_metadata(&bytes)?.crs.as_deref(), Some("EPSG:4326"));
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-The metadata is opaque (the crate stores the strings you give it, verbatim).
-Pair query results with their payloads via the zero-copy views or the streaming
-reader — see [Persistence](docs/persistence.md) and the [binary format](FORMAT.md).
-
-When every record is the same size, `.records(stride, ..)` (or `.triangles(..)`
-for `Triangle2D` / `Triangle3D`, and the compact `Triangle2DF32` / `Triangle3DF32`)
-stores a **fixed-width** payload: no offset table, so the file is smaller, a
-streamed query reads one fewer time, and a view can borrow the records as a
-zero-copy typed slice. A triangle payload plus the index over each triangle's
-bounding box (`Index3D::from_triangles`) is a streamable mesh BVH; `raycast` finds
-candidates and `Ray3D::closest_triangle` does the exact hit (the `f32` records test
-8 at a time with `simd`). See the [`raycast_mesh`](examples/raycast_mesh.rs) example.
-
-For half the box bytes in memory and on the wire, build the same thing on the
-compact `f32` index: `Index3DF32::from_triangles(..).serialize().triangles(..)`
-then stream it with `StreamIndex3DF32` — `f32-storage` alone, no `simd` needed.
-The stored f32 boxes are rounded outward, so range and ray results are a
-conservative superset; `search_exact` refines them against your `f64` boxes.
+It also serializes to a single file you can put on object storage and
+range-query from the edge or a browser, with no backend. For the longer answer,
+including where a spatial database wins, see
+[When to use it](docs/when-to-use.md).
 
 ## Features
 
@@ -229,15 +115,6 @@ required.
 cargo build --no-default-features                      # minimal: scalar + serialize + metadata
 cargo build --no-default-features --features simd      # SIMD only
 ```
-
-## Documentation
-
-- **[Guide](docs/guide.md)** — recipes, choosing a query method, builder configuration, examples, WASM demo.
-- **[Persistence](docs/persistence.md)** — serialize / load / zero-copy views, querying large or on-disk indexes via mmap, and streaming queries over a `RangeReader` (local file or remote object).
-- **[Performance](docs/performance.md)** — benchmarks vs `static_aabb2d_index`, FlatGeobuf, and the `bvh` crate.
-- **[Internals](docs/internals/)** — technique deep-dives: SIMD kernels, two-queue kNN, traversal prefetch.
-- **[Binary format](FORMAT.md)** — the `PSINDEX` on-disk layout.
-- **API reference** — [docs.rs/packed_spatial_index](https://docs.rs/packed_spatial_index).
 
 ## Limitations
 
@@ -285,95 +162,3 @@ suite catches mistakes.
 ## License
 
 Licensed under the Apache License, Version 2.0.
-
-<!-- docs.rs method links -->
-[search]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search
-[search_iter]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_iter
-[search_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_into
-[search_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_with
-[any]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.any
-[first]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.first
-[count]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.count
-[visit]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.visit
-[neighbors]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors
-[neighbors_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_within
-[neighbors_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_into
-[neighbors_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_with
-[neighbors_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_each
-[neighbors_metric]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_metric
-[neighbors_metric_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_metric_into
-[neighbors_metric_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_metric_each
-[haversine_distance_2d]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/fn.haversine_distance_2d.html
-[search_ordered]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_ordered
-[search_ordered_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_ordered_into
-[search_ordered_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_ordered_each
-[view_depth_2d]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/fn.view_depth_2d.html
-[view_depth_3d]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/fn.view_depth_3d.html
-[EARTH_RADIUS_M]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/constant.EARTH_RADIUS_M.html
-[neighbors_of_box]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box
-[neighbors_of_box_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box_within
-[neighbors_of_box_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box_into
-[neighbors_of_box_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box_with
-[neighbors_of_box_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.neighbors_of_box_each
-[raycast]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast
-[raycast_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_into
-[raycast_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_with
-[raycast_closest]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_closest
-[raycast_closest_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_closest_with
-[raycast_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_each
-[join]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join
-[join_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_each
-[pairs]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs
-[pairs_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs_each
-[estimate_count]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.estimate_count
-[search_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within
-[search_within_into]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within_into
-[search_within_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within_each
-[search_within_any]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_within_any
-[count_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.count_within
-[closest_pair_to]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.closest_pair_to
-[closest_pair]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.closest_pair
-[join_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_within
-[join_within_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_within_each
-[pairs_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs_within
-[pairs_within_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs_within_each
-[anti_join_within]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.anti_join_within
-[pairs_within_components]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs_within_components
-[extent]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.extent
-[search_exact]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html#method.search_exact
-[neighbors_exact]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html#method.neighbors_exact
-[Box2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Box2D.html
-[Box3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Box3D.html
-[Point2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Point2D.html
-[Point3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Point3D.html
-[Ray2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Ray2D.html
-[Ray3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Ray3D.html
-[Triangle2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Triangle2D.html
-[ConvexPolygon2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.ConvexPolygon2D.html
-[Frustum3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Frustum3D.html
-[ClipSpaceZ]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.ClipSpaceZ.html
-[Index2DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html
-[Index3DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DBuilder.html
-[Index2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html
-[Index3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3D.html
-[SimdIndex2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2D.html
-[SimdIndex3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex3D.html
-[SimdIndex2DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex2DF32.html
-[SimdIndex3DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SimdIndex3DF32.html
-[Index2DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DF32.html
-[Index3DF32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DF32.html
-[StreamIndex2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.StreamIndex2D.html
-[StreamIndex3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.StreamIndex3D.html
-[Index2DView]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DView.html
-[Index3DView]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DView.html
-[SearchWorkspace]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.SearchWorkspace.html
-[NeighborWorkspace]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.NeighborWorkspace.html
-[finish]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish
-[finish_simd]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish_simd
-[finish_simd_f32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish_simd_f32
-[finish_f32]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html#method.finish_f32
-[SortKey2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.SortKey2D.html
-[SortKey3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.SortKey3D.html
-[BoundsError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BoundsError.html
-[BuildError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BuildError.html
-[LoadError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.LoadError.html

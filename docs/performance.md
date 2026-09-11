@@ -204,6 +204,19 @@ narrowing of the SIMD indexes' lead on range search. The ray predicate is a slab
 test rather than a box overlap, so it sits between the cheap and the expensive
 end: 2D gains clearly, 3D lands within drift.
 
+The spatial join is where the mask pays most. `join` expands one node against one
+box at a time, and along the other tree's boxes that per-child test is 50/50 far
+more often than a range query's is, so its branch was the join's dominant cost:
+on 100 000 × 100 000 uniform boxes (extent 1000, unit size, node size 16) `join`
+went from 12.6–13.3 ms to 4.5–5.4 ms in 2D and from 36–40 ms to 12.8–13.8 ms in
+3D — 2.6–2.8× — with the same pair sets (checked against a brute-force
+`count` per item). `join_within` takes the same traversal with the distance
+predicate and gains 20–25%. Both predicates come out packed in the shipped
+build (the distance kernel's added instructions are `subpd`/`maxpd`/`mulpd`, the
+overlap kernel's are `cmplepd`); the distance test is simply several times the
+arithmetic per child — a subtraction, a clamp and a square per axis against one
+compare per side — so its branch was a smaller share of the whole.
+
 Removing the branch is only half of what happens. A loop that tests every child
 into a bitmask has no `continue` in it, and that is what lets the autovectorizer
 widen it: in the shipped build (`lto = true`), the collect paths' mask loop

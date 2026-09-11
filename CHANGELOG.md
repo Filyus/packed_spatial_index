@@ -6,6 +6,13 @@ All notable changes to this crate are documented here.
 
 ### Performance
 
+- The spatial join — `join`, `join_with`, `self_join`, the `join_within` family
+  and their view and SIMD forms, all of which share one kernel — tests a node's
+  children against the other side's box into a bitmask and branches once per
+  surviving pair. On 100 000 × 100 000 uniform unit boxes `join` runs 2.6× faster
+  in 2D (12.6–13.3 → 4.5–5.4 ms) and 2.8× in 3D (36–40 → 12.8–13.8 ms), the
+  distance forms 20–25% faster; the pair sets are unchanged (`docs/performance.md`,
+  and the `docs/guide.md` distance-join ratios are re-measured).
 - The scalar collect paths — `search`, `search_into`, `search_with` and
   `count` on `Index2D` and `Index3D` — test each node's children into a bitmask
   and then branch once per hit rather than once per child. Along a query's edge the

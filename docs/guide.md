@@ -643,17 +643,17 @@ views, and the SIMD indexes and views):
   component "is" (merge, split, keep as noise) stays with the caller. This
   reports what the graph defines, deterministically.
 
-Measured on 100 000 × 100 000 uniform 2D boxes (extent 1000, unit size):
-`join_within` at `max_distance = 2` (324 000 pairs) runs ~2.5× faster than the
-workaround of joining two indexes of `max_distance`-inflated boxes and filtering
-the pairs by exact distance; at `max_distance = 6` (1.6 million pairs) ~3×. The
-workaround also needs a second, larger index — 6–10 ms extra build and more
-memory in this setup. Against plain `join` the picture splits by data shape:
-on uniform data the distance predicate costs nothing extra —
-`join_within(0.0)`, the same pairs with the predicate swapped, measures
-0.5–1.0× of `join` — while on clustered data plain `join` stays the cheaper
-tool (1.1–2.9×, worst where almost nothing matches), so pick by the question
-being asked.
+Measured on 100 000 × 100 000 uniform 2D boxes (extent 1000, unit size), with
+the branch-free node test on both forms: `join_within` at `max_distance = 2`
+(324 000 pairs) runs at parity with the workaround of joining two indexes of
+`max_distance`-inflated boxes and filtering the pairs by exact distance
+(0.97–1.11× either way); at `max_distance = 6` (1.6 million pairs) the
+workaround is 0.77–0.94× of it. What `join_within` saves is the second, larger
+index — 6–10 ms extra build and its memory — and the filter, not the join
+itself: the distance test is several times the arithmetic per child of an
+overlap test, so `join_within(0.0)`, the same pairs with the predicate swapped,
+measures 1.2–1.4× of plain `join`. Pick by the question being asked; on clustered data
+plain `join` stays the cheaper tool by a wider margin still.
 
 ## The closest pair
 

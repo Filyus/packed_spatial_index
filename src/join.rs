@@ -14,6 +14,7 @@ use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
 use crate::geometry::{Box2D, Box3D};
+use crate::index2d::MASK_CHUNK;
 use crate::range::visit_region;
 use crate::tree_access::{TreeAccess, leaf_range};
 
@@ -153,67 +154,85 @@ where
         let start = a.tree_index(a_pos);
         let end = (start + a.tree_node_size()).min(a.tree_level_bound(child_level));
         let b_bounds = b.tree_bounds(b_pos);
-        for pos in start..end {
-            let bounds = a.tree_bounds(pos);
-            if !test.keeps(bounds, b_bounds) {
-                continue;
+        // Branch-free node test: fold the children's tests into a bitmask and
+        // branch once per surviving pair instead of once per child.
+        let mut chunk = start;
+        while chunk < end {
+            let stop = (chunk + MASK_CHUNK).min(end);
+            let mut mask = 0u64;
+            for (i, pos) in (chunk..stop).enumerate() {
+                mask |= u64::from(test.keeps(a.tree_bounds(pos), b_bounds)) << i;
             }
-            if child_level == 0 {
-                if b_level == 0 {
-                    visitor(a.tree_index(pos), b.tree_index(b_pos))?;
-                } else if test.covers(bounds, b_bounds) {
-                    // The leaf box covers B's whole subtree: every item under
-                    // `b_pos` intersects it, so emit the range without tests.
-                    let item_a = a.tree_index(pos);
-                    let (s, e) = leaf_range(b, b_pos, b_level);
-                    for b_leaf in s..e {
-                        visitor(item_a, b.tree_index(b_leaf))?;
+            while mask != 0 {
+                let pos = chunk + mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                let bounds = a.tree_bounds(pos);
+                if child_level == 0 {
+                    if b_level == 0 {
+                        visitor(a.tree_index(pos), b.tree_index(b_pos))?;
+                    } else if test.covers(bounds, b_bounds) {
+                        // The leaf box covers B's whole subtree: every item under
+                        // `b_pos` intersects it, so emit the range without tests.
+                        let item_a = a.tree_index(pos);
+                        let (s, e) = leaf_range(b, b_pos, b_level);
+                        for b_leaf in s..e {
+                            visitor(item_a, b.tree_index(b_leaf))?;
+                        }
+                    } else {
+                        stack.push((pos, 0, b_pos, b_level));
+                    }
+                } else if b_level == 0 && test.covers(b_bounds, bounds) {
+                    // The B leaf box covers this whole A subtree: mirror fast path.
+                    let item_b = b.tree_index(b_pos);
+                    let (s, e) = leaf_range(a, pos, child_level);
+                    for a_leaf in s..e {
+                        visitor(a.tree_index(a_leaf), item_b)?;
                     }
                 } else {
-                    stack.push((pos, 0, b_pos, b_level));
+                    stack.push((pos, child_level, b_pos, b_level));
                 }
-            } else if b_level == 0 && test.covers(b_bounds, bounds) {
-                // The B leaf box covers this whole A subtree: mirror fast path.
-                let item_b = b.tree_index(b_pos);
-                let (s, e) = leaf_range(a, pos, child_level);
-                for a_leaf in s..e {
-                    visitor(a.tree_index(a_leaf), item_b)?;
-                }
-            } else {
-                stack.push((pos, child_level, b_pos, b_level));
             }
+            chunk = stop;
         }
     } else {
         let child_level = b_level - 1;
         let start = b.tree_index(b_pos);
         let end = (start + b.tree_node_size()).min(b.tree_level_bound(child_level));
         let a_bounds = a.tree_bounds(a_pos);
-        for pos in start..end {
-            let bounds = b.tree_bounds(pos);
-            if !test.keeps(a_bounds, bounds) {
-                continue;
+        let mut chunk = start;
+        while chunk < end {
+            let stop = (chunk + MASK_CHUNK).min(end);
+            let mut mask = 0u64;
+            for (i, pos) in (chunk..stop).enumerate() {
+                mask |= u64::from(test.keeps(a_bounds, b.tree_bounds(pos))) << i;
             }
-            if child_level == 0 {
-                if a_level == 0 {
-                    visitor(a.tree_index(a_pos), b.tree_index(pos))?;
-                } else if test.covers(bounds, a_bounds) {
-                    let item_b = b.tree_index(pos);
-                    let (s, e) = leaf_range(a, a_pos, a_level);
-                    for a_leaf in s..e {
-                        visitor(a.tree_index(a_leaf), item_b)?;
+            while mask != 0 {
+                let pos = chunk + mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                let bounds = b.tree_bounds(pos);
+                if child_level == 0 {
+                    if a_level == 0 {
+                        visitor(a.tree_index(a_pos), b.tree_index(pos))?;
+                    } else if test.covers(bounds, a_bounds) {
+                        let item_b = b.tree_index(pos);
+                        let (s, e) = leaf_range(a, a_pos, a_level);
+                        for a_leaf in s..e {
+                            visitor(a.tree_index(a_leaf), item_b)?;
+                        }
+                    } else {
+                        stack.push((a_pos, a_level, pos, 0));
+                    }
+                } else if a_level == 0 && test.covers(a_bounds, bounds) {
+                    let item_a = a.tree_index(a_pos);
+                    let (s, e) = leaf_range(b, pos, child_level);
+                    for b_leaf in s..e {
+                        visitor(item_a, b.tree_index(b_leaf))?;
                     }
                 } else {
-                    stack.push((a_pos, a_level, pos, 0));
+                    stack.push((a_pos, a_level, pos, child_level));
                 }
-            } else if a_level == 0 && test.covers(a_bounds, bounds) {
-                let item_a = a.tree_index(a_pos);
-                let (s, e) = leaf_range(b, pos, child_level);
-                for b_leaf in s..e {
-                    visitor(item_a, b.tree_index(b_leaf))?;
-                }
-            } else {
-                stack.push((a_pos, a_level, pos, child_level));
             }
+            chunk = stop;
         }
     }
     ControlFlow::Continue(())

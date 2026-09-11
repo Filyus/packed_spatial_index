@@ -1,9 +1,22 @@
 //! Layout-agnostic scalar raycast traversal.
 
+use crate::index2d::{MASK_CHUNK, for_each_hit, for_each_hit_rev, frame};
 use crate::neighbors::{NeighborNodeState, NeighborState};
 use crate::ray::inclusive_ray_cutoff;
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
+
+/// Hit tests of the positions `start..end` (at most `MASK_CHUNK`) as a bitmask,
+/// bit `i` for position `start + i`.
+#[inline(always)]
+fn hit_mask(start: usize, end: usize, hit_at: &impl Fn(usize) -> bool) -> u64 {
+    debug_assert!(end - start <= MASK_CHUNK);
+    let mut mask = 0u64;
+    for (i, pos) in (start..end).enumerate() {
+        mask |= u64::from(hit_at(pos)) << i;
+    }
+    mask
+}
 
 /// Depth-first raycast collection over a packed tree. Callers provide storage
 /// accessors for hit testing and item/node indices.
@@ -35,41 +48,53 @@ pub(crate) fn collect_hits(
         let end = (node_index + node_size).min(level_end(level));
         let is_leaf = node_index < num_items;
 
+        // No early exit here, so each node's hit tests fold into a bitmask and
+        // the loop branches once per hit instead of once per child. See
+        // `index2d::overlap_mask`.
         if is_leaf {
-            for pos in node_index..end {
-                if hit_at(pos) {
-                    results.push(index_at(pos));
-                }
+            let mut start = node_index;
+            while start < end {
+                let stop = (start + MASK_CHUNK).min(end);
+                for_each_hit(hit_mask(start, stop, &hit_at), |i| {
+                    results.push(index_at(start + i));
+                });
+                start = stop;
             }
         } else {
             let child_level = level - 1;
             if reverse_internal_push {
-                for pos in (node_index..end).rev() {
-                    if hit_at(pos) {
-                        stack.push(index_at(pos));
-                        stack.push(child_level);
-                    }
+                // Chunks from the back, bits from the top: children pop in order.
+                let mut stop = end;
+                while stop > node_index {
+                    let start = stop.saturating_sub(MASK_CHUNK).max(node_index);
+                    for_each_hit_rev(hit_mask(start, stop, &hit_at), |i| {
+                        stack.push(frame::pack(index_at(start + i), child_level));
+                    });
+                    stop = start;
                 }
             } else {
-                for pos in node_index..end {
-                    if hit_at(pos) {
-                        stack.push(index_at(pos));
-                        stack.push(child_level);
-                    }
+                let mut start = node_index;
+                while start < end {
+                    let stop = (start + MASK_CHUNK).min(end);
+                    for_each_hit(hit_mask(start, stop, &hit_at), |i| {
+                        stack.push(frame::pack(index_at(start + i), child_level));
+                    });
+                    start = stop;
                 }
             }
         }
 
-        if stack.len() > 1 {
-            level = stack.pop().unwrap();
-            node_index = stack.pop().unwrap();
-            // Prefetch the next node to be popped (its index sits at len-2; pairs
-            // are (index, level)) so its box loads while this node is hit-tested.
-            if stack.len() >= 2 {
-                prefetch_at(stack[stack.len() - 2]);
+        match stack.pop() {
+            Some(f) => {
+                // Prefetch the next node to be popped so its box loads while
+                // this node is hit-tested.
+                if let Some(&next) = stack.last() {
+                    prefetch_at(frame::node(next));
+                }
+                node_index = frame::node(f);
+                level = frame::level(f);
             }
-        } else {
-            return;
+            None => return,
         }
     }
 }

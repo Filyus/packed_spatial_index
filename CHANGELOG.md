@@ -24,7 +24,10 @@ All notable changes to this crate are documented here.
   their gap to the owned index there (390 µs against 370 µs on the same 100 000
   boxes), and stayed flat on sparse ones. The scalar f32 indexes take the same
   route in their own traversal: `Index2DF32` / `Index3DF32` `search` fell 4–12%
-  and `count` 6–8%, with their early-exit forms unchanged.
+  and `count` 6–8%, with their early-exit forms unchanged. The shared all-hits
+  raycast core takes it too: `Index2D` raycast fell 12% on long rays and 6% on
+  short ones, with 3D flat within drift and nothing regressing. The best-first
+  `raycast_closest` descent is untouched.
   The callback paths (`visit`, `any`, `first`) keep the branching loop on
   purpose: on an early-exit query the full mask per internal node measured
   +40–60% on `any`, since the rejected-child branch is well predicted while

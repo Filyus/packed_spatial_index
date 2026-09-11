@@ -199,8 +199,10 @@ predicts perfectly. The collect paths therefore fold a node's children into a
 branch per *hit* instead of one per *child*. That is where the 2D and 3D search
 numbers above come from: 25–37% off 2D collect paths on wide queries, 33–52% off
 `Index3D`, 30–33% off the zero-copy views, 4–12% off the scalar `Index2DF32` /
-`Index3DF32` collect forms, and most of the narrowing of the SIMD indexes' lead
-on range search.
+`Index3DF32` collect forms, 6–12% off 2D all-hits raycast, and most of the
+narrowing of the SIMD indexes' lead on range search. The ray predicate is a slab
+test rather than a box overlap, so it sits between the cheap and the expensive
+end: 2D gains clearly, 3D lands within drift.
 
 Two boundaries on the technique are measured, and both keep it off the other
 paths:

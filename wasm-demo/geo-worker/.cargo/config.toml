@@ -1,0 +1,7 @@
+# wasm SIMD for the geo index module. The browser demo passes this through
+# `RUSTFLAGS` in its npm script the Workers are built by `wasm-pack` directly,
+# so it lives here instead and applies however cargo is invoked. Worth 393.5 ->
+# 325.3 us wide at `opt-level = 3` -- and nothing at the size levels, where
+# there is no vectorization for it to enable.
+[target.wasm32-unknown-unknown]
+rustflags = ["-Ctarget-feature=+simd128"]

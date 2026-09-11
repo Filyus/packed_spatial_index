@@ -25,6 +25,15 @@ packed_spatial_index = { path = "../..", default-features = false, features = ["
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
 
+# `opt-level = "s"` was the default choice here and it is the wrong one for a
+# module whose work is tree traversal: at the size levels there is no
+# autovectorization, which is what the crate's collect paths are built around.
+# Measured on wasm32 (same source, 1000 count queries over 100 000 boxes),
+# `"s"` without SIMD against `3` with it: 664.1 -> 325.3 us wide (2.0x) and
+# 362.5 -> 195.8 us narrow (1.9x), for 9.8% more module (523 KB -> 574 KB raw,
+# well inside a Worker's size limit). `"z"` is both bigger and slower than
+# `"s"` here, so it is never the answer.
 [profile.release]
-opt-level = "s"
+opt-level = 3
+codegen-units = 1
 lto = true

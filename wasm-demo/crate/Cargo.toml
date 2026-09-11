@@ -21,3 +21,11 @@ packed_spatial_index = { path = "../..", default-features = false }
 [features]
 default = ["simd"]
 simd = ["packed_spatial_index/simd"]
+
+# Measured on wasm32 (same source, `+simd128` on, 1000 count queries over
+# 100 000 boxes): adding these two takes the module from 142 841 to 123 193
+# bytes and the query from 344.8 to 325.3 us wide, 216.4 to 195.8 us narrow.
+# Smaller and faster both, which is why there is nothing to trade off here.
+[profile.release]
+lto = true
+codegen-units = 1

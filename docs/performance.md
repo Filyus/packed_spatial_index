@@ -70,7 +70,7 @@ canonical byte format for 100,000 boxes.
 | Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: | ---: |
 | Full build | 46.82 ms | 6.31 ms | 2.23 ms serial / 1.73 ms parallel | - |
-| Search batch | 545.58 us | 440.86 us | 416.19 us | 115.32 us |
+| Search batch | 588.75 us | 485.64 us | 205.62 us | 127.36 us |
 | Serialize built tree (fresh buffer) | - | - | 399.11 us | 613.21 us |
 | Serialize built tree (reused buffer) | 131.28 us | - | 68.02 us | 160.86 us |
 | Load owned tree | 646.49 us | - | 372.24 us | 554.75 us |
@@ -88,17 +88,22 @@ scatters AoS→SoA to load. The `reused buffer` row isolates this best:
 query far more than you persist, and load read-mostly bytes through the zero-copy
 `Index2DView` (34.96 us) rather than rebuilding an owned SoA index.
 
-Scalar `Index2D` search versus `static_aabb2d_index` is dataset-sensitive: the
-margin between them ranges from a few percent to 1.8× across two runs with the
-same item and query counts but different generated inputs — and on the `0xF6B`
-inputs the two were the other way round under `2.0.0` of the baseline crate (see
-below). Treat the ordering as a property of the data and the baseline version,
-not as a standing result:
+Scalar `Index2D` search leads `static_aabb2d_index` on both generated inputs,
+by 2.4× on the `0xF6B` set and 3.0× on `0xB0B`. That used to be a
+dataset-sensitive call — a few percent to 1.8× depending on the inputs, and the
+other way round on `0xF6B` under `2.0.0` of the baseline crate (see below) —
+until the scalar collect paths stopped branching once per child: each node's
+overlap tests now fold into a bitmask and the traversal branches once per hit,
+which removed the mispredicts that dominated wide queries. The margin is now
+well outside the run-to-run spread on either side (about 1% here, with the
+baseline crate's own column moving by 2–3% between runs), so the ordering holds
+across the inputs tried, while the 2D competitor table's warning about the
+baseline version still applies to that column:
 
 | Search batch | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: |
-| `flatgeobuf2d_bench`, seed `0xF6B` (`search_with`) | 440.86 us | 416.19 us | 115.32 us |
-| `index2d_bench`, seed `0xB0B` (`search_into_stack` / `search_simd`) | 604.86 us | 335.80 us | 221.17 us |
+| `flatgeobuf2d_bench`, seed `0xF6B` (`search_with`) | 485.64 us | 205.62 us | 127.36 us |
+| `index2d_bench`, seed `0xB0B` (`search_into_stack` / `search_simd`) | 645.93 us | 215.56 us | 208.98 us |
 
 The `SimdIndex2D` columns are not the same entry point: `search_with` picks a
 kernel for the query, while `search_simd` is the explicit wide-4 path, so read
@@ -353,8 +358,8 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 - `Index2D` is the general-purpose path;
 - `SimdIndex2D` and `SimdIndex3D` are best for heavier query batches where SIMD
   work amortizes well;
-- scalar `Index2D` search versus `static_aabb2d_index` depends on the generated
-  data and query distribution, while `Index2D` build is faster in these runs;
+- scalar `Index2D` search leads `static_aabb2d_index` by 2.4–3.0× on both
+  generated inputs, and `Index2D` build is faster as well;
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
   can be faster when Z meaningfully prunes the tree;
 - f32 storage halves box memory; exact callbacks trade source-box lookup for

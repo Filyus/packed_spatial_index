@@ -12,7 +12,10 @@ All notable changes to this crate are documented here.
   per-child overlap branch is right about half the time, and callgrind put
   roughly half of the traversal's branch mispredicts on it. Measured on
   100 000 boxes: −25–37% on queries returning ~44 items, −7–25% on queries
-  returning ~1. The traversal stack also holds one packed `(node, level)`
+  returning ~1; on the crate's own competitor benches the `Index2D` search rows
+  fell 43–49%, putting the scalar index 2.4–3.0× ahead of `static_aabb2d_index`
+  on both generated inputs (`docs/performance.md`). The traversal stack also
+  holds one packed `(node, level)`
   word per child instead of two, on every 2D scalar path including `visit`.
   The callback paths (`visit`, `any`, `first`) keep the branching loop on
   purpose: on an early-exit query the full mask per internal node measured

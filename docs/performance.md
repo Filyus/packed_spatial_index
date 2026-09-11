@@ -288,6 +288,65 @@ depth, since a deeper tree holds larger fully contained subtrees, and a window
 too small to contain any whole node pays a containment test that skips nothing —
 the same trade the owned indexes make.
 
+## Overlapping boxes
+
+An R-tree prunes by node bounding box, so the usual worry is that data packed
+densely into one space makes the node boxes overlap too, and a query then has to
+open subtrees holding nothing for it. This measures whether that happens here.
+
+The separating metric is **checks per hit**, from the `search_visited(query) ->
+(hits, intersection_checks)` diagnostic. If pruning were failing, checks per hit
+would rise as the field gets denser. If the extra cost is simply that the answer
+is bigger, checks per hit stays flat or falls.
+
+Workload: 100,000 boxes over a 1,000-wide square, 2,000 queries per row. "Boxes
+over a point" is the expected number of boxes covering any one point, which is
+what "denser" means here. The counters are exact and reproduce byte for byte
+between runs; only the last column is timed.
+
+Fixed 5-wide query window:
+
+| box side | boxes over a point | hits/query | checks/query | checks/hit | µs/query |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5 | 0.03 | 3.1 | 107 | 35.1 | 0.21 |
+| 2 | 0.4 | 4.9 | 115 | 23.2 | 0.22 |
+| 5 | 2.5 | 10.1 | 131 | 13.1 | 0.27 |
+| 8 | 6.4 | 16.9 | 150 | 8.9 | 0.34 |
+| 20 | 40 | 61.9 | 237 | 3.8 | 0.51 |
+| 60 | 360 | 398.4 | 731 | 1.8 | 1.46 |
+
+A point query is the cleaner probe, because its answer is exactly the boxes
+covering the point, so the answer grows with density by definition and anything
+left in checks per hit is the tree:
+
+| box side | boxes over a point | hits/query | checks/query | checks/hit |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.5 | 0.03 | 0.03 | 87 | — |
+| 2 | 0.4 | 0.39 | 93 | — |
+| 5 | 2.5 | 2.44 | 106 | 43.4 |
+| 8 | 6.4 | 6.25 | 120 | 19.1 |
+| 20 | 40 | 39.1 | 196 | 5.0 |
+| 60 | 360 | 338.9 | 650 | 1.9 |
+
+**Pruning holds.** Checks per hit falls throughout, and the absolute work grows
+far slower than the answer: across a 12,000× rise in density the point query goes
+from 87 checks to 650, a factor of 7.4, while its answer goes from 0.03 items to
+339. Subtract the hits, which any index must touch, and the overhead above the
+answer grows from about 87 to about 310 — under 4× for four orders of magnitude
+of density.
+
+So a query over heavily overlapping boxes costs more because the answer is
+bigger, not because the tree stopped pruning. That also explains the one kNN
+figure that looks alarming in isolation: `neighbors(point, 1)` on such a field
+takes about 4 µs instead of 1.3, because with hundreds of boxes covering the
+point there are hundreds of equally near answers to settle between, not because
+the descent got worse.
+
+This says nothing about **clustered** data, which is a different shape: there the
+boxes are small but the empty space between groups is large, and node boxes span
+the gaps. That case is the [raycast comparison against `bvh`](#closest-hit-raycast-vs-the-bvh-crate)
+below, where a surface-area-heuristic build wins and Hilbert packing does not.
+
 ## Ordered front-to-back region queries
 
 `search_ordered` answers the same set as `search` but emits it in nondecreasing

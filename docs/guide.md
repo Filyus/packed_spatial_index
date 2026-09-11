@@ -878,14 +878,16 @@ growing `k` only append: `neighbors(point, k)` is a prefix of
 `neighbors(point, k + 1)` for every `k`, including `k = 1`, which is served by a
 separate single-answer traversal.
 
-The rule costs something in the case that provokes it. Asking for one neighbour
-can no longer stop at the first box it finds containing the point; it has to
-finish the zero-distance set to know which member has the smallest index.
-Measured on 100 000 boxes, that is free while a query point sits inside about
-one box, around 25–40% slower where it sits inside two to six, and about 4.5x
-slower on a deliberately pathological field where every point sits inside some
-three hundred. Even there the single-answer traversal stays well ahead of asking
-for `k` and taking the first.
+What this costs depends on your data, in one direction only: how many boxes
+contain the query point. Asking for one neighbour cannot stop at the first such
+box, because a smaller item index may sit in another one, so it finishes the
+whole zero-distance set. A point that lands outside every box is unaffected.
+
+On 100 000 boxes that is about 1.3 µs per call while a point sits inside a
+handful of boxes, rising toward 4 µs on a field so dense that hundreds cover
+every point — where "the nearest" is a question about hundreds of equally near
+answers anyway. [Performance](performance.md#overlapping-boxes) has the numbers,
+and shows that the rise is the answer growing rather than the tree pruning worse.
 
 ## Geographic and custom-metric kNN
 

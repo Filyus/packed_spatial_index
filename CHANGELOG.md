@@ -6,131 +6,138 @@ All notable changes to this crate are documented here.
 
 ### API
 
-- **BREAKING:** the way you want an answer no longer leads the method name. The
-  operation leads; the mode trails, as one of `_into`, `_iter`, `_each`, `_any`,
-  `_first`, or nothing at all for a fresh `Vec`. So the callback forms that used
-  to be spelled `visit_*` are now `*_each` — `visit_within` is
-  `search_within_each`, `visit_neighbors` is `neighbors_each`, `visit_raycast`
-  is `raycast_each`, and likewise for `visit_region`, `visit_ordered`,
-  `visit_pick`, `visit_exact`, `visit_neighbors_of_box`,
-  `visit_neighbors_metric` and the streaming `visit_payload*` family. The
-  early-exit forms follow the same rule wherever an operation is named:
-  `any_within` is `search_within_any`, `any_region` is `search_region_any`,
-  `first_region` is `search_region_first`, and so on for the `_exact` pair.
-  Five callback forms that had borrowed the `_with` slot move too: `join_with`
-  is `join_each`, `pairs_with` is `pairs_each`, and the `join_within_with` /
-  `pairs_within_with` / `anti_join_within_with` trio gains `_each` in place of
-  `_with`.
-  The plain overlap query keeps `search` / `search_into` / `search_iter` /
-  `visit` / `any` / `first` / `count` exactly as they were. It is the one family
-  with no operation word for a suffix to trail, so the mode stands alone — the
-  rule is that the mode leads only where there is nothing else to lead.
-  Names that were already `_with_<noun>`, such as `to_bytes_with_payloads` and
-  `open_with_limits`, are untouched, as are the `#[doc(hidden)]` internals.
+- **BREAKING: query method names now end with the call mode instead of starting
+  with it.** The operation leads; how you want the answer trails it.
+- **BREAKING: pair queries within one index lost the `self_` prefix.** They lead
+  with `pairs`, which means overlapping pairs for the same reason `search` means
+  overlap. The two-index `join`, `join_within` and `anti_join_within` keep their
+  names.
+- **BREAKING: the two closest-pair methods swapped names.** The short one now
+  belongs to the single-index form.
+
+The endings:
+
+| ending | you get |
+| --- | --- |
+| none | a fresh `Vec` |
+| `_into` | your `Vec` |
+| `_with` | your workspace |
+| `_iter` | a lazy iterator |
+| `_each` | a callback per hit |
+| `_any` | a `bool`, stopping at the first hit |
+| `_first` | the first hit, then stop |
+
+The plain overlap query is the one exception and keeps `search`, `search_into`,
+`search_with`, `search_iter`, `visit`, `any`, `first` and `count`: it has no
+operation word for a suffix to trail. Names already shaped `_with_<noun>`, such
+as `to_bytes_with_payloads`, are untouched, and so are the server's HTTP routes,
+its JSON field names and the `gp2psindex` CLI verbs.
+
+**Check every existing `closest_pair(&other)` call.** Passing an index stops
+type-checking, but the name survives as the single-index method, so a call that
+loses its argument in a refactor silently changes meaning. There is no
+deprecation window, because the old spelling is still a live method.
+
+Every rename, from 0.29:
+
+| before | after |
+| --- | --- |
+| `self_join` | `pairs` |
+| `self_join_with` | `pairs_each` |
+| `self_join_within` | `pairs_within` |
+| `self_join_within_with` | `pairs_within_each` |
+| `self_join_within_components` | `pairs_within_components` |
+| `self_closest_pair()` | `closest_pair()` |
+| `closest_pair(&other)` | `closest_pair_to(&other)` |
+| `join_with` | `join_each` |
+| `join_within_with` | `join_within_each` |
+| `anti_join_within_with` | `anti_join_within_each` |
+| `visit_within` | `search_within_each` |
+| `visit_region` | `search_region_each` |
+| `visit_ordered` | `search_ordered_each` |
+| `visit_pick` | `search_pick_each` |
+| `visit_exact` | `search_exact_each` |
+| `visit_neighbors` | `neighbors_each` |
+| `visit_neighbors_of_box` | `neighbors_of_box_each` |
+| `visit_neighbors_metric` | `neighbors_metric_each` |
+| `visit_raycast` | `raycast_each` |
+| `visit_payloads` | `search_payloads_each` |
+| `visit_payloads_region` | `search_payloads_region_each` |
+| `visit_payloads_at_ranks` | `payloads_at_ranks_each` |
+| `visit_payload_prefixes` | `search_payload_prefixes_each` |
+| `visit_payload_prefixes_region` | `search_payload_prefixes_region_each` |
+| `any_within` | `search_within_any` |
+| `any_region` | `search_region_any` |
+| `any_exact` | `search_exact_any` |
+| `first_region` | `search_region_first` |
+| `first_exact` | `search_exact_first` |
 
 ### Nearest Neighbors
 
-- Asking for one nearest neighbour now answers the same item as asking for
-  several and taking the first. `max_results == 1` is served by its own
-  traversal, and that traversal settled ties by whichever item it reached first,
-  while every larger `k` settles them by item index — so on a query point that
-  several boxes contain, `neighbors(point, 1)` could disagree with
-  `neighbors(point, 4)[0]`. Both now return the smallest item index among items
-  at equal distance, which makes `neighbors(point, k)` a prefix of
-  `neighbors(point, k + 1)` for every `k`. The rule is now documented, and it
-  holds on all eight `f64` frontends, the scalar `f32` indexes, and the
-  box-query family `neighbors_of_box`; the custom-metric and exact-`f32`
-  kernels never had the special case and are unchanged.
-  The single-answer traversal pays for this: it can no longer stop at the first
-  box it finds containing the point. Measured on 100 000 boxes, that is free
-  while a query point sits inside about one box, 25–40% slower where it sits
-  inside two to six, and about 4.5x slower on a pathological field where every
-  point sits inside some three hundred — a regime in which the old answer was
-  arbitrary anyway. Even there it stays roughly 2.5x ahead of asking for `k`
-  and taking the first.
+- **Asking for one nearest neighbour now agrees with asking for several and
+  taking the first.** Items at equal distance come back smallest index first, so
+  `neighbors(point, k)` is a prefix of `neighbors(point, k + 1)` for every `k`.
 
-### API
+Before, `k == 1` took a separate traversal that settled ties by whichever item it
+reached first, so on a point that several boxes contain, `neighbors(point, 1)`
+could disagree with `neighbors(point, 4)[0]`. The fix covers all eight `f64`
+frontends, the scalar `f32` indexes and `neighbors_of_box`; the custom-metric and
+exact-`f32` kernels never had the special case.
 
-- **BREAKING:** the pair queries that work within one index drop the `self_`
-  prefix for a `pairs` head, so the operation is the first word of the name:
-  `self_join` is now `pairs`, `self_join_with` is `pairs_with`,
-  `self_join_within` is `pairs_within`, `self_join_within_with` is
-  `pairs_within_with`, and `self_join_within_components` is
-  `pairs_within_components`. `pairs` reports the overlapping pairs, the same
-  way `search` means overlap everywhere else in the crate. The two-index
-  `join`, `join_with`, `join_within`, `join_within_with` and
-  `anti_join_within` are unchanged, as is the `_within` distance vocabulary.
-- **BREAKING:** the closest-pair methods swap names so the short one belongs to
-  the single-index form: `self_closest_pair()` is now `closest_pair()`, and the
-  two-index `closest_pair(&other)` is now `closest_pair_to(&other)`. **Existing
-  callers of `closest_pair(&other)` need attention even though most of them
-  still compile**: passing an index now fails to typecheck, but the name itself
-  survives as the single-index method, so a call that was written to mean "the
-  closest pair between these two" reads as "within this one" if its argument is
-  ever dropped. There is no deprecation window on the old spelling because it
-  is still a live method with a different meaning.
-- The rename is confined to the Rust API. The server's HTTP routes
-  (`/collections/{id}/closest-pair/{other}`, `/join/{other}`,
-  `/anti-join/{other}`, `/components`), its JSON field names, and the
-  `gp2psindex` CLI verbs are a separate contract and keep their spellings.
+`neighbors(point, 1)` pays for it. It can no longer stop at the first box it
+finds containing the point, because a smaller item index may sit in another one,
+so it finishes the whole zero-distance set. A query point that lands outside
+every box is unaffected; one that lands inside many now costs more, in proportion
+to how many. `docs/performance.md` has the measurements.
 
 ### Performance
 
-- The spatial join — `join`, `join_with`, `pairs`, the `join_within` family
-  and their view and SIMD forms, all of which share one kernel — tests a node's
-  children against the other side's box into a bitmask and branches once per
-  surviving pair. On 100 000 × 100 000 uniform unit boxes `join` runs 2.6× faster
-  in 2D (12.6–13.3 → 4.5–5.4 ms) and 2.8× in 3D (36–40 → 12.8–13.8 ms), the
-  distance forms 20–25% faster; the pair sets are unchanged (`docs/performance.md`,
-  and the `docs/guide.md` distance-join ratios are re-measured).
-- The scalar collect paths — `search`, `search_into`, `search_with` and
-  `count` on `Index2D` and `Index3D` — test each node's children into a bitmask
-  and then branch once per hit rather than once per child. Along a query's edge the
-  per-child overlap branch is right about half the time, and callgrind put
-  roughly half of the traversal's branch mispredicts on it. Measured on
-  100 000 boxes: −25–37% on queries returning ~44 items, −7–25% on queries
-  returning ~1; on the crate's own competitor benches the `Index2D` search rows
-  fell 43–49%, putting the scalar index 2.4–3.0× ahead of `static_aabb2d_index`
-  on both generated inputs (`docs/performance.md`). `Index3D` search fell
-  33–52% across the planar, uniform and flat-Z datasets and both node sizes,
-  which narrows `SimdIndex3D`'s lead on range search from 2.4× to 1.3–1.5×. The
-  traversal stack also holds one packed `(node, level)` word per child instead
-  of two, on every scalar path including `visit`. The zero-copy views take the
-  same route through the shared traversal: `Index2DView` / `Index3DView`
-  `search` and `search_with` fell 30–33% on wide queries, which closes most of
-  their gap to the owned index there (390 µs against 370 µs on the same 100 000
-  boxes), and stayed flat on sparse ones. The scalar f32 indexes take the same
-  route in their own traversal: `Index2DF32` / `Index3DF32` `search` fell 4–12%
-  and `count` 6–8%, with their early-exit forms unchanged. The shared all-hits
-  raycast core takes it too: `Index2D` raycast fell 12% on long rays and 6% on
-  short ones, with 3D flat within drift and nothing regressing. The best-first
-  `raycast_closest` descent is untouched. `SimdIndex2DView` / `SimdIndex3DView`
-  carry their own scalar raycast traversal rather than the shared one, and it
-  takes the same change: 2D fell 15% on long rays and 7% on short ones.
-  The callback paths (`visit`, `any`, `first`) keep the branching loop on
-  purpose: on an early-exit query the full mask per internal node measured
-  +40–60% on `any`, since the rejected-child branch is well predicted while
-  most children miss. So do the shape regions and the radius queries, whose
-  per-child predicate is too expensive for the saved branch to show (measured;
-  `docs/performance.md` records where the technique applies). In the window-class
-  tables the effect sorts by what a window does: the per-child rows fell 36–37%,
-  closing the SIMD gap from 2.8× to 1.8× in 2D and 2.4× to 1.6× in 3D, while the
-  rows that are mostly covered-range copying are unchanged.
+- **The spatial join tests a node's children into a bitmask and branches once per
+  surviving pair.** One kernel, so `join`, `pairs`, the `join_within` family and
+  their view and SIMD forms all move together. Pair sets are unchanged.
+- **The scalar collect paths do the same.** `search`, `search_into`,
+  `search_with` and `count` branch once per hit rather than once per child. Along
+  a query's edge that per-child branch is right about half the time, and
+  callgrind put roughly half of the traversal's mispredicts on it.
+
+| 100 000 × 100 000 uniform boxes | before | after |
+| --- | ---: | ---: |
+| `join`, 2D | 12.6–13.3 ms | 4.5–5.4 ms |
+| `join`, 3D | 36–40 ms | 12.8–13.8 ms |
+
+The distance forms gain 20–25%. On the collect paths, over 100 000 boxes:
+
+| path | change |
+| --- | --- |
+| `Index2D` search, ~44 hits | −25–37% |
+| `Index2D` search, ~1 hit | −7–25% |
+| `Index2D` competitor benches | −43–49%, now 2.4–3.0× ahead of `static_aabb2d_index` |
+| `Index3D` search | −33–52%, narrowing `SimdIndex3D`'s lead to 1.3–1.5× |
+| `Index2DView` / `Index3DView`, wide queries | −30–33% |
+| `Index2DF32` / `Index3DF32` search | −4–12% |
+| all-hits raycast, long rays | −12% scalar, −15% on the SIMD views |
+
+The traversal stack also holds one packed `(node, level)` word per child instead
+of two.
+
+The technique is applied only where it measured a win. The callback paths
+(`visit`, `any`, `first`) keep the branching loop, since an early-exit query
+predicts the rejected-child branch well and never pays for the mispredicts the
+mask removes; the shape regions and radius queries keep it because their
+per-child predicate dwarfs the branch either way. `docs/performance.md` has the
+per-path numbers.
 
 ### Documentation
 
-- The README is a front page again rather than a reference. It keeps the pitch,
-  one worked example and a list of where to go; the method table and the type
-  inventory moved to a new **[API map](docs/api.md)**, and the payload and
-  metadata material moved to [Persistence](docs/persistence.md), which already
-  owned serialization. The example itself now names its data, so the returned
-  `0` is visibly the first box you added rather than a bare number.
-- `docs/api.md`, `docs/guide.md` and `docs/persistence.md` are now compiled as
-  doctests alongside the README, so their examples cannot rot unnoticed. Wiring
-  them up immediately caught four that had: one missing a `Box3D` import and
-  propagating the wrong error type, one asserting a single pair from
-  `join_within(&self, ..)` where joining an index with itself really returns
-  five (self-pairs included, which is what `pairs_within` exists to avoid), and
+- **The README is a front page again rather than a reference.** It keeps the
+  pitch, one worked example and a list of where to go. The method table and the
+  type inventory moved to a new [API map](docs/api.md); payloads and metadata
+  moved to [Persistence](docs/persistence.md). The example now names its data, so
+  the returned `0` is visibly the first box you added.
+- **`docs/api.md`, `docs/guide.md` and `docs/persistence.md` are compiled as
+  doctests now**, alongside the README. Wiring them up caught four examples that
+  had already rotted: a missing import with the wrong error type, an ε-join
+  asserting one pair where joining an index with itself really returns five, and
   two that only build with `parallel` / `simd` enabled.
 
 ## [0.29.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.28.0...psi-v0.29.0) - 2026-09-05

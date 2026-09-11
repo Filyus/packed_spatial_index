@@ -489,6 +489,31 @@ AVX2-only CPUs), and SSE2 is the floor. So these kernels do **not** need
 the **scalar** autovectorized loops (~1.1–1.3×). (The WASM demo passes
 `-Ctarget-feature=+simd128` for the same reason.)
 
+### Dials that were measured and left alone
+
+A consumer picks the profile, so these are reported rather than set. All on
+100 000 boxes, 1 000 `count` queries, `lto = true` and `codegen-units = 1` held
+constant except where they are the subject.
+
+- **`opt-level`: keep the release default of 3.** Native: `2` costs 1–4%, `1`
+  costs 37–42%, `"s"` 30–34%, `"z"` 53–62%. The size levels turn off
+  autovectorization, which is what the collect paths are built around, so they
+  cost far more here than the usual rule of thumb suggests.
+- **PGO makes this slower, not faster.** Instrumented build, profile collected
+  on the very workload then measured — PGO's best case — and it lost by 7% on
+  wide queries and 13% on narrow, consistently across interleaved runs. It is
+  not undoing the vectorization (the profiled build has *more* packed compares,
+  42 against 18); it unrolls an inner loop that runs at most `node_size`
+  iterations and is already branch-free and vectorized, so there is nothing for
+  a profile to discover and the larger loop body costs. PGO earns its keep on
+  branchy code; this traversal stopped being branchy.
+- **`panic = "abort"`: a size dial, not a speed one.** −6.4% binary, with the
+  speed difference inside the ~7% layout noise between two separately compiled
+  binaries. It is also the wrong default for a server: a panicking request
+  takes the process with it instead of unwinding.
+- **`strip = true` does nothing on MSVC** — byte-identical binary, because the
+  debug info is in a separate `.pdb` already. It is an ELF dial.
+
 Independently of width, range search and all-hits raycast **prefetch the next
 tree node** while the current one is tested — a free latency hint worth ~3–5% on
 range and ~5–12% on heavy raycast traversal. See

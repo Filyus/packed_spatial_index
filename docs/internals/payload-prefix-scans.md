@@ -6,7 +6,7 @@ blob with a fixed 24-byte feature reference, and a "header search" decodes just
 that prefix for every match so a caller can page, deduplicate, or count without
 materializing megabytes of GeoJSON.
 
-That scan is served by `visit_payload_prefixes` (and its `_async` twin), and on a
+That scan is served by `search_payload_prefixes_each` (and its `_async` twin), and on a
 local file it behaves exactly as intended. Over object storage it does not: it
 issues **one range request per match**. This note explains why, why the two
 obvious knobs do not fix it, and what does.
@@ -230,12 +230,12 @@ rebuild.
 
 ### Reader
 
-`visit_payload_prefixes` has one extra branch: when a `PFIX` section is present
+`search_payload_prefixes_each` has one extra branch: when a `PFIX` section is present
 and `prefix_len <= pfix.record_stride`, it reads the prefixes from there instead
 of from the blobs. Everything downstream is unchanged — the visitor still emits
 `PayloadPrefix { id, leaf_rank, prefix, payload_len }`, `payload_len` still comes
 from the offset table the scan already reads, and the four public
-`visit_payload_prefixes*` entry points did not change at all. They just got
+`search_payload_prefixes_each*` entry points did not change at all. They just got
 faster.
 
 The section lives on `StreamCoreParts`, not only on `StreamCore`, so a directory

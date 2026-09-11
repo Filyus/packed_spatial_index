@@ -219,7 +219,7 @@ mod ordered_and_views {
             expected.sort_by(|a, b| a.0.total_cmp(&b.0));
 
             let mut visited: Vec<(f64, usize)> = Vec::new();
-            let flow: ControlFlow<()> = index.visit_raycast(ray, |id, t| {
+            let flow: ControlFlow<()> = index.raycast_each(ray, |id, t| {
                 visited.push((t, id));
                 ControlFlow::Continue(())
             });
@@ -281,12 +281,12 @@ mod ordered_and_views {
             assert!(close(owned_closest, view_closest));
 
             let mut simd_ts = Vec::new();
-            let _: ControlFlow<()> = simd.visit_raycast(ray, |_, t| {
+            let _: ControlFlow<()> = simd.raycast_each(ray, |_, t| {
                 simd_ts.push(t);
                 ControlFlow::Continue(())
             });
             let mut view_ts = Vec::new();
-            let _: ControlFlow<()> = view.visit_raycast(ray, |_, t| {
+            let _: ControlFlow<()> = view.raycast_each(ray, |_, t| {
                 view_ts.push(t);
                 ControlFlow::Continue(())
             });

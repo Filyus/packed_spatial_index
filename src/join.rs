@@ -15,7 +15,7 @@ use std::ops::ControlFlow;
 
 use crate::geometry::{Box2D, Box3D};
 use crate::index2d::MASK_CHUNK;
-use crate::range::visit_region;
+use crate::range::search_region_each;
 use crate::tree_access::{TreeAccess, leaf_range};
 
 /// Which entry pairs of a dual-tree descent can hold output pairs.
@@ -384,7 +384,7 @@ where
     P: PairTest<T::Bounds>,
     F: FnMut(usize) -> ControlFlow<R>,
 {
-    visit_region(
+    search_region_each(
         tree,
         stack,
         |node| test.keeps(node, query),

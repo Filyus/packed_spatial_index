@@ -35,7 +35,7 @@ fn nan_query_point_returns_empty_3d_neighbors() {
     );
 
     let mut visited = false;
-    let flow: ControlFlow<()> = index.visit_neighbors(point, 10.0, |_, _| {
+    let flow: ControlFlow<()> = index.neighbors_each(point, 10.0, |_, _| {
         visited = true;
         ControlFlow::Continue(())
     });

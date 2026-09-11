@@ -304,7 +304,7 @@ fn bench_knn(c: &mut Criterion) {
                     for &point in &points {
                         let mut count = 0usize;
                         let _: ControlFlow<()> =
-                            index.visit_neighbors(point, case.max_distance, |_idx, _dist| {
+                            index.neighbors_each(point, case.max_distance, |_idx, _dist| {
                                 count += 1;
                                 if count == case.limit {
                                     ControlFlow::Break(())

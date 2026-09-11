@@ -1119,7 +1119,7 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
         Ok(out)
     }
 
-    /// Async counterpart of [`StreamIndex2D::visit_payload_prefixes`].
+    /// Async counterpart of [`StreamIndex2D::search_payload_prefixes_each`].
     pub async fn visit_payload_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box2D,
@@ -1135,7 +1135,7 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
             .await
     }
 
-    /// Async counterpart of [`StreamIndex2D::visit_payload_prefixes_region`].
+    /// Async counterpart of [`StreamIndex2D::search_payload_prefixes_region_each`].
     pub async fn visit_payload_prefixes_region_async<Q, F>(
         &self,
         query: &Q,
@@ -1155,7 +1155,7 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
             .await
     }
 
-    /// Async counterpart of [`StreamIndex2D::visit_payloads_at_ranks`].
+    /// Async counterpart of [`StreamIndex2D::payloads_at_ranks_each`].
     pub async fn visit_payloads_at_ranks_async<F: FnMut(usize, &[u8])>(
         &self,
         leaf_ranks: &[usize],
@@ -1296,7 +1296,7 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
         Ok(out)
     }
 
-    /// Async counterpart of [`StreamIndex3D::visit_payload_prefixes`].
+    /// Async counterpart of [`StreamIndex3D::search_payload_prefixes_each`].
     pub async fn visit_payload_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box3D,
@@ -1312,7 +1312,7 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
             .await
     }
 
-    /// Async counterpart of [`StreamIndex3D::visit_payload_prefixes_region`].
+    /// Async counterpart of [`StreamIndex3D::search_payload_prefixes_region_each`].
     pub async fn visit_payload_prefixes_region_async<Q, F>(
         &self,
         query: &Q,
@@ -1332,7 +1332,7 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
             .await
     }
 
-    /// Async counterpart of [`StreamIndex3D::visit_payloads_at_ranks`].
+    /// Async counterpart of [`StreamIndex3D::payloads_at_ranks_each`].
     pub async fn visit_payloads_at_ranks_async<F: FnMut(usize, &[u8])>(
         &self,
         leaf_ranks: &[usize],
@@ -1473,7 +1473,7 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
         Ok(out)
     }
 
-    /// Async counterpart of [`StreamIndex2DF32::visit_payload_prefixes`].
+    /// Async counterpart of [`StreamIndex2DF32::search_payload_prefixes_each`].
     pub async fn visit_payload_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box2D,
@@ -1489,7 +1489,7 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
             .await
     }
 
-    /// Async counterpart of [`StreamIndex2DF32::visit_payload_prefixes_region`].
+    /// Async counterpart of [`StreamIndex2DF32::search_payload_prefixes_region_each`].
     pub async fn visit_payload_prefixes_region_async<Q, F>(
         &self,
         query: &Q,
@@ -1509,7 +1509,7 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
             .await
     }
 
-    /// Async counterpart of [`StreamIndex2DF32::visit_payloads_at_ranks`].
+    /// Async counterpart of [`StreamIndex2DF32::payloads_at_ranks_each`].
     pub async fn visit_payloads_at_ranks_async<F: FnMut(usize, &[u8])>(
         &self,
         leaf_ranks: &[usize],
@@ -1650,7 +1650,7 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
         Ok(out)
     }
 
-    /// Async counterpart of [`StreamIndex3DF32::visit_payload_prefixes`].
+    /// Async counterpart of [`StreamIndex3DF32::search_payload_prefixes_each`].
     pub async fn visit_payload_prefixes_async<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box3D,
@@ -1666,7 +1666,7 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
             .await
     }
 
-    /// Async counterpart of [`StreamIndex3DF32::visit_payload_prefixes_region`].
+    /// Async counterpart of [`StreamIndex3DF32::search_payload_prefixes_region_each`].
     pub async fn visit_payload_prefixes_region_async<Q, F>(
         &self,
         query: &Q,
@@ -1686,7 +1686,7 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
             .await
     }
 
-    /// Async counterpart of [`StreamIndex3DF32::visit_payloads_at_ranks`].
+    /// Async counterpart of [`StreamIndex3DF32::payloads_at_ranks_each`].
     pub async fn visit_payloads_at_ranks_async<F: FnMut(usize, &[u8])>(
         &self,
         leaf_ranks: &[usize],

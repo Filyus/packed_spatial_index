@@ -71,7 +71,7 @@ loop:
 
 (`src/neighbors/best_first.rs::collect_neighbors_two_queue` is the kernel;
 `visit_neighbors_two_queue` is the same browse calling a visitor instead of
-collecting, so `neighbors` and `visit_neighbors` emit in the *same* order.)
+collecting, so `neighbors` and `neighbors_each` emit in the *same* order.)
 
 Why it is faster than the single queue: a leaf's items are materialized **only
 when that leaf is the closest pending node**; node expansion stops the moment

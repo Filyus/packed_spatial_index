@@ -318,7 +318,7 @@ fn index3d_neighbor_apis_agree_and_support_early_exit() {
     assert_eq!(workspace.results(), expected.as_slice());
 
     let mut visited = Vec::new();
-    let flow: ControlFlow<()> = index.visit_neighbors(point, f64::INFINITY, |item, dist| {
+    let flow: ControlFlow<()> = index.neighbors_each(point, f64::INFINITY, |item, dist| {
         visited.push((item, dist));
         if visited.len() == 3 {
             ControlFlow::Break(())

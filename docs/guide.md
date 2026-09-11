@@ -18,16 +18,16 @@ the method for each need; the notes after it explain the reasoning.
 | Every hit in a hot loop, no reallocation | `search_into(query, &mut vec)` (your `Vec`, cleared per call) or `search_with(query, &mut workspace)` (a reusable `SearchWorkspace`, returns a `&[usize]`) | `search`, which allocates a fresh `Vec` per query |
 | To stop part-way through the hits | `search_iter(query)` on the owned `f64` indexes — a lazy iterator, so `.take(k)` / `.find(..)` end the traversal — or `visit` returning `ControlFlow::Break` | collecting everything and then breaking |
 | To fold or aggregate hits (sum, min, push elsewhere) | `visit(query, ..)` | `search` followed by a loop |
-| The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `visit_neighbors` — same alloc-vs-buffer choice as above. `neighbors_within` adds a distance cap to the *k*; when there is no *k*, use `search_within` below, which skips the heap and the sort | sorting search results by distance |
+| The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `neighbors_each` — same alloc-vs-buffer choice as above. `neighbors_within` adds a distance cap to the *k*; when there is no *k*, use `search_within` below, which skips the heap and the sort | sorting search results by distance |
 | The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
-| Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `visit_ordered` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
-| The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `visit_pick` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express; `search_pick_into` / `search_pick_with` reuse the buffers | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
-| The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `visit_` forms | — |
-| Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `visit_raycast`, and `raycast_closest` when only the nearest matters | — |
-| All overlapping pairs between two indexes | `join` / `join_with` (`pairs` within one index) | a query per item |
-| Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `visit_within` / `any_within` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
+| Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `search_ordered_each` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
+| The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `search_pick_each` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express; `search_pick_into` / `search_pick_with` reuse the buffers | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
+| The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `_each` forms | — |
+| Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `raycast_each`, and `raycast_closest` when only the nearest matters | — |
+| All overlapping pairs between two indexes | `join` / `join_each` (`pairs` within one index) | a query per item |
+| Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `search_within_each` / `search_within_any` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
 | The single closest pair, with no distance to guess | `closest_pair()` within one index, `closest_pair_to(&other)` between two | `join_within` with a guessed `max_distance`, widened until it is non-empty |
-| All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_with` (`pairs_within` within one index, `anti_join_within` for the unpaired items, `pairs_within_components` for groups) | joining indexes of `max_distance`-inflated boxes and filtering |
+| All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_each` (`pairs_within` within one index, `anti_join_within` for the unpaired items, `pairs_within_components` for groups) | joining indexes of `max_distance`-inflated boxes and filtering |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
 | The per-item blob back, not just the id | `payload(id)` / `search_payloads(query)` on a view, or `search_payloads` on a streaming reader | a side table keyed by id |
@@ -43,6 +43,35 @@ carry `any` / `first` / `count` / `visit` but not the buffer-reusing
 streaming readers carry `count` too, as `count(query) -> Result<usize, _>`,
 alongside `count_region` for the shape queries (and the `_async` twins under the
 `async` feature).
+
+### How the names are built
+
+The operation leads, the way you want the answer trails. Once you know the
+operation you can predict the rest:
+
+| suffix | you get |
+| --- | --- |
+| none | a fresh `Vec` |
+| `_into` | your `Vec`, cleared and refilled |
+| `_iter` | a lazy iterator |
+| `_each` | a callback per hit, returning `ControlFlow` |
+| `_any` | a `bool`, stopping at the first hit |
+| `_first` | the first hit, then stop |
+
+So `search_within` collects, `search_within_each` calls you back,
+`search_within_any` answers yes or no, and the same six endings follow
+`neighbors`, `raycast`, `search_ordered`, `join` and the rest. `count` and
+`count_within` sit outside the table because the tree answers them from node
+summaries instead of enumerating hits.
+
+The plain overlap query is the one exception, and it is a deliberate one: it has
+no operation word for a suffix to trail, so its modes are spelled alone —
+`search`, `search_into`, `search_iter`, `visit`, `any`, `first`, `count`. The
+mode leads only where there is no operation to name.
+
+`_with` is not one of these endings. It introduces a named thing the call needs:
+a reusable workspace in `search_with`, the blobs in `to_bytes_with_payloads`,
+the budget in `open_with_limits`.
 
 Why the distinctions matter:
 
@@ -109,7 +138,7 @@ like their other queries (`count(query) -> Result<usize, _>`).
 On `Index2D` / `Index3D` and their views they ride the ordinary `search` / `any`
 / `first` / `count` / `visit`, which take borrowed region geometry as well as a
 box. Everywhere else they are a parallel family — `search_region` /
-`search_region_into` / `visit_region` / `any_region` / `first_region` /
+`search_region_into` / `search_region_each` / `search_region_any` / `search_region_first` /
 `count_region` — so that the `Box` entry points keep their specialized kernels:
 that is how the SIMD and `f32` frontends carry them, and how the streaming
 readers already did (plus `search_payloads_region`, and the matching `*_async`
@@ -352,7 +381,7 @@ exact `t` found so far. The rule is therefore:
 
 ```rust,ignore
 let mut best: Option<(usize, f64)> = None;
-index.visit_pick(pixel, ray, |hit| {
+index.search_pick_each(pixel, ray, |hit| {
     // Every remaining candidate enters no earlier than this one, so once the
     // box order passes the best exact hit, nothing left can beat it.
     if best.is_some_and(|(_, t)| hit.entry_t > t) {
@@ -430,7 +459,7 @@ is ~185x faster, and 10 000 still ~10x. The rule of thumb: reach for
 `ControlFlow::Break` — lets the traversal stop; reach for `search` and `sort`
 when you genuinely need every hit ordered.
 
-`visit_ordered` gives the same sequence through a visitor that receives the key
+`search_ordered_each` gives the same sequence through a visitor that receives the key
 alongside the id, so a renderer can accumulate until its budget is spent and
 break. Every f64 and `f32` in-memory frontend answers it, SIMD included, though
 the descent is scalar everywhere (a heap pops one node at a time). Streaming
@@ -559,8 +588,8 @@ assert_eq!(near, vec![0, 1]);
 # Ok::<(), packed_spatial_index::BuildError>(())
 ```
 
-`search_within_into` fills a buffer you own, `visit_within` folds without one
-(return `ControlFlow::Break` to stop early), `any_within` answers "is there
+`search_within_into` fills a buffer you own, `search_within_each` folds without one
+(return `ControlFlow::Break` to stop early), `search_within_any` answers "is there
 anything near here" without collecting and `count_within` counts during the
 traversal, allocating nothing — the same five forms `search` has. All five are
 on the same eight types
@@ -628,10 +657,10 @@ The family shares the `join` descent with the prune test swapped for the
 distance, on every type that carries `join` (the owned `f64` indexes, their
 views, and the SIMD indexes and views):
 
-- `join_within` / `join_within_with`, `pairs_within` /
-  `pairs_within_with` — the pair stream. A leaf whose whole subtree lies
+- `join_within` / `join_within_each`, `pairs_within` /
+  `pairs_within_each` — the pair stream. A leaf whose whole subtree lies
   within `max_distance` is emitted as a range without per-item tests.
-- `anti_join_within` / `anti_join_within_with` — items of `self` with *no*
+- `anti_join_within` / `anti_join_within_each` — items of `self` with *no*
   partner within `max_distance`: the noise side of the graph, one pruned search per
   item. An index queried against itself pairs with itself at distance zero, so
   isolation within one index is a components question, not an anti-join.
@@ -842,7 +871,7 @@ for `k` and taking the first.
 
 `neighbors` orders by squared Euclidean distance. When your coordinates are
 longitude/latitude, or you want a different distance entirely, use
-`neighbors_metric` (also `neighbors_metric_into` and `visit_neighbors_metric`,
+`neighbors_metric` (also `neighbors_metric_into` and `neighbors_metric_each`,
 and the same trio on `Index2DView` / `Index3DView`). It takes a closure
 `|box| -> f64` returning the distance from your query to a box, and returns the
 nearest items in that metric:

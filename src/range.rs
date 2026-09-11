@@ -23,9 +23,9 @@ fn overlap_mask_at<T: TreeAccess>(
 }
 
 /// Collect every leaf item whose bounds overlap an arbitrary region predicate,
-/// with the contained-subtree shortcut of [`visit_region`].
+/// with the contained-subtree shortcut of [`search_region_each`].
 ///
-/// The collect twin of `visit_region`: it has no early exit, so each node's
+/// The collect twin of `search_region_each`: it has no early exit, so each node's
 /// overlap tests run branch-free into a bitmask and the loop branches once per
 /// hit instead of once per child — the same trade the owned indexes make in
 /// their `search_into_stack` paths.
@@ -48,7 +48,7 @@ pub(crate) fn collect_region<T, O, C, F>(
     }
 
     let root = tree.tree_bounds(tree.tree_num_nodes() - 1);
-    // See `visit_region` for why `overlaps` is tested before `contains`.
+    // See `search_region_each` for why `overlaps` is tested before `contains`.
     if overlaps(root) && contains(root) {
         for pos in 0..tree.tree_num_items() {
             emit(tree.tree_index(pos));
@@ -165,7 +165,7 @@ where
 /// `overlaps` decides whether a node must be descended or a leaf item emitted;
 /// `contains` accepts a whole subtree without per-leaf region tests.
 #[inline]
-pub(crate) fn visit_region<R, T, O, C, F>(
+pub(crate) fn search_region_each<R, T, O, C, F>(
     tree: &T,
     stack: &mut Vec<usize>,
     overlaps: O,

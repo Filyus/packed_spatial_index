@@ -1,4 +1,4 @@
-//! `search_pick` / `visit_pick`: the click-in-a-viewport ordered broad phase.
+//! `search_pick` / `search_pick_each`: the click-in-a-viewport ordered broad phase.
 //!
 //! Oracles are deliberately independent of the implementation: the reference
 //! ray-to-box squared distance is a brute-force scan over the ray parameter
@@ -357,7 +357,7 @@ fn visit_pick_matches_search_pick_and_breaks_early() {
     let full = scene.index.search_pick(fr, ray, usize::MAX);
 
     let mut visited = Vec::new();
-    let cf = scene.index.visit_pick(fr, ray, |h| {
+    let cf = scene.index.search_pick_each(fr, ray, |h| {
         visited.push(h);
         ControlFlow::<()>::Continue(())
     });
@@ -365,7 +365,7 @@ fn visit_pick_matches_search_pick_and_breaks_early() {
     assert_eq!(visited, full);
 
     let mut first = None;
-    let cf = scene.index.visit_pick(fr, ray, |h| {
+    let cf = scene.index.search_pick_each(fr, ray, |h| {
         first = Some(h);
         ControlFlow::<()>::Break(())
     });
@@ -395,7 +395,7 @@ fn view_matches_owned() {
         scene.index.search_pick(fr, ray, usize::MAX)
     );
     let mut visited = Vec::new();
-    let cf = view.visit_pick(fr, ray, |h| {
+    let cf = view.search_pick_each(fr, ray, |h| {
         visited.push(h);
         ControlFlow::<()>::Continue(())
     });

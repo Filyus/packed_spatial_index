@@ -757,20 +757,20 @@ pub fn join_response(
             (collection.id() != other.id()).then(|| other.join_index()),
         ) {
             (JoinIndex::D2(index), None) => {
-                let _ = index.pairs_within_with(max_distance, &mut emit);
+                let _ = index.pairs_within_each(max_distance, &mut emit);
             }
             (JoinIndex::D3(index), None) => {
-                let _ = index.pairs_within_with(max_distance, &mut emit);
+                let _ = index.pairs_within_each(max_distance, &mut emit);
             }
             (JoinIndex::D2(a), Some(views)) => match views? {
                 JoinIndex::D2(b) => {
-                    let _ = a.join_within_with(b, max_distance, &mut emit);
+                    let _ = a.join_within_each(b, max_distance, &mut emit);
                 }
                 JoinIndex::D3(_) => return Err(dimension_mismatch(collection, other)),
             },
             (JoinIndex::D3(a), Some(views)) => match views? {
                 JoinIndex::D3(b) => {
-                    let _ = a.join_within_with(b, max_distance, &mut emit);
+                    let _ = a.join_within_each(b, max_distance, &mut emit);
                 }
                 JoinIndex::D2(_) => return Err(dimension_mismatch(collection, other)),
             },
@@ -880,10 +880,10 @@ pub fn anti_join_response(
         };
         match (collection.join_index()?, other.join_index()?) {
             (JoinIndex::D2(a), JoinIndex::D2(b)) => {
-                let _ = a.anti_join_within_with(b, max_distance, &mut emit);
+                let _ = a.anti_join_within_each(b, max_distance, &mut emit);
             }
             (JoinIndex::D3(a), JoinIndex::D3(b)) => {
-                let _ = a.anti_join_within_with(b, max_distance, &mut emit);
+                let _ = a.anti_join_within_each(b, max_distance, &mut emit);
             }
             _ => return Err(dimension_mismatch(collection, other)),
         }
@@ -1142,20 +1142,20 @@ pub fn nearest_response(
     };
     match (collection.join_index()?, metric) {
         (JoinIndex::D2(index), NearestMetric::Planar) => {
-            let _ = index.visit_neighbors(Point2D::new(point[0], point[1]), cutoff, |i, d2| {
+            let _ = index.neighbors_each(Point2D::new(point[0], point[1]), cutoff, |i, d2| {
                 take(i, d2.sqrt())
             });
         }
         (JoinIndex::D2(index), NearestMetric::Spherical) => {
             let query = (point[0], point[1]);
-            let _ = index.visit_neighbors_metric(
+            let _ = index.neighbors_metric_each(
                 |bounds| haversine_distance_2d(query, bounds, EARTH_RADIUS_M),
                 cutoff,
                 &mut take,
             );
         }
         (JoinIndex::D3(index), _) => {
-            let _ = index.visit_neighbors(
+            let _ = index.neighbors_each(
                 Point3D::new(point[0], point[1], point[2]),
                 cutoff,
                 |i, d2| take(i, d2.sqrt()),

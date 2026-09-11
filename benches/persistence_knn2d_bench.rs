@@ -256,6 +256,8 @@ fn bench_knn(c: &mut Criterion) {
                     let mut results = Vec::with_capacity(case.limit);
                     for &p in &points {
                         results.clear();
+                        // `reference` is the competitor crate static_aabb2d_index,
+                        // whose method keeps its own name.
                         let _ = reference.visit_neighbors(p.x, p.y, &mut |idx, dist| {
                             if dist > max_dist_sq {
                                 return Control::Break(());
@@ -334,7 +336,7 @@ fn bench_knn(c: &mut Criterion) {
                     for &p in &points {
                         let mut count = 0usize;
                         let _: ControlFlow<()> =
-                            index.visit_neighbors(p, case.max_distance, |_idx, _dist| {
+                            index.neighbors_each(p, case.max_distance, |_idx, _dist| {
                                 count += 1;
                                 if count == case.limit {
                                     ControlFlow::Break(())

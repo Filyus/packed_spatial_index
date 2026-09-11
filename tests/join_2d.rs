@@ -103,7 +103,7 @@ fn join_with_supports_early_exit() {
     assert!(total > 10, "test needs a pair-rich input, got {total}");
 
     let mut seen = 0usize;
-    let flow = index.pairs_with(|_, _| {
+    let flow = index.pairs_each(|_, _| {
         seen += 1;
         if seen == 10 {
             ControlFlow::Break(())

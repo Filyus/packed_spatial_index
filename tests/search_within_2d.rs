@@ -93,7 +93,7 @@ fn boundary_is_inclusive() {
     // Query touches item 1 at exactly 2.0 and item 2 at 2.001.
     let query = Box2D::new(0.5, 0.5, 1.0, 1.0);
     assert_eq!(as_set(index.search_within(query, 2.0)), as_set(vec![0, 1]));
-    assert!(index.any_within(query, 2.0));
+    assert!(index.search_within_any(query, 2.0));
 }
 
 #[test]
@@ -121,7 +121,10 @@ fn negative_and_nan_max_distance_match_nothing() {
             index.search_within(query, max_distance).is_empty(),
             "{max_distance}"
         );
-        assert!(!index.any_within(query, max_distance), "{max_distance}");
+        assert!(
+            !index.search_within_any(query, max_distance),
+            "{max_distance}"
+        );
     }
 }
 
@@ -141,13 +144,16 @@ fn into_visit_any_and_count_agree_with_search_within() {
             assert_eq!(buffer, expected, "eps={max_distance}");
 
             let mut visited = Vec::new();
-            let _: ControlFlow<()> = index.visit_within(query, max_distance, |i| {
+            let _: ControlFlow<()> = index.search_within_each(query, max_distance, |i| {
                 visited.push(i);
                 ControlFlow::Continue(())
             });
             assert_eq!(visited, expected, "eps={max_distance}");
 
-            assert_eq!(index.any_within(query, max_distance), !expected.is_empty());
+            assert_eq!(
+                index.search_within_any(query, max_distance),
+                !expected.is_empty()
+            );
             assert_eq!(index.count_within(query, max_distance), expected.len());
         }
     }
@@ -159,7 +165,7 @@ fn visit_within_stops_early() {
     let boxes = random_boxes(&mut rng, 300, 100.0, 4.0);
     let index = build(&boxes);
     let mut seen = 0usize;
-    let flow = index.visit_within(Box2D::new(0.0, 0.0, 100.0, 100.0), 5.0, |i| {
+    let flow = index.search_within_each(Box2D::new(0.0, 0.0, 100.0, 100.0), 5.0, |i| {
         seen += 1;
         ControlFlow::Break(i)
     });
@@ -175,7 +181,7 @@ fn empty_index_matches_nothing() {
             .search_within(Box2D::new(0.0, 0.0, 1.0, 1.0), 10.0)
             .is_empty()
     );
-    assert!(!index.any_within(Box2D::new(0.0, 0.0, 1.0, 1.0), 10.0));
+    assert!(!index.search_within_any(Box2D::new(0.0, 0.0, 1.0, 1.0), 10.0));
     assert_eq!(index.count_within(Box2D::new(0.0, 0.0, 1.0, 1.0), 10.0), 0);
 }
 
@@ -194,8 +200,8 @@ fn view_matches_owned() {
             "eps={max_distance}"
         );
         assert_eq!(
-            view.any_within(query, max_distance),
-            index.any_within(query, max_distance)
+            view.search_within_any(query, max_distance),
+            index.search_within_any(query, max_distance)
         );
         assert_eq!(
             view.count_within(query, max_distance),
@@ -241,8 +247,14 @@ mod simd {
                     expected,
                     "eps={max_distance}"
                 );
-                assert_eq!(index.any_within(query, max_distance), !expected.is_empty());
-                assert_eq!(view.any_within(query, max_distance), !expected.is_empty());
+                assert_eq!(
+                    index.search_within_any(query, max_distance),
+                    !expected.is_empty()
+                );
+                assert_eq!(
+                    view.search_within_any(query, max_distance),
+                    !expected.is_empty()
+                );
                 assert_eq!(index.count_within(query, max_distance), expected.len());
                 assert_eq!(view.count_within(query, max_distance), expected.len());
             }

@@ -688,7 +688,7 @@ fn axis_gap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
 /// Only the SIMD frontends need this as a function: their kernels take the
 /// shortcut against the root explicitly, while the scalar traversals reach the
 /// same conclusion through the contained-subtree flag in
-/// [`crate::range::visit_region`], which applies the identical rule to whatever
+/// [`crate::range::search_region_each`], which applies the identical rule to whatever
 /// region it was given (`overlaps(root) && contains(root)`).
 #[cfg(feature = "simd")]
 #[inline]

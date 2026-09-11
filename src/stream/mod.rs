@@ -13,7 +13,7 @@
 //! from the directory or in coalesced reads, so it touches only the lower levels
 //! and the few leaf runs the query actually overlaps. [`StreamIndex2D`] and
 //! [`StreamIndex3D`] expose `search` / `search_into` / `visit`, and — when the
-//! index carries a payload section — `search_payloads` / `visit_payloads`, which
+//! index carries a payload section — `search_payloads` / `search_payloads_each`, which
 //! also stream each matching item's stored blob (the payload is laid out in leaf
 //! order, so a query fetches its blobs in coalesced reads).
 //!
@@ -231,20 +231,20 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// round trips even over a remote source, instead of one per item. The blob
     /// slice is valid only for the duration of each call. Returns
     /// [`StreamError::NoPayload`] if the index has no payload section.
-    pub fn visit_payloads<F: FnMut(usize, &[u8])>(
+    pub fn search_payloads_each<F: FnMut(usize, &[u8])>(
         &self,
         query: Box2D,
         visitor: F,
     ) -> Result<(), StreamError> {
         self.core
-            .visit_payloads(|record| parse_box2d(record).overlaps(query), visitor)
+            .search_payloads_each(|record| parse_box2d(record).overlaps(query), visitor)
     }
 
     /// Collect `(item index, payload blob)` for every item intersecting `query`.
-    /// The owning counterpart of [`visit_payloads`](Self::visit_payloads).
+    /// The owning counterpart of [`search_payloads_each`](Self::search_payloads_each).
     pub fn search_payloads(&self, query: Box2D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
-        self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        self.search_payloads_each(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 
@@ -255,7 +255,7 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// streamed descent, so a region query fetches only the leaves it overlaps —
     /// less data than its bounding box. (Pruning can fragment the coalesced runs,
     /// so the range-request count is shape-dependent; the bytes always shrink.)
-    pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    pub fn search_region_each<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps2D,
         F: FnMut(usize),
@@ -267,7 +267,7 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// Collect the indices of every item whose box overlaps the region `query`.
     pub fn search_region<Q: Overlaps2D>(&self, query: &Q) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
-        self.visit_region(query, |index| out.push(index))?;
+        self.search_region_each(query, |index| out.push(index))?;
         Ok(out)
     }
 
@@ -277,32 +277,36 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// traversal, so nothing is collected.
     pub fn count_region<Q: Overlaps2D>(&self, query: &Q) -> Result<usize, StreamError> {
         let mut count = 0usize;
-        self.visit_region(query, |_| count += 1)?;
+        self.search_region_each(query, |_| count += 1)?;
         Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
-    /// region `query`. Like [`visit_payloads`](Self::visit_payloads) but for a
+    /// region `query`. Like [`search_payloads_each`](Self::search_payloads_each) but for a
     /// custom [`Overlaps2D`] shape; node-box pruning fetches only the leaves the
     /// region touches.
-    pub fn visit_payloads_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    pub fn search_payloads_region_each<Q, F>(
+        &self,
+        query: &Q,
+        visitor: F,
+    ) -> Result<(), StreamError>
     where
         Q: Overlaps2D,
         F: FnMut(usize, &[u8]),
     {
         self.core
-            .visit_payloads(|record| query.overlaps_box(parse_box2d(record)), visitor)
+            .search_payloads_each(|record| query.overlaps_box(parse_box2d(record)), visitor)
     }
 
     /// Collect `(item index, payload blob)` for every item whose box overlaps the
     /// region `query`. The owning counterpart of
-    /// [`visit_payloads_region`](Self::visit_payloads_region).
+    /// [`search_payloads_region_each`](Self::search_payloads_region_each).
     pub fn search_payloads_region<Q: Overlaps2D>(
         &self,
         query: &Q,
     ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
-        self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
+        self.search_payloads_region_each(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 
@@ -311,9 +315,9 @@ impl<R: RangeReader> StreamIndex2D<R> {
     ///
     /// Payload bodies past the prefix are not read — lengths come from the
     /// offset table (or the fixed stride) — so identity prefixes and size
-    /// summaries cost a fraction of [`visit_payloads`](Self::visit_payloads).
+    /// summaries cost a fraction of [`search_payloads_each`](Self::search_payloads_each).
     /// Capture `leaf_rank` values here and feed a page of them to
-    /// [`visit_payloads_at_ranks`](Self::visit_payloads_at_ranks) to fetch full
+    /// [`payloads_at_ranks_each`](Self::payloads_at_ranks_each) to fetch full
     /// payloads later. Returns [`StreamError::NoPayload`] if the index has no
     /// payload section.
     ///
@@ -333,37 +337,37 @@ impl<R: RangeReader> StreamIndex2D<R> {
     ///
     /// let stream = StreamIndex2D::open(SliceReader::new(bytes))?;
     /// let mut headers = Vec::new();
-    /// stream.visit_payload_prefixes(Box2D::new(-1.0, -1.0, 7.0, 7.0), 5, |p| {
+    /// stream.search_payload_prefixes_each(Box2D::new(-1.0, -1.0, 7.0, 7.0), 5, |p| {
     ///     headers.push((p.id, p.leaf_rank, p.payload_len, p.prefix.to_vec()));
     /// })?;
     /// assert_eq!(headers.len(), 2);
     ///
     /// let page_ranks = [headers[0].1];
     /// let mut page = Vec::new();
-    /// stream.visit_payloads_at_ranks(&page_ranks, |rank, blob| {
+    /// stream.payloads_at_ranks_each(&page_ranks, |rank, blob| {
     ///     page.push((rank, blob.to_vec()));
     /// })?;
     /// assert_eq!(page[0].0, headers[0].1);
     /// assert_eq!(page[0].1.len(), headers[0].2);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
+    pub fn search_payload_prefixes_each<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box2D,
         prefix_len: usize,
         visitor: F,
     ) -> Result<(), StreamError> {
-        self.core.visit_payload_prefixes(
+        self.core.search_payload_prefixes_each(
             |record| parse_box2d(record).overlaps(query),
             prefix_len,
             visitor,
         )
     }
 
-    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes) for a custom
+    /// [`search_payload_prefixes_each`](Self::search_payload_prefixes_each) for a custom
     /// [`Overlaps2D`] region; node-box pruning fetches only the leaves the
     /// region touches.
-    pub fn visit_payload_prefixes_region<Q, F>(
+    pub fn search_payload_prefixes_region_each<Q, F>(
         &self,
         query: &Q,
         prefix_len: usize,
@@ -373,7 +377,7 @@ impl<R: RangeReader> StreamIndex2D<R> {
         Q: Overlaps2D,
         F: FnMut(PayloadPrefix<'_>),
     {
-        self.core.visit_payload_prefixes(
+        self.core.search_payload_prefixes_each(
             |record| query.overlaps_box(parse_box2d(record)),
             prefix_len,
             visitor,
@@ -385,12 +389,12 @@ impl<R: RangeReader> StreamIndex2D<R> {
     /// are sorted and deduplicated internally, read in coalesced ascending
     /// runs, and emitted in ascending rank order. A rank at or past the item
     /// count fails with [`StreamError::InvalidRank`].
-    pub fn visit_payloads_at_ranks<F: FnMut(usize, &[u8])>(
+    pub fn payloads_at_ranks_each<F: FnMut(usize, &[u8])>(
         &self,
         leaf_ranks: &[usize],
         visitor: F,
     ) -> Result<(), StreamError> {
-        self.core.visit_payloads_at_ranks(leaf_ranks, visitor)
+        self.core.payloads_at_ranks_each(leaf_ranks, visitor)
     }
 }
 
@@ -544,27 +548,27 @@ impl<R: RangeReader> StreamIndex3D<R> {
     }
 
     /// Visit `(item index, payload blob)` for every item intersecting `query`.
-    /// See [`StreamIndex2D::visit_payloads`].
-    pub fn visit_payloads<F: FnMut(usize, &[u8])>(
+    /// See [`StreamIndex2D::search_payloads_each`].
+    pub fn search_payloads_each<F: FnMut(usize, &[u8])>(
         &self,
         query: Box3D,
         visitor: F,
     ) -> Result<(), StreamError> {
         self.core
-            .visit_payloads(|record| parse_box3d(record).overlaps(query), visitor)
+            .search_payloads_each(|record| parse_box3d(record).overlaps(query), visitor)
     }
 
     /// Collect `(item index, payload blob)` for every item intersecting `query`.
     pub fn search_payloads(&self, query: Box3D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
-        self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        self.search_payloads_each(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 
     /// Stream the indices of every item whose box overlaps the region `query` —
     /// any [`Overlaps3D`] shape (e.g. a [`Frustum3D`](crate::Frustum3D)), not just
     /// a box. Subtrees outside `query` are pruned during the streamed descent.
-    pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    pub fn search_region_each<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps3D,
         F: FnMut(usize),
@@ -576,7 +580,7 @@ impl<R: RangeReader> StreamIndex3D<R> {
     /// Collect the indices of every item whose box overlaps the region `query`.
     pub fn search_region<Q: Overlaps3D>(&self, query: &Q) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
-        self.visit_region(query, |index| out.push(index))?;
+        self.search_region_each(query, |index| out.push(index))?;
         Ok(out)
     }
 
@@ -586,51 +590,55 @@ impl<R: RangeReader> StreamIndex3D<R> {
     /// traversal, so nothing is collected.
     pub fn count_region<Q: Overlaps3D>(&self, query: &Q) -> Result<usize, StreamError> {
         let mut count = 0usize;
-        self.visit_region(query, |_| count += 1)?;
+        self.search_region_each(query, |_| count += 1)?;
         Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
     /// region `query`; node-box pruning fetches only the leaves it touches.
-    pub fn visit_payloads_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    pub fn search_payloads_region_each<Q, F>(
+        &self,
+        query: &Q,
+        visitor: F,
+    ) -> Result<(), StreamError>
     where
         Q: Overlaps3D,
         F: FnMut(usize, &[u8]),
     {
         self.core
-            .visit_payloads(|record| query.overlaps_box(parse_box3d(record)), visitor)
+            .search_payloads_each(|record| query.overlaps_box(parse_box3d(record)), visitor)
     }
 
     /// Collect `(item index, payload blob)` for every item whose box overlaps the
     /// region `query`. The owning counterpart of
-    /// [`visit_payloads_region`](Self::visit_payloads_region).
+    /// [`search_payloads_region_each`](Self::search_payloads_region_each).
     pub fn search_payloads_region<Q: Overlaps3D>(
         &self,
         query: &Q,
     ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
-        self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
+        self.search_payloads_region_each(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 
     /// Visit a [`PayloadPrefix`] for every item intersecting `query`; the 3D
-    /// counterpart of [`StreamIndex2D::visit_payload_prefixes`].
-    pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
+    /// counterpart of [`StreamIndex2D::search_payload_prefixes_each`].
+    pub fn search_payload_prefixes_each<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box3D,
         prefix_len: usize,
         visitor: F,
     ) -> Result<(), StreamError> {
-        self.core.visit_payload_prefixes(
+        self.core.search_payload_prefixes_each(
             |record| parse_box3d(record).overlaps(query),
             prefix_len,
             visitor,
         )
     }
 
-    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes) for a custom
+    /// [`search_payload_prefixes_each`](Self::search_payload_prefixes_each) for a custom
     /// [`Overlaps3D`] region.
-    pub fn visit_payload_prefixes_region<Q, F>(
+    pub fn search_payload_prefixes_region_each<Q, F>(
         &self,
         query: &Q,
         prefix_len: usize,
@@ -640,7 +648,7 @@ impl<R: RangeReader> StreamIndex3D<R> {
         Q: Overlaps3D,
         F: FnMut(PayloadPrefix<'_>),
     {
-        self.core.visit_payload_prefixes(
+        self.core.search_payload_prefixes_each(
             |record| query.overlaps_box(parse_box3d(record)),
             prefix_len,
             visitor,
@@ -648,13 +656,13 @@ impl<R: RangeReader> StreamIndex3D<R> {
     }
 
     /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks; the
-    /// 3D counterpart of [`StreamIndex2D::visit_payloads_at_ranks`].
-    pub fn visit_payloads_at_ranks<F: FnMut(usize, &[u8])>(
+    /// 3D counterpart of [`StreamIndex2D::payloads_at_ranks_each`].
+    pub fn payloads_at_ranks_each<F: FnMut(usize, &[u8])>(
         &self,
         leaf_ranks: &[usize],
         visitor: F,
     ) -> Result<(), StreamError> {
-        self.core.visit_payloads_at_ranks(leaf_ranks, visitor)
+        self.core.payloads_at_ranks_each(leaf_ranks, visitor)
     }
 }
 
@@ -833,25 +841,25 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
     }
 
     /// Visit `(item index, payload blob)` for every item intersecting `query`.
-    pub fn visit_payloads<F: FnMut(usize, &[u8])>(
+    pub fn search_payloads_each<F: FnMut(usize, &[u8])>(
         &self,
         query: Box2D,
         visitor: F,
     ) -> Result<(), StreamError> {
         self.core
-            .visit_payloads(|r| parse_box2d_f32(r).overlaps(query), visitor)
+            .search_payloads_each(|r| parse_box2d_f32(r).overlaps(query), visitor)
     }
 
     /// Collect `(item index, payload blob)` for every item intersecting `query`.
     pub fn search_payloads(&self, query: Box2D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
-        self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        self.search_payloads_each(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 
     /// Stream the indices of every item whose (rounded) box overlaps the region
     /// `query` — any [`Overlaps2D`] shape. Subtrees outside `query` are pruned.
-    pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    pub fn search_region_each<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps2D,
         F: FnMut(usize),
@@ -865,7 +873,7 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
     /// Collect the indices of every item whose box overlaps the region `query`.
     pub fn search_region<Q: Overlaps2D>(&self, query: &Q) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
-        self.visit_region(query, |index| out.push(index))?;
+        self.search_region_each(query, |index| out.push(index))?;
         Ok(out)
     }
 
@@ -875,18 +883,22 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
     /// traversal, so nothing is collected.
     pub fn count_region<Q: Overlaps2D>(&self, query: &Q) -> Result<usize, StreamError> {
         let mut count = 0usize;
-        self.visit_region(query, |_| count += 1)?;
+        self.search_region_each(query, |_| count += 1)?;
         Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
     /// region `query`; node-box pruning fetches only the leaves it touches.
-    pub fn visit_payloads_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    pub fn search_payloads_region_each<Q, F>(
+        &self,
+        query: &Q,
+        visitor: F,
+    ) -> Result<(), StreamError>
     where
         Q: Overlaps2D,
         F: FnMut(usize, &[u8]),
     {
-        self.core.visit_payloads(
+        self.core.search_payloads_each(
             |record| query.overlaps_box(parse_box2d_f32(record)),
             visitor,
         )
@@ -899,29 +911,29 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
         query: &Q,
     ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
-        self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
+        self.search_payloads_region_each(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 
     /// Visit a [`PayloadPrefix`] for every item whose (rounded) box intersects
     /// `query`; the `f32` counterpart of
-    /// [`StreamIndex2D::visit_payload_prefixes`].
-    pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
+    /// [`StreamIndex2D::search_payload_prefixes_each`].
+    pub fn search_payload_prefixes_each<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box2D,
         prefix_len: usize,
         visitor: F,
     ) -> Result<(), StreamError> {
-        self.core.visit_payload_prefixes(
+        self.core.search_payload_prefixes_each(
             |record| parse_box2d_f32(record).overlaps(query),
             prefix_len,
             visitor,
         )
     }
 
-    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes) for a custom
+    /// [`search_payload_prefixes_each`](Self::search_payload_prefixes_each) for a custom
     /// [`Overlaps2D`] region.
-    pub fn visit_payload_prefixes_region<Q, F>(
+    pub fn search_payload_prefixes_region_each<Q, F>(
         &self,
         query: &Q,
         prefix_len: usize,
@@ -931,7 +943,7 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
         Q: Overlaps2D,
         F: FnMut(PayloadPrefix<'_>),
     {
-        self.core.visit_payload_prefixes(
+        self.core.search_payload_prefixes_each(
             |record| query.overlaps_box(parse_box2d_f32(record)),
             prefix_len,
             visitor,
@@ -939,13 +951,13 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
     }
 
     /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks; the
-    /// `f32` counterpart of [`StreamIndex2D::visit_payloads_at_ranks`].
-    pub fn visit_payloads_at_ranks<F: FnMut(usize, &[u8])>(
+    /// `f32` counterpart of [`StreamIndex2D::payloads_at_ranks_each`].
+    pub fn payloads_at_ranks_each<F: FnMut(usize, &[u8])>(
         &self,
         leaf_ranks: &[usize],
         visitor: F,
     ) -> Result<(), StreamError> {
-        self.core.visit_payloads_at_ranks(leaf_ranks, visitor)
+        self.core.payloads_at_ranks_each(leaf_ranks, visitor)
     }
 }
 
@@ -1082,25 +1094,25 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
     }
 
     /// Visit `(item index, payload blob)` for every item intersecting `query`.
-    pub fn visit_payloads<F: FnMut(usize, &[u8])>(
+    pub fn search_payloads_each<F: FnMut(usize, &[u8])>(
         &self,
         query: Box3D,
         visitor: F,
     ) -> Result<(), StreamError> {
         self.core
-            .visit_payloads(|r| parse_box3d_f32(r).overlaps(query), visitor)
+            .search_payloads_each(|r| parse_box3d_f32(r).overlaps(query), visitor)
     }
 
     /// Collect `(item index, payload blob)` for every item intersecting `query`.
     pub fn search_payloads(&self, query: Box3D) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
-        self.visit_payloads(query, |id, blob| out.push((id, blob.to_vec())))?;
+        self.search_payloads_each(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 
     /// Stream the indices of every item whose (rounded) box overlaps the region
     /// `query` — any [`Overlaps3D`] shape. Subtrees outside `query` are pruned.
-    pub fn visit_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    pub fn search_region_each<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps3D,
         F: FnMut(usize),
@@ -1114,7 +1126,7 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
     /// Collect the indices of every item whose box overlaps the region `query`.
     pub fn search_region<Q: Overlaps3D>(&self, query: &Q) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
-        self.visit_region(query, |index| out.push(index))?;
+        self.search_region_each(query, |index| out.push(index))?;
         Ok(out)
     }
 
@@ -1124,18 +1136,22 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
     /// traversal, so nothing is collected.
     pub fn count_region<Q: Overlaps3D>(&self, query: &Q) -> Result<usize, StreamError> {
         let mut count = 0usize;
-        self.visit_region(query, |_| count += 1)?;
+        self.search_region_each(query, |_| count += 1)?;
         Ok(count)
     }
 
     /// Visit `(item index, payload blob)` for every item whose box overlaps the
     /// region `query`; node-box pruning fetches only the leaves it touches.
-    pub fn visit_payloads_region<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
+    pub fn search_payloads_region_each<Q, F>(
+        &self,
+        query: &Q,
+        visitor: F,
+    ) -> Result<(), StreamError>
     where
         Q: Overlaps3D,
         F: FnMut(usize, &[u8]),
     {
-        self.core.visit_payloads(
+        self.core.search_payloads_each(
             |record| query.overlaps_box(parse_box3d_f32(record)),
             visitor,
         )
@@ -1148,29 +1164,29 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
         query: &Q,
     ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
-        self.visit_payloads_region(query, |id, blob| out.push((id, blob.to_vec())))?;
+        self.search_payloads_region_each(query, |id, blob| out.push((id, blob.to_vec())))?;
         Ok(out)
     }
 
     /// Visit a [`PayloadPrefix`] for every item whose (rounded) box intersects
     /// `query`; the `f32` 3D counterpart of
-    /// [`StreamIndex2D::visit_payload_prefixes`].
-    pub fn visit_payload_prefixes<F: FnMut(PayloadPrefix<'_>)>(
+    /// [`StreamIndex2D::search_payload_prefixes_each`].
+    pub fn search_payload_prefixes_each<F: FnMut(PayloadPrefix<'_>)>(
         &self,
         query: Box3D,
         prefix_len: usize,
         visitor: F,
     ) -> Result<(), StreamError> {
-        self.core.visit_payload_prefixes(
+        self.core.search_payload_prefixes_each(
             |record| parse_box3d_f32(record).overlaps(query),
             prefix_len,
             visitor,
         )
     }
 
-    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes) for a custom
+    /// [`search_payload_prefixes_each`](Self::search_payload_prefixes_each) for a custom
     /// [`Overlaps3D`] region.
-    pub fn visit_payload_prefixes_region<Q, F>(
+    pub fn search_payload_prefixes_region_each<Q, F>(
         &self,
         query: &Q,
         prefix_len: usize,
@@ -1180,7 +1196,7 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
         Q: Overlaps3D,
         F: FnMut(PayloadPrefix<'_>),
     {
-        self.core.visit_payload_prefixes(
+        self.core.search_payload_prefixes_each(
             |record| query.overlaps_box(parse_box3d_f32(record)),
             prefix_len,
             visitor,
@@ -1188,13 +1204,13 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
     }
 
     /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks; the
-    /// `f32` 3D counterpart of [`StreamIndex2D::visit_payloads_at_ranks`].
-    pub fn visit_payloads_at_ranks<F: FnMut(usize, &[u8])>(
+    /// `f32` 3D counterpart of [`StreamIndex2D::payloads_at_ranks_each`].
+    pub fn payloads_at_ranks_each<F: FnMut(usize, &[u8])>(
         &self,
         leaf_ranks: &[usize],
         visitor: F,
     ) -> Result<(), StreamError> {
-        self.core.visit_payloads_at_ranks(leaf_ranks, visitor)
+        self.core.payloads_at_ranks_each(leaf_ranks, visitor)
     }
 }
 

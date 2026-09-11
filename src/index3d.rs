@@ -19,14 +19,14 @@ use crate::{
         metric_knn,
     },
     ordered::{
-        PickHit3D, PickWorkspace, collect_ordered, collect_pick, pick_key, visit_ordered,
-        visit_pick,
+        PickHit3D, PickWorkspace, collect_ordered, collect_pick, pick_key, search_ordered_each,
+        search_pick_each,
     },
     persistence::{
         LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, parse_index_owned,
         payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
     },
-    range::{collect_region, visit_overlaps, visit_region},
+    range::{collect_region, search_region_each, visit_overlaps},
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree_access::{TreeAccess, leaf_group_range},
@@ -502,7 +502,7 @@ impl Index3D {
     ///
     /// The visitor receives squared distances. Return [`ControlFlow::Break`] to
     /// stop early.
-    pub fn visit_neighbors<B, F>(
+    pub fn neighbors_each<B, F>(
         &self,
         point: Point3D,
         max_distance: f64,
@@ -568,7 +568,7 @@ impl Index3D {
     /// Visit items in nondecreasing custom-`metric` distance; the visitor receives
     /// the metric distance and may return [`ControlFlow::Break`] to stop early.
     /// See [`neighbors_metric`](Self::neighbors_metric) for the metric contract.
-    pub fn visit_neighbors_metric<B, M, F>(
+    pub fn neighbors_metric_each<B, M, F>(
         &self,
         metric: M,
         max_distance: f64,
@@ -579,7 +579,7 @@ impl Index3D {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        metric_knn::visit_neighbors(
+        metric_knn::neighbors_each(
             self.entries.len(),
             self.num_items,
             self.node_size,
@@ -680,7 +680,7 @@ impl Index3D {
     /// Visit items of `region` in nondecreasing `key` order; the visitor receives
     /// the key and may return [`ControlFlow::Break`] to stop early. See
     /// [`search_ordered`](Self::search_ordered) for the key contract.
-    pub fn visit_ordered<Q, K, B, F>(
+    pub fn search_ordered_each<Q, K, B, F>(
         &self,
         region: Q,
         key: K,
@@ -692,7 +692,7 @@ impl Index3D {
         K: Fn(Box3D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+        search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
     /// Up to `max_results` items overlapping `region`, ordered for picking: by
     /// squared perpendicular distance from `ray` to the item's box first, then
@@ -714,7 +714,7 @@ impl Index3D {
     /// is below the best exact `t` found so far. Run exact tests down the
     /// stream and stop at the first candidate with `hit.entry_t > best_t`
     /// (candidates the ray misses carry [`f64::INFINITY`], so they end the scan
-    /// on their own); [`visit_pick`](Self::visit_pick) makes that a
+    /// on their own); [`search_pick_each`](Self::search_pick_each) makes that a
     /// [`ControlFlow::Break`] and never walks the rest of the region. Picking
     /// the *nearest to the cursor* rather than the frontmost is the same rule
     /// with `distance_squared` in place of `entry_t`.
@@ -804,12 +804,12 @@ impl Index3D {
     /// This is the streaming form the narrow phase wants: exact tests run as
     /// candidates arrive, and the break ends the traversal without collecting
     /// the rest of the region.
-    pub fn visit_pick<Q, B, F>(&self, region: Q, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
+    pub fn search_pick_each<Q, B, F>(&self, region: Q, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps3D,
         F: FnMut(PickHit3D) -> ControlFlow<B>,
     {
-        visit_pick(
+        search_pick_each(
             self,
             usize::MAX,
             |b| pick_key(&region, ray, b),
@@ -929,7 +929,7 @@ impl Index3D {
     ///
     /// The visitor receives squared gap distances (`0.0` for items overlapping
     /// the query box). Return [`ControlFlow::Break`] to stop early.
-    pub fn visit_neighbors_of_box<B, F>(
+    pub fn neighbors_of_box_each<B, F>(
         &self,
         query: Box3D,
         max_distance: f64,
@@ -1012,7 +1012,7 @@ impl Index3D {
     /// ```
     pub fn join(&self, other: &Index3D) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+        let _: ControlFlow<()> = self.join_each(other, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -1020,8 +1020,8 @@ impl Index3D {
     }
 
     /// Visit every intersecting pair between `self` and `other`. See
-    /// [`Index2D::join_with`](crate::Index2D::join_with).
-    pub fn join_with<B, F>(&self, other: &Index3D, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::join_each`](crate::Index2D::join_each).
+    pub fn join_each<B, F>(&self, other: &Index3D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -1033,7 +1033,7 @@ impl Index3D {
     /// [`Index2D::pairs`](crate::Index2D::pairs).
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.pairs_with(|i, j| {
+        let _: ControlFlow<()> = self.pairs_each(|i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -1041,8 +1041,8 @@ impl Index3D {
     }
 
     /// Visit every unordered pair of distinct intersecting items within this
-    /// index. See [`Index2D::pairs_with`](crate::Index2D::pairs_with).
-    pub fn pairs_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    /// index. See [`Index2D::pairs_each`](crate::Index2D::pairs_each).
+    pub fn pairs_each<B, F>(&self, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -1083,7 +1083,7 @@ impl Index3D {
     /// ```
     pub fn join_within(&self, other: &Index3D, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_within_with(other, max_distance, |i, j| {
+        let _: ControlFlow<()> = self.join_within_each(other, max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -1094,7 +1094,7 @@ impl Index3D {
     /// collecting a result `Vec`. See [`Index3D::join_within`].
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn join_within_with<B, F>(
+    pub fn join_within_each<B, F>(
         &self,
         other: &Index3D,
         max_distance: f64,
@@ -1122,7 +1122,7 @@ impl Index3D {
     ///
     /// Allocates a fresh `Vec` per call — see
     /// [`search_within_into`](Index3D::search_within_into),
-    /// [`any_within`](Index3D::any_within).
+    /// [`search_within_any`](Index3D::search_within_any).
     ///
     /// # Example
     ///
@@ -1150,7 +1150,7 @@ impl Index3D {
     /// first).
     pub fn search_within_into(&self, query: Box3D, max_distance: f64, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_within(query, max_distance, |index| {
+        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -1160,7 +1160,12 @@ impl Index3D {
     /// result `Vec`. See [`search_within`](Self::search_within).
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn visit_within<B, F>(&self, query: Box3D, max_distance: f64, visitor: F) -> ControlFlow<B>
+    pub fn search_within_each<B, F>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
@@ -1179,18 +1184,18 @@ impl Index3D {
     /// Stops at the first hit, so it takes the prune-only descent: no
     /// whole-subtree accept is computed. See
     /// [`search_within`](Self::search_within).
-    pub fn any_within(&self, query: Box3D, max_distance: f64) -> bool {
+    pub fn search_within_any(&self, query: Box3D, max_distance: f64) -> bool {
         any_within_core(self, query, DistanceTest::new(max_distance))
     }
 
     /// Count the items within `max_distance` of `query`.
     ///
-    /// The same traversal as [`visit_within`](Self::visit_within) with a
+    /// The same traversal as [`search_within_each`](Self::search_within_each) with a
     /// counter in place of a buffer, so nothing is allocated. Mirrors
     /// [`count`](Self::count) for the overlap query.
     pub fn count_within(&self, query: Box3D, max_distance: f64) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_within(query, max_distance, |_| {
+        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -1259,7 +1264,7 @@ impl Index3D {
     /// ```
     pub fn pairs_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.pairs_within_with(max_distance, |i, j| {
+        let _: ControlFlow<()> = self.pairs_within_each(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -1271,7 +1276,7 @@ impl Index3D {
     /// `Vec`. See [`Index3D::pairs_within`].
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn pairs_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
+    pub fn pairs_within_each<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -1307,7 +1312,7 @@ impl Index3D {
     /// ```
     pub fn anti_join_within(&self, other: &Index3D, max_distance: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.anti_join_within_with(other, max_distance, |i| {
+        let _: ControlFlow<()> = self.anti_join_within_each(other, max_distance, |i| {
             out.push(i);
             ControlFlow::Continue(())
         });
@@ -1318,7 +1323,7 @@ impl Index3D {
     /// without collecting a result `Vec`. See [`Index3D::anti_join_within`].
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn anti_join_within_with<B, F>(
+    pub fn anti_join_within_each<B, F>(
         &self,
         other: &Index3D,
         max_distance: f64,
@@ -1490,7 +1495,7 @@ impl Index3D {
             queue.clear();
             return ControlFlow::Continue(());
         }
-        best_first::visit_neighbors(
+        best_first::neighbors_each(
             self.entries.len(),
             self.num_items,
             self.node_size,
@@ -2021,7 +2026,7 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Visit items in nondecreasing squared-distance order from `point`.
-    pub fn visit_neighbors<B, F>(
+    pub fn neighbors_each<B, F>(
         &self,
         point: Point3D,
         max_distance: f64,
@@ -2082,7 +2087,7 @@ impl<'a> Index3DView<'a> {
     /// the metric distance and may return [`ControlFlow::Break`] to stop early.
     /// See [`Index3D::neighbors_metric`](crate::Index3D::neighbors_metric) for the
     /// metric contract.
-    pub fn visit_neighbors_metric<B, M, F>(
+    pub fn neighbors_metric_each<B, M, F>(
         &self,
         metric: M,
         max_distance: f64,
@@ -2093,7 +2098,7 @@ impl<'a> Index3DView<'a> {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        metric_knn::visit_neighbors(
+        metric_knn::neighbors_each(
             self.num_nodes,
             self.num_items,
             self.node_size,
@@ -2150,7 +2155,7 @@ impl<'a> Index3DView<'a> {
     /// Visit items of `region` in nondecreasing `key` order; the visitor receives
     /// the key and may return [`ControlFlow::Break`] to stop early. See
     /// [`Index3D::search_ordered`](crate::Index3D::search_ordered).
-    pub fn visit_ordered<Q, K, B, F>(
+    pub fn search_ordered_each<Q, K, B, F>(
         &self,
         region: Q,
         key: K,
@@ -2162,7 +2167,7 @@ impl<'a> Index3DView<'a> {
         K: Fn(Box3D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+        search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
     /// Up to `max_results` items overlapping `region`, ordered for picking: by
     /// squared perpendicular distance from `ray` to the item's box first, then
@@ -2184,7 +2189,7 @@ impl<'a> Index3DView<'a> {
     /// is below the best exact `t` found so far. Run exact tests down the
     /// stream and stop at the first candidate with `hit.entry_t > best_t`
     /// (candidates the ray misses carry [`f64::INFINITY`], so they end the scan
-    /// on their own); [`visit_pick`](Self::visit_pick) makes that a
+    /// on their own); [`search_pick_each`](Self::search_pick_each) makes that a
     /// [`ControlFlow::Break`] and never walks the rest of the region. Picking
     /// the *nearest to the cursor* rather than the frontmost is the same rule
     /// with `distance_squared` in place of `entry_t`.
@@ -2274,12 +2279,12 @@ impl<'a> Index3DView<'a> {
     /// This is the streaming form the narrow phase wants: exact tests run as
     /// candidates arrive, and the break ends the traversal without collecting
     /// the rest of the region.
-    pub fn visit_pick<Q, B, F>(&self, region: Q, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
+    pub fn search_pick_each<Q, B, F>(&self, region: Q, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps3D,
         F: FnMut(PickHit3D) -> ControlFlow<B>,
     {
-        visit_pick(
+        search_pick_each(
             self,
             usize::MAX,
             |b| pick_key(&region, ray, b),
@@ -2399,7 +2404,7 @@ impl<'a> Index3DView<'a> {
     ///
     /// The visitor receives squared gap distances (`0.0` for items overlapping
     /// the query box). Return [`ControlFlow::Break`] to stop early.
-    pub fn visit_neighbors_of_box<B, F>(
+    pub fn neighbors_of_box_each<B, F>(
         &self,
         query: Box3D,
         max_distance: f64,
@@ -2430,7 +2435,7 @@ impl<'a> Index3DView<'a> {
     /// of `other`. See [`Index2D::join`](crate::Index2D::join).
     pub fn join(&self, other: &Index3DView<'_>) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+        let _: ControlFlow<()> = self.join_each(other, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2438,8 +2443,8 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Visit every intersecting pair between `self` and `other`. See
-    /// [`Index2D::join_with`](crate::Index2D::join_with).
-    pub fn join_with<B, F>(&self, other: &Index3DView<'_>, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::join_each`](crate::Index2D::join_each).
+    pub fn join_each<B, F>(&self, other: &Index3DView<'_>, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -2451,7 +2456,7 @@ impl<'a> Index3DView<'a> {
     /// [`Index2D::pairs`](crate::Index2D::pairs).
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.pairs_with(|i, j| {
+        let _: ControlFlow<()> = self.pairs_each(|i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2459,8 +2464,8 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Visit every unordered pair of distinct intersecting items within this
-    /// view. See [`Index2D::pairs_with`](crate::Index2D::pairs_with).
-    pub fn pairs_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    /// view. See [`Index2D::pairs_each`](crate::Index2D::pairs_each).
+    pub fn pairs_each<B, F>(&self, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -2472,7 +2477,7 @@ impl<'a> Index3DView<'a> {
     /// [`Index3D::join_within`].
     pub fn join_within(&self, other: &Index3DView<'_>, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_within_with(other, max_distance, |i, j| {
+        let _: ControlFlow<()> = self.join_within_each(other, max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2480,8 +2485,8 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Visit every pair within `max_distance` between `self` and `other`. See
-    /// [`Index3D::join_within_with`].
-    pub fn join_within_with<B, F>(
+    /// [`Index3D::join_within_each`].
+    pub fn join_within_each<B, F>(
         &self,
         other: &Index3DView<'_>,
         max_distance: f64,
@@ -2505,7 +2510,7 @@ impl<'a> Index3DView<'a> {
     /// first).
     pub fn search_within_into(&self, query: Box3D, max_distance: f64, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_within(query, max_distance, |index| {
+        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -2515,7 +2520,12 @@ impl<'a> Index3DView<'a> {
     /// result `Vec`. See [`search_within`](Self::search_within).
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn visit_within<B, F>(&self, query: Box3D, max_distance: f64, visitor: F) -> ControlFlow<B>
+    pub fn search_within_each<B, F>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
@@ -2534,18 +2544,18 @@ impl<'a> Index3DView<'a> {
     /// Stops at the first hit, so it takes the prune-only descent: no
     /// whole-subtree accept is computed. See
     /// [`search_within`](Self::search_within).
-    pub fn any_within(&self, query: Box3D, max_distance: f64) -> bool {
+    pub fn search_within_any(&self, query: Box3D, max_distance: f64) -> bool {
         any_within_core(self, query, DistanceTest::new(max_distance))
     }
 
     /// Count the items within `max_distance` of `query`.
     ///
-    /// The same traversal as [`visit_within`](Self::visit_within) with a
+    /// The same traversal as [`search_within_each`](Self::search_within_each) with a
     /// counter in place of a buffer, so nothing is allocated. Mirrors
     /// [`count`](Self::count) for the overlap query.
     pub fn count_within(&self, query: Box3D, max_distance: f64) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_within(query, max_distance, |_| {
+        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -2596,7 +2606,7 @@ impl<'a> Index3DView<'a> {
     /// [`Index3D::pairs_within`].
     pub fn pairs_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.pairs_within_with(max_distance, |i, j| {
+        let _: ControlFlow<()> = self.pairs_within_each(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2605,8 +2615,8 @@ impl<'a> Index3DView<'a> {
 
     /// Visit every unordered pair of distinct items within this view whose
     /// boxes lie within `max_distance` of each other. See
-    /// [`Index3D::pairs_within_with`].
-    pub fn pairs_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
+    /// [`Index3D::pairs_within_each`].
+    pub fn pairs_within_each<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -2617,7 +2627,7 @@ impl<'a> Index3DView<'a> {
     /// `max_distance`. See [`Index3D::anti_join_within`].
     pub fn anti_join_within(&self, other: &Index3DView<'_>, max_distance: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.anti_join_within_with(other, max_distance, |i| {
+        let _: ControlFlow<()> = self.anti_join_within_each(other, max_distance, |i| {
             out.push(i);
             ControlFlow::Continue(())
         });
@@ -2625,8 +2635,8 @@ impl<'a> Index3DView<'a> {
     }
 
     /// Visit every item of `self` with no item of `other` within `max_distance`.
-    /// See [`Index3D::anti_join_within_with`].
-    pub fn anti_join_within_with<B, F>(
+    /// See [`Index3D::anti_join_within_each`].
+    pub fn anti_join_within_each<B, F>(
         &self,
         other: &Index3DView<'_>,
         max_distance: f64,
@@ -2750,7 +2760,7 @@ impl<'a> Index3DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        visit_region(
+        search_region_each(
             self,
             stack,
             |bounds: Box3D| bounds.overlaps(query),
@@ -2787,7 +2797,7 @@ impl<'a> Index3DView<'a> {
             queue.clear();
             return ControlFlow::Continue(());
         }
-        best_first::visit_neighbors(
+        best_first::neighbors_each(
             self.num_nodes,
             self.num_items,
             self.node_size,

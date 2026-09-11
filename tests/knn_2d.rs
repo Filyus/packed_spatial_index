@@ -58,7 +58,7 @@ fn neighbor_apis_agree_and_support_early_exit() {
     assert_eq!(workspace.results(), expected.as_slice());
 
     let mut visited = Vec::new();
-    let completed: ControlFlow<()> = index.visit_neighbors(point, f64::INFINITY, |idx, dist| {
+    let completed: ControlFlow<()> = index.neighbors_each(point, f64::INFINITY, |idx, dist| {
         visited.push((idx, dist));
         ControlFlow::Continue(())
     });
@@ -74,7 +74,7 @@ fn neighbor_apis_agree_and_support_early_exit() {
     assert!(visited.windows(2).all(|pair| pair[0].1 <= pair[1].1));
 
     let mut calls = 0usize;
-    let stopped: ControlFlow<usize> = index.visit_neighbors(point, f64::INFINITY, |idx, _| {
+    let stopped: ControlFlow<usize> = index.neighbors_each(point, f64::INFINITY, |idx, _| {
         calls += 1;
         ControlFlow::Break(idx)
     });
@@ -103,7 +103,7 @@ fn nan_query_point_returns_empty_neighbors() {
     );
 
     let mut visited = false;
-    let flow: ControlFlow<()> = index.visit_neighbors(point, 10.0, |_, _| {
+    let flow: ControlFlow<()> = index.neighbors_each(point, 10.0, |_, _| {
         visited = true;
         ControlFlow::Continue(())
     });

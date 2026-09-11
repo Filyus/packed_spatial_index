@@ -281,7 +281,7 @@ mod ordered_and_views {
             let expected = brute_ordered(&boxes, ray);
 
             let mut visited: Vec<(f64, usize)> = Vec::new();
-            let flow: ControlFlow<()> = index.visit_raycast(ray, |id, t| {
+            let flow: ControlFlow<()> = index.raycast_each(ray, |id, t| {
                 visited.push((t, id));
                 ControlFlow::Continue(())
             });
@@ -314,7 +314,7 @@ mod ordered_and_views {
             .unwrap();
 
         let mut seen = 0usize;
-        let flow = index.visit_raycast(ray, |_, _| {
+        let flow = index.raycast_each(ray, |_, _| {
             seen += 1;
             if seen == 2 {
                 ControlFlow::Break(())
@@ -348,12 +348,12 @@ mod ordered_and_views {
             assert_eq!(index.raycast_closest(ray), view.raycast_closest(ray));
 
             let mut owned_ts = Vec::new();
-            let _: ControlFlow<()> = index.visit_raycast(ray, |_, t| {
+            let _: ControlFlow<()> = index.raycast_each(ray, |_, t| {
                 owned_ts.push(t);
                 ControlFlow::Continue(())
             });
             let mut view_ts = Vec::new();
-            let _: ControlFlow<()> = view.visit_raycast(ray, |_, t| {
+            let _: ControlFlow<()> = view.raycast_each(ray, |_, t| {
                 view_ts.push(t);
                 ControlFlow::Continue(())
             });
@@ -388,12 +388,12 @@ mod ordered_and_views {
             assert!(close(owned_closest, view_closest));
 
             let mut simd_ts = Vec::new();
-            let _: ControlFlow<()> = simd.visit_raycast(ray, |_, t| {
+            let _: ControlFlow<()> = simd.raycast_each(ray, |_, t| {
                 simd_ts.push(t);
                 ControlFlow::Continue(())
             });
             let mut view_ts = Vec::new();
-            let _: ControlFlow<()> = view.visit_raycast(ray, |_, t| {
+            let _: ControlFlow<()> = view.raycast_each(ray, |_, t| {
                 view_ts.push(t);
                 ControlFlow::Continue(())
             });

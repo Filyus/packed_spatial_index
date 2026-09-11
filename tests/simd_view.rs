@@ -132,7 +132,7 @@ fn simd2d_view_matches_aos_over_both_byte_sources() {
             );
 
             let mut visited = Vec::new();
-            let stopped = view.visit_neighbors(p, f64::INFINITY, |idx, dist| {
+            let stopped = view.neighbors_each(p, f64::INFINITY, |idx, dist| {
                 visited.push((idx, dist));
                 if visited.len() == 5 {
                     ControlFlow::Break(idx)
@@ -145,7 +145,7 @@ fn simd2d_view_matches_aos_over_both_byte_sources() {
             assert_eq!(
                 visited.iter().map(|&(idx, _)| idx).collect::<Vec<_>>(),
                 simd.neighbors(p, 5),
-                "view.visit_neighbors"
+                "view.neighbors_each"
             );
         }
 
@@ -236,7 +236,7 @@ fn simd3d_view_matches_aos_over_both_byte_sources() {
             );
 
             let mut visited = Vec::new();
-            let stopped = view.visit_neighbors(p, f64::INFINITY, |idx, dist| {
+            let stopped = view.neighbors_each(p, f64::INFINITY, |idx, dist| {
                 visited.push((idx, dist));
                 if visited.len() == 5 {
                     ControlFlow::Break(idx)
@@ -249,7 +249,7 @@ fn simd3d_view_matches_aos_over_both_byte_sources() {
             assert_eq!(
                 visited.iter().map(|&(idx, _)| idx).collect::<Vec<_>>(),
                 simd.neighbors(p, 5),
-                "view.visit_neighbors"
+                "view.neighbors_each"
             );
         }
 

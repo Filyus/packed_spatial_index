@@ -10,7 +10,7 @@ use super::{
     ExactNeighborState, NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared,
 };
 use crate::config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY;
-use crate::neighbors::best_first::{collect_neighbors, nearest_one, visit_neighbors};
+use crate::neighbors::best_first::{collect_neighbors, nearest_one, neighbors_each};
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
@@ -319,7 +319,7 @@ fn visit_point_neighbors_with_queue<T, B>(
 where
     T: PointKnn + ?Sized,
 {
-    visit_neighbors(
+    neighbors_each(
         tree.knn_num_nodes(),
         tree.knn_num_items(),
         tree.knn_node_size(),

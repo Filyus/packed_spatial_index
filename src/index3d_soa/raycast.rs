@@ -839,7 +839,7 @@ impl SimdIndex3D {
     /// The visitor receives `(item index, entry t)`. Return
     /// [`ControlFlow::Break`] to stop early - for example after the first N
     /// occluders. `t` is `0.0` when the ray origin starts inside a box.
-    pub fn visit_raycast<B, F>(&self, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
+    pub fn raycast_each<B, F>(&self, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {

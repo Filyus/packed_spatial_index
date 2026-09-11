@@ -1,4 +1,4 @@
-//! Ordered region queries: `search_ordered` / `visit_ordered` must return exactly
+//! Ordered region queries: `search_ordered` / `search_ordered_each` must return exactly
 //! the set `search` returns, emit it in nondecreasing key order, honor the
 //! `max_results` budget and the `max_key` cutoff, and agree between the owned
 //! indexes and their byte views.
@@ -184,7 +184,7 @@ fn ordered_emits_nondecreasing_keys() {
             let index = build3d(&boxes3, node_size);
             let frustum = box_frustum(30.0, 170.0);
             let mut keys = Vec::new();
-            let flow: ControlFlow<()> = index.visit_ordered(
+            let flow: ControlFlow<()> = index.search_ordered_each(
                 frustum,
                 |b| view_depth_3d(EYE3, DIR3, b),
                 f64::INFINITY,
@@ -214,7 +214,7 @@ fn ordered_emits_nondecreasing_keys() {
     let index = build2d(&boxes2, 8);
     let window = Box2D::new(20.0, 20.0, 150.0, 160.0);
     let mut keys = Vec::new();
-    let _: ControlFlow<()> = index.visit_ordered(
+    let _: ControlFlow<()> = index.search_ordered_each(
         window,
         |b| view_depth_2d(EYE2, DIR2, b),
         f64::INFINITY,
@@ -289,7 +289,7 @@ fn visitor_can_break_early() {
     let frustum = box_frustum(30.0, 170.0);
 
     let mut seen = 0usize;
-    let flow = index.visit_ordered(
+    let flow = index.search_ordered_each(
         frustum,
         |b| view_depth_3d(EYE3, DIR3, b),
         f64::INFINITY,
@@ -337,7 +337,7 @@ fn views_match_owned() {
 
     // The view's visitor path too.
     let mut keys = Vec::new();
-    let _: ControlFlow<()> = view3.visit_ordered(
+    let _: ControlFlow<()> = view3.search_ordered_each(
         frustum,
         |b| view_depth_3d(EYE3, DIR3, b),
         f64::INFINITY,

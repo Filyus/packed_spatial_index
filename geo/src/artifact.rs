@@ -888,10 +888,10 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
                 |p: PayloadPrefix<'_>| collect_header(p, &mut headers, &mut short_payload);
             match &self.index {
                 GeoStreamIndex2D::F64(index) => {
-                    index.visit_payload_prefixes_region(&region, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_region_each(&region, FEATURE_REF_RECORD_LEN, collect)?
                 }
                 GeoStreamIndex2D::F32(index) => {
-                    index.visit_payload_prefixes_region(&region, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_region_each(&region, FEATURE_REF_RECORD_LEN, collect)?
                 }
             }
             return finish_headers(headers, short_payload);
@@ -905,10 +905,10 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             let collect = |p: PayloadPrefix<'_>| collect_header(p, &mut batch, &mut short_payload);
             match &self.index {
                 GeoStreamIndex2D::F64(index) => {
-                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_each(bbox, FEATURE_REF_RECORD_LEN, collect)?
                 }
                 GeoStreamIndex2D::F32(index) => {
-                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_each(bbox, FEATURE_REF_RECORD_LEN, collect)?
                 }
             }
             for header in batch {
@@ -960,10 +960,10 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
                 |p: PayloadPrefix<'_>| collect_header_page(p, &mut page, &mut short_payload);
             match &self.index {
                 GeoStreamIndex2D::F64(index) => {
-                    index.visit_payload_prefixes_region(&region, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_region_each(&region, FEATURE_REF_RECORD_LEN, collect)?
                 }
                 GeoStreamIndex2D::F32(index) => {
-                    index.visit_payload_prefixes_region(&region, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_region_each(&region, FEATURE_REF_RECORD_LEN, collect)?
                 }
             }
             return finish_match_header_page(page, short_payload);
@@ -983,10 +983,10 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             };
             match &self.index {
                 GeoStreamIndex2D::F64(index) => {
-                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_each(bbox, FEATURE_REF_RECORD_LEN, collect)?
                 }
                 GeoStreamIndex2D::F32(index) => {
-                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_each(bbox, FEATURE_REF_RECORD_LEN, collect)?
                 }
             }
         }
@@ -1028,10 +1028,10 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
                 };
                 match &self.index {
                     GeoStreamIndex2D::F64(index) => {
-                        index.visit_payloads_at_ranks(&ranks, collect)?
+                        index.payloads_at_ranks_each(&ranks, collect)?
                     }
                     GeoStreamIndex2D::F32(index) => {
-                        index.visit_payloads_at_ranks(&ranks, collect)?
+                        index.payloads_at_ranks_each(&ranks, collect)?
                     }
                 }
                 assemble_matches(&self.manifest.payload_plan, headers, &by_rank)
@@ -2095,19 +2095,19 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
         match query.into() {
             GeoQuery3D::Box3D(bbox) => match &self.index {
                 GeoStreamIndex3D::F64(index) => {
-                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_each(bbox, FEATURE_REF_RECORD_LEN, collect)?
                 }
                 GeoStreamIndex3D::F32(index) => {
-                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_each(bbox, FEATURE_REF_RECORD_LEN, collect)?
                 }
             },
             GeoQuery3D::Frustum3D(frustum) => match &self.index {
-                GeoStreamIndex3D::F64(index) => index.visit_payload_prefixes_region(
+                GeoStreamIndex3D::F64(index) => index.search_payload_prefixes_region_each(
                     &frustum,
                     FEATURE_REF_RECORD_LEN,
                     collect,
                 )?,
-                GeoStreamIndex3D::F32(index) => index.visit_payload_prefixes_region(
+                GeoStreamIndex3D::F32(index) => index.search_payload_prefixes_region_each(
                     &frustum,
                     FEATURE_REF_RECORD_LEN,
                     collect,
@@ -2152,19 +2152,19 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
         match query.into() {
             GeoQuery3D::Box3D(bbox) => match &self.index {
                 GeoStreamIndex3D::F64(index) => {
-                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_each(bbox, FEATURE_REF_RECORD_LEN, collect)?
                 }
                 GeoStreamIndex3D::F32(index) => {
-                    index.visit_payload_prefixes(bbox, FEATURE_REF_RECORD_LEN, collect)?
+                    index.search_payload_prefixes_each(bbox, FEATURE_REF_RECORD_LEN, collect)?
                 }
             },
             GeoQuery3D::Frustum3D(frustum) => match &self.index {
-                GeoStreamIndex3D::F64(index) => index.visit_payload_prefixes_region(
+                GeoStreamIndex3D::F64(index) => index.search_payload_prefixes_region_each(
                     &frustum,
                     FEATURE_REF_RECORD_LEN,
                     collect,
                 )?,
-                GeoStreamIndex3D::F32(index) => index.visit_payload_prefixes_region(
+                GeoStreamIndex3D::F32(index) => index.search_payload_prefixes_region_each(
                     &frustum,
                     FEATURE_REF_RECORD_LEN,
                     collect,
@@ -2207,10 +2207,10 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
                 };
                 match &self.index {
                     GeoStreamIndex3D::F64(index) => {
-                        index.visit_payloads_at_ranks(&ranks, collect)?
+                        index.payloads_at_ranks_each(&ranks, collect)?
                     }
                     GeoStreamIndex3D::F32(index) => {
-                        index.visit_payloads_at_ranks(&ranks, collect)?
+                        index.payloads_at_ranks_each(&ranks, collect)?
                     }
                 }
                 assemble_matches(&self.manifest.payload_plan, headers, &by_rank)

@@ -191,7 +191,7 @@ pub(crate) fn nearest_one(
 /// delegates, so `visit` emits in the SAME order as the two-queue `neighbors`
 /// collect (they must agree on ties — a contract the tests check).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn visit_neighbors<B>(
+pub(crate) fn neighbors_each<B>(
     num_nodes: usize,
     num_items: usize,
     node_size: usize,

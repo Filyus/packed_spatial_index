@@ -134,7 +134,7 @@ fn visit_neighbors_of_box_is_nondecreasing_and_breaks() {
 
     let mut last = 0.0f64;
     let mut seen = 0usize;
-    let flow = index.visit_neighbors_of_box(query, f64::INFINITY, |_, dist| {
+    let flow = index.neighbors_of_box_each(query, f64::INFINITY, |_, dist| {
         assert!(dist >= last, "distances must be nondecreasing");
         last = dist;
         seen += 1;

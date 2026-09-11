@@ -823,7 +823,7 @@ fn payload_prefixes_match_search_payloads() {
     let full = stream.search_payloads(query).unwrap();
     let mut prefixes = Vec::new();
     stream
-        .visit_payload_prefixes(query, 8, |p| {
+        .search_payload_prefixes_each(query, 8, |p| {
             prefixes.push((p.id, p.leaf_rank, p.prefix.to_vec(), p.payload_len));
         })
         .unwrap();
@@ -840,7 +840,7 @@ fn payload_prefixes_match_search_payloads() {
     // A prefix longer than any blob clamps to the whole blob.
     let mut clamped = Vec::new();
     stream
-        .visit_payload_prefixes(query, 10_000, |p| {
+        .search_payload_prefixes_each(query, 10_000, |p| {
             clamped.push((p.id, p.prefix.to_vec()));
         })
         .unwrap();
@@ -858,7 +858,7 @@ fn payloads_at_ranks_round_trip() {
 
     let mut rank_to_id = Vec::new();
     stream
-        .visit_payload_prefixes(query, 0, |p| rank_to_id.push((p.leaf_rank, p.id)))
+        .search_payload_prefixes_each(query, 0, |p| rank_to_id.push((p.leaf_rank, p.id)))
         .unwrap();
     assert!(rank_to_id.len() > 20, "query should match a healthy sample");
 
@@ -870,7 +870,7 @@ fn payloads_at_ranks_round_trip() {
     page.push(dup);
     let mut got = Vec::new();
     stream
-        .visit_payloads_at_ranks(&page, |rank, blob| got.push((rank, blob.to_vec())))
+        .payloads_at_ranks_each(&page, |rank, blob| got.push((rank, blob.to_vec())))
         .unwrap();
 
     let mut want: Vec<usize> = page.clone();
@@ -887,7 +887,7 @@ fn payloads_at_ranks_round_trip() {
 fn payloads_at_ranks_rejects_out_of_range() {
     let (_, _, bytes) = random_with_payloads(100, 0xAB03);
     let stream = open_slice(bytes);
-    match stream.visit_payloads_at_ranks(&[0, 100], |_, _| {}) {
+    match stream.payloads_at_ranks_each(&[0, 100], |_, _| {}) {
         Err(StreamError::InvalidRank) => {}
         other => panic!("expected InvalidRank, got {other:?}"),
     }
@@ -915,7 +915,7 @@ fn payload_prefixes_stay_within_a_budget_full_blobs_exceed() {
 
     let mut seen = 0usize;
     stream
-        .visit_payload_prefixes(query, 24, |p| {
+        .search_payload_prefixes_each(query, 24, |p| {
             assert_eq!(p.payload_len, 8192);
             assert_eq!(p.prefix.len(), 24);
             seen += 1;
@@ -957,7 +957,7 @@ fn prefix_gap_trades_reads_for_bytes() {
         let reads0 = *idx.core.reader.reads.borrow();
         let bytes0 = *idx.core.reader.bytes.borrow();
         let mut seen = 0usize;
-        idx.visit_payload_prefixes(query, PREFIX, |p| {
+        idx.search_payload_prefixes_each(query, PREFIX, |p| {
             assert_eq!(p.prefix.len(), PREFIX);
             assert_eq!(p.payload_len, BODY);
             seen += 1;
@@ -1020,7 +1020,7 @@ fn prefix_section_collapses_reads_without_over_reading() {
         let reads0 = *idx.core.reader.reads.borrow();
         let bytes0 = *idx.core.reader.bytes.borrow();
         let mut seen = Vec::new();
-        idx.visit_payload_prefixes(query, PREFIX, |p| {
+        idx.search_payload_prefixes_each(query, PREFIX, |p| {
             assert_eq!(p.prefix.len(), PREFIX);
             assert_eq!(p.payload_len, BODY);
             seen.push((p.id, u64::from_le_bytes(p.prefix[..8].try_into().unwrap())));
@@ -1083,7 +1083,7 @@ fn prefix_section_survives_a_split_directory() {
     let reads0 = *direct.core.reader.reads.borrow();
     let mut direct_seen = 0usize;
     direct
-        .visit_payload_prefixes(query, PREFIX, |_| direct_seen += 1)
+        .search_payload_prefixes_each(query, PREFIX, |_| direct_seen += 1)
         .unwrap();
     let direct_reads = *direct.core.reader.reads.borrow() - reads0;
 
@@ -1094,7 +1094,7 @@ fn prefix_section_survives_a_split_directory() {
     let warm =
         StreamIndex2D::from_directory(&dir, CountingReader::new(SliceReader::new(bytes))).unwrap();
     let mut warm_seen = 0usize;
-    warm.visit_payload_prefixes(query, PREFIX, |_| warm_seen += 1)
+    warm.search_payload_prefixes_each(query, PREFIX, |_| warm_seen += 1)
         .unwrap();
     let warm_reads = *warm.core.reader.reads.borrow();
 
@@ -1120,7 +1120,7 @@ fn fixed_width_payload_prefixes_and_ranks() {
 
     let mut ranks = Vec::new();
     stream
-        .visit_payload_prefixes(query, 8, |p| {
+        .search_payload_prefixes_each(query, 8, |p| {
             assert_eq!(p.payload_len, STRIDE);
             assert_eq!(
                 u64::from_le_bytes(p.prefix.try_into().unwrap()),
@@ -1134,7 +1134,7 @@ fn fixed_width_payload_prefixes_and_ranks() {
     let page: Vec<usize> = ranks.iter().map(|&(r, _)| r).collect();
     let mut got = 0usize;
     stream
-        .visit_payloads_at_ranks(&page, |rank, blob| {
+        .payloads_at_ranks_each(&page, |rank, blob| {
             assert_eq!(blob.len(), STRIDE);
             let id = ranks.iter().find(|(r, _)| *r == rank).unwrap().1;
             assert_eq!(u64::from_le_bytes(blob[..8].try_into().unwrap()), id as u64);
@@ -1903,7 +1903,7 @@ fn async_payload_prefixes_and_rank_fetch_match_sync() {
 
     let q = Box2D::new(300.0, 300.0, 380.0, 380.0);
     let mut sync_headers = Vec::new();
-    sync.visit_payload_prefixes(q, 24, |p| {
+    sync.search_payload_prefixes_each(q, 24, |p| {
         sync_headers.push((p.id, p.leaf_rank, p.payload_len, p.prefix.to_vec()));
     })
     .unwrap();
@@ -1917,7 +1917,7 @@ fn async_payload_prefixes_and_rank_fetch_match_sync() {
 
     let page_ranks: Vec<usize> = async_headers.iter().take(5).map(|h| h.1).collect();
     let mut sync_page = Vec::new();
-    sync.visit_payloads_at_ranks(&page_ranks, |rank, blob| {
+    sync.payloads_at_ranks_each(&page_ranks, |rank, blob| {
         sync_page.push((rank, blob.to_vec()));
     })
     .unwrap();

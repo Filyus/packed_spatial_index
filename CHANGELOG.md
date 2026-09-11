@@ -4,6 +4,30 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### API
+
+- **BREAKING:** the way you want an answer no longer leads the method name. The
+  operation leads; the mode trails, as one of `_into`, `_iter`, `_each`, `_any`,
+  `_first`, or nothing at all for a fresh `Vec`. So the callback forms that used
+  to be spelled `visit_*` are now `*_each` — `visit_within` is
+  `search_within_each`, `visit_neighbors` is `neighbors_each`, `visit_raycast`
+  is `raycast_each`, and likewise for `visit_region`, `visit_ordered`,
+  `visit_pick`, `visit_exact`, `visit_neighbors_of_box`,
+  `visit_neighbors_metric` and the streaming `visit_payload*` family. The
+  early-exit forms follow the same rule wherever an operation is named:
+  `any_within` is `search_within_any`, `any_region` is `search_region_any`,
+  `first_region` is `search_region_first`, and so on for the `_exact` pair.
+  Five callback forms that had borrowed the `_with` slot move too: `join_with`
+  is `join_each`, `pairs_with` is `pairs_each`, and the `join_within_with` /
+  `pairs_within_with` / `anti_join_within_with` trio gains `_each` in place of
+  `_with`.
+  The plain overlap query keeps `search` / `search_into` / `search_iter` /
+  `visit` / `any` / `first` / `count` exactly as they were. It is the one family
+  with no operation word for a suffix to trail, so the mode stands alone — the
+  rule is that the mode leads only where there is nothing else to lead.
+  Names that were already `_with_<noun>`, such as `to_bytes_with_payloads` and
+  `open_with_limits`, are untouched, as are the `#[doc(hidden)]` internals.
+
 ### Nearest Neighbors
 
 - Asking for one nearest neighbour now answers the same item as asking for

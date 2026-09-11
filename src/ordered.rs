@@ -1,7 +1,7 @@
 //! Ordered region traversal: emit the items of a region in nondecreasing order
 //! of a caller-supplied key.
 //!
-//! The sibling of [`crate::range::visit_region`] — same `TreeAccess` view of the
+//! The sibling of [`crate::range::search_region_each`] — same `TreeAccess` view of the
 //! tree, same region predicate — but a best-first descent
 //! ([`crate::neighbors::metric_knn`]) instead of a depth-first stack, so the
 //! caller can stop on a budget instead of filtering the output. The region test
@@ -71,7 +71,7 @@ pub(crate) fn collect_ordered<T: TreeAccess>(
 
 /// Visit the items of the region in nondecreasing `key` order; the visitor
 /// receives the key and may break early.
-pub(crate) fn visit_ordered<T: TreeAccess, B>(
+pub(crate) fn search_ordered_each<T: TreeAccess, B>(
     tree: &T,
     overlaps: impl Fn(T::Bounds) -> bool,
     key: impl Fn(T::Bounds) -> f64,
@@ -82,7 +82,7 @@ pub(crate) fn visit_ordered<T: TreeAccess, B>(
         return ControlFlow::Continue(());
     }
     let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-    metric_knn::visit_neighbors(
+    metric_knn::neighbors_each(
         tree.tree_num_nodes(),
         tree.tree_num_items(),
         tree.tree_node_size(),
@@ -220,11 +220,11 @@ impl PickWorkspace {
 }
 
 /// Best-first pick descent over the shared tree layout, mirroring
-/// [`metric_knn::visit_neighbors`] but with a lexicographic two-component key.
+/// [`metric_knn::neighbors_each`] but with a lexicographic two-component key.
 /// The key closure returns `None` for a pruned entry (region miss) and
 /// `(perp2, entry_t)` for a kept one. Streaming: hits reach the visitor as the
 /// heap pops them, so a break stops the traversal.
-pub(crate) fn visit_pick<T, B>(
+pub(crate) fn search_pick_each<T, B>(
     tree: &T,
     max_results: usize,
     key: impl Fn(crate::geometry::Box3D) -> Option<(f64, f64)>,
@@ -282,7 +282,7 @@ where
     }
 }
 
-/// [`visit_pick`] collecting into `results` (cleared first) — the same descent,
+/// [`search_pick_each`] collecting into `results` (cleared first) — the same descent,
 /// with a visitor that only pushes.
 pub(crate) fn collect_pick<T: TreeAccess<Bounds = crate::geometry::Box3D>>(
     tree: &T,
@@ -292,7 +292,7 @@ pub(crate) fn collect_pick<T: TreeAccess<Bounds = crate::geometry::Box3D>>(
     queue: &mut BinaryHeap<PickState>,
 ) {
     results.clear();
-    let _ = visit_pick(tree, max_results, key, queue, &mut |hit| {
+    let _ = search_pick_each(tree, max_results, key, queue, &mut |hit| {
         results.push(hit);
         ControlFlow::<()>::Continue(())
     });

@@ -1,4 +1,4 @@
-//! Custom-metric kNN (`neighbors_metric` / `visit_neighbors_metric`) on the owned
+//! Custom-metric kNN (`neighbors_metric` / `neighbors_metric_each`) on the owned
 //! f64 indexes and their zero-copy views must return exactly the brute-force
 //! k-nearest under the same metric, and the byte views must match the owned
 //! indexes. Also checks the `haversine_distance_2d` helper against a known value.
@@ -93,7 +93,7 @@ fn metric_matches_bruteforce_2d() {
                     assert!(ds.windows(2).all(|w| w[0] <= w[1]), "not sorted: {ds:?}");
                     // visit yields the same set.
                     let mut vis = Vec::new();
-                    let _ = index.visit_neighbors_metric::<(), _, _>(
+                    let _ = index.neighbors_metric_each::<(), _, _>(
                         |bx| dist2(q, bx),
                         f64::INFINITY,
                         |i, _| {

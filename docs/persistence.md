@@ -134,7 +134,7 @@ issue a level's reads concurrently.
 `visit` / `count`), optionally returning a stored blob per hit
 (`search_payloads`, when the file was written with `to_bytes_with_payloads`),
 sync or async. Streaming readers also support region queries (`search_region` /
-`visit_region` / `count_region` / `search_payloads_region` and their async
+`search_region_each` / `count_region` / `search_payloads_region` and their async
 counterparts) such as 2D convex polygons and 3D frustums. `count` and
 `count_region` answer how many items match without materializing one, at the
 same read cost as the search they replace — the shape a "how many are in this

@@ -26,9 +26,9 @@ use crate::{
         closest_pair_to_core, join_core, pairs_components_core, pairs_core, within_core,
     },
     neighbors::{NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first},
-    ordered::{collect_ordered, visit_ordered},
+    ordered::{collect_ordered, search_ordered_each},
     persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
-    range::visit_region,
+    range::search_region_each,
     ray::Ray3D,
     sort3d::{SortKey3DContext, encode_sort_by_key_3d},
     traversal::{SearchWorkspace, upper_bound_level},
@@ -315,7 +315,7 @@ impl SimdIndex3D {
 
     /// Visit items of `region` in nondecreasing `key` order; the visitor receives
     /// the key and may return [`ControlFlow::Break`] to stop early.
-    pub fn visit_ordered<Q, K, B, F>(
+    pub fn search_ordered_each<Q, K, B, F>(
         &self,
         region: Q,
         key: K,
@@ -327,7 +327,7 @@ impl SimdIndex3D {
         K: Fn(Box3D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+        search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
     /// Items overlapping the region `region` — any [`Overlaps3D`] shape, such as
     /// [`Frustum3D`](crate::Frustum3D) or a [`Box3D`].
@@ -337,7 +337,7 @@ impl SimdIndex3D {
     /// is what you mean.
     ///
     /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
-    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    /// [`count_region`](Self::count_region), [`search_region_any`](Self::search_region_any).
     pub fn search_region<Q: Overlaps3D>(&self, region: Q) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_region_into(region, &mut out);
@@ -347,7 +347,7 @@ impl SimdIndex3D {
     /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
     pub fn search_region_into<Q: Overlaps3D>(&self, region: Q, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_region(region, |index| {
+        let _: ControlFlow<()> = self.search_region_each(region, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -355,13 +355,13 @@ impl SimdIndex3D {
 
     /// Visit every item overlapping `region`; the visitor may return
     /// [`ControlFlow::Break`] to stop early.
-    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    pub fn search_region_each<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps3D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        visit_region(
+        search_region_each(
             self,
             &mut stack,
             |b| region.overlaps_box(b),
@@ -371,14 +371,14 @@ impl SimdIndex3D {
     }
 
     /// Return `true` if at least one item overlaps `region`.
-    pub fn any_region<Q: Overlaps3D>(&self, region: Q) -> bool {
-        self.visit_region(region, |_| ControlFlow::Break(()))
+    pub fn search_region_any<Q: Overlaps3D>(&self, region: Q) -> bool {
+        self.search_region_each(region, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     /// Return one item overlapping `region`, if any.
-    pub fn first_region<Q: Overlaps3D>(&self, region: Q) -> Option<usize> {
-        match self.visit_region(region, ControlFlow::Break) {
+    pub fn search_region_first<Q: Overlaps3D>(&self, region: Q) -> Option<usize> {
+        match self.search_region_each(region, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -387,7 +387,7 @@ impl SimdIndex3D {
     /// Count the items overlapping `region` without collecting them.
     pub fn count_region<Q: Overlaps3D>(&self, region: Q) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_region(region, |_| {
+        let _: ControlFlow<()> = self.search_region_each(region, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -577,7 +577,7 @@ impl SimdIndex3D {
     }
 
     /// Visit items in nondecreasing squared-distance order from `point`.
-    pub fn visit_neighbors<B, F>(
+    pub fn neighbors_each<B, F>(
         &self,
         point: Point3D,
         max_distance: f64,
@@ -685,8 +685,8 @@ impl SimdIndex3D {
     }
 
     /// Visit items in nondecreasing box-to-box distance order from `query`.
-    /// See [`Index2D::visit_neighbors_of_box`](crate::Index2D::visit_neighbors_of_box).
-    pub fn visit_neighbors_of_box<B, F>(
+    /// See [`Index2D::neighbors_of_box_each`](crate::Index2D::neighbors_of_box_each).
+    pub fn neighbors_of_box_each<B, F>(
         &self,
         query: Box3D,
         max_distance: f64,
@@ -717,7 +717,7 @@ impl SimdIndex3D {
     /// of `other`. See [`Index2D::join`](crate::Index2D::join).
     pub fn join(&self, other: &SimdIndex3D) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+        let _: ControlFlow<()> = self.join_each(other, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -725,8 +725,8 @@ impl SimdIndex3D {
     }
 
     /// Visit every intersecting pair between `self` and `other`. See
-    /// [`Index2D::join_with`](crate::Index2D::join_with).
-    pub fn join_with<B, F>(&self, other: &SimdIndex3D, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::join_each`](crate::Index2D::join_each).
+    pub fn join_each<B, F>(&self, other: &SimdIndex3D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -738,7 +738,7 @@ impl SimdIndex3D {
     /// [`Index2D::pairs`](crate::Index2D::pairs).
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.pairs_with(|i, j| {
+        let _: ControlFlow<()> = self.pairs_each(|i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -746,8 +746,8 @@ impl SimdIndex3D {
     }
 
     /// Visit every unordered pair of distinct intersecting items within this
-    /// index. See [`Index2D::pairs_with`](crate::Index2D::pairs_with).
-    pub fn pairs_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    /// index. See [`Index2D::pairs_each`](crate::Index2D::pairs_each).
+    pub fn pairs_each<B, F>(&self, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -759,7 +759,7 @@ impl SimdIndex3D {
     /// [`Index2D::join_within`](crate::Index2D::join_within).
     pub fn join_within(&self, other: &SimdIndex3D, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_within_with(other, max_distance, |i, j| {
+        let _: ControlFlow<()> = self.join_within_each(other, max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -767,8 +767,8 @@ impl SimdIndex3D {
     }
 
     /// Visit every pair within `max_distance` between `self` and `other`. See
-    /// [`Index2D::join_within_with`](crate::Index2D::join_within_with).
-    pub fn join_within_with<B, F>(
+    /// [`Index2D::join_within_each`](crate::Index2D::join_within_each).
+    pub fn join_within_each<B, F>(
         &self,
         other: &SimdIndex3D,
         max_distance: f64,
@@ -796,7 +796,7 @@ impl SimdIndex3D {
     ///
     /// Allocates a fresh `Vec` per call — see
     /// [`search_within_into`](SimdIndex3D::search_within_into),
-    /// [`any_within`](SimdIndex3D::any_within).
+    /// [`search_within_any`](SimdIndex3D::search_within_any).
     ///
     /// # Example
     ///
@@ -824,7 +824,7 @@ impl SimdIndex3D {
     /// first).
     pub fn search_within_into(&self, query: Box3D, max_distance: f64, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_within(query, max_distance, |index| {
+        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -834,7 +834,12 @@ impl SimdIndex3D {
     /// result `Vec`. See [`search_within`](Self::search_within).
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn visit_within<B, F>(&self, query: Box3D, max_distance: f64, visitor: F) -> ControlFlow<B>
+    pub fn search_within_each<B, F>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
@@ -853,18 +858,18 @@ impl SimdIndex3D {
     /// Stops at the first hit, so it takes the prune-only descent: no
     /// whole-subtree accept is computed. See
     /// [`search_within`](Self::search_within).
-    pub fn any_within(&self, query: Box3D, max_distance: f64) -> bool {
+    pub fn search_within_any(&self, query: Box3D, max_distance: f64) -> bool {
         any_within_core(self, query, DistanceTest::new(max_distance))
     }
 
     /// Count the items within `max_distance` of `query`.
     ///
-    /// The same traversal as [`visit_within`](Self::visit_within) with a
+    /// The same traversal as [`search_within_each`](Self::search_within_each) with a
     /// counter in place of a buffer, so nothing is allocated. Mirrors
     /// [`count`](Self::count) for the overlap query.
     pub fn count_within(&self, query: Box3D, max_distance: f64) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_within(query, max_distance, |_| {
+        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -915,7 +920,7 @@ impl SimdIndex3D {
     /// [`Index2D::pairs_within`](crate::Index2D::pairs_within).
     pub fn pairs_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.pairs_within_with(max_distance, |i, j| {
+        let _: ControlFlow<()> = self.pairs_within_each(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -924,8 +929,8 @@ impl SimdIndex3D {
 
     /// Visit every unordered pair of distinct items within this index whose
     /// boxes lie within `max_distance` of each other. See
-    /// [`Index2D::pairs_within_with`](crate::Index2D::pairs_within_with).
-    pub fn pairs_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::pairs_within_each`](crate::Index2D::pairs_within_each).
+    pub fn pairs_within_each<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -936,7 +941,7 @@ impl SimdIndex3D {
     /// `max_distance`. See [`Index2D::anti_join_within`](crate::Index2D::anti_join_within).
     pub fn anti_join_within(&self, other: &SimdIndex3D, max_distance: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.anti_join_within_with(other, max_distance, |i| {
+        let _: ControlFlow<()> = self.anti_join_within_each(other, max_distance, |i| {
             out.push(i);
             ControlFlow::Continue(())
         });
@@ -944,8 +949,8 @@ impl SimdIndex3D {
     }
 
     /// Visit every item of `self` with no item of `other` within `max_distance`.
-    /// See [`Index2D::anti_join_within_with`](crate::Index2D::anti_join_within_with).
-    pub fn anti_join_within_with<B, F>(
+    /// See [`Index2D::anti_join_within_each`](crate::Index2D::anti_join_within_each).
+    pub fn anti_join_within_each<B, F>(
         &self,
         other: &SimdIndex3D,
         max_distance: f64,
@@ -1079,7 +1084,7 @@ impl SimdIndex3D {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        best_first::visit_neighbors(
+        best_first::neighbors_each(
             self.min_xs.len(),
             self.num_items,
             self.node_size,
@@ -2202,7 +2207,7 @@ impl<'a> SimdIndex3DView<'a> {
 
     /// Visit items of `region` in nondecreasing `key` order; the visitor receives
     /// the key and may return [`ControlFlow::Break`] to stop early.
-    pub fn visit_ordered<Q, K, B, F>(
+    pub fn search_ordered_each<Q, K, B, F>(
         &self,
         region: Q,
         key: K,
@@ -2214,7 +2219,7 @@ impl<'a> SimdIndex3DView<'a> {
         K: Fn(Box3D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+        search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
     /// Items overlapping the region `region` — any [`Overlaps3D`] shape, such as
     /// [`Frustum3D`](crate::Frustum3D) or a [`Box3D`].
@@ -2224,7 +2229,7 @@ impl<'a> SimdIndex3DView<'a> {
     /// is what you mean.
     ///
     /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
-    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    /// [`count_region`](Self::count_region), [`search_region_any`](Self::search_region_any).
     pub fn search_region<Q: Overlaps3D>(&self, region: Q) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_region_into(region, &mut out);
@@ -2234,7 +2239,7 @@ impl<'a> SimdIndex3DView<'a> {
     /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
     pub fn search_region_into<Q: Overlaps3D>(&self, region: Q, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_region(region, |index| {
+        let _: ControlFlow<()> = self.search_region_each(region, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -2242,13 +2247,13 @@ impl<'a> SimdIndex3DView<'a> {
 
     /// Visit every item overlapping `region`; the visitor may return
     /// [`ControlFlow::Break`] to stop early.
-    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    pub fn search_region_each<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps3D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        visit_region(
+        search_region_each(
             self,
             &mut stack,
             |b| region.overlaps_box(b),
@@ -2258,14 +2263,14 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Return `true` if at least one item overlaps `region`.
-    pub fn any_region<Q: Overlaps3D>(&self, region: Q) -> bool {
-        self.visit_region(region, |_| ControlFlow::Break(()))
+    pub fn search_region_any<Q: Overlaps3D>(&self, region: Q) -> bool {
+        self.search_region_each(region, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     /// Return one item overlapping `region`, if any.
-    pub fn first_region<Q: Overlaps3D>(&self, region: Q) -> Option<usize> {
-        match self.visit_region(region, ControlFlow::Break) {
+    pub fn search_region_first<Q: Overlaps3D>(&self, region: Q) -> Option<usize> {
+        match self.search_region_each(region, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -2274,7 +2279,7 @@ impl<'a> SimdIndex3DView<'a> {
     /// Count the items overlapping `region` without collecting them.
     pub fn count_region<Q: Overlaps3D>(&self, region: Q) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_region(region, |_| {
+        let _: ControlFlow<()> = self.search_region_each(region, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -2450,7 +2455,7 @@ impl<'a> SimdIndex3DView<'a> {
     /// of `other`. See [`Index2D::join`](crate::Index2D::join).
     pub fn join(&self, other: &SimdIndex3DView<'_>) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_with(other, |i, j| {
+        let _: ControlFlow<()> = self.join_each(other, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2458,8 +2463,8 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Visit every intersecting pair between `self` and `other`. See
-    /// [`Index2D::join_with`](crate::Index2D::join_with).
-    pub fn join_with<B, F>(&self, other: &SimdIndex3DView<'_>, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::join_each`](crate::Index2D::join_each).
+    pub fn join_each<B, F>(&self, other: &SimdIndex3DView<'_>, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -2471,7 +2476,7 @@ impl<'a> SimdIndex3DView<'a> {
     /// [`Index2D::pairs`](crate::Index2D::pairs).
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.pairs_with(|i, j| {
+        let _: ControlFlow<()> = self.pairs_each(|i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2479,8 +2484,8 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Visit every unordered pair of distinct intersecting items within this
-    /// view. See [`Index2D::pairs_with`](crate::Index2D::pairs_with).
-    pub fn pairs_with<B, F>(&self, visitor: F) -> ControlFlow<B>
+    /// view. See [`Index2D::pairs_each`](crate::Index2D::pairs_each).
+    pub fn pairs_each<B, F>(&self, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -2496,7 +2501,7 @@ impl<'a> SimdIndex3DView<'a> {
         max_distance: f64,
     ) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.join_within_with(other, max_distance, |i, j| {
+        let _: ControlFlow<()> = self.join_within_each(other, max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2504,8 +2509,8 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Visit every pair within `max_distance` between `self` and `other`. See
-    /// [`Index2D::join_within_with`](crate::Index2D::join_within_with).
-    pub fn join_within_with<B, F>(
+    /// [`Index2D::join_within_each`](crate::Index2D::join_within_each).
+    pub fn join_within_each<B, F>(
         &self,
         other: &SimdIndex3DView<'_>,
         max_distance: f64,
@@ -2529,7 +2534,7 @@ impl<'a> SimdIndex3DView<'a> {
     /// first).
     pub fn search_within_into(&self, query: Box3D, max_distance: f64, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_within(query, max_distance, |index| {
+        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -2539,7 +2544,12 @@ impl<'a> SimdIndex3DView<'a> {
     /// result `Vec`. See [`search_within`](Self::search_within).
     ///
     /// Return [`ControlFlow::Break`] for early exit.
-    pub fn visit_within<B, F>(&self, query: Box3D, max_distance: f64, visitor: F) -> ControlFlow<B>
+    pub fn search_within_each<B, F>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
@@ -2558,18 +2568,18 @@ impl<'a> SimdIndex3DView<'a> {
     /// Stops at the first hit, so it takes the prune-only descent: no
     /// whole-subtree accept is computed. See
     /// [`search_within`](Self::search_within).
-    pub fn any_within(&self, query: Box3D, max_distance: f64) -> bool {
+    pub fn search_within_any(&self, query: Box3D, max_distance: f64) -> bool {
         any_within_core(self, query, DistanceTest::new(max_distance))
     }
 
     /// Count the items within `max_distance` of `query`.
     ///
-    /// The same traversal as [`visit_within`](Self::visit_within) with a
+    /// The same traversal as [`search_within_each`](Self::search_within_each) with a
     /// counter in place of a buffer, so nothing is allocated. Mirrors
     /// [`count`](Self::count) for the overlap query.
     pub fn count_within(&self, query: Box3D, max_distance: f64) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_within(query, max_distance, |_| {
+        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -2620,7 +2630,7 @@ impl<'a> SimdIndex3DView<'a> {
     /// [`Index2D::pairs_within`](crate::Index2D::pairs_within).
     pub fn pairs_within(&self, max_distance: f64) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.pairs_within_with(max_distance, |i, j| {
+        let _: ControlFlow<()> = self.pairs_within_each(max_distance, |i, j| {
             out.push((i, j));
             ControlFlow::Continue(())
         });
@@ -2629,8 +2639,8 @@ impl<'a> SimdIndex3DView<'a> {
 
     /// Visit every unordered pair of distinct items within this view whose
     /// boxes lie within `max_distance` of each other. See
-    /// [`Index2D::pairs_within_with`](crate::Index2D::pairs_within_with).
-    pub fn pairs_within_with<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
+    /// [`Index2D::pairs_within_each`](crate::Index2D::pairs_within_each).
+    pub fn pairs_within_each<B, F>(&self, max_distance: f64, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, usize) -> ControlFlow<B>,
     {
@@ -2641,7 +2651,7 @@ impl<'a> SimdIndex3DView<'a> {
     /// `max_distance`. See [`Index2D::anti_join_within`](crate::Index2D::anti_join_within).
     pub fn anti_join_within(&self, other: &SimdIndex3DView<'_>, max_distance: f64) -> Vec<usize> {
         let mut out = Vec::new();
-        let _: ControlFlow<()> = self.anti_join_within_with(other, max_distance, |i| {
+        let _: ControlFlow<()> = self.anti_join_within_each(other, max_distance, |i| {
             out.push(i);
             ControlFlow::Continue(())
         });
@@ -2649,8 +2659,8 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Visit every item of `self` with no item of `other` within `max_distance`.
-    /// See [`Index2D::anti_join_within_with`](crate::Index2D::anti_join_within_with).
-    pub fn anti_join_within_with<B, F>(
+    /// See [`Index2D::anti_join_within_each`](crate::Index2D::anti_join_within_each).
+    pub fn anti_join_within_each<B, F>(
         &self,
         other: &SimdIndex3DView<'_>,
         max_distance: f64,
@@ -2878,7 +2888,7 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Visit items in nondecreasing squared-distance order from `point`.
-    pub fn visit_neighbors<B, F>(
+    pub fn neighbors_each<B, F>(
         &self,
         point: Point3D,
         max_distance: f64,
@@ -2986,8 +2996,8 @@ impl<'a> SimdIndex3DView<'a> {
     }
 
     /// Visit items in nondecreasing box-to-box distance order from `query`.
-    /// See [`Index2D::visit_neighbors_of_box`](crate::Index2D::visit_neighbors_of_box).
-    pub fn visit_neighbors_of_box<B, F>(
+    /// See [`Index2D::neighbors_of_box_each`](crate::Index2D::neighbors_of_box_each).
+    pub fn neighbors_of_box_each<B, F>(
         &self,
         query: Box3D,
         max_distance: f64,
@@ -3037,7 +3047,7 @@ impl<'a> SimdIndex3DView<'a> {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        best_first::visit_neighbors(
+        best_first::neighbors_each(
             self.num_nodes,
             self.num_items,
             self.node_size,
@@ -3279,7 +3289,7 @@ impl SimdIndex3DView<'_> {
     /// The visitor receives `(item index, entry t)`. Return
     /// [`ControlFlow::Break`] to stop early - for example after the first N
     /// occluders. `t` is `0.0` when the ray origin starts inside a box.
-    pub fn visit_raycast<B, F>(&self, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
+    pub fn raycast_each<B, F>(&self, ray: Ray3D, mut visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {

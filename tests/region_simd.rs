@@ -111,9 +111,9 @@ fn simd_2d_region_matches_owned() {
                 "polygon: n={n} node_size={node_size}"
             );
             assert_eq!(simd.count_region(&poly), expected_poly.len());
-            assert_eq!(simd.any_region(&poly), !expected_poly.is_empty());
+            assert_eq!(simd.search_region_any(&poly), !expected_poly.is_empty());
             assert_eq!(
-                simd.first_region(&poly).is_some(),
+                simd.search_region_first(&poly).is_some(),
                 !expected_poly.is_empty()
             );
 
@@ -144,7 +144,7 @@ fn simd_3d_region_matches_owned() {
                 "n={n} node_size={node_size}"
             );
             assert_eq!(simd.count_region(frustum), expected.len());
-            assert_eq!(simd.any_region(frustum), !expected.is_empty());
+            assert_eq!(simd.search_region_any(frustum), !expected.is_empty());
 
             let window = Box3D::new(20.0, 20.0, 20.0, 150.0, 160.0, 140.0);
             assert_eq!(
@@ -187,7 +187,7 @@ fn region_visitor_can_break_and_buffers_are_cleared() {
     let frustum = box_frustum(30.0, 170.0);
 
     let mut seen = 0usize;
-    let flow = simd.visit_region(frustum, |id| {
+    let flow = simd.search_region_each(frustum, |id| {
         seen += 1;
         if seen == 3 {
             ControlFlow::Break(id)
@@ -210,8 +210,8 @@ fn region_on_empty_index() {
     let frustum = box_frustum(30.0, 170.0);
     assert!(simd.search_region(frustum).is_empty());
     assert_eq!(simd.count_region(frustum), 0);
-    assert!(!simd.any_region(frustum));
-    assert_eq!(simd.first_region(frustum), None);
+    assert!(!simd.search_region_any(frustum));
+    assert_eq!(simd.search_region_first(frustum), None);
 }
 
 mod ordered {
@@ -257,10 +257,11 @@ mod ordered {
                 );
 
                 let mut keys = Vec::new();
-                let _: ControlFlow<()> = simd.visit_ordered(frustum, key, f64::INFINITY, |_, k| {
-                    keys.push(k);
-                    ControlFlow::Continue(())
-                });
+                let _: ControlFlow<()> =
+                    simd.search_ordered_each(frustum, key, f64::INFINITY, |_, k| {
+                        keys.push(k);
+                        ControlFlow::Continue(())
+                    });
                 for pair in keys.windows(2) {
                     assert!(pair[0] <= pair[1], "keys out of order");
                 }

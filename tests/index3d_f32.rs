@@ -282,9 +282,9 @@ fn search_exact_matches_f64_exactly() {
         // exact is a subset of the conservative search
         let conservative: HashSet<usize> = compact.search(q).into_iter().collect();
         assert!(exact.iter().all(|id| conservative.contains(id)));
-        // any_exact / first_exact agree
-        assert_eq!(compact.any_exact(q, |id| bs[id]), !exact.is_empty());
-        if let Some(f) = compact.first_exact(q, |id| bs[id]) {
+        // search_exact_any / search_exact_first agree
+        assert_eq!(compact.search_exact_any(q, |id| bs[id]), !exact.is_empty());
+        if let Some(f) = compact.search_exact_first(q, |id| bs[id]) {
             assert!(exact.contains(&f));
         }
     }

@@ -36,27 +36,27 @@
 //!   a cursor turns the same query into 3D picking, see [`Frustum3D`]).
 //! * **Nearest neighbors** — from a point [`neighbors`](Index2D::neighbors)
 //!   (plus `_within` / `_into` / `_with` /
-//!   [`visit_neighbors`](Index2D::visit_neighbors)) or from a box
+//!   [`neighbors_each`](Index2D::neighbors_each)) or from a box
 //!   [`neighbors_of_box`](Index2D::neighbors_of_box) and its variants; or under a
 //!   custom distance metric with [`neighbors_metric`](Index2D::neighbors_metric)
 //!   (e.g. great-circle distance via [`haversine_distance_2d`]).
 //! * **Ordered region** — the same region geometry, but emitted in nondecreasing
 //!   order of a key you supply, so a budget can stop the traversal early:
 //!   [`search_ordered`](Index2D::search_ordered) (plus `_into` and
-//!   [`visit_ordered`](Index2D::visit_ordered)). With
+//!   [`search_ordered_each`](Index2D::search_ordered_each)). With
 //!   [`view_depth_3d`] as the key, a `Frustum3D` query yields objects front to
 //!   back.
 //! * **Pick (3D)** — the click-in-a-viewport order: [`search_pick`](Index3D::search_pick)
-//!   / [`visit_pick`](Index3D::visit_pick) emit a region's candidates by
+//!   / [`search_pick_each`](Index3D::search_pick_each) emit a region's candidates by
 //!   squared distance from a ray, ties by ray entry depth, so the first hit is
 //!   the box under the cursor.
 //! * **Ray segment** — [`raycast`](Index2D::raycast) (all hits),
 //!   [`raycast_closest`](Index2D::raycast_closest) (nearest box entered), and
-//!   [`visit_raycast`](Index2D::visit_raycast).
+//!   [`raycast_each`](Index2D::raycast_each).
 //! * **Spatial join** — [`join`](Index2D::join) /
-//!   [`join_with`](Index2D::join_with) between two indexes,
+//!   [`join_each`](Index2D::join_each) between two indexes,
 //!   [`pairs`](Index2D::pairs) /
-//!   [`pairs_with`](Index2D::pairs_with) within one, and the distance
+//!   [`pairs_each`](Index2D::pairs_each) within one, and the distance
 //!   forms: [`join_within`](Index2D::join_within) for pairs within `max_distance`,
 //!   [`anti_join_within`](Index2D::anti_join_within) for the unpaired items,
 //!   and [`pairs_within_components`](Index2D::pairs_within_components)

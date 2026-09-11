@@ -653,17 +653,17 @@ fn join_pairs<W: std::io::Write>(
 
     let flow = match b_bytes {
         None => match &a {
-            JoinIndex::D2(a) => a.pairs_within_with(max_distance, &mut emit),
-            JoinIndex::D3(a) => a.pairs_within_with(max_distance, &mut emit),
+            JoinIndex::D2(a) => a.pairs_within_each(max_distance, &mut emit),
+            JoinIndex::D3(a) => a.pairs_within_each(max_distance, &mut emit),
         },
         Some(bytes) => {
             let b = load_join_index(bytes, "b.psi")?;
             match (&a, &b) {
                 (JoinIndex::D2(a), JoinIndex::D2(b)) => {
-                    a.join_within_with(b, max_distance, &mut emit)
+                    a.join_within_each(b, max_distance, &mut emit)
                 }
                 (JoinIndex::D3(a), JoinIndex::D3(b)) => {
-                    a.join_within_with(b, max_distance, &mut emit)
+                    a.join_within_each(b, max_distance, &mut emit)
                 }
                 _ => {
                     return Err(
@@ -745,8 +745,8 @@ fn anti_join_items<W: std::io::Write>(
         }
     };
     let flow = match (&a, &b) {
-        (JoinIndex::D2(a), JoinIndex::D2(b)) => a.anti_join_within_with(b, max_distance, &mut emit),
-        (JoinIndex::D3(a), JoinIndex::D3(b)) => a.anti_join_within_with(b, max_distance, &mut emit),
+        (JoinIndex::D2(a), JoinIndex::D2(b)) => a.anti_join_within_each(b, max_distance, &mut emit),
+        (JoinIndex::D3(a), JoinIndex::D3(b)) => a.anti_join_within_each(b, max_distance, &mut emit),
         _ => {
             return Err(
                 "a.psi and b.psi are different dimensions; an anti-join needs both in 2D or both in 3D"

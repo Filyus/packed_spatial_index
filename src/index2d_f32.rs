@@ -4,7 +4,7 @@
 //! are stored as `f32` rounded outward, so stored boxes can be larger than the
 //! original f64 boxes. Rounded range search returns every exact hit, and may
 //! also include extra near-boundary hits.
-//! `search_exact*` and `visit_exact` use caller-owned f64 boxes for exact
+//! `search_exact*` and `search_exact_each` use caller-owned f64 boxes for exact
 //! range hits. Exact KNN is available through `neighbors_exact*`.
 //!
 //! Exact methods trade some speed for compact storage. Prefer f64 indexes for
@@ -16,9 +16,9 @@ use crate::{
     f32_storage::{Box2DF32, F32Columns2D, columns2d_from_parsed},
     geometry::{Box2D, Overlaps2D},
     index2d::{MASK_CHUNK, for_each_hit, frame},
-    ordered::{collect_ordered, visit_ordered},
+    ordered::{collect_ordered, search_ordered_each},
     persistence::{LoadError, parse_index},
-    range::visit_region,
+    range::search_region_each,
     ray::Ray2D,
     sort2d::{SortKeyContext, encode_sort_by_key},
     tree::{TreeLayout, try_compute_tree_layout},
@@ -400,7 +400,7 @@ impl Index2DF32 {
     }
 
     /// Visit rounded-box nearest items in nondecreasing squared-distance order.
-    pub fn visit_neighbors<B, F>(
+    pub fn neighbors_each<B, F>(
         &self,
         point: Point2D,
         max_distance: f64,
@@ -580,7 +580,7 @@ impl SimdIndex2DF32 {
     }
 
     /// Visit rounded-box nearest items in nondecreasing squared-distance order.
-    pub fn visit_neighbors<B, F>(
+    pub fn neighbors_each<B, F>(
         &self,
         point: Point2D,
         max_distance: f64,
@@ -696,7 +696,7 @@ impl SimdIndex2DF32 {
 
     /// Visit items of `region` in nondecreasing `key` order; the visitor receives
     /// the key and may return [`ControlFlow::Break`] to stop early.
-    pub fn visit_ordered<Q, K, B, F>(
+    pub fn search_ordered_each<Q, K, B, F>(
         &self,
         region: Q,
         key: K,
@@ -708,7 +708,7 @@ impl SimdIndex2DF32 {
         K: Fn(Box2D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+        search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
@@ -723,7 +723,7 @@ impl SimdIndex2DF32 {
     /// is what you mean.
     ///
     /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
-    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    /// [`count_region`](Self::count_region), [`search_region_any`](Self::search_region_any).
     pub fn search_region<Q: Overlaps2D>(&self, region: Q) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_region_into(region, &mut out);
@@ -733,7 +733,7 @@ impl SimdIndex2DF32 {
     /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
     pub fn search_region_into<Q: Overlaps2D>(&self, region: Q, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_region(region, |index| {
+        let _: ControlFlow<()> = self.search_region_each(region, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -741,13 +741,13 @@ impl SimdIndex2DF32 {
 
     /// Visit every item overlapping `region`; the visitor may return
     /// [`ControlFlow::Break`] to stop early.
-    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    pub fn search_region_each<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps2D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        visit_region(
+        search_region_each(
             self,
             &mut stack,
             |b| region.overlaps_box(b),
@@ -757,14 +757,14 @@ impl SimdIndex2DF32 {
     }
 
     /// Return `true` if at least one item overlaps `region`.
-    pub fn any_region<Q: Overlaps2D>(&self, region: Q) -> bool {
-        self.visit_region(region, |_| ControlFlow::Break(()))
+    pub fn search_region_any<Q: Overlaps2D>(&self, region: Q) -> bool {
+        self.search_region_each(region, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     /// Return one item overlapping `region`, if any.
-    pub fn first_region<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
-        match self.visit_region(region, ControlFlow::Break) {
+    pub fn search_region_first<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
+        match self.search_region_each(region, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -773,7 +773,7 @@ impl SimdIndex2DF32 {
     /// Count the items overlapping `region` without collecting them.
     pub fn count_region<Q: Overlaps2D>(&self, region: Q) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_region(region, |_| {
+        let _: ControlFlow<()> = self.search_region_each(region, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -922,11 +922,11 @@ impl SimdIndex2DF32 {
     }
 
     /// Return `true` if at least one caller-owned f64 box intersects `query`.
-    pub fn any_exact<F>(&self, query: Box2D, box_at: F) -> bool
+    pub fn search_exact_any<F>(&self, query: Box2D, box_at: F) -> bool
     where
         F: FnMut(usize) -> Box2D,
     {
-        self.visit_exact(query, box_at, |_| ControlFlow::Break(()))
+        self.search_exact_each(query, box_at, |_| ControlFlow::Break(()))
             .is_break()
     }
 
@@ -939,11 +939,11 @@ impl SimdIndex2DF32 {
     }
 
     /// Return one caller-owned f64 box intersecting `query`, if any.
-    pub fn first_exact<F>(&self, query: Box2D, box_at: F) -> Option<usize>
+    pub fn search_exact_first<F>(&self, query: Box2D, box_at: F) -> Option<usize>
     where
         F: FnMut(usize) -> Box2D,
     {
-        match self.visit_exact(query, box_at, ControlFlow::Break) {
+        match self.search_exact_each(query, box_at, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -959,7 +959,12 @@ impl SimdIndex2DF32 {
     }
 
     /// Visit exact range hits after checking rounded-box hits against f64 boxes.
-    pub fn visit_exact<B, BF, VF>(&self, query: Box2D, box_at: BF, visitor: VF) -> ControlFlow<B>
+    pub fn search_exact_each<B, BF, VF>(
+        &self,
+        query: Box2D,
+        box_at: BF,
+        visitor: VF,
+    ) -> ControlFlow<B>
     where
         BF: FnMut(usize) -> Box2D,
         VF: FnMut(usize) -> ControlFlow<B>,
@@ -1769,7 +1774,7 @@ impl<'a> SimdIndex2DF32View<'a> {
 
     /// Visit items of `region` in nondecreasing `key` order; the visitor receives
     /// the key and may return [`ControlFlow::Break`] to stop early.
-    pub fn visit_ordered<Q, K, B, F>(
+    pub fn search_ordered_each<Q, K, B, F>(
         &self,
         region: Q,
         key: K,
@@ -1781,7 +1786,7 @@ impl<'a> SimdIndex2DF32View<'a> {
         K: Fn(Box2D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+        search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
@@ -1796,7 +1801,7 @@ impl<'a> SimdIndex2DF32View<'a> {
     /// is what you mean.
     ///
     /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
-    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    /// [`count_region`](Self::count_region), [`search_region_any`](Self::search_region_any).
     pub fn search_region<Q: Overlaps2D>(&self, region: Q) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_region_into(region, &mut out);
@@ -1806,7 +1811,7 @@ impl<'a> SimdIndex2DF32View<'a> {
     /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
     pub fn search_region_into<Q: Overlaps2D>(&self, region: Q, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_region(region, |index| {
+        let _: ControlFlow<()> = self.search_region_each(region, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -1814,13 +1819,13 @@ impl<'a> SimdIndex2DF32View<'a> {
 
     /// Visit every item overlapping `region`; the visitor may return
     /// [`ControlFlow::Break`] to stop early.
-    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    pub fn search_region_each<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps2D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        visit_region(
+        search_region_each(
             self,
             &mut stack,
             |b| region.overlaps_box(b),
@@ -1830,14 +1835,14 @@ impl<'a> SimdIndex2DF32View<'a> {
     }
 
     /// Return `true` if at least one item overlaps `region`.
-    pub fn any_region<Q: Overlaps2D>(&self, region: Q) -> bool {
-        self.visit_region(region, |_| ControlFlow::Break(()))
+    pub fn search_region_any<Q: Overlaps2D>(&self, region: Q) -> bool {
+        self.search_region_each(region, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     /// Return one item overlapping `region`, if any.
-    pub fn first_region<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
-        match self.visit_region(region, ControlFlow::Break) {
+    pub fn search_region_first<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
+        match self.search_region_each(region, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -1846,7 +1851,7 @@ impl<'a> SimdIndex2DF32View<'a> {
     /// Count the items overlapping `region` without collecting them.
     pub fn count_region<Q: Overlaps2D>(&self, region: Q) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_region(region, |_| {
+        let _: ControlFlow<()> = self.search_region_each(region, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -2046,11 +2051,11 @@ impl<'a> SimdIndex2DF32View<'a> {
     }
 
     /// Return `true` if at least one caller-owned f64 box intersects `query`.
-    pub fn any_exact<F>(&self, query: Box2D, box_at: F) -> bool
+    pub fn search_exact_any<F>(&self, query: Box2D, box_at: F) -> bool
     where
         F: FnMut(usize) -> Box2D,
     {
-        self.visit_exact(query, box_at, |_| ControlFlow::Break(()))
+        self.search_exact_each(query, box_at, |_| ControlFlow::Break(()))
             .is_break()
     }
 
@@ -2063,11 +2068,11 @@ impl<'a> SimdIndex2DF32View<'a> {
     }
 
     /// Return one caller-owned f64 box intersecting `query`, if any.
-    pub fn first_exact<F>(&self, query: Box2D, box_at: F) -> Option<usize>
+    pub fn search_exact_first<F>(&self, query: Box2D, box_at: F) -> Option<usize>
     where
         F: FnMut(usize) -> Box2D,
     {
-        match self.visit_exact(query, box_at, ControlFlow::Break) {
+        match self.search_exact_each(query, box_at, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -2083,7 +2088,12 @@ impl<'a> SimdIndex2DF32View<'a> {
     }
 
     /// Visit exact range hits after checking rounded-box hits against f64 boxes.
-    pub fn visit_exact<B, BF, VF>(&self, query: Box2D, box_at: BF, visitor: VF) -> ControlFlow<B>
+    pub fn search_exact_each<B, BF, VF>(
+        &self,
+        query: Box2D,
+        box_at: BF,
+        visitor: VF,
+    ) -> ControlFlow<B>
     where
         BF: FnMut(usize) -> Box2D,
         VF: FnMut(usize) -> ControlFlow<B>,
@@ -2318,7 +2328,7 @@ impl<'a> SimdIndex2DF32View<'a> {
     }
 
     /// Visit rounded-box nearest items in nondecreasing squared-distance order.
-    pub fn visit_neighbors<B, F>(
+    pub fn neighbors_each<B, F>(
         &self,
         point: Point2D,
         max_distance: f64,
@@ -2447,7 +2457,7 @@ impl Index2DF32 {
 
     /// Visit items of `region` in nondecreasing `key` order; the visitor receives
     /// the key and may return [`ControlFlow::Break`] to stop early.
-    pub fn visit_ordered<Q, K, B, F>(
+    pub fn search_ordered_each<Q, K, B, F>(
         &self,
         region: Q,
         key: K,
@@ -2459,7 +2469,7 @@ impl Index2DF32 {
         K: Fn(Box2D) -> f64,
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        visit_ordered(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+        search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
@@ -2474,7 +2484,7 @@ impl Index2DF32 {
     /// is what you mean.
     ///
     /// Allocates a fresh `Vec` per call — see [`search_region_into`](Self::search_region_into),
-    /// [`count_region`](Self::count_region), [`any_region`](Self::any_region).
+    /// [`count_region`](Self::count_region), [`search_region_any`](Self::search_region_any).
     pub fn search_region<Q: Overlaps2D>(&self, region: Q) -> Vec<usize> {
         let mut out = Vec::new();
         self.search_region_into(region, &mut out);
@@ -2484,7 +2494,7 @@ impl Index2DF32 {
     /// [`search_region`](Self::search_region) into a reused buffer (cleared first).
     pub fn search_region_into<Q: Overlaps2D>(&self, region: Q, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.visit_region(region, |index| {
+        let _: ControlFlow<()> = self.search_region_each(region, |index| {
             out.push(index);
             ControlFlow::Continue(())
         });
@@ -2492,13 +2502,13 @@ impl Index2DF32 {
 
     /// Visit every item overlapping `region`; the visitor may return
     /// [`ControlFlow::Break`] to stop early.
-    pub fn visit_region<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
+    pub fn search_region_each<B, Q, F>(&self, region: Q, visitor: F) -> ControlFlow<B>
     where
         Q: Overlaps2D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
         let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
-        visit_region(
+        search_region_each(
             self,
             &mut stack,
             |b| region.overlaps_box(b),
@@ -2508,14 +2518,14 @@ impl Index2DF32 {
     }
 
     /// Return `true` if at least one item overlaps `region`.
-    pub fn any_region<Q: Overlaps2D>(&self, region: Q) -> bool {
-        self.visit_region(region, |_| ControlFlow::Break(()))
+    pub fn search_region_any<Q: Overlaps2D>(&self, region: Q) -> bool {
+        self.search_region_each(region, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     /// Return one item overlapping `region`, if any.
-    pub fn first_region<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
-        match self.visit_region(region, ControlFlow::Break) {
+    pub fn search_region_first<Q: Overlaps2D>(&self, region: Q) -> Option<usize> {
+        match self.search_region_each(region, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -2524,7 +2534,7 @@ impl Index2DF32 {
     /// Count the items overlapping `region` without collecting them.
     pub fn count_region<Q: Overlaps2D>(&self, region: Q) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit_region(region, |_| {
+        let _: ControlFlow<()> = self.search_region_each(region, |_| {
             count += 1;
             ControlFlow::Continue(())
         });
@@ -2684,21 +2694,25 @@ impl Index2DF32 {
         out: &mut Vec<usize>,
     ) {
         out.clear();
-        let _ = self.visit_exact(query, box_at, |id| {
+        let _ = self.search_exact_each(query, box_at, |id| {
             out.push(id);
             ControlFlow::<()>::Continue(())
         });
     }
 
     /// Whether any caller-owned `f64` box intersects `query` (exact, early-exit).
-    pub fn any_exact<F: FnMut(usize) -> Box2D>(&self, query: Box2D, box_at: F) -> bool {
-        self.visit_exact(query, box_at, |_| ControlFlow::Break(()))
+    pub fn search_exact_any<F: FnMut(usize) -> Box2D>(&self, query: Box2D, box_at: F) -> bool {
+        self.search_exact_each(query, box_at, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     /// Some item whose caller-owned `f64` box intersects `query` (exact), or `None`.
-    pub fn first_exact<F: FnMut(usize) -> Box2D>(&self, query: Box2D, box_at: F) -> Option<usize> {
-        match self.visit_exact(query, box_at, ControlFlow::Break) {
+    pub fn search_exact_first<F: FnMut(usize) -> Box2D>(
+        &self,
+        query: Box2D,
+        box_at: F,
+    ) -> Option<usize> {
+        match self.search_exact_each(query, box_at, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -2707,7 +2721,7 @@ impl Index2DF32 {
     /// Visit each item whose caller-owned `f64` box (from `box_at`) intersects
     /// `query` (exact); the f32 boxes prune the descent, `box_at` refines each
     /// candidate. Return [`ControlFlow::Break`] from `visitor` to stop early.
-    pub fn visit_exact<B, BF, VF>(
+    pub fn search_exact_each<B, BF, VF>(
         &self,
         query: Box2D,
         mut box_at: BF,
@@ -2814,7 +2828,7 @@ impl Index2DF32 {
     }
 }
 
-// `TreeAccess` lets the shared region traversal (`crate::range::visit_region`)
+// `TreeAccess` lets the shared region traversal (`crate::range::search_region_each`)
 // walk these trees. `Bounds` is the f64-widened box: the stored f32 box is
 // rounded outward, so widening it can only grow the box, which keeps region
 // overlap a conservative superset and keeps the contained-subtree fast path
@@ -3070,11 +3084,11 @@ mod tests {
             index.search_exact_with(query, |i| boxes[i], &mut workspace),
             &[1][..]
         );
-        assert!(index.any_exact(query, |i| boxes[i]));
-        assert_eq!(index.first_exact(query, |i| boxes[i]), Some(1));
+        assert!(index.search_exact_any(query, |i| boxes[i]));
+        assert_eq!(index.search_exact_first(query, |i| boxes[i]), Some(1));
 
         let mut visited = Vec::new();
-        let _: ControlFlow<()> = index.visit_exact(
+        let _: ControlFlow<()> = index.search_exact_each(
             query,
             |i| boxes[i],
             |i| {
@@ -3089,8 +3103,8 @@ mod tests {
             view.search_exact_with(query, |i| boxes[i], &mut workspace),
             &[1][..]
         );
-        assert!(view.any_exact(query, |i| boxes[i]));
-        assert_eq!(view.first_exact(query, |i| boxes[i]), Some(1));
+        assert!(view.search_exact_any(query, |i| boxes[i]));
+        assert_eq!(view.search_exact_first(query, |i| boxes[i]), Some(1));
     }
 
     #[test]
@@ -3103,19 +3117,19 @@ mod tests {
         let panic_box_at = |_| panic!("source box lookup should not be needed");
 
         assert_eq!(index.search_exact(query, panic_box_at), vec![0]);
-        assert!(index.any_exact(query, panic_box_at));
-        assert_eq!(index.first_exact(query, panic_box_at), Some(0));
+        assert!(index.search_exact_any(query, panic_box_at));
+        assert_eq!(index.search_exact_first(query, panic_box_at), Some(0));
 
         let mut visited = Vec::new();
-        let _: ControlFlow<()> = index.visit_exact(query, panic_box_at, |i| {
+        let _: ControlFlow<()> = index.search_exact_each(query, panic_box_at, |i| {
             visited.push(i);
             ControlFlow::Continue(())
         });
         assert_eq!(visited, vec![0]);
 
         assert_eq!(view.search_exact(query, panic_box_at), vec![0]);
-        assert!(view.any_exact(query, panic_box_at));
-        assert_eq!(view.first_exact(query, panic_box_at), Some(0));
+        assert!(view.search_exact_any(query, panic_box_at));
+        assert_eq!(view.search_exact_first(query, panic_box_at), Some(0));
     }
 
     #[test]

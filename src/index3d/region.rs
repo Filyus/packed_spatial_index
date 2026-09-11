@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 use crate::{
     config::DEFAULT_SEARCH_STACK_CAPACITY,
     geometry::{Box3D, Overlaps3D},
-    range::visit_region,
+    range::search_region_each,
     traversal::SearchWorkspace,
 };
 
@@ -287,7 +287,7 @@ impl Index3D {
         Q: Overlaps3D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        visit_region(
+        search_region_each(
             self,
             stack,
             |b| query.overlaps_box(b),
@@ -308,7 +308,7 @@ impl Index3DView<'_> {
         Q: Overlaps3D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        visit_region(
+        search_region_each(
             self,
             stack,
             |b| query.overlaps_box(b),

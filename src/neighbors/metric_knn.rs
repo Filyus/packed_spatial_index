@@ -81,7 +81,7 @@ pub(crate) fn collect_neighbors(
 
 /// Visit items in nondecreasing metric distance; `visitor` may break early.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn visit_neighbors<B>(
+pub(crate) fn neighbors_each<B>(
     num_nodes: usize,
     num_items: usize,
     node_size: usize,

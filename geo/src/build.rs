@@ -69,7 +69,7 @@ pub(crate) fn builder_3d(count: usize, opts: &IndexBuildOptions) -> Index3DBuild
 /// Collect up to `max_results` `(FeatureRef, distance)` pairs from a
 /// nondecreasing-distance core neighbor visitor, stopping the traversal once
 /// `max_results` have been found. `visit` should call the core index's own
-/// `visit_neighbors`/`visit_neighbors_metric` with the closure it's given.
+/// `neighbors_each`/`neighbors_metric_each` with the closure it's given.
 fn collect_nearest(
     features: &[FeatureRef],
     max_results: usize,
@@ -724,7 +724,7 @@ impl GeoIndex2D {
         max_results: usize,
     ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
-            let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
+            let _ = self.index.neighbors_each(point, f64::INFINITY, visitor);
         })
     }
 
@@ -759,7 +759,7 @@ impl GeoIndex2D {
         max_distance_metres: f64,
     ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
-            let _ = self.index.visit_neighbors_metric(
+            let _ = self.index.neighbors_metric_each(
                 |bx| haversine_distance_2d((lon, lat), bx, EARTH_RADIUS_M),
                 max_distance_metres,
                 visitor,
@@ -958,7 +958,7 @@ impl GeoIndex2DF32 {
         max_results: usize,
     ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
-            let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
+            let _ = self.index.neighbors_each(point, f64::INFINITY, visitor);
         })
     }
 
@@ -1084,7 +1084,7 @@ impl GeoIndex3D {
         max_results: usize,
     ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
-            let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
+            let _ = self.index.neighbors_each(point, f64::INFINITY, visitor);
         })
     }
 
@@ -1295,7 +1295,7 @@ impl GeoIndex3DF32 {
         max_results: usize,
     ) -> Vec<(FeatureRef, f64)> {
         collect_nearest(&self.features, max_results, |visitor| {
-            let _ = self.index.visit_neighbors(point, f64::INFINITY, visitor);
+            let _ = self.index.neighbors_each(point, f64::INFINITY, visitor);
         })
     }
 

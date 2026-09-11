@@ -161,8 +161,11 @@ fn f32_2d_region_is_a_conservative_superset() {
                 &format!("polygon n={n} node_size={node_size}"),
             );
             assert_eq!(compact.count_region(&poly), hits.len());
-            assert_eq!(compact.any_region(&poly), !hits.is_empty());
-            assert_eq!(compact.first_region(&poly).is_some(), !hits.is_empty());
+            assert_eq!(compact.search_region_any(&poly), !hits.is_empty());
+            assert_eq!(
+                compact.search_region_first(&poly).is_some(),
+                !hits.is_empty()
+            );
 
             // A Box2D region must agree with the frontend's own rounded `search`.
             let window = Box2D::new(20.0, 20.0, 150.0, 160.0);
@@ -210,7 +213,7 @@ fn region_visitor_can_break_and_buffers_are_cleared() {
     let frustum = box_frustum(30.0, 170.0);
 
     let mut seen = 0usize;
-    let flow = compact.visit_region(frustum, |id| {
+    let flow = compact.search_region_each(frustum, |id| {
         seen += 1;
         if seen == 3 {
             ControlFlow::Break(id)
@@ -233,8 +236,8 @@ fn region_on_empty_index() {
     let frustum = box_frustum(30.0, 170.0);
     assert!(compact.search_region(frustum).is_empty());
     assert_eq!(compact.count_region(frustum), 0);
-    assert!(!compact.any_region(frustum));
-    assert_eq!(compact.first_region(frustum), None);
+    assert!(!compact.search_region_any(frustum));
+    assert_eq!(compact.search_region_first(frustum), None);
 }
 
 #[cfg(feature = "simd")]
@@ -335,7 +338,7 @@ mod ordered {
 
                 let mut keys = Vec::new();
                 let _: ControlFlow<()> =
-                    compact.visit_ordered(frustum, key, f64::INFINITY, |_, k| {
+                    compact.search_ordered_each(frustum, key, f64::INFINITY, |_, k| {
                         keys.push(k);
                         ControlFlow::Continue(())
                     });

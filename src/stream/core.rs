@@ -643,7 +643,11 @@ impl<R: RangeReader> StreamCore<R> {
     /// Visit `(insertion id, payload blob)` for every leaf whose box satisfies
     /// `overlaps`, streaming the payload section in leaf order during the leaf
     /// pass so the offset table and blobs are read in coalesced runs.
-    pub(crate) fn visit_payloads<O, F>(&self, overlaps: O, mut emit: F) -> Result<(), StreamError>
+    pub(crate) fn search_payloads_each<O, F>(
+        &self,
+        overlaps: O,
+        mut emit: F,
+    ) -> Result<(), StreamError>
     where
         O: Fn(&[u8]) -> bool,
         F: FnMut(usize, &[u8]),
@@ -783,7 +787,7 @@ impl<R: RangeReader> StreamCore<R> {
     /// first `prefix_len` bytes — without reading payload bodies past the
     /// prefix. Lengths come from the offset table (or the fixed stride), so a
     /// variable-width payload's body bytes beyond the prefix are never fetched.
-    pub(crate) fn visit_payload_prefixes<O, F>(
+    pub(crate) fn search_payload_prefixes_each<O, F>(
         &self,
         overlaps: O,
         prefix_len: usize,
@@ -921,11 +925,11 @@ impl<R: RangeReader> StreamCore<R> {
 
     /// Visit `(leaf rank, payload blob)` for an explicit set of leaf ranks —
     /// random-access payload reads for ranks captured earlier by
-    /// [`visit_payload_prefixes`](Self::visit_payload_prefixes). Input ranks
+    /// [`search_payload_prefixes_each`](Self::search_payload_prefixes_each). Input ranks
     /// are sorted and deduplicated internally so the payload section is read
     /// in coalesced ascending runs; blobs are emitted in ascending rank order.
     /// A rank at or past the item count fails with [`StreamError::InvalidRank`].
-    pub(crate) fn visit_payloads_at_ranks<F>(
+    pub(crate) fn payloads_at_ranks_each<F>(
         &self,
         leaf_ranks: &[usize],
         mut emit: F,
@@ -1061,7 +1065,7 @@ pub struct PayloadPrefix<'a> {
     pub id: usize,
     /// Leaf rank — the item's position in the leaf-ordered payload section.
     /// Stable for one serialized index, not across rebuilds. Feed ranks to
-    /// [`StreamIndex2D::visit_payloads_at_ranks`](super::StreamIndex2D::visit_payloads_at_ranks)
+    /// [`StreamIndex2D::payloads_at_ranks_each`](super::StreamIndex2D::payloads_at_ranks_each)
     /// to fetch full payloads later.
     pub leaf_rank: usize,
     /// The first `min(prefix_len, payload_len)` payload bytes.

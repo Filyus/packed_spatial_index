@@ -192,8 +192,8 @@ fn search_exact_matches_f64_exactly() {
         assert_eq!(exact, f64_hits);
         let conservative: HashSet<usize> = compact.search(q).into_iter().collect();
         assert!(exact.iter().all(|id| conservative.contains(id)));
-        assert_eq!(compact.any_exact(q, |id| bs[id]), !exact.is_empty());
-        if let Some(f) = compact.first_exact(q, |id| bs[id]) {
+        assert_eq!(compact.search_exact_any(q, |id| bs[id]), !exact.is_empty());
+        if let Some(f) = compact.search_exact_first(q, |id| bs[id]) {
             assert!(exact.contains(&f));
         }
     }

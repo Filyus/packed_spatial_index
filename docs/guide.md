@@ -53,25 +53,30 @@ operation you can predict the rest:
 | --- | --- |
 | none | a fresh `Vec` |
 | `_into` | your `Vec`, cleared and refilled |
+| `_with` | your workspace, returning a borrowed slice |
 | `_iter` | a lazy iterator |
 | `_each` | a callback per hit, returning `ControlFlow` |
 | `_any` | a `bool`, stopping at the first hit |
 | `_first` | the first hit, then stop |
 
 So `search_within` collects, `search_within_each` calls you back,
-`search_within_any` answers yes or no, and the same six endings follow
-`neighbors`, `raycast`, `search_ordered`, `join` and the rest. `count` and
-`count_within` sit outside the table because the tree answers them from node
-summaries instead of enumerating hits.
+`search_within_any` answers yes or no, and the same endings follow `neighbors`,
+`raycast`, `search_ordered`, `join` and the rest. `_into` and `_with` are the
+two ways to bring your own buffer: `_into` takes a `Vec` you own, `_with` takes
+a workspace that also holds the traversal's own scratch, which is why it is the
+faster of the two on queries that return a lot.
+
+`count` and `count_within` sit outside the table because the tree answers them
+from node summaries instead of enumerating hits.
 
 The plain overlap query is the one exception, and it is a deliberate one: it has
 no operation word for a suffix to trail, so its modes are spelled alone —
-`search`, `search_into`, `search_iter`, `visit`, `any`, `first`, `count`. The
-mode leads only where there is no operation to name.
+`search`, `search_into`, `search_with`, `search_iter`, `visit`, `any`, `first`,
+`count`. The mode leads only where there is no operation to name.
 
-`_with` is not one of these endings. It introduces a named thing the call needs:
-a reusable workspace in `search_with`, the blobs in `to_bytes_with_payloads`,
-the budget in `open_with_limits`.
+`_with_<noun>` is a different thing from the `_with` mode, and the noun is what
+tells them apart: `to_bytes_with_payloads` attaches the blobs,
+`open_with_limits` attaches a read budget.
 
 Why the distinctions matter:
 

@@ -56,6 +56,8 @@ pub struct Index3DBuilder {
     #[cfg(feature = "parallel")]
     parallel_min_items: usize,
     items: Vec<Box3D>,
+    agg_scalars: Option<Vec<f64>>,
+    agg_masks: Option<Vec<u64>>,
 }
 
 impl Index3DBuilder {
@@ -72,6 +74,8 @@ impl Index3DBuilder {
             #[cfg(feature = "parallel")]
             parallel_min_items: DEFAULT_PARALLEL_MIN_ITEMS,
             items: items_vec_with_root_capacity_3d(count),
+            agg_scalars: None,
+            agg_masks: None,
         }
     }
 
@@ -156,6 +160,7 @@ impl Index3DBuilder {
             });
         }
         self.check_item_bounds()?;
+        self.check_aggregate_counts()?;
         self.build()
     }
 
@@ -181,8 +186,74 @@ impl Index3DBuilder {
             });
         }
         self.check_item_bounds()?;
+        self.check_aggregate_counts()?;
         let config = self.config();
-        crate::index3d_soa::build_simd_index_3d(config, self.items)
+        let mut index = crate::index3d_soa::build_simd_index_3d(config, self.items)?;
+        index.attach_aggregates(self.agg_scalars.as_deref(), self.agg_masks.as_deref());
+        Ok(index)
+    }
+
+    /// Attach a per-item scalar column for the node aggregates: `values[i]` is
+    /// the scalar of the item added `i`-th. Every node then stores the sum,
+    /// min and max of its items' values, and
+    /// [`aggregate`](crate::Index3D::aggregate) answers count / sum / min / max
+    /// over any window exactly. `values.len()` must equal the item count.
+    ///
+    /// Aggregates are carried by the f64 indexes ([`Index3D`],
+    /// `SimdIndex3D` and their views) and serialized as
+    /// an optional `AGGR` chunk; the f32-storage outputs ignore them.
+    pub fn aggregate_scalar(mut self, values: &[f64]) -> Self {
+        self.agg_scalars = Some(values.to_vec());
+        self
+    }
+
+    /// Attach a per-item category-mask column for the node aggregates:
+    /// `masks[i]` is the `u64` OR-combinable mask of the item added `i`-th.
+    /// `masks.len()` must equal the item count. See
+    /// [`aggregate_scalar`](Self::aggregate_scalar) for what carries them.
+    pub fn aggregate_mask(mut self, masks: &[u64]) -> Self {
+        self.agg_masks = Some(masks.to_vec());
+        self
+    }
+
+    /// Reject aggregate columns whose length does not equal the item count.
+    fn check_aggregate_counts(&self) -> Result<(), BuildError> {
+        if let Some(v) = &self.agg_scalars
+            && v.len() != self.num_items
+        {
+            return Err(BuildError::AggregateCount {
+                expected: self.num_items,
+                got: v.len(),
+            });
+        }
+        if let Some(v) = &self.agg_masks
+            && v.len() != self.num_items
+        {
+            return Err(BuildError::AggregateCount {
+                expected: self.num_items,
+                got: v.len(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Summaries for the finished tree, or `None` when no columns were set.
+    fn compute_aggregates(
+        &self,
+        node_size: usize,
+        level_bounds: &[usize],
+        indices: &[usize],
+    ) -> Option<crate::aggregates::Aggregates> {
+        if self.agg_scalars.is_none() && self.agg_masks.is_none() {
+            return None;
+        }
+        Some(crate::aggregates::aggregates_for_index(
+            node_size,
+            level_bounds,
+            indices,
+            self.agg_scalars.as_deref(),
+            self.agg_masks.as_deref(),
+        ))
     }
 
     /// Pack the tree into the f32-storage 3D SIMD index.
@@ -253,15 +324,22 @@ impl Index3DBuilder {
                 level_bounds: vec![0],
                 entries: Vec::new(),
                 indices: Vec::new(),
+                aggregates: self.compute_aggregates(self.node_size, &[0], &[]),
             });
         }
 
         if num_items <= node_size {
+            let aggregates = self.compute_aggregates(
+                self.node_size,
+                &[num_items, num_items + 1],
+                &(0..num_items).chain([0]).collect::<Vec<_>>(),
+            );
             return Ok(build_single_node_index_3d(
                 node_size,
                 num_items,
                 vec![num_items, num_items + 1],
                 self.items,
+                aggregates,
             ));
         }
 
@@ -311,12 +389,14 @@ impl Index3DBuilder {
             }
         }
 
+        let aggregates = self.compute_aggregates(self.node_size, &level_bounds, &indices);
         Ok(Index3D {
             node_size,
             num_items,
             level_bounds,
             entries,
             indices,
+            aggregates,
         })
     }
 }
@@ -350,6 +430,7 @@ fn build_single_node_index_3d(
     num_items: usize,
     level_bounds: Vec<usize>,
     mut entries: Vec<Box3D>,
+    aggregates: Option<crate::aggregates::Aggregates>,
 ) -> Index3D {
     let mut root = empty_box3d();
     for &entry in &entries {
@@ -367,6 +448,7 @@ fn build_single_node_index_3d(
         level_bounds,
         entries,
         indices,
+        aggregates,
     }
 }
 

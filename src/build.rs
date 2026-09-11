@@ -24,6 +24,13 @@ pub enum BuildError {
         /// Position of the offending box in the order it was added.
         at: usize,
     },
+    /// An aggregate column's length does not equal the item count.
+    AggregateCount {
+        /// The index's item count.
+        expected: usize,
+        /// The length of the supplied aggregate column.
+        got: usize,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -37,6 +44,10 @@ impl fmt::Display for BuildError {
             BuildError::InvalidItemBounds { at } => write!(
                 f,
                 "item {at} has crossed or NaN bounds (min > max); build from `Box::try_new` bounds"
+            ),
+            BuildError::AggregateCount { expected, got } => write!(
+                f,
+                "aggregate column length {got} does not match item count {expected}"
             ),
         }
     }

@@ -142,6 +142,7 @@ impl<'a> Serializer3D<'a> {
             self.prefix_len,
             &idx.indices[..idx.num_items],
             &self.meta,
+            idx.aggregates.as_ref(),
         )
     }
 }

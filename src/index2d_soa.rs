@@ -17,6 +17,7 @@ use crate::estimate::{Estimate, box_fraction_2d, estimate_core};
 #[cfg(target_arch = "x86_64")]
 use crate::leftpack::leftpack4;
 use crate::{
+    aggregates::{Aggregate, Aggregates, AggregatesView, aggregate_region_core},
     build::BuildError,
     builder2d::BuildConfig,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
@@ -27,7 +28,9 @@ use crate::{
     },
     neighbors::{NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first},
     ordered::{collect_ordered, search_ordered_each},
-    persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
+    persistence::{
+        LoadError, parse_aggregates, parse_index, read_f64_le_unchecked, read_u64_le_unchecked,
+    },
     range::search_region_each,
     ray::Ray2D,
     sort2d::{SortKeyContext, encode_sort_by_key},
@@ -55,6 +58,7 @@ pub(crate) fn build_simd_index(
             max_xs: Vec::new(),
             max_ys: Vec::new(),
             indices: Vec::new(),
+            aggregates: None,
         });
     }
 
@@ -170,6 +174,7 @@ pub(crate) fn build_simd_index(
         max_xs,
         max_ys,
         indices,
+        aggregates: None,
     })
 }
 
@@ -215,6 +220,7 @@ fn build_single_node_soa(
         max_xs,
         max_ys,
         indices,
+        aggregates: None,
     }
 }
 
@@ -244,9 +250,25 @@ pub struct SimdIndex2D {
     max_xs: Vec<Num>,
     max_ys: Vec<Num>,
     indices: Vec<usize>,
+    pub(crate) aggregates: Option<Aggregates>,
 }
 
 impl SimdIndex2D {
+    /// Compute and attach the node summaries from the builder's insertion-order
+    /// columns; called once by the builder at build time.
+    pub(crate) fn attach_aggregates(&mut self, scalars: Option<&[f64]>, masks: Option<&[u64]>) {
+        if scalars.is_none() && masks.is_none() {
+            return;
+        }
+        self.aggregates = Some(crate::aggregates::aggregates_for_index(
+            self.node_size,
+            &self.level_bounds,
+            &self.indices,
+            scalars,
+            masks,
+        ));
+    }
+
     /// Up to `max_results` items overlapping `region`, in nondecreasing `key`
     /// order.
     ///
@@ -901,6 +923,26 @@ impl SimdIndex2D {
             |node| query.contains(node),
             |node| box_fraction_2d(node, query),
         )
+    }
+
+    /// The node summaries this index carries, or `None` if it was built without
+    /// any. See
+    /// [`Index2DBuilder::aggregate_scalar`](crate::Index2DBuilder::aggregate_scalar).
+    pub fn aggregates(&self) -> Option<&Aggregates> {
+        self.aggregates.as_ref()
+    }
+
+    /// Exact aggregate over every item whose box overlaps `query`. See
+    /// [`Index2D::aggregate`](crate::Index2D::aggregate); returns `None` when the
+    /// index carries no aggregate columns.
+    pub fn aggregate(&self, query: Box2D) -> Option<Aggregate> {
+        let agg = self.aggregates.as_ref()?;
+        Some(aggregate_region_core(
+            self,
+            agg,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+        ))
     }
 
     /// Return every unordered pair of distinct items within this index whose
@@ -2139,6 +2181,7 @@ pub struct SimdIndex2DView<'a> {
     level_bounds: Vec<usize>,
     entries: &'a [u8],
     indices: &'a [u8],
+    aggregates: Option<AggregatesView<'a>>,
 }
 
 impl<'a> SimdIndex2DView<'a> {
@@ -2280,6 +2323,7 @@ impl<'a> SimdIndex2DView<'a> {
         if payload.is_some() {
             return Err(LoadError::PayloadNotSupported);
         }
+        let aggregates = parse_aggregates(bytes, parsed.num_nodes, parsed.num_items)?;
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -2288,7 +2332,27 @@ impl<'a> SimdIndex2DView<'a> {
             level_bounds: parsed.level_bounds,
             entries: parsed.entries,
             indices: parsed.indices,
+            aggregates,
         })
+    }
+
+    /// The node summaries these bytes carry, or `None` if the file was written
+    /// without an `AGGR` chunk. Borrowed zero-copy.
+    pub fn aggregates(&self) -> Option<&AggregatesView<'a>> {
+        self.aggregates.as_ref()
+    }
+
+    /// Exact aggregate over every item whose box overlaps `query`. See
+    /// [`Index2D::aggregate`](crate::Index2D::aggregate); returns `None` when
+    /// the file carries no `AGGR` chunk.
+    pub fn aggregate(&self, query: Box2D) -> Option<Aggregate> {
+        let agg = self.aggregates.as_ref()?;
+        Some(aggregate_region_core(
+            self,
+            agg,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+        ))
     }
 
     /// Return the number of indexed items.

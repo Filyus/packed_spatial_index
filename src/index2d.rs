@@ -21,6 +21,9 @@
 
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
+use crate::aggregates::{
+    Aggregate, Aggregates, AggregatesView, aggregate_region_core, aggregates_from_view,
+};
 use crate::config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY};
 use crate::estimate::{Estimate, box_fraction_2d, estimate_core};
 use crate::geometry::{Box2D, Overlaps2D, Point2D};
@@ -33,8 +36,8 @@ use crate::neighbors::{
 };
 use crate::ordered::{collect_ordered, search_ordered_each};
 use crate::persistence::{
-    LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, parse_index_owned,
-    payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
+    LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_aggregates, parse_index,
+    parse_index_owned, payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
 };
 use crate::range::{collect_region, search_region_each, visit_overlaps};
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
@@ -161,6 +164,7 @@ pub struct Index2D {
     pub(crate) level_bounds: Vec<usize>,
     pub(crate) entries: Vec<Box2D>,
     pub(crate) indices: Vec<usize>,
+    pub(crate) aggregates: Option<Aggregates>,
 }
 
 impl Index2D {
@@ -381,6 +385,8 @@ impl Index2D {
     /// the streaming reader to read it back.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
         let tree = parse_index_owned(bytes, 2, 8)?;
+        let aggregates = parse_aggregates(bytes, tree.num_nodes, tree.num_items)?
+            .map(|v| aggregates_from_view(&v, tree.num_items));
 
         Ok(Self {
             node_size: tree.node_size,
@@ -388,6 +394,7 @@ impl Index2D {
             level_bounds: tree.level_bounds,
             entries: copy_box2d_entries(&tree.entries, tree.num_nodes),
             indices: copy_u64_indices(&tree.indices, tree.num_nodes),
+            aggregates,
         })
     }
 
@@ -1322,6 +1329,55 @@ impl Index2D {
         )
     }
 
+    /// The node summaries this index carries, or `None` if it was built (and
+    /// serialized) without any. See
+    /// [`Index2DBuilder::aggregate_scalar`](crate::Index2DBuilder::aggregate_scalar).
+    pub fn aggregates(&self) -> Option<&Aggregates> {
+        self.aggregates.as_ref()
+    }
+
+    /// Exact aggregate over every item whose box overlaps `query`: how many
+    /// items hit it and, when the index carries the columns, the sum / min /
+    /// max of their scalar and the OR of their category masks.
+    ///
+    /// Returns `None` when the index carries no aggregate columns. The answer
+    /// is exact and agrees with [`search`](Self::search) — nodes fully inside
+    /// the window contribute their stored summary whole, and only the leaves
+    /// the window cuts are read item by item — so a window covering most of the
+    /// extent costs a few node reads where `search` + a fold would touch every
+    /// hit.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut builder = Index2DBuilder::new(2);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(5.0, 5.0, 6.0, 6.0));
+    /// let index = builder
+    ///     .aggregate_scalar(&[10.0, 2.5])
+    ///     .aggregate_mask(&[0b01, 0b10])
+    ///     .finish()
+    ///     .unwrap();
+    ///
+    /// let agg = index.aggregate(Box2D::new(0.0, 0.0, 100.0, 100.0)).unwrap();
+    /// assert_eq!(agg.count, 2);
+    /// assert_eq!(agg.sum, Some(12.5));
+    /// assert_eq!(agg.min, Some(2.5));
+    /// assert_eq!(agg.max, Some(10.0));
+    /// assert_eq!(agg.mask, Some(0b11));
+    /// ```
+    pub fn aggregate(&self, query: Box2D) -> Option<Aggregate> {
+        let agg = self.aggregates.as_ref()?;
+        Some(aggregate_region_core(
+            self,
+            agg,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+        ))
+    }
+
     /// Return every unordered pair of distinct items within this index whose
     /// boxes lie within `max_distance` of each other, each pair exactly once. See
     /// [`Index2D::join_within`] for the distance semantics and
@@ -1984,6 +2040,7 @@ pub struct Index2DView<'a> {
     /// `insertion id -> leaf rank`, built when a (leaf-ordered) payload is
     /// present, to serve random `payload(id)` lookups.
     id_to_leaf: Option<Vec<u32>>,
+    aggregates: Option<AggregatesView<'a>>,
 }
 
 impl<'a> Index2DView<'a> {
@@ -2009,6 +2066,7 @@ impl<'a> Index2DView<'a> {
         let id_to_leaf = payload
             .is_some()
             .then(|| build_id_to_leaf(parsed.indices, parsed.num_items));
+        let aggregates = parse_aggregates(bytes, parsed.num_nodes, parsed.num_items)?;
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -2019,7 +2077,27 @@ impl<'a> Index2DView<'a> {
             indices: parsed.indices,
             payload,
             id_to_leaf,
+            aggregates,
         })
+    }
+
+    /// The node summaries these bytes carry, or `None` if the file was written
+    /// without an `AGGR` chunk. Borrowed zero-copy.
+    pub fn aggregates(&self) -> Option<&AggregatesView<'a>> {
+        self.aggregates.as_ref()
+    }
+
+    /// Exact aggregate over every item whose box overlaps `query`. See
+    /// [`Index2D::aggregate`](crate::Index2D::aggregate); returns `None` when
+    /// the file carries no `AGGR` chunk.
+    pub fn aggregate(&self, query: Box2D) -> Option<Aggregate> {
+        let agg = self.aggregates.as_ref()?;
+        Some(aggregate_region_core(
+            self,
+            agg,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+        ))
     }
 
     /// Whether this view's bytes carry a payload section.

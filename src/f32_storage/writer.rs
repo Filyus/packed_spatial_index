@@ -48,6 +48,8 @@ pub(crate) fn write_columns2d(
         prefix_len,
         &columns.indices[..columns.num_items],
         meta,
+        // f32-storage outputs carry no aggregate columns.
+        None,
     )
 }
 
@@ -104,5 +106,6 @@ pub(crate) fn write_columns3d(
         prefix_len,
         &columns.indices[..columns.num_items],
         meta,
+        None,
     )
 }

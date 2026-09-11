@@ -17,6 +17,7 @@ use crate::estimate::{Estimate, box_fraction_3d, estimate_core};
 #[cfg(target_arch = "x86_64")]
 use crate::leftpack::leftpack4;
 use crate::{
+    aggregates::{Aggregate, Aggregates, AggregatesView, aggregate_region_core},
     build::BuildError,
     builder3d::BuildConfig3D,
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
@@ -27,7 +28,9 @@ use crate::{
     },
     neighbors::{NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first},
     ordered::{collect_ordered, search_ordered_each},
-    persistence::{LoadError, parse_index, read_f64_le_unchecked, read_u64_le_unchecked},
+    persistence::{
+        LoadError, parse_aggregates, parse_index, read_f64_le_unchecked, read_u64_le_unchecked,
+    },
     range::search_region_each,
     ray::Ray3D,
     sort3d::{SortKey3DContext, encode_sort_by_key_3d},
@@ -159,6 +162,7 @@ pub(crate) fn build_simd_index_3d(
         max_ys,
         max_zs,
         indices,
+        aggregates: None,
     })
 }
 
@@ -214,6 +218,7 @@ fn build_single_node_soa_3d(
         max_ys,
         max_zs,
         indices,
+        aggregates: None,
     }
 }
 
@@ -259,9 +264,25 @@ pub struct SimdIndex3D {
     max_ys: Vec<Num>,
     max_zs: Vec<Num>,
     indices: Vec<usize>,
+    pub(crate) aggregates: Option<Aggregates>,
 }
 
 impl SimdIndex3D {
+    /// Compute and attach the node summaries from the builder's insertion-order
+    /// columns; called once by the builder at build time.
+    pub(crate) fn attach_aggregates(&mut self, scalars: Option<&[f64]>, masks: Option<&[u64]>) {
+        if scalars.is_none() && masks.is_none() {
+            return;
+        }
+        self.aggregates = Some(crate::aggregates::aggregates_for_index(
+            self.node_size,
+            &self.level_bounds,
+            &self.indices,
+            scalars,
+            masks,
+        ));
+    }
+
     /// Up to `max_results` items overlapping `region`, in nondecreasing `key`
     /// order.
     ///
@@ -405,6 +426,7 @@ impl SimdIndex3D {
             max_ys: Vec::new(),
             max_zs: Vec::new(),
             indices: Vec::new(),
+            aggregates: None,
         }
     }
 
@@ -913,6 +935,26 @@ impl SimdIndex3D {
             |node| query.contains(node),
             |node| box_fraction_3d(node, query),
         )
+    }
+
+    /// The node summaries this index carries, or `None` if it was built without
+    /// any. See
+    /// [`Index3DBuilder::aggregate_scalar`](crate::Index3DBuilder::aggregate_scalar).
+    pub fn aggregates(&self) -> Option<&Aggregates> {
+        self.aggregates.as_ref()
+    }
+
+    /// Exact aggregate over every item whose box overlaps `query`. See
+    /// [`Index3D::aggregate`](crate::Index3D::aggregate); returns `None` when the
+    /// index carries no aggregate columns.
+    pub fn aggregate(&self, query: Box3D) -> Option<Aggregate> {
+        let agg = self.aggregates.as_ref()?;
+        Some(aggregate_region_core(
+            self,
+            agg,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+        ))
     }
 
     /// Return every unordered pair of distinct items within this index whose
@@ -2151,6 +2193,7 @@ pub struct SimdIndex3DView<'a> {
     level_bounds: Vec<usize>,
     entries: &'a [u8],
     indices: &'a [u8],
+    aggregates: Option<AggregatesView<'a>>,
 }
 
 impl<'a> SimdIndex3DView<'a> {
@@ -2291,6 +2334,7 @@ impl<'a> SimdIndex3DView<'a> {
         if payload.is_some() {
             return Err(LoadError::PayloadNotSupported);
         }
+        let aggregates = parse_aggregates(bytes, parsed.num_nodes, parsed.num_items)?;
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -2299,7 +2343,27 @@ impl<'a> SimdIndex3DView<'a> {
             level_bounds: parsed.level_bounds,
             entries: parsed.entries,
             indices: parsed.indices,
+            aggregates,
         })
+    }
+
+    /// The node summaries these bytes carry, or `None` if the file was written
+    /// without an `AGGR` chunk. Borrowed zero-copy.
+    pub fn aggregates(&self) -> Option<&AggregatesView<'a>> {
+        self.aggregates.as_ref()
+    }
+
+    /// Exact aggregate over every item whose box overlaps `query`. See
+    /// [`Index3D::aggregate`](crate::Index3D::aggregate); returns `None` when
+    /// the file carries no `AGGR` chunk.
+    pub fn aggregate(&self, query: Box3D) -> Option<Aggregate> {
+        let agg = self.aggregates.as_ref()?;
+        Some(aggregate_region_core(
+            self,
+            agg,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+        ))
     }
 
     /// Return the number of indexed items.

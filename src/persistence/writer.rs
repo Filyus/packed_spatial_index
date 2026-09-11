@@ -1,5 +1,7 @@
+use crate::aggregates::Aggregates;
 use crate::geometry::{Box2D, Box3D};
 
+use super::aggr_chunk::{TAG_AGGR, aggr_chunk_len, write_aggr_chunk};
 use super::container::FORMAT_MAGIC;
 use super::{
     CHUNK_ENTRY_LEN, MetaFields, PFIX_DESC_LEN, PYLD_DESC_LEN, PYLD_DESC_LEN_FIXED, PayloadError,
@@ -416,6 +418,7 @@ pub(crate) fn write_index_container(
     prefix_len: Option<u32>,
     leaf_order: &[usize],
     meta: &MetaFields<'_>,
+    aggregates: Option<&Aggregates>,
 ) -> Result<(), PayloadError> {
     // Node bytes are `record + 8` per node regardless of layout (SoA splits them,
     // interleaved keeps them adjacent), so the TREE length is layout-independent.
@@ -480,10 +483,11 @@ pub(crate) fn write_index_container(
         })
         .transpose()?;
     let meta_len = (!meta.is_empty()).then(|| meta.content_len());
+    let aggr_len = aggregates.map(|agg| aggr_chunk_len(agg, num_nodes, num_items));
 
-    // Chunks in write order: TREE, then optional PYLD, PFIX, META. Each length
-    // pushed remembers its own directory slot, so adding another optional chunk
-    // does not shift the ones after it by hand.
+    // Chunks in write order: TREE, then optional PYLD, PFIX, META, AGGR. Each
+    // length pushed remembers its own directory slot, so adding another
+    // optional chunk does not shift the ones after it by hand.
     let mut lens = vec![tree_len];
     let mut push = |len: Option<usize>| {
         len.map(|len| {
@@ -494,6 +498,7 @@ pub(crate) fn write_index_container(
     let pyld_idx = push(pyld_len);
     let pfix_idx = push(pfix_len);
     let meta_idx = push(meta_len);
+    let aggr_idx = push(aggr_len);
     let (total, off) = plan_container(&lens).map_err(|_| PayloadError::TooLarge)?;
 
     let mut bytes = ByteWriter::new(out, total);
@@ -507,6 +512,9 @@ pub(crate) fn write_index_container(
     }
     if let Some(i) = meta_idx {
         bytes.write_chunk_entry(&TAG_META, false, off[i], lens[i]);
+    }
+    if let Some(i) = aggr_idx {
+        bytes.write_chunk_entry(&TAG_AGGR, false, off[i], lens[i]);
     }
 
     let mut pos = SUPERBLOCK_LEN + lens.len() * CHUNK_ENTRY_LEN;
@@ -532,6 +540,11 @@ pub(crate) fn write_index_container(
     if let Some(i) = meta_idx {
         bytes.write_zeros(off[i] - pos);
         bytes.write_meta(meta);
+        pos = off[i] + lens[i];
+    }
+    if let (Some(i), Some(agg)) = (aggr_idx, aggregates) {
+        bytes.write_zeros(off[i] - pos);
+        write_aggr_chunk(&mut bytes, agg);
         pos = off[i] + lens[i];
     }
     bytes.write_zeros(total - pos);

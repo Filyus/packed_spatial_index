@@ -4,6 +4,20 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### API
+
+- **Node aggregates (the aR-tree chunk).** An index built with
+  `aggregate_scalar(&[f64])` and/or `aggregate_mask(&[u64])` on the builder
+  stores one summary per node — sum/min/max of the scalar, OR of the mask — in
+  a new optional `AGGR` chunk, and `aggregate(query)` answers the exact
+  count / sum / min / max / mask over any window: nodes fully inside the window
+  contribute their stored summary whole, only cut leaves read item by item.
+  Measured 1.7x at ~100 hits and ~4x at ~10k hits against `search` + a fold on
+  a 1M-item index; a window over the whole extent is one root summary. Carried
+  by `Index2D` / `Index3D`, the `simd` indexes and all zero-copy views; the
+  `f32` indexes and the streaming readers skip the chunk (follow-up). Format:
+  `FORMAT.md` revision 14.
+
 ## [0.30.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.29.0...psi-v0.30.0) - 2026-09-11
 
 ### API

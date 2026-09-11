@@ -2,7 +2,7 @@
 
 | Revision | Last revised |
 | -------- | ------------ |
-| 13       | 2026-07-29   |
+| 14       | 2026-09-11   |
 
 This document describes the binary format used by packed spatial indexes
 (`format_version` 2).
@@ -48,7 +48,7 @@ the whole `level_bounds` table are functions of `num_items` and `node_size`, so
 they are recomputed at load rather than stored — there is no second copy that
 could drift.
 
-Four chunk types are defined:
+Five chunk types are defined:
 
 | Tag    | Critical | Contents |
 | ------ | -------- | -------- |
@@ -56,6 +56,7 @@ Four chunk types are defined:
 | `PYLD` | no       | Optional payload: one opaque blob per item. At most one. |
 | `PFIX` | no       | Optional dense copy of each payload blob's leading bytes. At most one. |
 | `META` | no       | Optional descriptive fields (CRS / content type / attribution). At most one. |
+| `AGGR` | no       | Optional node aggregates: one summary per node. At most one. |
 
 ## Superblock
 
@@ -277,6 +278,59 @@ loading the index; index loaders skip the chunk entirely.
 are recomputed rather than stored, and application-specific data belongs in an
 application-private chunk (a lowercase-first tag), not here.
 
+## `AGGR` chunk (optional)
+
+The `AGGR` chunk carries one summary per node, turning the packed tree into an
+aR-tree: a query folds whole summaries for the subtrees it fully contains and
+only reads items in the leaves it cuts. Two columns exist, chosen at write time
+and stored together:
+
+- **scalar** (`columns` bit 0) — one `f64` per item; every node stores the
+  sum, min and max of its items' values;
+- **mask** (`columns` bit 1) — one `u64` per item; every node stores the
+  bitwise OR.
+
+```text
+descriptor (16 B):
+offset  size  field
+0       4     desc_len  u32 = 16
+4       1     ordering  u8 = 0 (node tree order)
+5       1     columns   u8: bit 0 = scalar, bit 1 = mask
+6       2     flags     u16: bit 0 = per-item values present (must be set)
+8       8     reserved  (zero)
+
+then:
+node_summaries   num_nodes records, each:
+                   scalar column: sum f64, min f64, max f64
+                   mask column:   or u64
+                   (fields present per `columns`; stride 24/32/8 bytes)
+item_values      per-item values, leaf order:
+                   scalar column: num_items x f64
+                   mask column:   num_items x u64
+```
+
+Node summaries are stored in tree order — the same node order as the `TREE`
+chunk — and per-item values in leaf order, so both are addressed by the
+positions a query walks. The per-item values are what keeps the answers exact:
+a window that cuts a leaf must fold that leaf's items one by one, and a
+per-leaf summary is too coarse for that. This revision therefore requires
+`flags` bit 0; a clear bit is reserved for a summary-only variant and is
+rejected by current readers rather than answered approximately.
+
+A summary is derived from its children (or, at the leaves, from the item
+values) and a reader *may* re-verify it, but the chunk is marked optional
+because nothing spatial depends on it: a reader that does not handle aggregates
+skips it and answers identically, only without `aggregate`. Writers should emit
+it only when consumers will ask aggregate questions — it costs one summary per
+node plus 8 or 16 bytes per item.
+
+The count of items under any node is *not* stored: like the tree shape, it is
+rank arithmetic on `node_size` and the level bounds, exactly what
+`estimate_count` exploits. New columns (a third `columns` bit, a longer
+descriptor) extend this chunk under the usual rules: bump `desc_len`, keep the
+prefix, and older readers reject the unknown-column combination rather than
+misread it.
+
 ## Extensibility
 
 The container is designed so future additions do not break readers:
@@ -318,7 +372,9 @@ Loaders reject:
 - leaf indices outside `0..num_items`;
 - internal pointers outside the previous level, or not at a child-group start;
 - a `PYLD` offset table that is not `0`-based and non-decreasing, or whose final
-  offset does not match the blob region length.
+  offset does not match the blob region length;
+- an `AGGR` chunk whose length, column set or flags do not match the derived
+  tree shape.
 
 `LoadError` reports the failure category, not a byte offset.
 

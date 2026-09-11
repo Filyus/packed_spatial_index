@@ -27,6 +27,9 @@ pub enum LoadError {
     IntegerOverflow,
     /// The level bounds or child pointers do not describe a valid packed tree.
     InvalidTree,
+    /// The optional `AGGR` chunk is present but does not describe summaries
+    /// for this tree's shape.
+    InvalidAggregates,
 }
 
 impl fmt::Display for LoadError {
@@ -48,6 +51,9 @@ impl fmt::Display for LoadError {
             }
             LoadError::IntegerOverflow => write!(f, "buffer integer value is too large"),
             LoadError::InvalidTree => write!(f, "buffer does not contain a valid packed tree"),
+            LoadError::InvalidAggregates => {
+                write!(f, "buffer contains an invalid aggregate section")
+            }
         }
     }
 }

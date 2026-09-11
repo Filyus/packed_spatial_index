@@ -77,6 +77,10 @@ harness = false
 required-features = ["bench-internals"]
 
 [[bench]]
+name = "aggregates_bench"
+harness = false
+
+[[bench]]
 name = "index2d_bench"
 harness = false
 required-features = ["parallel", "simd", "bench-internals"]

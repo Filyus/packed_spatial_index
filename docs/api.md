@@ -27,6 +27,7 @@ unspecified unless you asked for one with `search_ordered`.
 | Ordered region | [`search_ordered`][search_ordered], [`search_ordered_into`][search_ordered_into], [`search_ordered_each`][search_ordered_each] — the same region shapes, emitted in nondecreasing order of a `\|box\| -> f64` key (e.g. [`view_depth_3d`][view_depth_3d] for front-to-back), so a budget can stop the traversal |
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`raycast_each`][raycast_each] |
 | Spatial join | [`join`][join], [`join_each`][join_each] between two indexes; [`pairs`][pairs], [`pairs_each`][pairs_each] for the overlapping pairs within one |
+| Aggregate over a window | [`aggregate`][aggregate] — the exact count / sum / min / max / mask-OR of the hits, folded from per-node summaries (`AGGR` chunk); needs `aggregate_scalar` / `aggregate_mask` at build time |
 | Estimate before you query | [`estimate_count`][estimate_count] — an exact `[lower, upper]` bracket on the hit count from node boxes alone, plus a point estimate; the streaming readers answer it from the cached directory without a read |
 | Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`search_within_each`][search_within_each], [`search_within_any`][search_within_any], [`count_within`][count_within] — every item whose box lies within `max_distance` of a query box, `max_distance = 0.0` reproducing `search` |
 | Distance join (ε-join) | [`join_within`][join_within], [`join_within_each`][join_within_each], [`pairs_within`][pairs_within], [`pairs_within_each`][pairs_within_each], [`anti_join_within`][anti_join_within], [`pairs_within_components`][pairs_within_components] |
@@ -192,3 +193,5 @@ assert_eq!(build().finish_simd().unwrap().search_region(&tri), vec![0]);
 [BoundsError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BoundsError.html
 [BuildError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.BuildError.html
 [LoadError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.LoadError.html
+
+[aggregate]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.aggregate

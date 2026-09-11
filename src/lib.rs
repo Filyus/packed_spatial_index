@@ -107,6 +107,7 @@ struct GuideDoctests;
 #[doc = include_str!("../docs/persistence.md")]
 struct PersistenceDoctests;
 
+mod aggregates;
 mod build;
 mod builder2d;
 mod builder3d;
@@ -148,6 +149,7 @@ mod tree;
 mod tree_access;
 mod triangle;
 
+pub use aggregates::{Aggregate, Aggregates, AggregatesView};
 pub use build::BuildError;
 pub use builder2d::Index2DBuilder;
 pub use builder3d::Index3DBuilder;

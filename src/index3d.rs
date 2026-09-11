@@ -6,6 +6,9 @@
 
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
+use crate::aggregates::{
+    Aggregate, Aggregates, AggregatesView, aggregate_region_core, aggregates_from_view,
+};
 use crate::estimate::{Estimate, box_fraction_3d, estimate_core};
 use crate::{
     config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
@@ -23,8 +26,8 @@ use crate::{
         search_pick_each,
     },
     persistence::{
-        LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_index, parse_index_owned,
-        payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
+        LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_aggregates, parse_index,
+        parse_index_owned, payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
     },
     range::{collect_region, search_region_each, visit_overlaps},
     ray::Ray3D,
@@ -96,6 +99,7 @@ pub struct Index3D {
     pub(crate) level_bounds: Vec<usize>,
     pub(crate) entries: Vec<Box3D>,
     pub(crate) indices: Vec<usize>,
+    pub(crate) aggregates: Option<Aggregates>,
 }
 
 impl Index3D {
@@ -261,6 +265,8 @@ impl Index3D {
     /// the streaming reader to read it back.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
         let tree = parse_index_owned(bytes, 3, 8)?;
+        let aggregates = parse_aggregates(bytes, tree.num_nodes, tree.num_items)?
+            .map(|v| aggregates_from_view(&v, tree.num_items));
 
         Ok(Self {
             node_size: tree.node_size,
@@ -268,6 +274,7 @@ impl Index3D {
             level_bounds: tree.level_bounds,
             entries: copy_box3d_entries(&tree.entries, tree.num_nodes),
             indices: copy_u64_indices(&tree.indices, tree.num_nodes),
+            aggregates,
         })
     }
 
@@ -1241,6 +1248,53 @@ impl Index3D {
         )
     }
 
+    /// The node summaries this index carries, or `None` if it was built (and
+    /// serialized) without any. See
+    /// [`Index3DBuilder::aggregate_scalar`](crate::Index3DBuilder::aggregate_scalar).
+    pub fn aggregates(&self) -> Option<&Aggregates> {
+        self.aggregates.as_ref()
+    }
+
+    /// Exact aggregate over every item whose box overlaps `query`: how many
+    /// items hit it and, when the index carries the columns, the sum / min /
+    /// max of their scalar and the OR of their category masks.
+    ///
+    /// Returns `None` when the index carries no aggregate columns. The answer
+    /// is exact and agrees with [`search`](Self::search) — nodes fully inside
+    /// the window contribute their stored summary whole, and only the leaves
+    /// the window cuts are read item by item.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box3D, Index3DBuilder};
+    ///
+    /// let mut builder = Index3DBuilder::new(2);
+    /// builder.add(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    /// builder.add(Box3D::new(5.0, 5.0, 5.0, 6.0, 6.0, 6.0));
+    /// let index = builder
+    ///     .aggregate_scalar(&[10.0, 2.5])
+    ///     .aggregate_mask(&[0b01, 0b10])
+    ///     .finish()
+    ///     .unwrap();
+    ///
+    /// let agg = index
+    ///     .aggregate(Box3D::new(0.0, 0.0, 0.0, 100.0, 100.0, 100.0))
+    ///     .unwrap();
+    /// assert_eq!(agg.count, 2);
+    /// assert_eq!(agg.sum, Some(12.5));
+    /// assert_eq!(agg.mask, Some(0b11));
+    /// ```
+    pub fn aggregate(&self, query: Box3D) -> Option<Aggregate> {
+        let agg = self.aggregates.as_ref()?;
+        Some(aggregate_region_core(
+            self,
+            agg,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+        ))
+    }
+
     /// Return every unordered pair of distinct items within this index whose
     /// boxes lie within `max_distance` of each other, each pair exactly once. See
     /// [`Index3D::join_within`] for the distance semantics and
@@ -1774,6 +1828,7 @@ pub struct Index3DView<'a> {
     /// `insertion id -> leaf rank` for random `payload(id)` over leaf-ordered
     /// payloads; built only when a payload is present.
     id_to_leaf: Option<Vec<u32>>,
+    aggregates: Option<AggregatesView<'a>>,
 }
 
 impl<'a> Index3DView<'a> {
@@ -1797,6 +1852,7 @@ impl<'a> Index3DView<'a> {
         let id_to_leaf = payload
             .is_some()
             .then(|| build_id_to_leaf(parsed.indices, parsed.num_items));
+        let aggregates = parse_aggregates(bytes, parsed.num_nodes, parsed.num_items)?;
         Ok(Self {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -1807,7 +1863,27 @@ impl<'a> Index3DView<'a> {
             indices: parsed.indices,
             payload,
             id_to_leaf,
+            aggregates,
         })
+    }
+
+    /// The node summaries these bytes carry, or `None` if the file was written
+    /// without an `AGGR` chunk. Borrowed zero-copy.
+    pub fn aggregates(&self) -> Option<&AggregatesView<'a>> {
+        self.aggregates.as_ref()
+    }
+
+    /// Exact aggregate over every item whose box overlaps `query`. See
+    /// [`Index3D::aggregate`](crate::Index3D::aggregate); returns `None` when
+    /// the file carries no `AGGR` chunk.
+    pub fn aggregate(&self, query: Box3D) -> Option<Aggregate> {
+        let agg = self.aggregates.as_ref()?;
+        Some(aggregate_region_core(
+            self,
+            agg,
+            |node| node.overlaps(query),
+            |node| query.contains(node),
+        ))
     }
 
     /// Whether this view's bytes carry a payload section.

@@ -1,3 +1,4 @@
+mod aggr_chunk;
 mod container;
 mod errors;
 mod metadata;
@@ -7,7 +8,9 @@ mod prefix_chunk;
 mod tree_chunk;
 mod writer;
 
+pub(crate) use self::aggr_chunk::{TAG_AGGR, aggr_chunk_len, write_aggr_chunk};
 use self::container::{find_chunk, parse_container};
+use crate::aggregates::{AggregatesView, parse_aggr_chunk};
 pub(crate) use container::{CHUNK_ENTRY_LEN, SUPERBLOCK_LEN, plan_container};
 #[cfg(feature = "stream")]
 pub(crate) use container::{CHUNK_FLAG_CRITICAL, FORMAT_VERSION};
@@ -21,6 +24,25 @@ pub(crate) use prefix_chunk::parse_pfix_chunk;
 pub(crate) use prefix_chunk::{PFIX_DESC_LEN, TAG_PFIX};
 pub(crate) use tree_chunk::{TAG_TREE, TREE_DESC_LEN, parse_tree_chunk};
 pub(crate) use writer::{ByteWriter, write_index_container};
+
+/// Find and parse the optional `AGGR` chunk for an already-parsed tree shape.
+/// Returns `None` when the bytes carry no aggregate section (the common case —
+/// the chunk exists only when the writer attached summaries).
+pub(crate) fn parse_aggregates(
+    bytes: &[u8],
+    num_nodes: usize,
+    num_items: usize,
+) -> Result<Option<AggregatesView<'_>>, LoadError> {
+    let chunks = parse_container(bytes, &[TAG_TREE])?;
+    match find_chunk(&chunks, TAG_AGGR) {
+        Some(aggr) => Ok(Some(parse_aggr_chunk(
+            &bytes[aggr.offset..aggr.offset + aggr.len],
+            num_nodes,
+            num_items,
+        )?)),
+        None => Ok(None),
+    }
+}
 
 pub(crate) fn expected_tree_shape(
     num_items: usize,

@@ -135,6 +135,13 @@ file; `search_iter` is the lazy iterator form of range search.
 | `SimdIndex2DF32` / `SimdIndex3DF32` (f32) | ✓* | ✓* | ✓* | ✓* | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | `StreamIndex2D` / `StreamIndex3D` (and `…F32`) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | read | ✗ | ✓ |
 
+Aggregates (`aggregate(query)` over the `AGGR` chunk) ride the four **f64**
+rows: `✓` where the table says `✓`, `✗` everywhere else — the `f32` indexes and
+the streaming readers skip the chunk and answer without it, only without the
+fold. A window covering the whole extent is one root summary; see
+[the API map](api.md) for the build-time `aggregate_scalar` / `aggregate_mask`
+columns.
+
 `count` has no column because it would be a column of `✓`: every row above
 answers `count(query)`, including the streaming readers, where it is fallible
 like their other queries (`count(query) -> Result<usize, _>`).

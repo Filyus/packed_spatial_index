@@ -1,7 +1,9 @@
 use super::SimdIndex2D;
+use crate::aggregates::aggregates_from_view;
 use crate::persistence::{
-    ByteWriter, CHUNK_ENTRY_LEN, LoadError, SUPERBLOCK_LEN, TAG_TREE, TREE_DESC_LEN, parse_index,
-    plan_container, read_f64_le_unchecked, read_u64_le_unchecked,
+    ByteWriter, CHUNK_ENTRY_LEN, LoadError, SUPERBLOCK_LEN, TAG_AGGR, TAG_TREE, TREE_DESC_LEN,
+    aggr_chunk_len, parse_aggregates, parse_index, plan_container, read_f64_le_unchecked,
+    read_u64_le_unchecked, write_aggr_chunk,
 };
 
 impl SimdIndex2D {
@@ -22,15 +24,29 @@ impl SimdIndex2D {
     pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
         let num_nodes = self.min_xs.len();
         let tree_len = TREE_DESC_LEN + num_nodes * 32 + num_nodes * 8;
-        let (total, off) = plan_container(&[tree_len]).expect("serialized index is too large");
+        let aggr_len = self
+            .aggregates
+            .as_ref()
+            .map(|a| aggr_chunk_len(a, num_nodes, self.num_items));
+        let lens: Vec<usize> = core::iter::once(tree_len).chain(aggr_len).collect();
+        let (total, off) = plan_container(&lens).expect("serialized index is too large");
         let mut bytes = ByteWriter::new(out, total);
-        bytes.write_superblock(1);
+        bytes.write_superblock(lens.len() as u32);
         bytes.write_chunk_entry(&TAG_TREE, true, off[0], tree_len);
-        bytes.write_zeros(off[0] - (SUPERBLOCK_LEN + CHUNK_ENTRY_LEN));
+        if let Some(len) = aggr_len {
+            bytes.write_chunk_entry(&TAG_AGGR, false, off[1], len);
+        }
+        bytes.write_zeros(off[0] - (SUPERBLOCK_LEN + lens.len() * CHUNK_ENTRY_LEN));
         bytes.write_tree_desc(2, 8, false, self.num_items, self.node_size);
         bytes.write_soa_boxes_2d(&self.min_xs, &self.min_ys, &self.max_xs, &self.max_ys);
         bytes.write_usize_slice_as_u64(&self.indices);
-        bytes.write_zeros(total - (off[0] + tree_len));
+        let mut pos = off[0] + tree_len;
+        if let (Some(len), Some(agg)) = (aggr_len, self.aggregates.as_ref()) {
+            bytes.write_zeros(off[1] - pos);
+            write_aggr_chunk(&mut bytes, agg);
+            pos = off[1] + len;
+        }
+        bytes.write_zeros(total - pos);
         bytes.finish();
     }
 
@@ -78,6 +94,8 @@ impl SimdIndex2D {
             .map(|b| read_u64_le_unchecked(b, 0) as usize)
             .collect();
 
+        let aggregates = parse_aggregates(bytes, num_nodes, parsed.num_items)?
+            .map(|v| aggregates_from_view(&v, parsed.num_items));
         Ok(SimdIndex2D {
             node_size: parsed.node_size,
             num_items: parsed.num_items,
@@ -87,6 +105,7 @@ impl SimdIndex2D {
             max_xs,
             max_ys,
             indices,
+            aggregates,
         })
     }
 }

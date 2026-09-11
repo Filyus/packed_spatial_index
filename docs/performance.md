@@ -204,6 +204,14 @@ narrowing of the SIMD indexes' lead on range search. The ray predicate is a slab
 test rather than a box overlap, so it sits between the cheap and the expensive
 end: 2D gains clearly, 3D lands within drift.
 
+Removing the branch is only half of what happens. A loop that tests every child
+into a bitmask has no `continue` in it, and that is what lets the autovectorizer
+widen it: in the shipped build (`lto = true`), the collect paths' mask loop
+compiles to 4-wide `vcmppd` against mask registers, while the branching loops it
+replaced stayed one box at a time. So the collect paths get vector compares out
+of a change that reads as a branch-prediction fix, and the callback paths, which
+keep their branches for the reason below, keep the scalar loop as well.
+
 Two boundaries on the technique are measured, and both keep it off the other
 paths:
 

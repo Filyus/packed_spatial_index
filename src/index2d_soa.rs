@@ -4,6 +4,7 @@
 //! `max_y[]`). The tree is built exactly like the AoS version; only the layout
 //! and search implementation differ.
 
+use crate::index2d::{MASK_CHUNK, for_each_hit, frame};
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use wide::f64x4;
@@ -3164,23 +3165,34 @@ impl SimdIndex2DView<'_> {
         loop {
             let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
             let is_leaf = node_index < self.num_items;
-            for pos in node_index..end {
-                if !ray.intersects_box(self.box_at(pos)) {
-                    continue;
+            // Branch-free node test: all hits have to be collected, so the slab
+            // tests fold into a bitmask and the loop branches once per hit
+            // instead of once per child. A branchless test loop also gives the
+            // autovectorizer something to widen, which a `continue` does not.
+            let child_level = level.wrapping_sub(1);
+            let mut start = node_index;
+            while start < end {
+                let stop = (start + MASK_CHUNK).min(end);
+                let mut mask = 0u64;
+                for (i, pos) in (start..stop).enumerate() {
+                    mask |= u64::from(ray.intersects_box(self.box_at(pos))) << i;
                 }
-                let index = self.index_at(pos);
-                if is_leaf {
-                    results.push(index);
-                } else {
-                    stack.push(index);
-                    stack.push(level - 1);
-                }
+                for_each_hit(mask, |i| {
+                    let index = self.index_at(start + i);
+                    if is_leaf {
+                        results.push(index);
+                    } else {
+                        stack.push(frame::pack(index, child_level));
+                    }
+                });
+                start = stop;
             }
-            if stack.len() > 1 {
-                level = stack.pop().unwrap();
-                node_index = stack.pop().unwrap();
-            } else {
-                return;
+            match stack.pop() {
+                Some(f) => {
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                }
+                None => return,
             }
         }
     }

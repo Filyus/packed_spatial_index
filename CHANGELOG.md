@@ -27,7 +27,9 @@ All notable changes to this crate are documented here.
   and `count` 6–8%, with their early-exit forms unchanged. The shared all-hits
   raycast core takes it too: `Index2D` raycast fell 12% on long rays and 6% on
   short ones, with 3D flat within drift and nothing regressing. The best-first
-  `raycast_closest` descent is untouched.
+  `raycast_closest` descent is untouched. `SimdIndex2DView` / `SimdIndex3DView`
+  carry their own scalar raycast traversal rather than the shared one, and it
+  takes the same change: 2D fell 15% on long rays and 7% on short ones.
   The callback paths (`visit`, `any`, `first`) keep the branching loop on
   purpose: on an early-exit query the full mask per internal node measured
   +40–60% on `any`, since the rejected-child branch is well predicted while

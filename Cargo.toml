@@ -81,6 +81,10 @@ name = "aggregates_bench"
 harness = false
 
 [[bench]]
+name = "predicate_regions_bench"
+harness = false
+
+[[bench]]
 name = "index2d_bench"
 harness = false
 required-features = ["parallel", "simd", "bench-internals"]

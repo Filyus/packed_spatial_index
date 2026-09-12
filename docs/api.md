@@ -73,7 +73,12 @@ assert_eq!(build().finish_simd().unwrap().search_region(&tri), vec![0]);
   [`Point3D`][Point3D], [`Ray2D`][Ray2D], [`Ray3D`][Ray3D],
   [`Triangle2D`][Triangle2D] / [`ConvexPolygon2D`][ConvexPolygon2D] (2D region
   queries), [`Frustum3D`][Frustum3D] (3D culling; [`ClipSpaceZ`][ClipSpaceZ]
-  picks the NDC depth convention for `from_view_projection`).
+  picks the NDC depth convention for `from_view_projection`),
+  [`HalfSpace2D`][HalfSpace2D] / [`HalfSpace3D`][HalfSpace3D] (unbounded
+  cross-sections — no bounding box to pre-filter with),
+  [`Capsule2D`][Capsule2D] / [`Capsule3D`][Capsule3D] (a thick ray, picking
+  tolerance in world units), [`Cone3D`][Cone3D] (sensor FOV / spotlight;
+  [`Cone3DError`][Cone3DError] from `try_new`).
 - **Builders**: [`Index2DBuilder`][Index2DBuilder],
   [`Index3DBuilder`][Index3DBuilder] — [`finish`][finish] (scalar f64),
   [`finish_simd`][finish_simd] (SoA + SIMD), [`finish_f32`][finish_f32] (compact
@@ -168,6 +173,12 @@ assert_eq!(build().finish_simd().unwrap().search_region(&tri), vec![0]);
 [ConvexPolygon2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.ConvexPolygon2D.html
 [Frustum3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Frustum3D.html
 [ClipSpaceZ]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.ClipSpaceZ.html
+[HalfSpace2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.HalfSpace2D.html
+[HalfSpace3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.HalfSpace3D.html
+[Capsule2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Capsule2D.html
+[Capsule3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Capsule3D.html
+[Cone3D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Cone3D.html
+[Cone3DError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.Cone3DError.html
 [Index2DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2DBuilder.html
 [Index3DBuilder]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index3DBuilder.html
 [Index2D]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html

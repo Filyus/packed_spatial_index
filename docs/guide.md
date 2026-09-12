@@ -28,6 +28,10 @@ the method for each need; the notes after it explain the reasoning.
 | Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `search_within_each` / `search_within_any` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
 | The single closest pair, with no distance to guess | `closest_pair()` within one index, `closest_pair_to(&other)` between two | `join_within` with a guessed `max_distance`, widened until it is non-empty |
 | All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_each` (`pairs_within` within one index, `anti_join_within` for the unpaired items, `pairs_within_components` for groups) | joining indexes of `max_distance`-inflated boxes and filtering |
+| What a moving box sweeps over a straight-line step | plain `search` — the swept volume of an axis-aligned box along a straight line is a bigger axis-aligned box (hull of the start and end boxes) | a special "swept" query; there isn't one, and none is needed |
+| Everything on one side of a line or plane (a cross-section cut) | `search(&HalfSpace2D::new(..))` / `search(&HalfSpace3D::new(..))` — the region is unbounded, so there is no bounding box to pre-filter with | `search` on a hand-clipped box plus a filter |
+| What a thick ray touches (picking tolerance in world units) | `search(&Capsule2D::new(a, b, r))` / `search(&Capsule3D::new(a, b, r))` | `search` on the segment's bbox grown by `r` plus a per-hit distance filter |
+| What a sensor cone / spotlight sees | `search(&Cone3D::try_new(..)?)` | `search` on the cone's bounding box plus a per-hit cone test |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
 | The per-item blob back, not just the id | `payload(id)` / `search_payloads(query)` on a view, or `search_payloads` on a streaming reader | a side table keyed by id |
@@ -260,6 +264,42 @@ For triangles, use `Triangle2D` with `search(&tri)` rather than
 representing the same shape as a three-vertex polygon. The same generic overlap
 methods are also on the zero-copy `Index2DView`.
 
+## Slices, thick rays, and cones
+
+Three more region shapes ride the same `search(&shape)` machinery:
+
+- [`HalfSpace2D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.HalfSpace2D.html)
+  / [`HalfSpace3D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.HalfSpace3D.html)
+  — everything on one side of a line or plane: the BIM / medical / geology
+  cross-section cut. The region is **unbounded**, so there is no bounding box a
+  caller could pre-filter with; the two-corner sign test prunes nodes and
+  accepts fully-inside subtrees. A cut that keeps only a corner slice of the
+  index runs in microseconds where a scan takes its own share of the index
+  (measured ~260x faster than a scan at a ~0.1% cut on 1M boxes); a cut that
+  keeps a third or more of the data is answered about as fast by a plain scan —
+  pick by the cut's size, as with any other query.
+- [`Capsule2D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Capsule2D.html)
+  / [`Capsule3D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Capsule3D.html)
+  — a segment thickened by a radius: a thick ray, or world-unit picking
+  tolerance. The box test is an exact segment-to-box distance (convex
+  one-dimensional minimization along the segment, no tolerance), which prunes
+  where the grown-bounding-box workaround cannot: measured ~28-49x faster than
+  `search(bbox) + filter` at radii from 0.5 to 50 units on 1M boxes.
+- [`Cone3D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Cone3D.html)
+  — a solid sensor-FOV / spotlight cone (`try_new` validates the axis, the
+  half-angle and the height). The box test is exact up to floating point: it
+  minimizes, over the height, the clearance between the axis and the box's
+  slice at that height against the cone's radius there — a convex function of
+  the height, so a bracketing search settles it, after cheap early outs (a
+  corner inside, the axis through the box, the axis too far for the radius at
+  the box's top), and the search itself stops as soon as convexity proves the
+  minimum positive. ~51x faster than the bounding-box workaround at a 5.7°
+  aperture and ~12x at 34° on 1M boxes (0.1 ms and 0.35 ms per query).
+
+All three answer the full region family — `search` / `count` / `any` / `first`
+/ `visit` on the owned `f64` indexes and views, the `*_region` spellings on the
+SIMD and `f32` frontends.
+
 ## Frustum culling (3D)
 
 `Index3D` answers a view-frustum query through the generic overlap API:
@@ -473,7 +513,11 @@ when you genuinely need every hit ordered.
 
 `search_ordered_each` gives the same sequence through a visitor that receives the key
 alongside the id, so a renderer can accumulate until its budget is spent and
-break. Every f64 and `f32` in-memory frontend answers it, SIMD included, though
+break. That is also the general **top-k** form: any monotone score whose
+box key is an admissible lower bound — depth, distance, a per-item priority
+summarized per subtree — becomes "the best `k` by my score" through
+`search_ordered(region, score_key, k, f64::INFINITY)`, and the budget stops the
+traversal once the `k` are found. Every f64 and `f32` in-memory frontend answers it, SIMD included, though
 the descent is scalar everywhere (a heap pops one node at a time). Streaming
 readers do not carry the method — a heap costs one round trip per node it opens
 — but they can still answer the question it is usually asked for; see below.

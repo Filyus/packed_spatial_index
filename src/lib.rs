@@ -111,12 +111,15 @@ mod aggregates;
 mod build;
 mod builder2d;
 mod builder3d;
+mod capsule;
+mod cone;
 mod config;
 mod estimate;
 #[cfg(feature = "f32-storage")]
 mod f32_storage;
 mod frustum;
 mod geometry;
+mod halfspace;
 mod hilbert2d;
 mod index2d;
 #[cfg(feature = "f32-storage")]
@@ -153,12 +156,15 @@ pub use aggregates::{Aggregate, Aggregates, AggregatesView};
 pub use build::BuildError;
 pub use builder2d::Index2DBuilder;
 pub use builder3d::Index3DBuilder;
+pub use capsule::{Capsule2D, Capsule3D};
+pub use cone::{Cone3D, Cone3DError};
 pub use config::DEFAULT_NODE_SIZE;
 #[cfg(feature = "parallel")]
 pub use config::DEFAULT_PARALLEL_MIN_ITEMS;
 pub use estimate::Estimate;
 pub use frustum::{ClipSpaceZ, Frustum3D, FrustumRayError};
 pub use geometry::{BoundsError, Box2D, Box3D, Overlaps2D, Overlaps3D, Point2D, Point3D};
+pub use halfspace::{HalfSpace2D, HalfSpace3D};
 #[doc(hidden)]
 pub use index2d::SearchQuery2D;
 pub use index2d::{Index2D, Index2DView, RegionSearch2DIter, Search2DIter, Serializer2D};

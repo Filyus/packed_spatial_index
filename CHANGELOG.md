@@ -6,6 +6,19 @@ All notable changes to this crate are documented here.
 
 ### API
 
+- **Predicate regions: half-space, capsule, cone.** Three new query shapes ride
+  the ordinary region family (`search` / `count` / `any` / `first` / `visit`,
+  `*_region` on SIMD and f32): `HalfSpace2D` / `HalfSpace3D` — the unbounded
+  cross-section cut no bounding box can pre-filter; `Capsule2D` / `Capsule3D` —
+  a thick ray with a world-unit tolerance, tested by an exact segment-to-box
+  distance (convex minimization, no tolerance); `Cone3D::try_new` — the sensor
+  FOV / spotlight, tested exactly (a convex minimization over the height of
+  the axis-to-slice clearance against the cone radius there). Measured on 1M
+  boxes vs their bbox+filter workarounds: capsule ~28-49x, cone ~51x at a 5.7°
+  aperture and ~12x at 34°, and a corner-slice half-space ~260x (broad cuts
+  are answered about as fast by a plain scan — documented). Also new in the
+  guide: a swept-box note (a box swept along a straight line is a bigger box —
+  `search` it directly) and the general top-k form (`search_ordered` + budget).
 - **Node aggregates (the aR-tree chunk).** An index built with
   `aggregate_scalar(&[f64])` and/or `aggregate_mask(&[u64])` on the builder
   stores one summary per node — sum/min/max of the scalar, OR of the mask — in

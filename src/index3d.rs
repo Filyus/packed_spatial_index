@@ -1180,6 +1180,50 @@ impl Index3D {
         );
     }
 
+    /// Run the radius collect query on one named traversal instead of letting
+    /// the selectivity switch choose: `false` branches per child, `true` folds
+    /// each node's tests into a bitmask. Hidden, and performance-only — the two
+    /// return identical results. It exists so `benches/paired_within.rs` can
+    /// time both on the same query in one binary, which is how the switch's
+    /// threshold was calibrated.
+    #[doc(hidden)]
+    pub fn search_within_into_forced<const MASKED: bool>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        out: &mut Vec<usize>,
+    ) {
+        out.clear();
+        let mut stack = crate::traversal::ScratchStack::take();
+        crate::join::collect_within_forced::<MASKED, _, _, _>(
+            self,
+            query,
+            DistanceTest::new(max_distance),
+            &mut stack,
+            |index| out.push(index),
+        );
+    }
+
+    /// [`search_within_into_forced`](Self::search_within_into_forced) counting
+    /// instead of collecting.
+    #[doc(hidden)]
+    pub fn count_within_forced<const MASKED: bool>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+    ) -> usize {
+        let mut n = 0usize;
+        let mut stack = crate::traversal::ScratchStack::take();
+        crate::join::collect_within_forced::<MASKED, _, _, _>(
+            self,
+            query,
+            DistanceTest::new(max_distance),
+            &mut stack,
+            |_| n += 1,
+        );
+        n
+    }
+
     /// Visit every item within `max_distance` of `query` without collecting a
     /// result `Vec`. See [`search_within`](Self::search_within).
     ///

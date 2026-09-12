@@ -288,6 +288,14 @@ is none. The cost of leaving it is the bottom two rows — up to 7% on 2D radius
 queries that return roughly a sixth of the index — against 12–17% won in the
 middle of the range and ~16% on every `count_within`.
 
+Which arm the switch picks is pinned by unit tests on the predicate itself
+rather than read off this table, and the two traversals are reachable
+individually (`search_within_into_forced::<MASKED>`, hidden) so the threshold
+can be re-calibrated on another machine. Note that the shipping entry point is
+deliberately not a fourth arm in that bench: it reaches the same two bodies
+through a different function, so timing it against them would measure an
+inlining difference and reads as a regression that is not there.
+
 The callback forms (`search_within_each`, `search_within_any`) never take the
 masked path at any width. They can stop early, and a mask spends its work before
 the first hit is reported; the same change measured 40–60% worse on `any`.

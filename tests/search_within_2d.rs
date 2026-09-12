@@ -323,3 +323,46 @@ fn collect_forms_agree_across_the_selectivity_switch() {
         }
     }
 }
+
+/// The hidden forced-traversal entries exist so the switch's threshold can be
+/// re-calibrated; they are only useful if they answer exactly what the shipping
+/// switch answers, whichever arm it happens to pick.
+#[test]
+fn forced_traversals_agree_with_the_switch() {
+    let mut rng = StdRng::seed_from_u64(0xF02CED);
+    let boxes = random_boxes(&mut rng, 3_000, 1_000.0, 6.0);
+    let index = build(&boxes);
+    let (mut branching, mut masked) = (Vec::new(), Vec::new());
+
+    for query in [
+        Box2D::new(500.0, 500.0, 501.0, 501.0),
+        Box2D::new(-30.0, 900.0, -29.0, 901.0),
+    ] {
+        for max_distance in [0.0, 0.5, 7.0, 40.0, 200.0, 800.0, 5_000.0] {
+            let expected = naive_within(&boxes, query, max_distance);
+            let label = format!("query={query:?} max_distance={max_distance}");
+
+            index.search_within_into_forced::<false>(query, max_distance, &mut branching);
+            index.search_within_into_forced::<true>(query, max_distance, &mut masked);
+            assert_eq!(as_set(branching.clone()), expected, "branching: {label}");
+            assert_eq!(as_set(masked.clone()), expected, "masked: {label}");
+
+            assert_eq!(
+                index.count_within_forced::<false>(query, max_distance),
+                expected.len(),
+                "branching count: {label}"
+            );
+            assert_eq!(
+                index.count_within_forced::<true>(query, max_distance),
+                expected.len(),
+                "masked count: {label}"
+            );
+            // And the shipping switch lands on one of them, never elsewhere.
+            assert_eq!(
+                index.count_within(query, max_distance),
+                expected.len(),
+                "switch: {label}"
+            );
+        }
+    }
+}

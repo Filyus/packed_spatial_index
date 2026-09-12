@@ -132,10 +132,6 @@ mod index3d_f32;
 #[cfg(feature = "simd")]
 mod index3d_soa;
 mod join;
-
-/// PROBE ONLY (`probe/within-switch`): force the radius collect traversal.
-#[doc(hidden)]
-pub use crate::join::force_within_shape;
 #[cfg(feature = "simd")]
 mod leftpack;
 mod neighbors;

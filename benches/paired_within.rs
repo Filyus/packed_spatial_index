@@ -8,14 +8,19 @@
 //! prints the expected hit fraction beside each case, which is the quantity the
 //! shipping switch reads.
 //!
+//! Only the two forced traversals are timed. The shipping `search_within_into`
+//! is deliberately NOT an arm here: it reaches the same two bodies through a
+//! different function, so a ratio against these arms would carry an inlining
+//! difference rather than the traversal difference, and it reads as a
+//! regression that is not there. Which arm the switch picks is pinned
+//! separately and deterministically by the unit tests in `src/join.rs`.
+//!
 //! Run:
 //!   BENCH_PIN_CORE=8 cargo bench --bench paired_within
 
 use std::hint::black_box;
 
-use packed_spatial_index::{
-    Box2D, Box3D, Index2D, Index2DBuilder, Index3D, Index3DBuilder, force_within_shape,
-};
+use packed_spatial_index::{Box2D, Box3D, Index2D, Index2DBuilder, Index3D, Index3DBuilder};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -32,9 +37,6 @@ fn n_items() -> usize {
 }
 const EXTENT: f64 = 10_000.0;
 const QUERIES: usize = 1_000;
-
-const BRANCHING: u8 = 1;
-const MASKED: u8 = 2;
 
 fn build_2d(seed: u64) -> Index2D {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -140,8 +142,7 @@ fn main() {
             "2d r={r} (covered {frac:.4}, {:.0} hits/query)",
             hits as f64 / qs.len() as f64
         );
-        let (mut out_c, mut out_b, mut out_m, mut out_s) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut out_c, mut out_b, mut out_m) = (Vec::new(), Vec::new(), Vec::new());
         let mut arms = vec![
             // Control: the box overlap collect path, which neither shape touches.
             paired::arm("box search_into (control)", || {
@@ -154,53 +155,37 @@ fn main() {
                 t
             }),
             paired::arm("within_into branching", || {
-                force_within_shape(BRANCHING);
                 let mut t = 0;
                 for q in black_box(&qs) {
-                    index.search_within_into(*q, r, &mut out_b);
+                    index.search_within_into_forced::<false>(*q, r, &mut out_b);
                     t += out_b.len();
                 }
                 t
             }),
             paired::arm("within_into masked", || {
-                force_within_shape(MASKED);
                 let mut t = 0;
                 for q in black_box(&qs) {
-                    index.search_within_into(*q, r, &mut out_m);
+                    index.search_within_into_forced::<true>(*q, r, &mut out_m);
                     t += out_m.len();
                 }
                 t
             }),
             paired::arm("count_within branching", || {
-                force_within_shape(BRANCHING);
                 let mut t = 0;
                 for q in black_box(&qs) {
-                    t += index.count_within(*q, r);
+                    t += index.count_within_forced::<false>(*q, r);
                 }
                 t
             }),
             paired::arm("count_within masked", || {
-                force_within_shape(MASKED);
                 let mut t = 0;
                 for q in black_box(&qs) {
-                    t += index.count_within(*q, r);
-                }
-                t
-            }),
-            // The shipping switch: its ratio should track whichever of the two
-            // forced arms above is faster in this row.
-            paired::arm("within_into switch (ships)", || {
-                force_within_shape(0);
-                let mut t = 0;
-                for q in black_box(&qs) {
-                    index.search_within_into(*q, r, &mut out_s);
-                    t += out_s.len();
+                    t += index.count_within_forced::<true>(*q, r);
                 }
                 t
             }),
         ];
         paired::run(&label, &mut arms, "within_into branching");
-        force_within_shape(0);
     }
 
     // ---- 3D ----
@@ -215,8 +200,7 @@ fn main() {
             "3d r={r} (covered {frac:.4}, {:.0} hits/query)",
             hits as f64 / qs.len() as f64
         );
-        let (mut out_c, mut out_b, mut out_m, mut out_s) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut out_c, mut out_b, mut out_m) = (Vec::new(), Vec::new(), Vec::new());
         let mut arms = vec![
             paired::arm("box search_into (control)", || {
                 let mut t = 0;
@@ -235,52 +219,36 @@ fn main() {
                 t
             }),
             paired::arm("within_into branching", || {
-                force_within_shape(BRANCHING);
                 let mut t = 0;
                 for q in black_box(&qs) {
-                    index.search_within_into(*q, r, &mut out_b);
+                    index.search_within_into_forced::<false>(*q, r, &mut out_b);
                     t += out_b.len();
                 }
                 t
             }),
             paired::arm("within_into masked", || {
-                force_within_shape(MASKED);
                 let mut t = 0;
                 for q in black_box(&qs) {
-                    index.search_within_into(*q, r, &mut out_m);
+                    index.search_within_into_forced::<true>(*q, r, &mut out_m);
                     t += out_m.len();
                 }
                 t
             }),
             paired::arm("count_within branching", || {
-                force_within_shape(BRANCHING);
                 let mut t = 0;
                 for q in black_box(&qs) {
-                    t += index.count_within(*q, r);
+                    t += index.count_within_forced::<false>(*q, r);
                 }
                 t
             }),
             paired::arm("count_within masked", || {
-                force_within_shape(MASKED);
                 let mut t = 0;
                 for q in black_box(&qs) {
-                    t += index.count_within(*q, r);
-                }
-                t
-            }),
-            // The shipping switch: its ratio should track whichever of the two
-            // forced arms above is faster in this row.
-            paired::arm("within_into switch (ships)", || {
-                force_within_shape(0);
-                let mut t = 0;
-                for q in black_box(&qs) {
-                    index.search_within_into(*q, r, &mut out_s);
-                    t += out_s.len();
+                    t += index.count_within_forced::<true>(*q, r);
                 }
                 t
             }),
         ];
         paired::run(&label, &mut arms, "within_into branching");
-        force_within_shape(0);
     }
 }

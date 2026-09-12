@@ -487,7 +487,7 @@ pub(crate) fn collect_within_switched<T, P, F>(
     max_distance: f64,
     test: P,
     stack: &mut Vec<usize>,
-    mut emit: F,
+    emit: F,
 ) where
     T: TreeAccess,
     T::Bounds: RadiusBounds,
@@ -498,34 +498,42 @@ pub(crate) fn collect_within_switched<T, P, F>(
         return;
     }
     let root = tree.tree_bounds(tree.tree_num_nodes() - 1);
-    let masked = match FORCE_WITHIN_SHAPE.with(|c| c.get()) {
-        1 => false,
-        2 => true,
-        _ => RadiusBounds::prefers_mask(root, query, max_distance, tree.tree_num_items()),
-    };
-    if masked {
+    if RadiusBounds::prefers_mask(root, query, max_distance, tree.tree_num_items()) {
+        collect_within_forced::<true, _, _, _>(tree, query, test, stack, emit);
+    } else {
+        collect_within_forced::<false, _, _, _>(tree, query, test, stack, emit);
+    }
+}
+
+/// One named traversal, with no decision in it — the two arms of
+/// [`collect_within_switched`], reachable on their own so the threshold above
+/// can be re-calibrated.
+///
+/// `MASKED` is a const generic rather than a flag: it costs nothing at runtime,
+/// it cannot be left set by one caller and observed by the next, and the
+/// shipping switch monomorphizes into exactly the same two bodies it would have
+/// had anyway.
+#[inline]
+pub(crate) fn collect_within_forced<const MASKED: bool, T, P, F>(
+    tree: &T,
+    query: T::Bounds,
+    test: P,
+    stack: &mut Vec<usize>,
+    emit: F,
+) where
+    T: TreeAccess,
+    P: PairTest<T::Bounds>,
+    F: FnMut(usize),
+{
+    if MASKED {
         collect_within_core(tree, query, test, stack, emit);
     } else {
+        let mut emit = emit;
         let _: ControlFlow<()> = within_core(tree, query, test, stack, |index| {
             emit(index);
             ControlFlow::Continue(())
         });
     }
-}
-
-thread_local! {
-    /// PROBE ONLY (`probe/within-switch`): 0 = the shipping switch, 1 = force
-    /// the branching traversal, 2 = force the masked one. Exists so the
-    /// calibration bench can time both paths on the same query in one binary;
-    /// it is read once per query, outside any timed loop, and must be removed
-    /// before this lands.
-    static FORCE_WITHIN_SHAPE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
-}
-
-/// PROBE ONLY: see [`FORCE_WITHIN_SHAPE`].
-#[doc(hidden)]
-pub fn force_within_shape(shape: u8) {
-    FORCE_WITHIN_SHAPE.with(|c| c.set(shape));
 }
 
 /// Bounds a radius query can estimate its own selectivity from, so the switch
@@ -1048,4 +1056,46 @@ pub(crate) fn pairs_components_core<T: TreeAccess, P: PairTest<T::Bounds>>(
         }
     }
     parent
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The radius switch's threshold is a tuned policy, so pin it directly
+    /// rather than inferring it from a benchmark: the crossover is one expected
+    /// hit, and expected hits scale with the item count at a fixed geometry.
+    /// That scaling is the whole point — the same covered fraction lost 25% at
+    /// 100k items and won 9.5% at 1M, so a fraction-only rule would be wrong.
+    #[test]
+    fn the_radius_switch_crosses_over_at_one_expected_hit() {
+        let root = Box2D::new(0.0, 0.0, 10_000.0, 10_000.0);
+        let point = Box2D::new(5_000.0, 5_000.0, 5_000.0, 5_000.0);
+
+        // r=20 covers (40/10_000)^2 = 1.6e-5 of the extent: 1.6 expected hits
+        // at 100k items, 0.16 at 10k.
+        assert!(prefers_mask_2d(root, point, 20.0, 100_000));
+        assert!(!prefers_mask_2d(root, point, 20.0, 10_000));
+        // ... and at 1M the same geometry is far above the line.
+        assert!(prefers_mask_2d(root, point, 6.0, 1_000_000));
+        assert!(!prefers_mask_2d(root, point, 6.0, 100_000));
+
+        // A query with nothing to find never takes the mask.
+        assert!(!prefers_mask_2d(root, point, 0.0, 1_000_000));
+        assert!(!prefers_mask_2d(root, point, -1.0, 1_000_000));
+        assert!(!prefers_mask_2d(root, point, f64::NAN, 1_000_000));
+        // An empty index is handled before the predicate, but be total anyway.
+        assert!(!prefers_mask_2d(root, point, 20.0, 0));
+    }
+
+    #[test]
+    fn the_3d_radius_switch_uses_the_same_threshold() {
+        let root = Box3D::new(0.0, 0.0, 0.0, 10_000.0, 10_000.0, 10_000.0);
+        let point = Box3D::new(5_000.0, 5_000.0, 5_000.0, 5_000.0, 5_000.0, 5_000.0);
+
+        // r=60 covers (120/10_000)^3 = 1.7e-6: 1.7 expected hits at 1M, 0.17 at 100k.
+        assert!(prefers_mask_3d(root, point, 60.0, 1_000_000));
+        assert!(!prefers_mask_3d(root, point, 60.0, 100_000));
+        assert!(!prefers_mask_3d(root, point, f64::NAN, 1_000_000));
+    }
 }

@@ -1,7 +1,7 @@
 use std::{collections::BinaryHeap, ops::ControlFlow};
 
 use crate::{
-    config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
+    config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     neighbors::NeighborWorkspace,
     ray::Ray2D,
     raycast as scalar_raycast,
@@ -35,7 +35,7 @@ impl Index2D {
 
     /// Raycast with a reusable result buffer.
     pub fn raycast_into(&self, ray: Ray2D, results: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.raycast_into_stack(ray, results, &mut stack);
     }
 
@@ -129,7 +129,7 @@ impl Index2DView<'_> {
 
     /// Raycast with a reusable result buffer.
     pub fn raycast_into(&self, ray: Ray2D, results: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.raycast_into_stack(ray, results, &mut stack);
     }
 

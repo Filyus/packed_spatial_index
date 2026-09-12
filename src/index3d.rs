@@ -1176,7 +1176,7 @@ impl Index3D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         within_core(
             self,
             query,
@@ -1659,7 +1659,7 @@ impl Index3D {
             return 0;
         }
 
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         let mut total = 0usize;
         let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -1769,7 +1769,7 @@ impl Index3D {
 
         let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
 
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
@@ -2605,7 +2605,7 @@ impl<'a> Index3DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         within_core(
             self,
             query,

@@ -81,6 +81,10 @@ name = "aggregates_bench"
 harness = false
 
 [[bench]]
+name = "alloc_cost_bench"
+harness = false
+
+[[bench]]
 name = "predicate_regions_bench"
 harness = false
 

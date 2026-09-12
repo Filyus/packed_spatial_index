@@ -43,7 +43,6 @@ use crate::{
 };
 
 // Imports used only by the SIMD query frontend (SimdIndex2DF32 + its view).
-use crate::config::DEFAULT_SEARCH_STACK_CAPACITY;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 use crate::leftpack::leftpack4;
 #[cfg(feature = "simd")]
@@ -746,7 +745,7 @@ impl SimdIndex2DF32 {
         Q: Overlaps2D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         search_region_each(
             self,
             &mut stack,
@@ -835,7 +834,7 @@ impl SimdIndex2DF32 {
 
     /// Rounded-box range search with a reusable result buffer.
     pub fn search_into(&self, query: Box2D, out: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.search_into_stack(query, out, &mut stack);
     }
 
@@ -883,7 +882,7 @@ impl SimdIndex2DF32 {
     where
         F: FnMut(usize) -> Box2D,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.search_refined_into_stack(query, box_at, out, &mut stack);
     }
 
@@ -954,7 +953,7 @@ impl SimdIndex2DF32 {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.visit_with_stack(query, &mut stack, visitor)
     }
 
@@ -969,7 +968,7 @@ impl SimdIndex2DF32 {
         BF: FnMut(usize) -> Box2D,
         VF: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.visit_refined_with_stack(query, &mut stack, box_at, visitor)
     }
 
@@ -1824,7 +1823,7 @@ impl<'a> SimdIndex2DF32View<'a> {
         Q: Overlaps2D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         search_region_each(
             self,
             &mut stack,
@@ -1967,7 +1966,7 @@ impl<'a> SimdIndex2DF32View<'a> {
 
     /// Candidate search with a reusable result buffer.
     pub fn search_into(&self, query: Box2D, out: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         out.clear();
         let _: ControlFlow<()> = self.try_visit(query, &mut stack, |index| {
             out.push(index);
@@ -2003,7 +2002,7 @@ impl<'a> SimdIndex2DF32View<'a> {
     where
         F: FnMut(usize) -> Box2D,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         out.clear();
         let _: ControlFlow<()> = self.try_visit_refined(query, &mut stack, box_at, |index| {
             out.push(index);
@@ -2083,7 +2082,7 @@ impl<'a> SimdIndex2DF32View<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.try_visit(query, &mut stack, visitor)
     }
 
@@ -2098,7 +2097,7 @@ impl<'a> SimdIndex2DF32View<'a> {
         BF: FnMut(usize) -> Box2D,
         VF: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.try_visit_refined(query, &mut stack, box_at, visitor)
     }
 
@@ -2507,7 +2506,7 @@ impl Index2DF32 {
         Q: Overlaps2D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         search_region_each(
             self,
             &mut stack,

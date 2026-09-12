@@ -1,7 +1,6 @@
 use std::ops::ControlFlow;
 
 use crate::{
-    config::DEFAULT_SEARCH_STACK_CAPACITY,
     geometry::{Box2D, Overlaps2D},
     range::search_region_each,
     traversal::SearchWorkspace,
@@ -75,7 +74,7 @@ impl SearchQuery2D for Box2D {
 
     #[inline]
     fn search_into_index(self, index: &Index2D, out: &mut Vec<usize>) {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         index.search_into_stack(self, out, &mut stack);
     }
 
@@ -91,7 +90,7 @@ impl SearchQuery2D for Box2D {
 
     #[inline]
     fn any_index(self, index: &Index2D) -> bool {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         index
             .visit_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
             .is_break()
@@ -110,7 +109,7 @@ impl SearchQuery2D for Box2D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         index.visit_with_stack(self, &mut stack, visitor)
     }
 
@@ -124,7 +123,7 @@ impl SearchQuery2D for Box2D {
 
     #[inline]
     fn search_into_view(self, view: &Index2DView<'_>, out: &mut Vec<usize>) {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         view.search_into_stack(self, out, &mut stack);
     }
 
@@ -140,14 +139,14 @@ impl SearchQuery2D for Box2D {
 
     #[inline]
     fn any_view(self, view: &Index2DView<'_>) -> bool {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         view.visit_overlaps_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     #[inline]
     fn first_view(self, view: &Index2DView<'_>) -> Option<usize> {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         match view.visit_overlaps_with_stack(self, &mut stack, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
@@ -159,7 +158,7 @@ impl SearchQuery2D for Box2D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         view.visit_with_stack(self, &mut stack, visitor)
     }
 }
@@ -173,7 +172,7 @@ impl<Q: Overlaps2D> SearchQuery2D for &Q {
     #[inline]
     fn search_into_index(self, index: &Index2D, out: &mut Vec<usize>) {
         out.clear();
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         let _ = index.visit_region_with_stack(self, &mut stack, |i| {
             out.push(i);
             ControlFlow::<()>::Continue(())
@@ -196,7 +195,7 @@ impl<Q: Overlaps2D> SearchQuery2D for &Q {
 
     #[inline]
     fn any_index(self, index: &Index2D) -> bool {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         index
             .visit_region_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
             .is_break()
@@ -215,7 +214,7 @@ impl<Q: Overlaps2D> SearchQuery2D for &Q {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         index.visit_region_with_stack(self, &mut stack, visitor)
     }
 
@@ -230,7 +229,7 @@ impl<Q: Overlaps2D> SearchQuery2D for &Q {
     #[inline]
     fn search_into_view(self, view: &Index2DView<'_>, out: &mut Vec<usize>) {
         out.clear();
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         let _ = view.visit_region_with_stack(self, &mut stack, |i| {
             out.push(i);
             ControlFlow::<()>::Continue(())
@@ -253,7 +252,7 @@ impl<Q: Overlaps2D> SearchQuery2D for &Q {
 
     #[inline]
     fn any_view(self, view: &Index2DView<'_>) -> bool {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         view.visit_region_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
             .is_break()
     }
@@ -271,7 +270,7 @@ impl<Q: Overlaps2D> SearchQuery2D for &Q {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack: Vec<usize> = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         view.visit_region_with_stack(self, &mut stack, visitor)
     }
 }

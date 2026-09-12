@@ -1,3 +1,73 @@
+use std::cell::RefCell;
+use std::ops::{Deref, DerefMut};
+
+use crate::config::DEFAULT_SEARCH_STACK_CAPACITY;
+
+thread_local! {
+    /// One traversal stack per thread, lent to the entry points that do not
+    /// take a [`SearchWorkspace`]. A `Vec::with_capacity` per query costs
+    /// ~20-35 ns, which measured as 15-21% of a narrow or point query on 100k
+    /// boxes; keeping the buffer across queries removes it.
+    static SCRATCH_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A traversal stack borrowed from the per-thread cache for the duration of
+/// one query, handed back on drop.
+///
+/// `take` moves the cached `Vec` out, so a query started from inside another
+/// query's visitor (or region predicate) finds the cache empty and simply
+/// grows its own; whichever finishes last leaves its buffer for the next
+/// query. Nothing is shared across threads and nothing outlives the query.
+pub(crate) struct ScratchStack(Vec<usize>);
+
+impl ScratchStack {
+    /// Borrow the thread's cached stack (cleared, with at least the default
+    /// capacity), or a fresh one if the cache is in use or gone.
+    #[inline]
+    pub(crate) fn take() -> Self {
+        let mut stack = SCRATCH_STACK
+            .try_with(|cell| std::mem::take(&mut *cell.borrow_mut()))
+            .unwrap_or_default();
+        stack.clear();
+        if stack.capacity() < DEFAULT_SEARCH_STACK_CAPACITY {
+            stack.reserve(DEFAULT_SEARCH_STACK_CAPACITY);
+        }
+        Self(stack)
+    }
+}
+
+impl Drop for ScratchStack {
+    #[inline]
+    fn drop(&mut self) {
+        let stack = std::mem::take(&mut self.0);
+        // Ignore a cache already torn down (thread exit) or busy (a query's
+        // visitor is mid-`take`, which cannot happen — `take` holds the borrow
+        // for one move only); the buffer is then just freed.
+        let _ = SCRATCH_STACK.try_with(|cell| {
+            if let Ok(mut cached) = cell.try_borrow_mut()
+                && cached.capacity() < stack.capacity()
+            {
+                *cached = stack;
+            }
+        });
+    }
+}
+
+impl Deref for ScratchStack {
+    type Target = Vec<usize>;
+    #[inline]
+    fn deref(&self) -> &Vec<usize> {
+        &self.0
+    }
+}
+
+impl DerefMut for ScratchStack {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Vec<usize> {
+        &mut self.0
+    }
+}
+
 /// Reusable buffers for allocation-free repeated searches.
 ///
 /// Use this when running many searches against the same index to reuse the

@@ -5,7 +5,7 @@ use wide::f64x4;
 #[cfg(target_arch = "x86_64")]
 use crate::leftpack::leftpack4;
 use crate::{
-    config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
+    config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::Box2D,
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace},
     ray::{Ray2D, inclusive_ray_cutoff},
@@ -396,7 +396,7 @@ impl SimdIndex2D {
 
     /// Raycast with a reusable result buffer.
     pub fn raycast_into(&self, ray: Ray2D, results: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.raycast_into_stack(ray, results, &mut stack);
     }
 

@@ -20,7 +20,7 @@ use crate::{
     aggregates::{Aggregate, Aggregates, AggregatesView, aggregate_region_core},
     build::BuildError,
     builder3d::BuildConfig3D,
-    config::{DEFAULT_NEIGHBOR_QUEUE_CAPACITY, DEFAULT_SEARCH_STACK_CAPACITY},
+    config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::{Box3D, Overlaps3D, Point3D, fold_max, fold_min, query_covers_tree_3d},
     join::{
         DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core,
@@ -381,7 +381,7 @@ impl SimdIndex3D {
         Q: Overlaps3D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         search_region_each(
             self,
             &mut stack,
@@ -476,7 +476,7 @@ impl SimdIndex3D {
     /// AVX-512 (`VPCOMPRESSQ` collection), then an explicit AVX2 tier (left-pack
     /// collection), then the SSE2 `wide` fallback.
     pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.search_avx512(query, out, &mut stack);
     }
 
@@ -731,7 +731,7 @@ impl SimdIndex3D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.visit_avx512(query, &mut stack, visitor)
     }
 
@@ -865,7 +865,7 @@ impl SimdIndex3D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         within_core(
             self,
             query,
@@ -2295,7 +2295,7 @@ impl<'a> SimdIndex3DView<'a> {
         Q: Overlaps3D,
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         search_region_each(
             self,
             &mut stack,
@@ -2461,7 +2461,7 @@ impl<'a> SimdIndex3DView<'a> {
 
     /// Search with a reusable result buffer.
     pub fn search_into(&self, query: Box3D, out: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         out.clear();
         let _: ControlFlow<()> = self.try_visit(query, &mut stack, |index| {
             out.push(index);
@@ -2511,7 +2511,7 @@ impl<'a> SimdIndex3DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.try_visit(query, &mut stack, visitor)
     }
 
@@ -2617,7 +2617,7 @@ impl<'a> SimdIndex3DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         within_core(
             self,
             query,
@@ -3234,7 +3234,7 @@ impl SimdIndex3DView<'_> {
 
     /// Raycast with a reusable result buffer.
     pub fn raycast_into(&self, ray: Ray3D, results: &mut Vec<usize>) {
-        let mut stack = Vec::with_capacity(DEFAULT_SEARCH_STACK_CAPACITY);
+        let mut stack = crate::traversal::ScratchStack::take();
         self.raycast_into_stack(ray, results, &mut stack);
     }
 

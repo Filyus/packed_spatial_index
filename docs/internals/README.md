@@ -20,3 +20,8 @@ does and when to use it, see the [guide](../guide.md). For the numbers, see
   over object storage, why neither coalescing setting alone fixes it, and the
   contiguous `PFIX` section that does. The body size at which each tool starts
   paying, measured.
+- **[payload-compression.md](payload-compression.md)** — what the reserved
+  `compression` byte should ever hold. Why an Elias-Fano offset table is worth
+  25% of the payload section on point data and 0.7% on polygons (the share is
+  `8 / (8 + mean_blob)` and nothing else), and why byte-stream-split was measured
+  and rejected outright.

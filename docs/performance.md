@@ -288,6 +288,58 @@ depth, since a deeper tree holds larger fully contained subtrees, and a window
 too small to contain any whole node pays a containment test that skips nothing —
 the same trade the owned indexes make.
 
+## Profiling the two count/aggregate open questions
+
+The paired benches left two questions open: why the scalar `Index2D::count`
+still counts large windows ~1.2x faster than `count_simd_impl`, and why
+`aggregate` on a ~10k-hit window costs ~3x `count` when cache misses do not
+explain it. Both were profiled with `callgrind` (instruction, cache and branch
+simulation, WSL2 — there is no valgrind on Windows) plus live `perf` cycle
+sampling, using `examples/callgrind_count_agg.rs`: one arm per process with
+`--collect-atstart=no --toggle-collect` around the query loop, the index build
+excluded by construction, and a parity check first (`owned` and `simd` must
+print the same count). Both gaps reproduce on the profiling platform
+(1.24x and 2.0x), so the profiles answer the question that was asked.
+
+**The SIMD count kernel loses on dispatch, not on work.** For 200 windows of
+side 2000–5000 (100k boxes): the SIMD kernel executes *fewer* instructions than
+the scalar one (12.2M vs 14.9M Ir for the whole query loop) and takes
+essentially *no* last-level misses against the scalar kernel's 31k — yet burns
+55% of the alternating run's cycles against the scalar kernel's 45%, which is
+the 1.2x. `llvm-mca` puts the loop bodies at parity (8.0 vs 8.2 cycles per four
+boxes), so the loss is not inside any loop either: it is the per-node
+dispatch structure. The scalar kernel builds one 64-bit overlap mask for the
+whole 16-entry node (autovectorized, independent lanes) and only then walks the
+mask to push cut children; `count_simd_impl` interleaves test → bitmask →
+gather/containment/push four times per node, putting the serial
+next-child-dependent chain on the critical path four times as often. The
+full-node-mask variant already tried when writing the kernel sat at the other
+end of the same knob (faster on 2D large, slower on every small-window case)
+and was rejected for the small windows; the untested middle is collecting all
+of a node's 4-lane bitmasks *before* dispatching any hits from them — that
+keeps the small-window shape and takes the dispatch chain off the test loop.
+Not yet measured.
+
+**`aggregate` pays for per-item folds on the window's cut leaves.** For 200
+windows of side 100k (1M boxes, ~10k hits each): `aggregate` executes only 33%
+more instructions than `count` (17.1M vs 12.8M Ir) but takes 2.02x the cycles
+(perf split 65%/32%), reproducing the wall-clock ratio. The +33% instructions
+are the aggregate kernel testing children through the generic per-child
+closure (`overlap_mask_at`) where the count kernel autovectorizes a 16-entry
+mask over contiguous entries. The cycles are elsewhere: only ~840 of the ~10k
+hits per window are cut-leaf items folded one by one (`Fold::item`) — the rest
+come from contained-subtree summaries — but those folds form a loop-carried
+FP chain (`sum += v`, a serial `addsd`) reading the scalar and mask columns,
+and ~40% of the kernel's samples sit on that chain's accumulator spill and
+`addsd`. The cache simulation agrees (264k vs 183k last-level misses), and
+explains why the per-node record-layout experiment did not move the ratio:
+the misses are per-*item* column reads on cut leaves, not per-node summary
+reads. Two levers follow, neither measured: autovectorize the aggregate
+kernel's child tests (a shared-kernel change — measure the owned paths
+specifically), and break the `sum` chain with partial accumulators (cheap,
+contained in `Fold`). The Windows ratio was 2.9–3.1x against 2.0x here; the
+mechanism is the same, the host's relative memory latency amplifies it.
+
 ## Overlapping boxes
 
 An R-tree prunes by node bounding box, so the usual worry is that data packed

@@ -310,15 +310,50 @@ the 1.2x. `llvm-mca` puts the loop bodies at parity (8.0 vs 8.2 cycles per four
 boxes), so the loss is not inside any loop either: it is the per-node
 dispatch structure. The scalar kernel builds one 64-bit overlap mask for the
 whole 16-entry node (autovectorized, independent lanes) and only then walks the
-mask to push cut children; `count_simd_impl` interleaves test → bitmask →
+mask to push cut children; `count_simd_impl` interleaved test → bitmask →
 gather/containment/push four times per node, putting the serial
-next-child-dependent chain on the critical path four times as often. The
-full-node-mask variant already tried when writing the kernel sat at the other
-end of the same knob (faster on 2D large, slower on every small-window case)
-and was rejected for the small windows; the untested middle is collecting all
-of a node's 4-lane bitmasks *before* dispatching any hits from them — that
-keeps the small-window shape and takes the dispatch chain off the test loop.
-Not yet measured.
+next-child-dependent chain on the critical path four times as often.
+
+The fix — build a chunk's 64-entry mask first, then walk it (the owned
+kernel's shape) — was measured as two binaries alternated A B A B, three
+passes, pinned core, on a quiet machine, figure = kernel/scalar-count ratio
+per pass (the `count` control's own level tracks the binary-to-binary layout
+bias, which moved up to 9% between builds — the per-run ratio is the only
+figure worth reading across builds):
+
+| window | before | after |
+| --- | ---: | ---: |
+| 2d small | 0.91 | 0.84 |
+| 2d large | 1.25 | 1.05 |
+| 3d small | 0.75 | 0.79 |
+| 3d large | 1.26 | 1.07 |
+
+Cross-checked on Windows/Zen5 with the one-binary harness
+(`benches/paired_simd_count.rs`, ratio to the old visit-closure
+implementation, so no build-to-build term), three dispatch shapes behind a
+const generic (`probe/simd-count-shapes`, two passes of 12–15 rounds):
+
+| window | interleaved (before) | chunk loop | whole-node mask |
+| --- | ---: | ---: | ---: |
+| 2d small | 0.71–0.76 | 0.72–0.76 | **0.64–0.67** |
+| 2d large | 0.73–0.75 | 0.66–0.68 | **0.62–0.64** |
+| 3d small | 1.04–1.14 | 1.08–1.20 | **1.03–1.13** |
+| 3d large | 0.80–0.84 | **0.65–0.68** | 0.69–0.72 |
+
+The chunk loop that the WSL2 measurement landed cost 3d small ~6% over the
+interleaved kernel; building the mask for the whole node when it has at most
+64 children (every default configuration — the chunk loop remains for wider
+nodes) keeps the large-window win, takes 2d small a further 10%, and returns
+3d small to the interleaved level. Final kernel against the old visit-based
+count: 2d small 0.64, 2d large 0.60 (scalar count 0.59), 3d small 1.04
+[0.96..1.07], 3d large 0.64 (scalar 0.61). Two
+intermediate shapes were measured and dropped: a per-batch scratch-array of
+masks (large-window win halved, small-window cost the same) and merging two
+four-lane batches per dispatch round (worse everywhere — the second batch's
+loads in flight cost more than the saved dispatch rounds). The
+remaining 3–5% on large windows is the SoA kernel's per-node bookkeeping
+(column bounds checks and the packed-frame push) that the owned kernel's
+contiguous entries do not pay.
 
 **`aggregate` pays for per-item folds on the window's cut leaves.** For 200
 windows of side 100k (1M boxes, ~10k hits each): `aggregate` executes only 33%
@@ -334,11 +369,28 @@ and ~40% of the kernel's samples sit on that chain's accumulator spill and
 `addsd`. The cache simulation agrees (264k vs 183k last-level misses), and
 explains why the per-node record-layout experiment did not move the ratio:
 the misses are per-*item* column reads on cut leaves, not per-node summary
-reads. Two levers follow, neither measured: autovectorize the aggregate
-kernel's child tests (a shared-kernel change — measure the owned paths
-specifically), and break the `sum` chain with partial accumulators (cheap,
-contained in `Fold`). The Windows ratio was 2.9–3.1x against 2.0x here; the
-mechanism is the same, the host's relative memory latency amplifies it.
+reads.
+
+The obvious fix for that chain — splitting the fold over several sum/min/max
+lanes, collapsed at the end — was built and measured, and it lost. Two
+binaries alternated on WSL2 read a 4% gain (1.62 → 1.55 at ~100 hits), which
+is inside the up-to-9% build-to-build band that comparison carries; putting
+the lane count behind a const generic and running 1, 2 and 4 lanes in *one*
+binary on Windows/Zen5 (`probe/aggr-fold-lanes`, `aggregate`/`count` per
+round, two passes of 12 rounds) gave:
+
+| window | 1 lane | 2 lanes | 4 lanes |
+| --- | ---: | ---: | ---: |
+| ~0 hits | 1.03 | 1.02–1.04 | 1.07–1.08 |
+| ~100 hits | 1.44–1.45 | 1.63–1.65 | 1.67–1.69 |
+| ~10k hits | 2.66–2.74 | 3.11–3.16 | 3.00–3.28 |
+
+One lane wins everywhere; four lanes cost 16% at ~100 hits. The profile's
+mechanism (samples on the accumulator chain) was real and still did not
+convert into time — the chain is not what the out-of-order core is waiting
+on, the column reads are. The single accumulator ships. The Windows ratio is
+2.9–3.1x against 2.0–2.5x on WSL2; the mechanism is the same, the host's
+relative memory latency amplifies it.
 
 ## Overlapping boxes
 

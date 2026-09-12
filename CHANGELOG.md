@@ -48,6 +48,15 @@ All notable changes to this crate are documented here.
 - **`aggregate` folds contained subtrees on the spot** (mask-and-iterate, one
   packed frame per cut child, no per-query allocation): -42% on windows of
   ~100 hits; unchanged at ~0 and ~10k hits.
+- **The SIMD count kernels dispatch a chunk's hits off one mask.** The
+  gather/containment/push chain per cut child is serial; building a 64-entry
+  overlap mask before walking it (the owned kernel's shape) takes that chain
+  off the four-lane test loop. Large windows (2000–5000 on 100k boxes), where
+  the kernel still trailed the scalar `count` by ~1.2x: now level with it
+  (2D 0.60 vs 0.59, 3D 0.64 vs 0.61 of the old visit-based count). The mask
+  covers the whole node when it has at most 64 children (every default
+  configuration), which also took 2D small windows from 0.72 to 0.64 and put
+  3D small back at 1.04 [0.96..1.07] of the old implementation.
 
 ## [0.30.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.29.0...psi-v0.30.0) - 2026-09-11
 

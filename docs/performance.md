@@ -239,12 +239,58 @@ paths:
   against four box corners, an order of magnitude more work than the branch it
   replaces.
 
-The radius queries (`search_within`, `count_within`) sit exactly on the second
-boundary and split by query width rather than by form: a wide radius keeps most
-children and the mask takes 17–25% off, a narrow radius keeps almost none, the
-branch predicts, and the same change costs 35–43%. Since what separates the two
-is selectivity rather than path shape or tree level, no static placement captures
-the win, and the radius queries keep the branching traversal.
+The radius queries sit exactly on the second boundary and split by query width
+rather than by form, which is what the next section is about.
+
+## Radius queries: which traversal
+
+`search_within_into` and `count_within` pick between the branching traversal and
+the masked one per query, because neither wins everywhere. The two answer
+identically — the switch changes only which code produced the answer — so the
+whole question is speed.
+
+What the switch reads is the expected hit count: the fraction of the root box
+covered by the query grown by `max_distance`, times the item count. Below one
+expected hit it takes the branching path, at or above it the masked one.
+
+That threshold is an item count and **not** a covered fraction, which is the part
+worth writing down because the first attempt got it wrong. At 100k items a query
+covering 1e-6 of the extent lost 25% on the mask; at 1M items the *same fraction*
+won 9.5%. Same geometry, opposite sign, so the fraction is not what the crossover
+tracks — the hit count is, and a threshold calibrated as a fraction would have
+been tuned to one corpus size. Measured on Zen5, one binary, arms behind a
+runtime switch read outside the timed loop, the box collect path as a control
+(`benches/paired_within.rs`, ratios of masked to branching):
+
+| 2d, 100k items | hits/query | masked / branching |
+| --- | ---: | ---: |
+| r=1 | 0 | 1.31 |
+| r=20 | 2 | 1.03 |
+| r=60 | 14 | 0.83 |
+| r=400 | 502 | 0.84 |
+| r=700 | 1 478 | 0.88 |
+| r=1200 | 4 110 | 0.95 |
+| r=1800 | 8 691 | 1.01 |
+| r=2500 | 15 635 | 1.07 |
+
+3D behaves the same at the narrow end (1.04–1.08 at zero hits, 0.74 at 27 hits)
+and, unlike 2D, keeps winning all the way up: 0.71 at 4 853 hits per query.
+
+Two things the table says that the switch does not act on. First, `count_within`
+wins with the mask at *every* width — a flat ~16% even in the rows where
+`search_within_into` has given the win back — because it has no output to push
+and nothing else to be limited by. Second, the 2D collect form degrades once the
+output gets very large, and that upper crossover is not predictable: it sits near
+8 700 hits per query at 100k items and near 760 at 1M, a tenfold disagreement, so
+it is explained by neither an absolute count nor a share of the index. A second
+constant fitted to it would be fitted to this machine and this corpus, so there
+is none. The cost of leaving it is the bottom two rows — up to 7% on 2D radius
+queries that return roughly a sixth of the index — against 12–17% won in the
+middle of the range and ~16% on every `count_within`.
+
+The callback forms (`search_within_each`, `search_within_any`) never take the
+masked path at any width. They can stop early, and a mask spends its work before
+the first hit is reported; the same change measured 40–60% worse on `any`.
 
 ## Large-window range search
 

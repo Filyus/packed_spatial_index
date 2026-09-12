@@ -676,6 +676,18 @@ the exact distance costs two axis gaps and two multiplies, but the extra
 subtrees it descends cost 1.2–2.2× more than the predicate saves, measured
 with both arms in one binary.
 
+`search_within_into` and `count_within` pick their traversal per query. A query
+expected to hit at least one item folds each node's distance tests into a
+bitmask and branches once per child kept; one expected to hit nothing keeps the
+plain branching descent, where that test is predicted and the mask would be pure
+overhead. The estimate is the grown query's share of the total extent times the
+item count, so it costs a handful of flops once per query and no result depends
+on it — both traversals answer identically. It is worth 12–17% in the middle of
+the range and ~16% on `count_within` at any width; `docs/performance.md` has the
+table, including the one regime where it gives a few percent back. The callback
+forms keep the branching descent unconditionally, because they can stop early
+and a mask does its work before the first hit is reported.
+
 ## Join by distance (ε-join)
 
 Naming: every method that takes a distance bound ends in `_within`

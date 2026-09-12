@@ -266,3 +266,64 @@ mod simd {
         }
     }
 }
+
+/// The collect forms switch traversal by estimated selectivity, and the two
+/// traversals must answer identically. The sweep runs the radius from "hits
+/// almost nothing" to "covers the whole extent" so it crosses the threshold in
+/// both directions. See the 2D twin.
+#[test]
+fn collect_forms_agree_across_the_selectivity_switch() {
+    let mut rng = StdRng::seed_from_u64(0x5717C4);
+    let boxes = random_boxes(&mut rng, 2_000, 1_000.0, 5.0);
+    let index = build(&boxes);
+    let bytes = index.to_bytes();
+    let view = Index3DView::from_bytes(&bytes).unwrap();
+    let mut buffer = Vec::new();
+
+    for query in [
+        Box3D::new(500.0, 500.0, 500.0, 501.0, 501.0, 501.0),
+        Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+        Box3D::new(-50.0, -50.0, -50.0, -49.0, -49.0, -49.0),
+    ] {
+        for max_distance in [
+            0.0, 0.1, 1.0, 5.0, 12.0, 25.0, 60.0, 150.0, 400.0, 900.0, 2_000.0,
+        ] {
+            let expected = naive_within(&boxes, query, max_distance);
+            let label = format!("query={query:?} max_distance={max_distance}");
+
+            let mut each = Vec::new();
+            let _: ControlFlow<()> = index.search_within_each(query, max_distance, |i| {
+                each.push(i);
+                ControlFlow::Continue(())
+            });
+            assert_eq!(as_set(each), expected, "search_within_each: {label}");
+
+            assert_eq!(
+                as_set(index.search_within(query, max_distance)),
+                expected,
+                "search_within: {label}"
+            );
+            index.search_within_into(query, max_distance, &mut buffer);
+            assert_eq!(
+                as_set(buffer.clone()),
+                expected,
+                "search_within_into: {label}"
+            );
+            assert_eq!(
+                index.count_within(query, max_distance),
+                expected.len(),
+                "count_within: {label}"
+            );
+            assert_eq!(
+                as_set(view.search_within(query, max_distance)),
+                expected,
+                "view search_within: {label}"
+            );
+            assert_eq!(
+                view.count_within(query, max_distance),
+                expected.len(),
+                "view count_within: {label}"
+            );
+        }
+    }
+}

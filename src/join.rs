@@ -13,9 +13,10 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
+use crate::estimate::{box_fraction_2d, box_fraction_3d};
 use crate::geometry::{Box2D, Box3D};
 use crate::index2d::MASK_CHUNK;
-use crate::range::search_region_each;
+use crate::range::{collect_region, search_region_each};
 use crate::tree_access::{TreeAccess, leaf_range};
 
 /// Which entry pairs of a dual-tree descent can hold output pairs.
@@ -391,6 +392,183 @@ where
         |node| test.covers(query, node),
         visitor,
     )
+}
+
+/// The collect twin of [`within_core`]: same prune, same whole-subtree accept,
+/// no early exit. Without a `Break` to honour, a node's distance tests fold
+/// into a bitmask and the loop branches once per child kept instead of once per
+/// child tested — the trade the box collect paths already make.
+///
+/// Which of the two is faster depends on the query, not on the code: see
+/// [`prefers_mask_2d`] for the switch and the reasoning behind it. Only the
+/// forms that always run to completion may take this path.
+#[inline]
+pub(crate) fn collect_within_core<T, P, F>(
+    tree: &T,
+    query: T::Bounds,
+    test: P,
+    stack: &mut Vec<usize>,
+    emit: F,
+) where
+    T: TreeAccess,
+    P: PairTest<T::Bounds>,
+    F: FnMut(usize),
+{
+    collect_region(
+        tree,
+        stack,
+        |node| test.keeps(node, query),
+        |node| test.covers(query, node),
+        emit,
+    );
+}
+
+/// How many items a radius query must expect to hit before the masked
+/// traversal is worth its fixed cost.
+///
+/// One. A query not expected to hit even a single item spends the whole
+/// descent building masks of nodes it then discards, and that is exactly the
+/// regime where the branching test is perfectly predicted — the mask cost
+/// 25-27% there. Everything from about one expected hit upward it wins.
+///
+/// This is an item count and not a covered fraction on purpose: measured at
+/// 100k items a query covering 1e-6 of the extent lost 25%, and at 1M items
+/// the same fraction *won* 9.5%. The fraction was the same and the sign was
+/// not, so the fraction is not what the crossover tracks (docs/performance.md,
+/// "Radius queries: which traversal").
+const MIN_EXPECTED_HITS: f64 = 1.0;
+
+/// Whether a radius query is wide enough for the masked traversal.
+///
+/// The two traversals answer identically, so this only picks which one runs —
+/// no result depends on it, and a NaN anywhere simply lands on the branching
+/// path. What separates them is how many children of a node survive: a query
+/// with hits to find keeps a mixture, the per-child test comes out ~50/50
+/// along the boundary and the branch mispredicts, so folding the tests into a
+/// mask wins; a query with nothing to find misses nearly every child, the
+/// branch predicts, and the mask is overhead nothing pays for.
+///
+/// The estimate is the fraction of the root box covered by the query grown by
+/// `max_distance` — the region's bounding box — times the item count, i.e. the
+/// hits expected if items were spread uniformly. Clustering makes it wrong in
+/// both directions, which is affordable: the crossover is flat, and the worst
+/// mis-call measured cost 3%, against 20-27% for having no switch at all.
+#[inline]
+pub(crate) fn prefers_mask_2d(
+    root: Box2D,
+    query: Box2D,
+    max_distance: f64,
+    num_items: usize,
+) -> bool {
+    // A negative or NaN bound matches nothing, so the mask would be pure cost.
+    if max_distance.partial_cmp(&0.0).is_none_or(|o| o.is_lt()) {
+        return false;
+    }
+    let grown = Box2D::new(
+        query.min_x - max_distance,
+        query.min_y - max_distance,
+        query.max_x + max_distance,
+        query.max_y + max_distance,
+    );
+    box_fraction_2d(root, grown) * num_items as f64 >= MIN_EXPECTED_HITS
+}
+
+/// Run a radius query that always goes to completion, on whichever of the two
+/// traversals suits this query — the one switch point behind every
+/// `search_within_into` and `count_within` in the crate.
+///
+/// The callback forms (`search_within_each`, `search_within_any`) deliberately
+/// do not come through here: they may stop early, and a mask spends its work
+/// before the first hit is reported, which measured 40-60% worse on `any`.
+#[inline]
+pub(crate) fn collect_within_switched<T, P, F>(
+    tree: &T,
+    query: T::Bounds,
+    max_distance: f64,
+    test: P,
+    stack: &mut Vec<usize>,
+    mut emit: F,
+) where
+    T: TreeAccess,
+    T::Bounds: RadiusBounds,
+    P: PairTest<T::Bounds>,
+    F: FnMut(usize),
+{
+    if tree.tree_num_items() == 0 {
+        return;
+    }
+    let root = tree.tree_bounds(tree.tree_num_nodes() - 1);
+    let masked = match FORCE_WITHIN_SHAPE.with(|c| c.get()) {
+        1 => false,
+        2 => true,
+        _ => RadiusBounds::prefers_mask(root, query, max_distance, tree.tree_num_items()),
+    };
+    if masked {
+        collect_within_core(tree, query, test, stack, emit);
+    } else {
+        let _: ControlFlow<()> = within_core(tree, query, test, stack, |index| {
+            emit(index);
+            ControlFlow::Continue(())
+        });
+    }
+}
+
+thread_local! {
+    /// PROBE ONLY (`probe/within-switch`): 0 = the shipping switch, 1 = force
+    /// the branching traversal, 2 = force the masked one. Exists so the
+    /// calibration bench can time both paths on the same query in one binary;
+    /// it is read once per query, outside any timed loop, and must be removed
+    /// before this lands.
+    static FORCE_WITHIN_SHAPE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// PROBE ONLY: see [`FORCE_WITHIN_SHAPE`].
+#[doc(hidden)]
+pub fn force_within_shape(shape: u8) {
+    FORCE_WITHIN_SHAPE.with(|c| c.set(shape));
+}
+
+/// Bounds a radius query can estimate its own selectivity from, so the switch
+/// above is written once instead of once per dimension.
+pub(crate) trait RadiusBounds: Copy {
+    fn prefers_mask(root: Self, query: Self, max_distance: f64, num_items: usize) -> bool;
+}
+
+impl RadiusBounds for Box2D {
+    #[inline]
+    fn prefers_mask(root: Self, query: Self, max_distance: f64, num_items: usize) -> bool {
+        prefers_mask_2d(root, query, max_distance, num_items)
+    }
+}
+
+impl RadiusBounds for Box3D {
+    #[inline]
+    fn prefers_mask(root: Self, query: Self, max_distance: f64, num_items: usize) -> bool {
+        prefers_mask_3d(root, query, max_distance, num_items)
+    }
+}
+
+/// The 3D twin of [`prefers_mask_2d`].
+#[inline]
+pub(crate) fn prefers_mask_3d(
+    root: Box3D,
+    query: Box3D,
+    max_distance: f64,
+    num_items: usize,
+) -> bool {
+    // A negative or NaN bound matches nothing, so the mask would be pure cost.
+    if max_distance.partial_cmp(&0.0).is_none_or(|o| o.is_lt()) {
+        return false;
+    }
+    let grown = Box3D::new(
+        query.min_x - max_distance,
+        query.min_y - max_distance,
+        query.min_z - max_distance,
+        query.max_x + max_distance,
+        query.max_y + max_distance,
+        query.max_z + max_distance,
+    );
+    box_fraction_3d(root, grown) * num_items as f64 >= MIN_EXPECTED_HITS
 }
 
 /// Box bounds a closest-pair descent can measure between.

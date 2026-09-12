@@ -33,6 +33,18 @@ All notable changes to this crate are documented here.
 
 ### Performance
 
+- **Radius queries pick their traversal per query.** `search_within_into` and
+  `count_within` fold a node's distance tests into a bitmask when the query is
+  expected to hit at least one item, and keep the branching descent when it is
+  not; the estimate is the grown query's share of the extent times the item
+  count. Both traversals answer identically, so only speed changes. 2D at 100k
+  items: -17% at 14 hits per query, -16% at 502, -12% at 1 478; `count_within`
+  -16% at every width. 3D keeps the win across the whole range (-26% at 27 hits,
+  -29% at 4 853). The threshold is a hit count rather than a covered fraction on
+  purpose - the same fraction lost 25% at 100k items and won 9.5% at 1M. Very
+  wide 2D collect queries (returning ~1/6 of the index) give up to 7% back; see
+  `docs/performance.md`, "Radius queries: which traversal". The callback forms
+  (`search_within_each`, `search_within_any`) are unchanged.
 - **One traversal stack per thread.** Every query form that does not take a
   `SearchWorkspace` allocated a fresh traversal stack per call (80 sites across
   the 2D/3D owned, view, SIMD and `f32` frontends); they now lend one cached

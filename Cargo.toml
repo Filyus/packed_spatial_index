@@ -94,6 +94,10 @@ harness = false
 required-features = ["simd"]
 
 [[bench]]
+name = "paired_within"
+harness = false
+
+[[bench]]
 name = "predicate_regions_bench"
 harness = false
 

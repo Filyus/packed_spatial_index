@@ -24,7 +24,8 @@ use crate::{
     geometry::{Box2D, Overlaps2D, Point2D, fold_max, fold_min, query_covers_tree_2d},
     join::{
         DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core,
-        closest_pair_to_core, join_core, pairs_components_core, pairs_core, within_core,
+        closest_pair_to_core, collect_within_switched, join_core, pairs_components_core,
+        pairs_core, within_core,
     },
     neighbors::{NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first},
     ordered::{collect_ordered, search_ordered_each},
@@ -977,10 +978,26 @@ impl SimdIndex2D {
     /// first).
     pub fn search_within_into(&self, query: Box2D, max_distance: f64, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |index| {
-            out.push(index);
-            ControlFlow::Continue(())
-        });
+        self.collect_within(query, max_distance, |index| out.push(index));
+    }
+
+    /// The collect shape of the radius query, for the forms that never stop
+    /// early: picks the masked or the branching traversal by the query's
+    /// estimated selectivity. Both answer identically — see
+    /// [`crate::join::collect_within_switched`].
+    fn collect_within<F>(&self, query: Box2D, max_distance: f64, emit: F)
+    where
+        F: FnMut(usize),
+    {
+        let mut stack = crate::traversal::ScratchStack::take();
+        collect_within_switched(
+            self,
+            query,
+            max_distance,
+            DistanceTest::new(max_distance),
+            &mut stack,
+            emit,
+        );
     }
 
     /// Visit every item within `max_distance` of `query` without collecting a
@@ -1022,10 +1039,7 @@ impl SimdIndex2D {
     /// [`count`](Self::count) for the overlap query.
     pub fn count_within(&self, query: Box2D, max_distance: f64) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |_| {
-            count += 1;
-            ControlFlow::Continue(())
-        });
+        self.collect_within(query, max_distance, |_| count += 1);
         count
     }
 
@@ -3044,10 +3058,26 @@ impl<'a> SimdIndex2DView<'a> {
     /// first).
     pub fn search_within_into(&self, query: Box2D, max_distance: f64, out: &mut Vec<usize>) {
         out.clear();
-        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |index| {
-            out.push(index);
-            ControlFlow::Continue(())
-        });
+        self.collect_within(query, max_distance, |index| out.push(index));
+    }
+
+    /// The collect shape of the radius query, for the forms that never stop
+    /// early: picks the masked or the branching traversal by the query's
+    /// estimated selectivity. Both answer identically — see
+    /// [`crate::join::collect_within_switched`].
+    fn collect_within<F>(&self, query: Box2D, max_distance: f64, emit: F)
+    where
+        F: FnMut(usize),
+    {
+        let mut stack = crate::traversal::ScratchStack::take();
+        collect_within_switched(
+            self,
+            query,
+            max_distance,
+            DistanceTest::new(max_distance),
+            &mut stack,
+            emit,
+        );
     }
 
     /// Visit every item within `max_distance` of `query` without collecting a
@@ -3089,10 +3119,7 @@ impl<'a> SimdIndex2DView<'a> {
     /// [`count`](Self::count) for the overlap query.
     pub fn count_within(&self, query: Box2D, max_distance: f64) -> usize {
         let mut count = 0usize;
-        let _: ControlFlow<()> = self.search_within_each(query, max_distance, |_| {
-            count += 1;
-            ControlFlow::Continue(())
-        });
+        self.collect_within(query, max_distance, |_| count += 1);
         count
     }
 

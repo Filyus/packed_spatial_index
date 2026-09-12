@@ -18,9 +18,12 @@
 //! that does not know it skips it and loses nothing but the aggregates.
 
 use crate::estimate::subtree_leaf_range;
+use crate::index2d::{MASK_CHUNK, for_each_hit, for_each_hit_rev, frame};
 use crate::persistence::{
     LoadError, read_f64_le_unchecked, read_u16_at, read_u32_at, read_u64_le_unchecked,
 };
+use crate::range::overlap_mask_at;
+use crate::traversal::ScratchStack;
 use crate::tree_access::TreeAccess;
 
 /// Which summary columns an [`Aggregates`] carries.
@@ -328,11 +331,13 @@ pub(crate) fn aggregates_for_index(
 
 /// Fold the summaries over every item whose box overlaps the region.
 ///
-/// The descent mirrors `estimate_core`: a node the region misses is dropped, a
-/// node it fully contains contributes its stored summary whole, and a node it
-/// cuts is expanded; leaves are folded item by item (a leaf summary is too
-/// coarse — the region may cover only part of a leaf). The answer is exact:
-/// it equals `search` + a per-item fold, at a fraction of the leaves touched.
+/// The descent is the collect-path shape (`range::collect_region`): each
+/// node's overlap tests run branch-free into a bitmask and the loop branches
+/// once per hit. A hit child the region *contains* is folded on the spot from
+/// its stored summary — it never enters the stack — and only the children a
+/// region edge cuts are pushed, one packed frame each; at the leaves the hit
+/// items are folded one by one. The answer is exact: it equals `search` + a
+/// per-item fold, at a fraction of the leaves touched.
 pub(crate) fn aggregate_region_core<T, S, O, C>(
     tree: &T,
     agg: &S,
@@ -358,63 +363,122 @@ where
     if num_items == 0 || agg.columns() == 0 {
         return out;
     }
-    let (mut sum, mut min, mut max) = (0.0f64, f64::INFINITY, f64::NEG_INFINITY);
-    let mut or_mask = 0u64;
+    let mut acc = Fold {
+        count: 0,
+        sum: 0.0,
+        min: f64::INFINITY,
+        max: f64::NEG_INFINITY,
+        or_mask: 0,
+        scalar,
+        mask,
+    };
 
-    let node_size = tree.tree_node_size();
-    let level_count = tree.tree_level_count();
-    let mut stack: Vec<(usize, usize)> = Vec::with_capacity(64);
-    stack.push((tree.tree_num_nodes() - 1, level_count - 1));
-    while let Some((pos, level)) = stack.pop() {
-        let bounds = tree.tree_bounds(pos);
-        if !overlaps(bounds) {
-            continue;
-        }
-        if level > 0 && contains(bounds) {
-            // Every item below is a hit: fold the stored summary whole.
-            out.count += subtree_leaf_count(tree, pos, level);
-            if scalar {
-                let (s, lo, hi) = agg.node_scalar(pos);
-                sum += s;
-                min = min.min(lo);
-                max = max.max(hi);
+    let root = tree.tree_num_nodes() - 1;
+    let root_bounds = tree.tree_bounds(root);
+    if !overlaps(root_bounds) {
+        return out;
+    }
+    let top = tree.tree_level_count() - 1;
+    if top > 0 && contains(root_bounds) {
+        acc.count = num_items as u64;
+        acc.node(agg, root);
+    } else {
+        let mut stack = ScratchStack::take();
+        let mut node_index = root;
+        let mut level = top;
+        loop {
+            let end = (node_index + tree.tree_node_size()).min(tree.tree_level_bound(level));
+            if level == 0 {
+                let mut start = node_index;
+                while start < end {
+                    let stop = (start + MASK_CHUNK).min(end);
+                    for_each_hit(overlap_mask_at(tree, start, stop, &overlaps), |i| {
+                        acc.item(agg, start + i);
+                    });
+                    start = stop;
+                }
+            } else {
+                let child_level = level - 1;
+                // Chunks from the back, bits from the top: children pop in
+                // forward order.
+                let mut stop = end;
+                while stop > node_index {
+                    let start = stop.saturating_sub(MASK_CHUNK).max(node_index);
+                    for_each_hit_rev(overlap_mask_at(tree, start, stop, &overlaps), |i| {
+                        let pos = start + i;
+                        if contains(tree.tree_bounds(pos)) {
+                            acc.count += subtree_leaf_count(tree, pos, level);
+                            acc.node(agg, pos);
+                        } else {
+                            stack.push(frame::pack(tree.tree_index(pos), child_level));
+                        }
+                    });
+                    stop = start;
+                }
             }
-            if mask {
-                or_mask |= agg.node_mask(pos);
+            match stack.pop() {
+                Some(f) => {
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                }
+                None => break,
             }
-            continue;
-        }
-        if level == 0 {
-            out.count += 1;
-            if scalar {
-                let v = agg.item_scalar(pos);
-                sum += v;
-                min = min.min(v);
-                max = max.max(v);
-            }
-            if mask {
-                or_mask |= agg.item_mask(pos);
-            }
-            continue;
-        }
-        let child_level = level - 1;
-        let first = tree.tree_index(pos);
-        let last = (first + node_size).min(tree.tree_level_bound(child_level));
-        for child in first..last {
-            stack.push((child, child_level));
         }
     }
-    if out.count > 0 {
+    out.count = acc.count;
+    if acc.count > 0 {
         if scalar {
-            out.sum = Some(sum);
-            out.min = Some(min);
-            out.max = Some(max);
+            out.sum = Some(acc.sum);
+            out.min = Some(acc.min);
+            out.max = Some(acc.max);
         }
         if mask {
-            out.mask = Some(or_mask);
+            out.mask = Some(acc.or_mask);
         }
     }
     out
+}
+
+/// The running fold of `aggregate_region_core`.
+struct Fold {
+    count: u64,
+    sum: f64,
+    min: f64,
+    max: f64,
+    or_mask: u64,
+    scalar: bool,
+    mask: bool,
+}
+
+impl Fold {
+    /// Fold one node's stored summary (a contained subtree).
+    #[inline]
+    fn node<S: AggregateSource>(&mut self, agg: &S, pos: usize) {
+        if self.scalar {
+            let (s, lo, hi) = agg.node_scalar(pos);
+            self.sum += s;
+            self.min = self.min.min(lo);
+            self.max = self.max.max(hi);
+        }
+        if self.mask {
+            self.or_mask |= agg.node_mask(pos);
+        }
+    }
+
+    /// Fold one item at its leaf position.
+    #[inline]
+    fn item<S: AggregateSource>(&mut self, agg: &S, pos: usize) {
+        self.count += 1;
+        if self.scalar {
+            let v = agg.item_scalar(pos);
+            self.sum += v;
+            self.min = self.min.min(v);
+            self.max = self.max.max(v);
+        }
+        if self.mask {
+            self.or_mask |= agg.item_mask(pos);
+        }
+    }
 }
 
 /// Leaf-array items under the node at `pos` on `level` (rank arithmetic, see

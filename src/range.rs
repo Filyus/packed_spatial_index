@@ -8,7 +8,7 @@ use crate::tree_access::{TreeAccess, leaf_group_range};
 /// `index2d::overlap_mask` for byte-backed views, whose bounds are decoded per
 /// position rather than read from a slice.
 #[inline(always)]
-fn overlap_mask_at<T: TreeAccess>(
+pub(crate) fn overlap_mask_at<T: TreeAccess>(
     tree: &T,
     start: usize,
     end: usize,

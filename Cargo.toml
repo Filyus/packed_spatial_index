@@ -85,6 +85,10 @@ name = "alloc_cost_bench"
 harness = false
 
 [[bench]]
+name = "paired_aggregate"
+harness = false
+
+[[bench]]
 name = "paired_simd_count"
 harness = false
 required-features = ["simd"]

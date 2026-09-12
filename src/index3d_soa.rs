@@ -496,12 +496,119 @@ impl SimdIndex3D {
     /// Counts during the traversal, so nothing is collected — prefer it to
     /// `search(query).len()`, which allocates a `Vec` to throw away.
     pub fn count(&self, query: Box3D) -> usize {
-        let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit(query, |_| {
-            count += 1;
-            ControlFlow::Continue(())
-        });
-        count
+        let mut stack = crate::traversal::ScratchStack::take();
+        self.count_simd_impl(query, &mut stack)
+    }
+
+    /// Count the items overlapping `query` without collecting them: whole
+    /// subtrees the query contains are added by leaf-range arithmetic, leaf
+    /// nodes contribute the popcount of their overlap mask, and only the
+    /// internal children a query edge cuts are pushed, one packed frame each.
+    /// Portable `f64x4` lanes throughout: a count has no leaf output to
+    /// compress, so the intrinsic tiers would buy nothing here, and a full
+    /// 64-entry mask per node measured worse on small windows (where nearly
+    /// every child misses) than these four-lane tests.
+    fn count_simd_impl(&self, query: Box3D, stack: &mut Vec<usize>) -> usize {
+        use crate::index2d::frame;
+        stack.clear();
+        if self.num_items == 0 {
+            return 0;
+        }
+        if query_covers_tree_3d(query, self.root_box()) {
+            return self.num_items;
+        }
+        let qmxx_v = f64x4::splat(query.max_x);
+        let qmnx_v = f64x4::splat(query.min_x);
+        let qmxy_v = f64x4::splat(query.max_y);
+        let qmny_v = f64x4::splat(query.min_y);
+        let qmxz_v = f64x4::splat(query.max_z);
+        let qmnz_v = f64x4::splat(query.min_z);
+
+        let mut total = 0usize;
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                total += end - start;
+            } else if is_leaf {
+                let mut hits = 0u32;
+                let mut pos = node_index;
+                while pos + 4 <= end {
+                    let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
+                        & load4(&self.max_xs, pos).simd_ge(qmnx_v)
+                        & load4(&self.min_ys, pos).simd_le(qmxy_v)
+                        & load4(&self.max_ys, pos).simd_ge(qmny_v)
+                        & load4(&self.min_zs, pos).simd_le(qmxz_v)
+                        & load4(&self.max_zs, pos).simd_ge(qmnz_v);
+                    hits += mask.to_bitmask().count_ones();
+                    pos += 4;
+                }
+                while pos < end {
+                    let hit = (self.min_xs[pos] <= query.max_x)
+                        & (self.max_xs[pos] >= query.min_x)
+                        & (self.min_ys[pos] <= query.max_y)
+                        & (self.max_ys[pos] >= query.min_y)
+                        & (self.min_zs[pos] <= query.max_z)
+                        & (self.max_zs[pos] >= query.min_z);
+                    hits += u32::from(hit);
+                    pos += 1;
+                }
+                total += hits as usize;
+            } else {
+                let child_level = level - 1;
+                let mut pos = node_index;
+                while pos + 4 <= end {
+                    let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
+                        & load4(&self.max_xs, pos).simd_ge(qmnx_v)
+                        & load4(&self.min_ys, pos).simd_le(qmxy_v)
+                        & load4(&self.max_ys, pos).simd_ge(qmny_v)
+                        & load4(&self.min_zs, pos).simd_le(qmxz_v)
+                        & load4(&self.max_zs, pos).simd_ge(qmnz_v);
+                    let mut rest = mask.to_bitmask();
+                    while rest != 0 {
+                        let p = pos + rest.trailing_zeros() as usize;
+                        rest &= rest - 1;
+                        let flag =
+                            usize::from(self.query_contains_node(query, p)) * frame::CONTAINED;
+                        stack.push(frame::pack(self.indices[p], child_level) | flag);
+                    }
+                    pos += 4;
+                }
+                while pos < end {
+                    let hit = (self.min_xs[pos] <= query.max_x)
+                        & (self.max_xs[pos] >= query.min_x)
+                        & (self.min_ys[pos] <= query.max_y)
+                        & (self.max_ys[pos] >= query.min_y)
+                        & (self.min_zs[pos] <= query.max_z)
+                        & (self.max_zs[pos] >= query.min_z);
+                    if hit {
+                        let flag =
+                            usize::from(self.query_contains_node(query, pos)) * frame::CONTAINED;
+                        stack.push(frame::pack(self.indices[pos], child_level) | flag);
+                    }
+                    pos += 1;
+                }
+            }
+
+            match stack.pop() {
+                Some(f) => {
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                    contained = frame::contained(f);
+                }
+                None => return total,
+            }
+        }
     }
 
     /// Return one intersecting item, if any.

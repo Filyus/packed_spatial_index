@@ -31,6 +31,24 @@ All notable changes to this crate are documented here.
   `f32` indexes and the streaming readers skip the chunk (follow-up). Format:
   `FORMAT.md` revision 14.
 
+### Performance
+
+- **One traversal stack per thread.** Every query form that does not take a
+  `SearchWorkspace` allocated a fresh traversal stack per call (80 sites across
+  the 2D/3D owned, view, SIMD and `f32` frontends); they now lend one cached
+  per-thread stack for the query. Narrow and point windows on 100k boxes:
+  `count` -15..-17%, `search_into` -12..-13%, `search` -10..-13%; wide -4..-10%.
+  The caller-owned forms (`search_into_stack`, `search_with`) are unchanged and
+  the allocating forms are now within ~2% of them.
+- **`SimdIndex2D::count` / `SimdIndex3D::count` have their own kernel.** They
+  were a `visit` with a counting closure; now leaf nodes contribute the popcount
+  of their overlap mask, a contained subtree adds its leaf range, and only cut
+  children are pushed. 2D -28% on small and large windows, -15% on the whole
+  extent; 3D -22% large, -19% whole extent, small unchanged.
+- **`aggregate` folds contained subtrees on the spot** (mask-and-iterate, one
+  packed frame per cut child, no per-query allocation): -42% on windows of
+  ~100 hits; unchanged at ~0 and ~10k hits.
+
 ## [0.30.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.29.0...psi-v0.30.0) - 2026-09-11
 
 ### API

@@ -493,11 +493,15 @@ impl SimdIndex2D {
     /// nodes contribute the popcount of their overlap mask, and only the
     /// internal children a query edge cuts are pushed, one packed frame each.
     /// Portable `f64x4` lanes throughout: a count has no leaf output to
-    /// compress, so the intrinsic tiers would buy nothing here, and a full
-    /// 64-entry mask per node measured worse on small windows (where nearly
-    /// every child misses) than these four-lane tests.
+    /// compress, so the intrinsic tiers would buy nothing here. The tests are
+    /// four-lane, but an internal node's hits are gathered into one 64-entry
+    /// mask per chunk before any is dispatched — the serial gather/containment/
+    /// push chain then stays off the test loop (see `docs/performance.md`,
+    /// "Profiling the two count/aggregate open questions"). An autovectorized
+    /// 64-entry mask built by a plain loop over the columns was measured too
+    /// and lost on small windows.
     fn count_simd_impl(&self, query: Box2D, stack: &mut Vec<usize>) -> usize {
-        use crate::index2d::frame;
+        use crate::index2d::{MASK_CHUNK, frame};
         stack.clear();
         if self.num_items == 0 {
             return 0;
@@ -548,36 +552,78 @@ impl SimdIndex2D {
                 total += hits as usize;
             } else {
                 let child_level = level - 1;
-                let mut pos = node_index;
-                while pos + 4 <= end {
-                    let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
-                        & load4(&self.max_xs, pos).simd_ge(qmnx_v)
-                        & load4(&self.min_ys, pos).simd_le(qmxy_v)
-                        & load4(&self.max_ys, pos).simd_ge(qmny_v);
-                    let mut rest = mask.to_bitmask();
+                // Mask first, dispatch after (the owned kernel's shape): the
+                // per-hit gather/containment/push chain is serial, so running
+                // all of a node's four-lane tests back to back before walking
+                // its mask keeps that chain off the vector-test loop. A count
+                // has no per-hit output, so order is free. The whole node fits
+                // one mask up to 64 children — every default configuration —
+                // and the chunk loop below only exists for wider nodes; the
+                // straight form measured 5-10% ahead of running the chunk loop
+                // once (docs/performance.md, "Profiling the two count/
+                // aggregate open questions").
+                if end - node_index <= MASK_CHUNK {
+                    let start = node_index;
+                    let mut hit_mask = 0u64;
+                    let mut pos = start;
+                    while pos + 4 <= end {
+                        let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
+                            & load4(&self.max_xs, pos).simd_ge(qmnx_v)
+                            & load4(&self.min_ys, pos).simd_le(qmxy_v)
+                            & load4(&self.max_ys, pos).simd_ge(qmny_v);
+                        hit_mask |= u64::from(mask.to_bitmask()) << (pos - start);
+                        pos += 4;
+                    }
+                    while pos < end {
+                        let hit = (self.min_xs[pos] <= query.max_x)
+                            & (self.max_xs[pos] >= query.min_x)
+                            & (self.min_ys[pos] <= query.max_y)
+                            & (self.max_ys[pos] >= query.min_y);
+                        hit_mask |= u64::from(hit) << (pos - start);
+                        pos += 1;
+                    }
+                    let mut rest = hit_mask;
                     while rest != 0 {
-                        let p = pos + rest.trailing_zeros() as usize;
+                        let p = start + rest.trailing_zeros() as usize;
                         rest &= rest - 1;
                         let flag =
                             usize::from(self.query_contains_node(query, p)) * frame::CONTAINED;
                         stack.push(frame::pack(self.indices[p], child_level) | flag);
                     }
-                    pos += 4;
-                }
-                while pos < end {
-                    let hit = (self.min_xs[pos] <= query.max_x)
-                        & (self.max_xs[pos] >= query.min_x)
-                        & (self.min_ys[pos] <= query.max_y)
-                        & (self.max_ys[pos] >= query.min_y);
-                    if hit {
-                        let flag =
-                            usize::from(self.query_contains_node(query, pos)) * frame::CONTAINED;
-                        stack.push(frame::pack(self.indices[pos], child_level) | flag);
+                } else {
+                    let mut stop = end;
+                    while stop > node_index {
+                        let start = stop.saturating_sub(MASK_CHUNK).max(node_index);
+                        let mut hit_mask = 0u64;
+                        let mut pos = start;
+                        while pos + 4 <= stop {
+                            let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
+                                & load4(&self.max_xs, pos).simd_ge(qmnx_v)
+                                & load4(&self.min_ys, pos).simd_le(qmxy_v)
+                                & load4(&self.max_ys, pos).simd_ge(qmny_v);
+                            hit_mask |= u64::from(mask.to_bitmask()) << (pos - start);
+                            pos += 4;
+                        }
+                        while pos < stop {
+                            let hit = (self.min_xs[pos] <= query.max_x)
+                                & (self.max_xs[pos] >= query.min_x)
+                                & (self.min_ys[pos] <= query.max_y)
+                                & (self.max_ys[pos] >= query.min_y);
+                            hit_mask |= u64::from(hit) << (pos - start);
+                            pos += 1;
+                        }
+                        let mut rest = hit_mask;
+                        while rest != 0 {
+                            let p = start + rest.trailing_zeros() as usize;
+                            rest &= rest - 1;
+                            let flag =
+                                usize::from(self.query_contains_node(query, p)) * frame::CONTAINED;
+                            stack.push(frame::pack(self.indices[p], child_level) | flag);
+                        }
+                        stop = start;
                     }
-                    pos += 1;
                 }
             }
-
             match stack.pop() {
                 Some(f) => {
                     node_index = frame::node(f);

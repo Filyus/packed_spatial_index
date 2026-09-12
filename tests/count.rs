@@ -144,6 +144,44 @@ mod simd {
             assert_eq!(simd.count(q), simd.search(q).len());
         }
     }
+
+    /// Nodes wider than one 64-bit mask take the kernel's chunked branch;
+    /// node sizes 16 and 70 must count identically (both against `search`).
+    #[test]
+    fn simd_count_agrees_across_the_one_mask_boundary() {
+        let boxes = boxes2d(5_000);
+        let scalar = build2d(&boxes);
+        for node_size in [16usize, 64, 70, 130] {
+            let mut b = Index2DBuilder::new(boxes.len()).node_size(node_size);
+            for bx in &boxes {
+                b.add(*bx);
+            }
+            let simd = b.finish_simd().unwrap();
+            for q in queries2d() {
+                assert_eq!(
+                    simd.count(q),
+                    scalar.count(q),
+                    "2D node_size {node_size} {q:?}"
+                );
+            }
+        }
+        let boxes = boxes3d(5_000);
+        let scalar = build3d(&boxes);
+        for node_size in [16usize, 64, 70, 130] {
+            let mut b = Index3DBuilder::new(boxes.len()).node_size(node_size);
+            for bx in &boxes {
+                b.add(*bx);
+            }
+            let simd = b.finish_simd().unwrap();
+            for q in queries3d() {
+                assert_eq!(
+                    simd.count(q),
+                    scalar.count(q),
+                    "3D node_size {node_size} {q:?}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(feature = "f32-storage")]

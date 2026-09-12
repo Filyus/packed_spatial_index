@@ -266,3 +266,66 @@ mod stream {
         }
     }
 }
+
+#[cfg(feature = "simd")]
+#[test]
+fn simd_search_shapes_agree() {
+    use packed_spatial_index::{Box2D, Index2DBuilder};
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
+    for node_size in [16usize, 64, 70] {
+        let mut rng = StdRng::seed_from_u64(0x5EA4 + node_size as u64);
+        let mut b = Index2DBuilder::new(5_000).node_size(node_size);
+        for _ in 0..5_000 {
+            let x: f64 = rng.random_range(0.0..1000.0);
+            let y: f64 = rng.random_range(0.0..1000.0);
+            b.add(Box2D::new(x, y, x + 3.0, y + 3.0));
+        }
+        let simd = b.finish_simd().unwrap();
+        let (mut a, mut c, mut stack) = (Vec::new(), Vec::new(), Vec::new());
+        for side in [5.0, 60.0, 400.0, 2000.0] {
+            for k in 0..12 {
+                let o = k as f64 * 77.0;
+                let q = Box2D::new(o, o, o + side, o + side);
+                simd.search_shape::<0>(q, &mut a, &mut stack);
+                simd.search_shape::<1>(q, &mut c, &mut stack);
+                a.sort_unstable();
+                c.sort_unstable();
+                assert_eq!(a, c, "node_size={node_size} side={side} k={k}");
+            }
+        }
+    }
+}
+
+#[cfg(feature = "simd")]
+#[test]
+fn simd_search_shapes_agree_3d() {
+    use packed_spatial_index::{Box3D, Index3DBuilder};
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
+    for node_size in [16usize, 64, 70] {
+        let mut rng = StdRng::seed_from_u64(0x5EA43 + node_size as u64);
+        let mut b = Index3DBuilder::new(5_000).node_size(node_size);
+        for _ in 0..5_000 {
+            let x: f64 = rng.random_range(0.0..1000.0);
+            let y: f64 = rng.random_range(0.0..1000.0);
+            let z: f64 = rng.random_range(0.0..1000.0);
+            b.add(Box3D::new(x, y, z, x + 3.0, y + 3.0, z + 3.0));
+        }
+        let simd = b.finish_simd().unwrap();
+        let (mut a, mut c, mut stack) = (Vec::new(), Vec::new(), Vec::new());
+        for side in [5.0, 60.0, 400.0, 2000.0] {
+            for k in 0..12 {
+                let o = k as f64 * 77.0;
+                let q = Box3D::new(o, o, o, o + side, o + side, o + side);
+                simd.search_shape::<0>(q, &mut a, &mut stack);
+                simd.search_shape::<1>(q, &mut c, &mut stack);
+                a.sort_unstable();
+                c.sort_unstable();
+                assert_eq!(a, c, "node_size={node_size} side={side} k={k}");
+            }
+        }
+    }
+}

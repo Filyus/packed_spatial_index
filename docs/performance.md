@@ -334,6 +334,35 @@ depth, since a deeper tree holds larger fully contained subtrees, and a window
 too small to contain any whole node pays a containment test that skips nothing —
 the same trade the owned indexes make.
 
+## SIMD search: one mask per node before dispatch
+
+`count_simd_impl` won by building one 64-bit mask for a whole internal node and
+only then walking it, instead of gathering, containment-testing and pushing each
+hit as its four-lane test came out. `search_simd` is the same kind of path — a
+collect with no early exit, so the order is free — and had never been tried on
+that shape. It was, behind a const generic so both ran in one binary against the
+owned `search_into` as a control (`benches/paired_simd_search.rs`), 100k boxes,
+Zen5, four passes. Mask-first against per-4-lane:
+
+| window | 2d | 3d |
+| --- | ---: | ---: |
+| small | 0.93-0.98 | 1.01-1.03 |
+| large (2000..5000) | 0.93-0.95 | 0.93 |
+| full extent | 0.95-0.96 | 0.99 |
+
+Large windows are the clear win at -6..-7% in both dimensions, with a 2D
+full-extent scan at -4.5%; the small-window and 3D full-extent cells have spreads
+wide enough to span 1.0 and are unresolved rather than losses. No cell measured a
+real regression, so the shape ships everywhere and `search_shape::<0>` is kept
+hidden so the comparison can be re-run.
+
+`visit_simd_impl` is deliberately excluded. Its visitor may break, so a mask
+spends work that an early exit then discards, and the same rewrite measured 11%
+slower there; the callback family's mask experiments are at +40-60% elsewhere on
+this page. The AVX2 and AVX-512 tiers are untouched — the AVX2 tier already folds
+its containment test into vector lanes (`cbits`), which is the other half of the
+mechanism.
+
 ## Profiling the two count/aggregate open questions
 
 The paired benches left two questions open: why the scalar `Index2D::count`

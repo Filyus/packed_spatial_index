@@ -1606,16 +1606,31 @@ impl SimdIndex2D {
     /// AVX2/SSE path through `wide::f64x4`.
     #[doc(hidden)]
     pub fn search_simd(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        self.search_simd_impl::<false>(query, out, stack);
+        self.search_simd_impl::<false, 1>(query, out, stack);
     }
 
     /// AVX2/SSE path with prefetch for the next node from the stack.
     #[doc(hidden)]
     pub fn search_simd_prefetch(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        self.search_simd_impl::<true>(query, out, stack);
+        self.search_simd_impl::<true, 1>(query, out, stack);
     }
 
-    fn search_simd_impl<const PREFETCH: bool>(
+    /// Run the portable search kernel on a chosen internal-node dispatch
+    /// shape: 0 dispatches per 4 lanes, 1 (the default) builds one mask for
+    /// the whole node first. Hidden, and performance-only — the two return
+    /// identical results. It exists so `benches/paired_simd_search.rs` can
+    /// time both in one binary, which is how the default was chosen.
+    #[doc(hidden)]
+    pub fn search_shape<const SHAPE: u8>(
+        &self,
+        query: Box2D,
+        out: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        self.search_simd_impl::<false, SHAPE>(query, out, stack);
+    }
+
+    fn search_simd_impl<const PREFETCH: bool, const SHAPE: u8>(
         &self,
         query: Box2D,
         out: &mut Vec<usize>,
@@ -1644,6 +1659,52 @@ impl SimdIndex2D {
 
             if contained {
                 self.extend_contained_leaf_indices(node_index, end, level, out);
+            } else if SHAPE == 1 && !is_leaf && end - node_index <= 64 {
+                // Mask first, dispatch after, the shape `count_simd_impl`
+                // landed on. An internal node's per-hit chain (gather the child
+                // index, test containment, two pushes) is serial, so running
+                // all of the node's four-lane tests back to back before walking
+                // its mask keeps that chain off the vector-test loop. A collect
+                // path has no early exit, so the order is free — which is why
+                // `visit_simd_impl` does NOT get this: its visitor may break,
+                // and the same rewrite there measured 11% slower.
+                //
+                // Worth -6..-7% on large windows in both dimensions and -4.5%
+                // on a 2D full-extent scan, neutral on small ones
+                // (`benches/paired_simd_search.rs`). The whole node fits one
+                // mask up to 64 children, which is every default
+                // configuration; wider nodes fall through to the branch
+                // below.
+                let child_level = level - 1;
+                let start = node_index;
+                let mut hit_mask = 0u64;
+                let mut pos = start;
+                while pos + 4 <= end {
+                    let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
+                        & load4(&self.max_xs, pos).simd_ge(qmnx_v)
+                        & load4(&self.min_ys, pos).simd_le(qmxy_v)
+                        & load4(&self.max_ys, pos).simd_ge(qmny_v);
+                    hit_mask |= u64::from(mask.to_bitmask()) << (pos - start);
+                    pos += 4;
+                }
+                while pos < end {
+                    let hit = (self.min_xs[pos] <= query.max_x)
+                        & (self.max_xs[pos] >= query.min_x)
+                        & (self.min_ys[pos] <= query.max_y)
+                        & (self.max_ys[pos] >= query.min_y);
+                    hit_mask |= u64::from(hit) << (pos - start);
+                    pos += 1;
+                }
+                let mut rest = hit_mask;
+                while rest != 0 {
+                    let p = start + rest.trailing_zeros() as usize;
+                    rest &= rest - 1;
+                    stack.push(self.indices[p]);
+                    stack.push(encode_level(
+                        child_level,
+                        self.query_contains_node(query, p),
+                    ));
+                }
             } else {
                 // Guarded against underflow for a single leaf-level node (`level == 0`);
                 // `child_level` is only read on the internal-node push paths.

@@ -1642,6 +1642,30 @@ impl SimdIndex3D {
     /// AVX2/SSE path through `wide::f64x4`.
     #[doc(hidden)]
     pub fn search_simd(&self, query: Box3D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+        self.search_simd_impl::<1>(query, out, stack);
+    }
+
+    /// Run the portable search kernel on a chosen internal-node dispatch
+    /// shape: 0 dispatches per 4 lanes, 1 (the default) builds one mask for
+    /// the whole node first. Hidden, and performance-only — the two return
+    /// identical results. It exists so `benches/paired_simd_search.rs` can
+    /// time both in one binary, which is how the default was chosen.
+    #[doc(hidden)]
+    pub fn search_shape<const SHAPE: u8>(
+        &self,
+        query: Box3D,
+        out: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        self.search_simd_impl::<SHAPE>(query, out, stack);
+    }
+
+    fn search_simd_impl<const SHAPE: u8>(
+        &self,
+        query: Box3D,
+        out: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
         out.clear();
         stack.clear();
         if self.num_items == 0 {
@@ -1667,6 +1691,37 @@ impl SimdIndex3D {
 
             if contained {
                 self.extend_contained_leaf_indices(node_index, end, level, out);
+            } else if SHAPE == 1 && !is_leaf && end - node_index <= 64 {
+                // Mask first, dispatch after: see the 2D twin for the
+                // reasoning and the numbers.
+                let child_level = level - 1;
+                let start = node_index;
+                let mut hit_mask = 0u64;
+                let mut pos = start;
+                while pos + 4 <= end {
+                    let mask = load4(&self.min_xs, pos).simd_le(qmxx_v)
+                        & load4(&self.max_xs, pos).simd_ge(qmnx_v)
+                        & load4(&self.min_ys, pos).simd_le(qmxy_v)
+                        & load4(&self.max_ys, pos).simd_ge(qmny_v)
+                        & load4(&self.min_zs, pos).simd_le(qmxz_v)
+                        & load4(&self.max_zs, pos).simd_ge(qmnz_v);
+                    hit_mask |= u64::from(mask.to_bitmask()) << (pos - start);
+                    pos += 4;
+                }
+                while pos < end {
+                    hit_mask |= u64::from(self.hit_scalar(pos, query)) << (pos - start);
+                    pos += 1;
+                }
+                let mut rest = hit_mask;
+                while rest != 0 {
+                    let p = start + rest.trailing_zeros() as usize;
+                    rest &= rest - 1;
+                    stack.push(self.indices[p]);
+                    stack.push(encode_level(
+                        child_level,
+                        self.query_contains_node(query, p),
+                    ));
+                }
             } else {
                 let child_level = if is_leaf { 0 } else { level - 1 };
                 let mut pos = node_index;

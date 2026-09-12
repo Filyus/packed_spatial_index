@@ -467,6 +467,33 @@ on, the column reads are. The single accumulator ships. The Windows ratio is
 2.9–3.1x against 2.0–2.5x on WSL2; the mechanism is the same, the host's
 relative memory latency amplifies it.
 
+So the next suspect was the column reads themselves: a cut leaf gathers one
+scattered load per set bit of its hit mask, and its items are contiguous, so
+reading the whole range straight through and folding branch-free under the mask
+should have turned a gather into a stream. It lost too, and by more than the
+lane split did — one binary, both shapes behind a const generic, two passes
+(`probe/aggr-leaf-scan`, `aggregate`/`count`):
+
+| window | gather per hit (ships) | scan the leaf |
+| --- | ---: | ---: |
+| ~0 hits | 1.03–1.04 | 1.20–1.21 |
+| ~100 hits | 1.50–1.53 | 2.45–2.48 |
+| ~10k hits | 2.46–2.47 | 2.63–2.81 |
+
+The premise was wrong in a way worth keeping: at `node_size` 16 a cut leaf holds
+at most 16 items, so there is no stream long enough to amortize anything, and
+the scan only pays for the items the mask drops. Both attempts on this gap have
+now failed for the same underlying reason — the profile names a mechanism, and
+the mechanism is not what the core is waiting on.
+
+What the same runs do show is that the gap is not a defect to fix. Against the
+workaround `aggregate` replaces — `search` the window and fold the hits — it is
+**1.4x faster** at ~10k hits (2.46 vs 3.35–3.45 times `count`) and **1.6x** at
+~100 hits (1.50 vs 2.46). `count` is simply a much cheaper question: it reads no
+per-item columns at all. Treat `aggregate`/`count` as the price of the two extra
+columns rather than as headroom; the line is closed unless the format grows a
+way to answer from summaries alone.
+
 ## Overlapping boxes
 
 An R-tree prunes by node bounding box, so the usual worry is that data packed

@@ -17,7 +17,9 @@ pub(crate) use container::{CHUNK_FLAG_CRITICAL, FORMAT_VERSION};
 pub use errors::{LoadError, PayloadError};
 pub use metadata::{FileMetadata, read_metadata};
 pub(crate) use metadata::{MetaFields, TAG_META};
-pub(crate) use payload::{ParsedPayload, build_id_to_leaf, parse_payload_body, payload_slice};
+pub(crate) use payload::{
+    ParsedPayload, build_id_to_leaf, declares_records, parse_payload_body, payload_slice,
+};
 pub(crate) use payload_chunk::{PYLD_DESC_LEN, PYLD_DESC_LEN_FIXED, TAG_PYLD, parse_pyld_chunk};
 #[cfg(feature = "stream")]
 pub(crate) use prefix_chunk::parse_pfix_chunk;
@@ -206,7 +208,12 @@ pub(crate) fn parse_index(
     let payload = match find_chunk(&chunks, TAG_PYLD) {
         Some(p) => {
             let (pd, body) = parse_pyld_chunk(&bytes[p.offset..p.offset + p.len])?;
-            Some(parse_payload_body(body, desc.num_items, pd.record_stride)?)
+            Some(parse_payload_body(
+                body,
+                desc.num_items,
+                pd.record_stride,
+                pd.stride_inferred,
+            )?)
         }
         None => None,
     };
@@ -397,7 +404,7 @@ mod tests {
         let mut pyld = Vec::new();
         {
             let mut w = ByteWriter::new(&mut pyld, PYLD_DESC_LEN + 8 + b"blob".len());
-            w.write_pyld_desc(None); // variable-width
+            w.write_pyld_desc(None, false); // variable-width
             w.write_u64(0); // one-entry offset table fragment, just bytes here
             w.write_raw(b"blob");
             w.finish();
@@ -663,8 +670,13 @@ mod tests {
             flat.extend_from_slice(&[i as u8; STRIDE - 4]);
         }
         let fixed = index.serialize().records(STRIDE, &flat).to_bytes().unwrap();
+        // The contrast arm has to be genuinely ragged. Uniform blobs now select
+        // the fixed-width layout on their own, so splitting `flat` evenly would
+        // produce the same file twice and leave this assertion vacuous. Lengths
+        // alternate around `STRIDE` so the blob region still totals `n * STRIDE`
+        // and the saving is the table alone.
         let variable: Vec<Vec<u8>> = (0..n)
-            .map(|i| flat[i * STRIDE..(i + 1) * STRIDE].to_vec())
+            .map(|i| vec![i as u8; if i % 2 == 0 { STRIDE - 1 } else { STRIDE + 1 }])
             .collect();
         let var_bytes = index.to_bytes_with_payloads(&variable).unwrap();
 
@@ -684,6 +696,102 @@ mod tests {
                 &flat[id * STRIDE..(id + 1) * STRIDE]
             );
         }
+    }
+
+    #[test]
+    fn uniform_payloads_select_the_fixed_width_layout() {
+        const WIDTH: usize = 7;
+        let n = 20;
+        let index = build(n);
+        // Plain `.payloads()` — the caller never mentions a stride.
+        let payloads: Vec<Vec<u8>> = (0..n).map(|i| vec![i as u8; WIDTH]).collect();
+        let bytes = index.to_bytes_with_payloads(&payloads).unwrap();
+
+        let (_parsed, payload) = parse_index(&bytes, 2, 8).unwrap();
+        let parsed = payload.expect("payload present");
+        assert_eq!(parsed.stride, WIDTH);
+        assert!(parsed.offsets.is_empty(), "the offset table should be gone");
+        assert!(
+            parsed.stride_inferred,
+            "the width was deduced, not declared"
+        );
+        for r in 0..n {
+            let id = index.indices[r];
+            assert_eq!(payload_slice(&parsed, r), payloads[id].as_slice());
+        }
+    }
+
+    #[test]
+    fn empty_payloads_stay_variable_width() {
+        // Zero-length blobs are trivially uniform, but `record_stride == 0` is the
+        // wire sentinel for variable-width, so a fixed width of zero has no
+        // encoding: inferring one would write a file no reader can read back.
+        let n = 12;
+        let index = build(n);
+        let payloads: Vec<Vec<u8>> = vec![Vec::new(); n];
+        let bytes = index.to_bytes_with_payloads(&payloads).unwrap();
+
+        let (_parsed, payload) = parse_index(&bytes, 2, 8).unwrap();
+        let parsed = payload.expect("payload present");
+        assert_eq!(parsed.stride, 0);
+        assert_eq!(parsed.offsets.len(), (n + 1) * 8);
+        for r in 0..n {
+            assert!(payload_slice(&parsed, r).is_empty());
+        }
+    }
+
+    #[test]
+    fn ragged_payloads_keep_the_offset_table() {
+        let n = 16;
+        let index = build(n);
+        let payloads: Vec<Vec<u8>> = (0..n).map(|i| vec![i as u8; 1 + i % 5]).collect();
+        let bytes = index.to_bytes_with_payloads(&payloads).unwrap();
+
+        let (_parsed, payload) = parse_index(&bytes, 2, 8).unwrap();
+        let parsed = payload.expect("payload present");
+        assert_eq!(parsed.stride, 0);
+        assert!(!parsed.stride_inferred);
+        for r in 0..n {
+            let id = index.indices[r];
+            assert_eq!(payload_slice(&parsed, r), payloads[id].as_slice());
+        }
+    }
+
+    #[test]
+    fn a_declared_width_is_distinguishable_from_an_inferred_one() {
+        // Both files are the same layout over the same blob bytes; the flag in the
+        // descriptor's reserved field is the only difference, and it is what keeps
+        // a typed-record reader from claiming an incidentally-uniform payload.
+        const WIDTH: usize = 24;
+        let n = 8;
+        let index = build(n);
+        let flat: Vec<u8> = (0..n * WIDTH).map(|i| i as u8).collect();
+        let blobs: Vec<Vec<u8>> = (0..n)
+            .map(|i| flat[i * WIDTH..][..WIDTH].to_vec())
+            .collect();
+
+        let declared = index.serialize().records(WIDTH, &flat).to_bytes().unwrap();
+        let inferred = index.to_bytes_with_payloads(&blobs).unwrap();
+        assert_eq!(declared.len(), inferred.len());
+
+        for (bytes, want_inferred) in [(&declared, false), (&inferred, true)] {
+            let (_t, payload) = parse_index(bytes, 2, 8).unwrap();
+            let parsed = payload.expect("payload present");
+            assert_eq!(parsed.stride, WIDTH);
+            assert!(parsed.offsets.is_empty());
+            assert_eq!(parsed.stride_inferred, want_inferred);
+            assert_eq!(declares_records(&parsed, WIDTH), !want_inferred);
+        }
+    }
+
+    #[test]
+    fn a_single_uniform_item_still_drops_the_table() {
+        let index = build(1);
+        let bytes = index.to_bytes_with_payloads(&[b"solo".as_slice()]).unwrap();
+        let (_t, payload) = parse_index(&bytes, 2, 8).unwrap();
+        let parsed = payload.expect("payload present");
+        assert_eq!(parsed.stride, 4);
+        assert_eq!(payload_slice(&parsed, 0), b"solo");
     }
 
     #[test]

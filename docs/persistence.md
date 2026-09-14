@@ -75,6 +75,18 @@ for `Triangle2D` / `Triangle3D` and the compact `Triangle2DF32` /
 the file is smaller, a streamed query reads one fewer time, and a view can
 borrow the records as a zero-copy typed slice.
 
+You do not have to notice this yourself. If the blobs handed to `.payloads(..)`
+all turn out to be the same non-zero size, the serializer selects the same
+table-less layout on its own and the file simply comes out smaller — the offset
+table was recording nothing. What declaring the width still buys is the typed
+view: `triangles::<T>()` and `triangle::<T>(id)` have nothing but the stride to
+identify a record by, so they answer only for a width you declared. An
+incidentally-uniform payload is not reinterpreted as records — plenty of things
+are 24 bytes wide besides an `f32` 2D triangle.
+
+(Blobs that are all *empty* stay variable-width. A stride of zero is how the
+format spells "variable", so that one case has no table-less encoding.)
+
 A triangle payload plus an index over each triangle's bounding box
 (`Index3D::from_triangles`) is a streamable mesh BVH: `raycast` finds the
 candidates and `Ray3D::closest_triangle` does the exact hit, testing eight `f32`

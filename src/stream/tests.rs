@@ -1175,6 +1175,48 @@ fn streamed_payloads_round_trip_with_search() {
 }
 
 #[test]
+fn an_inferred_fixed_width_streams_like_a_declared_one() {
+    // The streaming reader has no notion of declared-vs-inferred: a payload that
+    // reached the fixed-width layout by detection must plan the same table-less
+    // reads as one that was asked for.
+    const STRIDE: usize = 12;
+    let (owned, _) = random_owned(20_000, 0x11FE);
+    let n = owned.num_items();
+    let uniform: Vec<Vec<u8>> = (0..n)
+        .map(|id| {
+            let mut r = vec![0u8; STRIDE];
+            r[..8].copy_from_slice(&(id as u64).to_le_bytes());
+            r
+        })
+        .collect();
+    let ragged: Vec<Vec<u8>> = (0..n)
+        .map(|id| vec![id as u8; if id % 2 == 0 { STRIDE - 1 } else { STRIDE + 1 }])
+        .collect();
+    let uniform_bytes = owned.serialize().payloads(&uniform).to_bytes().unwrap();
+    let ragged_bytes = owned.serialize().payloads(&ragged).to_bytes().unwrap();
+
+    let query = Box2D::new(400.0, 400.0, 460.0, 460.0);
+    let stream = open_slice(uniform_bytes.clone());
+    for (id, blob) in stream.search_payloads(query).unwrap() {
+        assert_eq!(blob.as_slice(), uniform[id].as_slice());
+    }
+
+    let mut reads = Vec::new();
+    for bytes in [uniform_bytes, ragged_bytes] {
+        let r = StreamIndex2D::open(CountingReader::new(SliceReader::new(bytes))).unwrap();
+        let before = *r.core.reader.reads.borrow();
+        let _ = r.search_payloads(query).unwrap();
+        reads.push(*r.core.reader.reads.borrow() - before);
+    }
+    assert!(
+        reads[0] < reads[1],
+        "inferred fixed-width {} should read fewer than ragged {}",
+        reads[0],
+        reads[1]
+    );
+}
+
+#[test]
 fn fixed_width_payload_streams_table_less() {
     const STRIDE: usize = 12;
     let (owned, _) = random_owned(20_000, 0x713A);
@@ -1186,8 +1228,12 @@ fn fixed_width_payload_streams_table_less() {
         flat[id * STRIDE + 8..id * STRIDE + STRIDE].copy_from_slice(&[0xAB, 0xCD, id as u8, 0]);
     }
     let fixed_bytes = owned.serialize().records(STRIDE, &flat).to_bytes().unwrap();
+    // Ragged on purpose: a uniform payload now picks the fixed-width layout by
+    // itself, so an evenly-split contrast arm would be the very same file and the
+    // read-count comparison below would compare a file with itself. Lengths
+    // alternate around `STRIDE`, keeping the blob region the same total size.
     let variable: Vec<Vec<u8>> = (0..n)
-        .map(|id| flat[id * STRIDE..(id + 1) * STRIDE].to_vec())
+        .map(|id| vec![id as u8; if id % 2 == 0 { STRIDE - 1 } else { STRIDE + 1 }])
         .collect();
     let var_bytes = owned.serialize().payloads(&variable).to_bytes().unwrap();
 

@@ -425,6 +425,30 @@ pub(crate) fn write_index_container(
     let record = dimensions as usize * 2 * coord_bytes as usize;
     let tree_len = TREE_DESC_LEN + num_nodes * (record + 8);
 
+    // Blobs that are already all the same size need no offset table, whether or
+    // not the caller knew to say so: take the fixed-width layout for them and drop
+    // `(num_items + 1) * 8` bytes the table was spending on nothing. An explicit
+    // `record_stride` always wins, and mismatched counts fall through to the error
+    // the sizing pass below already raises.
+    //
+    // Zero-length blobs are excluded, and not for tidiness: `record_stride == 0`
+    // is the wire sentinel for "variable-width", so there is no encoding for a
+    // fixed width of zero, and inferring one would write a table-less body that
+    // every reader then rejects for a missing table.
+    let inferred_stride = match (record_stride, payloads) {
+        (None, Some(p)) if !p.is_empty() && p.len() == num_items => {
+            let stride = p[0].len();
+            if stride > 0 && p.iter().all(|b| b.len() == stride) {
+                u32::try_from(stride).ok()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let stride_inferred = inferred_stride.is_some();
+    let record_stride = record_stride.or(inferred_stride);
+
     let pyld_len = match payloads {
         Some(p) => {
             if p.len() != num_items {
@@ -524,7 +548,7 @@ pub(crate) fn write_index_container(
     pos = off[0] + tree_len;
     if let (Some(i), Some(p)) = (pyld_idx, payloads) {
         bytes.write_zeros(off[i] - pos);
-        bytes.write_pyld_desc(record_stride);
+        bytes.write_pyld_desc(record_stride, stride_inferred);
         match record_stride {
             Some(_) => bytes.write_payload_blobs_fixed(p, leaf_order),
             None => bytes.write_payload_offsets_and_blobs(p, leaf_order),

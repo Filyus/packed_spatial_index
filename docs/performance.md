@@ -622,7 +622,10 @@ A triangle payload plus the index over each triangle's bounding box is a
 streamable mesh BVH: `raycast` returns candidate boxes, then
 `Ray3D::closest_triangle` runs the exact Moller-Trumbore test only on those. The
 records are fixed-width, so the payload drops its offset table (smaller file, one
-fewer streamed read) and a view borrows them as a zero-copy typed slice. The
+fewer streamed read) and a view borrows them as a zero-copy typed slice. Any
+payload whose blobs are all the same size gets the first two of those without
+asking — the serializer infers the width — but only a *declared* width is
+borrowed as typed records, since a stride alone does not identify a type. The
 `f32` records (`Triangle3DF32`, 36 bytes) are half the size of `f64`
 (`Triangle3D`, 72 bytes) and test 8 at a time through `wide::f32x8`; the `f64`
 path is scalar. Workload: 4,096 rays against 4,096 candidate triangles (the

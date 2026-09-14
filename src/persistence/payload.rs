@@ -12,6 +12,23 @@ pub(crate) struct ParsedPayload<'a> {
     /// `offsets`). When non-zero every blob is exactly `stride` bytes, so the
     /// blob at leaf rank `r` is `blobs[r * stride ..][.. stride]`.
     pub(crate) stride: usize,
+    /// The writer inferred `stride` from uniform blob lengths instead of being
+    /// told it. The bytes are addressed identically either way; what differs is
+    /// intent, so an API that reinterprets the blobs as typed records must refuse
+    /// an inferred payload — uniform width is not a declaration of record type.
+    pub(crate) stride_inferred: bool,
+}
+
+/// Whether this payload is a *declared* array of `stride`-byte records — the only
+/// case in which reinterpreting the blobs as a typed record is warranted.
+///
+/// A width the writer merely inferred from uniform blobs says nothing about what
+/// the blobs are: a corpus of 24-byte feature references is uniformly 24 bytes,
+/// which is also the `f32` 2D triangle stride. The format carries no type tag, so
+/// the declaration is the whole of the evidence and an inferred width is not one.
+#[inline]
+pub(crate) fn declares_records(payload: &ParsedPayload<'_>, stride: usize) -> bool {
+    payload.stride == stride && !payload.stride_inferred
 }
 
 /// Slice the payload at leaf rank `r`: by arithmetic for a fixed-width payload,
@@ -48,6 +65,7 @@ pub(crate) fn parse_payload_body(
     body: &[u8],
     num_items: usize,
     stride: usize,
+    stride_inferred: bool,
 ) -> Result<ParsedPayload<'_>, LoadError> {
     if stride != 0 {
         let total = num_items
@@ -63,6 +81,7 @@ pub(crate) fn parse_payload_body(
             offsets: &[],
             blobs: body,
             stride,
+            stride_inferred,
         });
     }
     let offsets_len = num_items
@@ -93,5 +112,6 @@ pub(crate) fn parse_payload_body(
         offsets,
         blobs,
         stride: 0,
+        stride_inferred: false,
     })
 }

@@ -6,6 +6,22 @@ All notable changes to this crate are documented here.
 
 ### API
 
+- **Uniform payloads drop the offset table on their own.** A variable-width
+  `PYLD` spends `(num_items + 1) x u64` recording where each blob starts, which
+  encodes nothing when the blobs are all the same size. The fixed-width layout
+  that removes it already existed but had to be asked for by the caller
+  (`.records(stride, flat)`); the serializer now detects a uniform non-zero width
+  and selects that layout itself. No API change, no new encoding, and the output
+  is a layout every reader has understood since `format_version` 2 — the file is
+  simply smaller and the streaming reader stops fetching the table for it. Blobs
+  that are all empty stay variable-width: `record_stride = 0` is the wire
+  sentinel for "variable", so a fixed width of zero has no encoding.
+  `FORMAT.md` revision 15 adds a `flags` bit recording that a width was
+  *inferred* rather than declared, so `triangles::<T>()` / `triangle::<T>()`,
+  which have only the stride to go on, keep refusing a payload that is merely
+  24 bytes wide (the `f32` 2D triangle stride, and also the width of a geo
+  feature reference) instead of reinterpreting it as records nobody declared.
+
 - **Predicate regions: half-space, capsule, cone.** Three new query shapes ride
   the ordinary region family (`search` / `count` / `any` / `first` / `visit`,
   `*_region` on SIMD and f32): `HalfSpace2D` / `HalfSpace3D` — the unbounded

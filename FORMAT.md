@@ -181,7 +181,7 @@ offset  size  field
 0       4     desc_len       u32 = 8 (variable-width) or 12 (fixed-width)
 4       1     ordering       u8 = 0 (leaf rank)
 5       1     compression    u8 = 0 (none)
-6       2     reserved
+6       2     flags          u16; bit 0 = record_stride was inferred, not declared
 8       4     record_stride  u32, present only when desc_len = 12; 0 = variable
 
 then:
@@ -200,6 +200,21 @@ There are two layouts, chosen by `record_stride`:
   (smaller file, one fewer streamed read) and lets a reader borrow the blobs as a
   typed slice. Triangle meshes use it (a 2D/3D triangle is 48/72 fixed bytes in
   `f64`, or 24/36 in `f32`).
+
+A writer may **infer** the fixed width rather than be told it, whenever every blob
+happens to be the same non-zero size, and records that in `flags` bit 0. Both
+forms address the blobs identically; the bit exists because uniform width is not a
+declaration of type. A corpus of 24-byte feature references is uniformly 24 bytes,
+which is also the `f32` 2D triangle stride, and the format carries no type tag — so
+a reader that reinterprets the blobs as typed records must do so only for a
+*declared* width (bit 0 clear). Files written before the bit existed have it clear,
+which is correct for them: they only ever got a stride by declaring one.
+
+Remaining `flags` bits are reserved and must be **ignored** on read, not rejected.
+
+A fixed width of zero cannot be expressed — `record_stride = 0` is the
+variable-width sentinel — so a payload whose blobs are all empty stays
+variable-width, with a table of `num_items + 1` zeros.
 
 Both layouts order the blobs by **leaf rank** (the position of an item among the
 leaves in Hilbert order), so a spatial query, which visits leaves in contiguous

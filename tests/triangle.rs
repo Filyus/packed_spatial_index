@@ -3,7 +3,7 @@
 
 use packed_spatial_index::{
     Box2D, Box3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
-    Point3D, Ray3D, Triangle2, Triangle2D, Triangle3, Triangle3D, Triangle3DF32,
+    Point3D, Ray3D, Triangle2, Triangle2D, Triangle2DF32, Triangle3, Triangle3D, Triangle3DF32,
 };
 
 fn tri3(i: usize) -> Triangle3D {
@@ -259,4 +259,45 @@ fn triangle_search_empty_index() {
     let tri = Triangle2D::new([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]);
     assert!(index.search(&tri).is_empty());
     assert!(!index.any(&tri));
+}
+
+#[test]
+fn an_inferred_record_width_is_not_a_triangle_payload() {
+    // A uniform 24-byte payload is addressable as records by arithmetic, and 24 is
+    // also the `f32` 2D triangle stride — geo's feature references are exactly 24
+    // bytes. The format carries no type tag, so only a width the writer
+    // *declared* may be reinterpreted; one inferred from uniform blobs may not.
+    let n = 32;
+    let mut builder = Index2DBuilder::new(n);
+    for i in 0..n {
+        let v = i as f64;
+        builder.add(Box2D::new(v, v, v + 1.0, v + 1.0));
+    }
+    let index = builder.finish().unwrap();
+    let blobs: Vec<Vec<u8>> = (0..n).map(|i| vec![i as u8; 24]).collect();
+    let bytes = index.to_bytes_with_payloads(&blobs).unwrap();
+
+    let view = Index2DView::from_bytes(&bytes).unwrap();
+    assert!(view.triangles::<Triangle2DF32>().is_none());
+    assert!(view.triangle::<Triangle2DF32>(0).is_none());
+    // The blobs themselves are unaffected, and still served by id.
+    for (id, blob) in blobs.iter().enumerate() {
+        assert_eq!(view.payload(id), Some(blob.as_slice()));
+    }
+
+    // The positive control: the same width, declared, still reads as triangles.
+    let tris: Vec<Triangle2DF32> = (0..n)
+        .map(|i| {
+            let v = i as f32;
+            Triangle2DF32::new([v, v], [v + 1.0, v], [v, v + 2.0])
+        })
+        .collect();
+    let declared = Index2D::from_triangles(&tris)
+        .unwrap()
+        .serialize()
+        .triangles(&tris)
+        .to_bytes()
+        .unwrap();
+    let view = Index2DView::from_bytes(&declared).unwrap();
+    assert_eq!(view.triangle::<Triangle2DF32>(0), Some(tris[0]));
 }

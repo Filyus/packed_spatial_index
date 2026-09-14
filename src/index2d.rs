@@ -37,8 +37,8 @@ use crate::neighbors::{
 };
 use crate::ordered::{collect_ordered, search_ordered_each};
 use crate::persistence::{
-    LoadError, ParsedPayload, PayloadError, build_id_to_leaf, parse_aggregates, parse_index,
-    parse_index_owned, payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
+    LoadError, ParsedPayload, PayloadError, build_id_to_leaf, declares_records, parse_aggregates,
+    parse_index, parse_index_owned, payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
 };
 use crate::range::{collect_region, search_region_each, visit_overlaps};
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
@@ -2180,7 +2180,7 @@ impl<'a> Index2DView<'a> {
     /// record by item id regardless of alignment.
     pub fn triangles<T: Triangle2>(&self) -> Option<&'a [T]> {
         let payload = self.payload.as_ref()?;
-        if payload.stride != T::STRIDE {
+        if !declares_records(payload, T::STRIDE) {
             return None;
         }
         blobs_as_records::<T>(payload.blobs)
@@ -2193,7 +2193,7 @@ impl<'a> Index2DView<'a> {
     /// [`Triangle2DF32`](crate::Triangle2DF32) for `f32`).
     pub fn triangle<T: Triangle2>(&self, id: usize) -> Option<T> {
         let payload = self.payload.as_ref()?;
-        if payload.stride != T::STRIDE {
+        if !declares_records(payload, T::STRIDE) {
             return None;
         }
         let id_to_leaf = self.id_to_leaf.as_ref()?;

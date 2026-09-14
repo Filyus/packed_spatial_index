@@ -345,7 +345,7 @@ by which files the commit touched.
 | 05 | Indexes | the touched crate | `index`, `builder`, `accelerator` | keep |
 | 06 | Search | `packed_spatial_index` | `search`, `visit`, `traversal`, `workspace`, `raycast`, `rays` | keep |
 | 07 | Nearest Neighbors | `packed_spatial_index` | `knn`, `neighbors`, `nearest` | keep |
-| 08 | Persistence | the touched crate | `persistence`, `serialize`, `load`, `views`, `format`, `bytes`, `zero-copy`, `stream`, `converter` | keep |
+| 08 | Persistence | the touched crate | `persistence`, `serialize`, `load`, `views`, `format`, `bytes`, `zero-copy`, `stream`, `payload`, `converter` | keep |
 | 09 | SIMD | `packed_spatial_index` | `simd`, `soa`, `avx`, `avx512`, `sse` | keep |
 | 10 | WASM | web / the touched crate | `wasm`, `wasm-demo`, `demo` | depends |
 | 11 | Performance | the touched crate | `perf`, `parallel`, `radix`, `node-size`, `prefetch` | keep if measured and user-facing |

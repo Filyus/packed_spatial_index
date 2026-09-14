@@ -361,8 +361,54 @@ Zen5, four passes. Mask-first against per-4-lane:
 Large windows are the clear win at -6..-7% in both dimensions, with a 2D
 full-extent scan at -4.5%; the small-window and 3D full-extent cells have spreads
 wide enough to span 1.0 and are unresolved rather than losses. No cell measured a
-real regression, so the shape ships everywhere and `search_shape::<0>` is kept
-hidden so the comparison can be re-run.
+real regression, so the shape ships in that kernel and `search_shape::<0>` is
+kept hidden so the comparison can be re-run.
+
+**Which kernel that is, and what it is worth.** `search_simd` is the portable
+`wide` tier, and `SimdIndex2D::search_into` reaches it only when the CPU offers
+neither AVX-512 nor AVX2 — so on current x86_64 hardware the numbers above
+describe a kernel that does not run. Measured in the same binary and the same
+run, `search_into` (dispatching to AVX-512 on the Zen5 box) is about **half** the
+`wide` tier's time on small and large windows alike, and the AVX2 tier about
+two thirds of it; on a full-extent scan all three converge, because the
+contained-subtree shortcut does the work and the kernel barely matters. So the
+shape above is a 5% slice of the slowest tier. It is still the right default for
+aarch64 and for pre-AVX2 x86, which is where that tier is the whole story.
+
+### The same shape in the intrinsic tiers: refuted
+
+Porting mask-first to the AVX2 and AVX-512 kernels was the obvious follow-up, and
+it does not ship. Both already compute containment in lanes (`cbits`), so the
+piece that made the portable kernel's version win — a scalar four-column
+containment test per hit, sitting in the middle of the vector loop — was never
+there to remove. What is left to reorder is an index load and two pushes.
+
+Four sweeps at different repetition counts, each tier its own three-arm group
+against its own shipping shape, 100k boxes, pinned:
+
+| window | avx512 | avx2 |
+| --- | ---: | ---: |
+| small (10..200) | 1.04 / 1.12 / 1.08 / 1.06 | 0.97 / 0.93 (bands span 1.0) |
+| large (2000..5000) | 0.95 / 0.96 / 0.95 / 0.945 | 0.96 / 0.98 / 0.97 / 0.97 |
+| full extent | 0.955 / 0.947 / 0.960 / 0.950 | ~0.95 |
+
+About 5% on large and full-extent windows, and a consistent ~5% **loss** on
+small ones in AVX-512 — opposite signs, in the tier runtime dispatch actually
+selects, with the loss falling on the commoner query shape. The gate that would
+fix it is a selectivity constant fitted to one machine, which this project
+declined once already for the radius switch's upper crossover.
+
+The mechanism, after the run corrected it: **mask-first costs per chunk and pays
+per hit.** The prediction from the first, wrong version of that sentence was that
+an AVX-512 node of only two 8-lane chunks has too little to defer, so widening to
+`node_size` 64 should flip the sign. It read 1.110 [1.060..1.141] — worse, and
+the most cleanly resolved cell of the session. More chunks with few hits is
+strictly more bookkeeping for the same empty drain.
+
+The kernels, the node-size arm that falsified the prediction, and one genuine fix
+found on the way (the mask form asked `query_contains_node` per *miss* in a
+partial node's scalar tail, worth 1.083 → 1.055) are on
+`probe/simd-tier-shapes`.
 
 `visit_simd_impl` is deliberately excluded. Its visitor may break, so a mask
 spends work that an early exit then discards, and the same rewrite measured 11%

@@ -49,13 +49,22 @@ All notable changes to this crate are documented here.
 
 ### Performance
 
-- **The SIMD search kernel builds one mask per internal node before it
+- **The portable SIMD search kernel builds one mask per internal node before it
   dispatches.** `search_simd` tested four children and immediately gathered,
   containment-tested and pushed each hit; the serial per-hit chain now stays off
   the vector-test loop, the same shape `count` took last release. Large windows
   on 100k boxes: 2D -6%, 3D -7%; a 2D full-extent scan -4.5%; small windows
   unresolved either way. Results are unchanged. `visit_simd` keeps the old shape
   deliberately - its visitor can break, and mask-first measured 11% worse there.
+
+  Scope, measured after the fact and worth stating plainly: this is the `wide`
+  tier, which runtime dispatch reaches only with neither AVX-512 nor AVX2 — so
+  the rows above describe the kernel that runs on aarch64 and pre-AVX2 x86, not
+  the one a current x86_64 box selects, where `search_into` is about twice as
+  fast before any of this. Porting the same shape to the two intrinsic tiers was
+  measured and does **not** ship: about -5% on large windows and +5% on small
+  ones in AVX-512, opposite signs on the commoner query shape. See
+  `docs/performance.md` and the `probe/simd-tier-shapes` branch.
 - **Radius queries pick their traversal per query.** `search_within_into` and
   `count_within` fold a node's distance tests into a bitmask when the query is
   expected to hit at least one item, and keep the branching descent when it is

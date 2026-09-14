@@ -98,7 +98,7 @@ fn main() {
         ("2d full extent", vec![extent; 1000]),
     ];
     for (label, qs) in &cases {
-        let (mut o0, mut o1, mut oc) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut o0, mut o1, mut oc, mut od) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let (mut st0, mut st1) = (Vec::new(), Vec::new());
         let mut arms = vec![
             paired::arm("owned Index2D::search_into (control)", || {
@@ -122,6 +122,19 @@ fn main() {
                 for q in black_box(qs) {
                     simd.search_shape::<1>(*q, &mut o1, &mut st1);
                     t += o1.len();
+                }
+                t
+            }),
+            // Which tier the two shapes above are competing in. Both live in the
+            // portable `wide` kernel, which runtime dispatch reaches only when
+            // there is no AVX2 and no AVX-512 -- so on any current x86_64 this
+            // arm runs a different kernel entirely, and the gap between it and
+            // the two above is the size of the thing those shapes are dividing.
+            paired::arm("simd search_into (runtime dispatch)", || {
+                let mut t = 0;
+                for q in black_box(qs) {
+                    simd.search_into(*q, &mut od);
+                    t += od.len();
                 }
                 t
             }),

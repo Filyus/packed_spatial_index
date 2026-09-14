@@ -4,7 +4,39 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.31.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.30.0...psi-v0.31.0) - 2026-09-15
+
 ### API
+
+- **Node aggregates (the aR-tree chunk).** An index built with
+  `aggregate_scalar(&[f64])` and/or `aggregate_mask(&[u64])` on the builder
+  stores one summary per node — sum/min/max of the scalar, OR of the mask — in
+  a new optional `AGGR` chunk, and `aggregate(query)` answers the exact
+  count / sum / min / max / mask over any window: nodes fully inside the window
+  contribute their stored summary whole, only cut leaves read item by item.
+  Measured 1.7x at ~100 hits and ~4x at ~10k hits against `search` + a fold on
+  a 1M-item index; a window over the whole extent is one root summary. Carried
+  by `Index2D` / `Index3D`, the `simd` indexes and all zero-copy views; the
+  `f32` indexes and the streaming readers skip the chunk (follow-up). Format:
+  `FORMAT.md` revision 14.
+
+### Geometry
+
+- **Predicate regions: half-space, capsule, cone.** Three new query shapes ride
+  the ordinary region family (`search` / `count` / `any` / `first` / `visit`,
+  `*_region` on SIMD and f32): `HalfSpace2D` / `HalfSpace3D` — the unbounded
+  cross-section cut no bounding box can pre-filter; `Capsule2D` / `Capsule3D` —
+  a thick ray with a world-unit tolerance, tested by an exact segment-to-box
+  distance (convex minimization, no tolerance); `Cone3D::try_new` — the sensor
+  FOV / spotlight, tested exactly (a convex minimization over the height of
+  the axis-to-slice clearance against the cone radius there). Measured on 1M
+  boxes vs their bbox+filter workarounds: capsule ~28-49x, cone ~51x at a 5.7°
+  aperture and ~12x at 34°, and a corner-slice half-space ~260x (broad cuts
+  are answered about as fast by a plain scan — documented). Also new in the
+  guide: a swept-box note (a box swept along a straight line is a bigger box —
+  `search` it directly) and the general top-k form (`search_ordered` + budget).
+
+### Persistence
 
 - **Uniform payloads drop the offset table on their own.** A variable-width
   `PYLD` spends `(num_items + 1) x u64` recording where each blob starts, which
@@ -21,31 +53,6 @@ All notable changes to this crate are documented here.
   which have only the stride to go on, keep refusing a payload that is merely
   24 bytes wide (the `f32` 2D triangle stride, and also the width of a geo
   feature reference) instead of reinterpreting it as records nobody declared.
-
-- **Predicate regions: half-space, capsule, cone.** Three new query shapes ride
-  the ordinary region family (`search` / `count` / `any` / `first` / `visit`,
-  `*_region` on SIMD and f32): `HalfSpace2D` / `HalfSpace3D` — the unbounded
-  cross-section cut no bounding box can pre-filter; `Capsule2D` / `Capsule3D` —
-  a thick ray with a world-unit tolerance, tested by an exact segment-to-box
-  distance (convex minimization, no tolerance); `Cone3D::try_new` — the sensor
-  FOV / spotlight, tested exactly (a convex minimization over the height of
-  the axis-to-slice clearance against the cone radius there). Measured on 1M
-  boxes vs their bbox+filter workarounds: capsule ~28-49x, cone ~51x at a 5.7°
-  aperture and ~12x at 34°, and a corner-slice half-space ~260x (broad cuts
-  are answered about as fast by a plain scan — documented). Also new in the
-  guide: a swept-box note (a box swept along a straight line is a bigger box —
-  `search` it directly) and the general top-k form (`search_ordered` + budget).
-- **Node aggregates (the aR-tree chunk).** An index built with
-  `aggregate_scalar(&[f64])` and/or `aggregate_mask(&[u64])` on the builder
-  stores one summary per node — sum/min/max of the scalar, OR of the mask — in
-  a new optional `AGGR` chunk, and `aggregate(query)` answers the exact
-  count / sum / min / max / mask over any window: nodes fully inside the window
-  contribute their stored summary whole, only cut leaves read item by item.
-  Measured 1.7x at ~100 hits and ~4x at ~10k hits against `search` + a fold on
-  a 1M-item index; a window over the whole extent is one root summary. Carried
-  by `Index2D` / `Index3D`, the `simd` indexes and all zero-copy views; the
-  `f32` indexes and the streaming readers skip the chunk (follow-up). Format:
-  `FORMAT.md` revision 14.
 
 ### Performance
 

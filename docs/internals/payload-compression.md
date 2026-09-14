@@ -6,8 +6,12 @@ table, and byte-stream-split for float payload columns. Neither had a number
 attached, and the byte they would claim is a one-way door, so both were measured
 before any format code was written.
 
-Short answer: **the offset table is worth compressing exactly when payloads are
-small, and byte-stream-split is not worth building at all.**
+Short answer: **most of the offset table's cost was not a compression problem at
+all, and byte-stream-split is not worth building.** The table's largest share
+falls on payloads whose blobs are all the same size — where the table is not
+compressible data but redundant data, now removed outright by inferring the
+fixed-width layout. What Elias-Fano could still earn is the remainder, measured
+at the end of this note.
 
 ## The offset table
 
@@ -50,16 +54,67 @@ the identity says it should:
 
 So the verdict splits on geometry, and sharply. A point corpus — a WKB point is
 21 bytes, and points are the single most common payload anyone indexes — spends
-**over a quarter** of its payload section on the offset table, and Elias-Fano
-gets essentially all of it back. A polygon corpus spends under a percent, and
-compressing it would be a rounding error dressed up as a format revision.
+**over a quarter** of its payload section on the offset table. A polygon corpus
+spends under a percent, and compressing it would be a rounding error dressed up
+as a format revision.
 
-This also says something the ranking did not: the feature that competes with
-Elias-Fano here is the one already shipped. Fixed-width `PYLD`
-(`record_stride > 0`) drops the offset table entirely, and a point payload is
-fixed-width by construction. Elias-Fano earns its byte on *variable*-width small
-blobs — mixed points and short lines, or points carrying a short attribute tail —
-rather than on points alone.
+### The share the table had was mostly not compressible, it was redundant
+
+Reading that table the other way settles the ranking: the corpora where the
+offset table is expensive are exactly the corpora whose blobs are all the *same
+size*, because that is what a small mean blob means for a single geometry type. A
+WKB point is 21 bytes every time. A table over equal-sized blobs stores no
+information at all — the fixed-width layout (`record_stride > 0`) addresses those
+blobs by arithmetic and carries no table.
+
+That layout already existed, but had to be requested (`.records(stride, flat)`),
+and the corpus builders never did: `geo` always calls `.payloads(..)`. So the
+27.6% row was not measuring what Elias-Fano could win. It was measuring a
+feature nobody was reaching for.
+
+The serializer now infers a uniform non-zero width and selects the table-less
+layout itself. Measured as whole files, the same corpora converted by the binary
+before and after the change (`gp2psindex build`, both payload plans, 70 files):
+
+| corpus | plan | file was | file now | saved |
+| --- | --- | ---: | ---: | ---: |
+| `natural-earth_cities` | row-ref | 21 088 | 19 144 | **9.2%** |
+| `natural-earth_cities` | row-wkb | 26 192 | 24 248 | **7.4%** |
+| `natural-earth_countries-bounds` | row-ref | 16 592 | 15 176 | **8.5%** |
+| `natural-earth_countries-geography` | row-ref | 16 592 | 15 176 | **8.5%** |
+| `example_geometry-mixed-dimensions` | row-ref | 3 312 | 3 088 | 6.8% |
+| `natural-earth_countries-bounds` | row-wkb | 22 345 | — | 0 (ragged) |
+
+53 of the 70 files shrank; 17 were byte-identical. Every byte of every difference
+is `PYLD`: no `PFIX` section appeared or disappeared, and the query answers are
+unchanged, which is the point — this removes a redundant table, it does not
+encode anything differently.
+
+Note what the row-wkb rows show. `cities` shrinks under row-wkb too, because a
+24-byte feature reference followed by a 21-byte WKB point is uniformly 45 bytes;
+`countries-bounds` does not, because polygon WKB is genuinely ragged. Uniformity,
+not geometry type, is the predicate.
+
+### What is left for Elias-Fano
+
+Whatever the inference cannot reach: payloads that are genuinely
+variable-width. On the corpora above that is the row-wkb line and polygon
+families, where the table is 5–7% of `PYLD` and Elias-Fano would return most of
+it — call it 5–6% of the payload section, low single digits of the file. That is
+the number backlog #1 has to justify itself against, and it is a fifth of the
+27.6% the original ranking was written around.
+
+Against it stands a `compression` byte that is a one-way door (a nonzero value is
+`UnsupportedVersion` for every existing reader, and on the whole file, since the
+check sits inside an otherwise-skippable optional chunk), a decoder where there
+is currently none, and — for the classic layout — a streaming read plan that
+turns one contiguous table range into three disjoint ones plus a select
+structure, which is the property the remote-reader story is built on. A
+block-partitioned variant keeps the single range per block and needs no global
+select index, at a bit or two more per offset.
+
+**Not rejected, but no longer ranked first, and not to be built on the 27.6%
+figure.**
 
 ## Byte-stream-split
 
@@ -107,3 +162,11 @@ Both scripts are parked on `probe/payload-compression-numbers` rather than
 carried on `main`: neither needs to run again unless the claim is challenged (the
 offset-table result is a closed form and the BSS result is a rejection), but the
 next person to doubt either should not have to rebuild them.
+
+The before/after file sizes are not from those scripts and not from arithmetic.
+Two `gp2psindex` binaries were built — one from the commit before the inference
+landed, one after — and each converted the same 70 corpus/plan pairs; the table
+reports the byte lengths of the resulting files and of their chunk directories.
+Nothing is timed, so there is nothing to pin or interleave; the only thing worth
+re-checking is that both binaries were built with the same features, which they
+were (`--release --all-features`).

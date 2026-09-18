@@ -164,3 +164,7 @@ required-features = ["f32-storage", "simd"]
 [[example]]
 name = "stream_query"
 required-features = ["stream"]
+
+[[bench]]
+name = "paired_raycast_prune"
+harness = false

@@ -73,6 +73,11 @@ impl Index2D {
     /// `max_distance` after the first hit. `t` is `0.0` when the ray origin
     /// starts inside the item's box, and is measured in units of the ray
     /// direction length (see [`Ray2D::new`]).
+    ///
+    /// The nearest **box**, not the nearest geometry. For an exact hit, run
+    /// your own test in the order [`raycast_each`](Self::raycast_each)
+    /// supplies and stop once the entry `t` passes the best exact hit; the
+    /// guide's "Exact closest hit on a mesh" measures what that saves.
     pub fn raycast_closest(&self, ray: Ray2D) -> Option<(usize, f64)> {
         let mut workspace = NeighborWorkspace::new();
         self.raycast_closest_with(ray, &mut workspace)

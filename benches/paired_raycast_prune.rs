@@ -152,11 +152,11 @@ fn main() {
                     return ControlFlow::Break(());
                 }
                 seen += 1;
-                if let Some(h) = ray.closest_triangle(&tris[id..id + 1]) {
-                    if h.t < best {
-                        best = h.t;
-                        prefix = seen;
-                    }
+                if let Some(h) = ray.closest_triangle(&tris[id..id + 1])
+                    && h.t < best
+                {
+                    best = h.t;
+                    prefix = seen;
                 }
                 ControlFlow::Continue(())
             });
@@ -217,11 +217,11 @@ fn main() {
                     let mut best = f64::INFINITY;
                     let mut best_id = usize::MAX;
                     for &id in ids_p.iter() {
-                        if let Some(h) = ray.closest_triangle(&tris[id..id + 1]) {
-                            if h.t < best {
-                                best = h.t;
-                                best_id = id;
-                            }
+                        if let Some(h) = ray.closest_triangle(&tris[id..id + 1])
+                            && h.t < best
+                        {
+                            best = h.t;
+                            best_id = id;
                         }
                     }
                     if best_id != usize::MAX {
@@ -239,11 +239,11 @@ fn main() {
                         if enter_t > best {
                             return ControlFlow::Break(());
                         }
-                        if let Some(h) = ray.closest_triangle(&tris[id..id + 1]) {
-                            if h.t < best {
-                                best = h.t;
-                                best_id = id;
-                            }
+                        if let Some(h) = ray.closest_triangle(&tris[id..id + 1])
+                            && h.t < best
+                        {
+                            best = h.t;
+                            best_id = id;
                         }
                         ControlFlow::Continue(())
                     });

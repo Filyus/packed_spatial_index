@@ -7,18 +7,32 @@
 //! phase). With the `stream` feature the same file can be served from a
 //! `RangeReader` without loading all of it.
 //!
+//! The part worth copying is that the narrow phase runs **in order and stops
+//! early**. `raycast_each` visits candidates by nondecreasing box entry `t`,
+//! and a box is entered at or before the geometry inside it, so once the
+//! stream's entry `t` passes the best exact hit so far, nothing left can beat
+//! it. Testing every candidate instead is up to 12.8x slower on a dense mesh
+//! (`benches/paired_raycast_prune.rs`), and below roughly five candidates per
+//! ray it is the faster shape — the ordered walk keeps a priority queue that
+//! the unordered sweep does not.
+//!
 //! Run: cargo run --example raycast_mesh
+
+use std::ops::ControlFlow;
 
 use packed_spatial_index::{Index3D, Index3DView, Point3D, Ray3D, Triangle3D};
 
 fn main() {
-    // A 10x10 grid of triangles in the z = 0 plane, with a few raised to z = 3.
+    // Eight stacked 10x10 grids, one per unit of height, so a ray straight down
+    // crosses the whole stack and there is something for the early stop to skip.
     let mut tris = Vec::new();
-    for i in 0..10 {
-        for j in 0..10 {
-            let (x, y) = (i as f64, j as f64);
-            let z = if (i + j) % 7 == 0 { 3.0 } else { 0.0 };
-            tris.push(Triangle3D::new([x, y, z], [x + 1.0, y, z], [x, y + 1.0, z]));
+    for layer in 0..8 {
+        let z = layer as f64;
+        for i in 0..10 {
+            for j in 0..10 {
+                let (x, y) = (i as f64, j as f64);
+                tris.push(Triangle3D::new([x, y, z], [x + 1.0, y, z], [x, y + 1.0, z]));
+            }
         }
     }
 
@@ -33,29 +47,36 @@ fn main() {
         bytes.len()
     );
 
-    // Load zero-copy and cast a ray straight down through (4.5, 4.5).
+    // Load zero-copy and cast a ray straight down through (4.2, 4.2).
     let view = Index3DView::from_bytes(&bytes).unwrap();
-    let ray = Ray3D::new(Point3D::new(4.5, 4.5, 10.0), 0.0, 0.0, -1.0, 100.0);
+    let ray = Ray3D::new(Point3D::new(4.2, 4.2, 10.0), 0.0, 0.0, -1.0, 100.0);
 
-    // Broad phase: the index returns triangles whose bounding box the ray crosses.
-    let candidate_ids = index.raycast(ray);
-    println!("broad phase: {} candidate triangles", candidate_ids.len());
+    // Broad phase: every triangle whose bounding box the ray crosses. Counted
+    // here only to have something to compare the exact tests against.
+    let candidates = view.raycast(ray).len();
 
-    // Narrow phase: the exact ray-triangle test, only on the candidates.
-    let candidates: Vec<Triangle3D> = candidate_ids
-        .iter()
-        .map(|&id| view.triangle(id).expect("triangle payload"))
-        .collect();
-    match ray.closest_triangle(&candidates) {
-        Some(hit) => {
-            let id = candidate_ids[hit.index];
-            // dir is length 1 (0,0,-1), so the hit z is origin.z - t.
-            println!(
-                "hit triangle #{id} at t = {:.3} (z = {:.2})",
-                hit.t,
-                10.0 - hit.t
-            );
+    // Narrow phase, in entry-`t` order, stopping as soon as the order proves
+    // nothing left can win.
+    let mut tested = 0usize;
+    let mut best: Option<(usize, f64)> = None;
+    let _: ControlFlow<()> = view.raycast_each(ray, |id, entry_t| {
+        if best.is_some_and(|(_, t)| entry_t > t) {
+            return ControlFlow::Break(());
         }
+        tested += 1;
+        let tri = view.triangle::<Triangle3D>(id).expect("triangle payload");
+        if let Some(hit) = ray.closest_triangle(&[tri])
+            && best.is_none_or(|(_, t)| hit.t < t)
+        {
+            best = Some((id, hit.t));
+        }
+        ControlFlow::Continue(())
+    });
+
+    println!("broad phase: {candidates} candidate boxes, exact tests run: {tested}");
+    match best {
+        // dir is length 1 (0,0,-1), so the hit z is origin.z - t.
+        Some((id, t)) => println!("hit triangle #{id} at t = {t:.3} (z = {:.2})", 10.0 - t),
         None => println!("ray missed the mesh"),
     }
 }

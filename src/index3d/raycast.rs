@@ -75,6 +75,12 @@ impl Index3D {
     /// `max_distance` after the first hit. `t` is `0.0` when the ray origin
     /// starts inside the item's box, and is measured in units of the ray
     /// direction length (see [`Ray3D::new`]).
+    ///
+    /// The nearest **box**, not the nearest geometry. For an exact hit against
+    /// a mesh, run your own test in the order
+    /// [`raycast_each`](Self::raycast_each) supplies and stop once the entry
+    /// `t` passes the best exact hit — `examples/raycast_mesh.rs` does it, and
+    /// it is up to 12.8x faster than testing every candidate.
     pub fn raycast_closest(&self, ray: Ray3D) -> Option<(usize, f64)> {
         let mut workspace = NeighborWorkspace::new();
         self.raycast_closest_with(ray, &mut workspace)

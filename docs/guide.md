@@ -23,7 +23,7 @@ the method for each need; the notes after it explain the reasoning.
 | Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `search_ordered_each` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
 | The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `search_pick_each` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express; `search_pick_into` / `search_pick_with` reuse the buffers | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `_each` forms | — |
-| Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `raycast_each`, and `raycast_closest` when only the nearest matters | — |
+| Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `raycast_each`, and `raycast_closest` when only the nearest *box* matters | — |
 | All overlapping pairs between two indexes | `join` / `join_each` (`pairs` within one index) | a query per item |
 | Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `search_within_each` / `search_within_any` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
 | The single closest pair, with no distance to guess | `closest_pair()` within one index, `closest_pair_to(&other)` between two | `join_within` with a guessed `max_distance`, widened until it is non-empty |
@@ -300,6 +300,52 @@ All three answer the full region family — `search` / `count` / `any` / `first`
 / `visit` on the owned `f64` indexes and views, the `*_region` spellings on the
 SIMD and `f32` frontends.
 
+## Exact closest hit on a mesh
+
+The index stores boxes, so `raycast_closest` answers with the nearest **box**
+the ray enters, not the nearest triangle. For a mesh the exact test is yours —
+`Ray3D::closest_triangle` over the candidates, with the triangles carried as a
+fixed-width payload (see [Keep payloads outside the
+index](#keep-payloads-outside-the-index)).
+
+The obvious way to spend those candidates is the expensive one: collect every
+box the ray crosses over the whole segment, then test them all. Instead, walk
+them in order and stop. `raycast_each` visits candidates by nondecreasing box
+entry `t`, a box is entered at or before the geometry inside it, so the same
+lower-bound rule as [Where the narrow phase
+stops](#where-the-narrow-phase-stops) applies:
+
+```rust,ignore
+let mut best: Option<(usize, f64)> = None;
+index.raycast_each(ray, |id, entry_t| {
+    // Every remaining candidate enters no earlier than this one.
+    if best.is_some_and(|(_, t)| entry_t > t) {
+        return ControlFlow::Break(());
+    }
+    if let Some(hit) = ray.closest_triangle(&[triangles[id]]) {
+        if best.is_none_or(|(_, t)| hit.t < t) {
+            best = Some((id, hit.t));
+        }
+    }
+    ControlFlow::Continue(())
+});
+```
+
+The answer is identical and the work is not. Measured on 200k random triangles
+with rays crossing the scene's whole depth, against collecting and testing
+everything: **1.3x** faster at 7 candidates per ray, 3.8x at 32, 7.1x at 129,
+9.6x at 512 and **12.8x** at 2013 — because at the densest the ordered walk runs
+the exact test on 26 of those 2013 boxes. From about 30 candidates per ray up it
+is also faster than the unordered broad phase *alone*, which never touches a
+triangle, because it never finishes the traversal.
+
+Ordering is not free: `raycast_each` is best-first over a priority queue where
+`raycast` is a depth-first stack sweep, which costs 1.3-2.7x per candidate
+walked, growing with density. Below roughly **five candidates per ray** that tax
+is larger than the narrow phase it saves and collecting everything is the right
+shape. `examples/raycast_mesh.rs` runs the ordered form end to end;
+`benches/paired_raycast_prune.rs` is where the numbers come from.
+
 ## Frustum culling (3D)
 
 `Index3D` answers a view-frustum query through the generic overlap API:
@@ -449,7 +495,10 @@ index.search_pick_each(pixel, ray, |hit| {
 ```
 
 Boxes the ray misses carry `entry_t == f64::INFINITY`, so they end the scan on
-their own the moment a real hit exists. Picking the *nearest to the cursor*
+their own the moment a real hit exists. The rule is not picking's: it holds for
+any ordered walk whose key is a lower bound, so `raycast_each` and
+`search_ordered_each` take the same loop — see [Exact closest hit on a
+mesh](#exact-closest-hit-on-a-mesh) for what it is worth there. Picking the *nearest to the cursor*
 instead of the frontmost is the same loop with `distance_squared` in place of
 `entry_t`. This is where picking actually pays: the break keeps the exact tests
 down to the few candidates that can still win, rather than the whole frustum.
@@ -1092,6 +1141,7 @@ cargo run --example basic_2d
 cargo run --example basic_3d
 cargo run --example persistence_2d
 cargo run --example persistence_3d
+cargo run --example raycast_mesh
 cargo run --example knn_2d
 cargo run --example knn_3d
 cargo run --example reuse_workspace_2d

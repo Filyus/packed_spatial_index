@@ -4,6 +4,20 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Documentation
+
+- **The mesh example stops early, and the guide says what that is worth.**
+  `raycast_closest` answers with the nearest *box*, so an exact hit against a
+  mesh is the caller's narrow phase — and running it in `raycast_each`'s
+  entry-`t` order, breaking once the order passes the best exact hit, is exact
+  and much cheaper than testing every candidate: measured 1.3x at 7 candidates
+  per ray up to 12.8x at 2013, and faster than the unordered broad phase alone
+  from ~30 candidates up, since the ordered walk runs 26 exact tests where the
+  collect-everything shape runs 2013. Below ~5 candidates per ray the priority
+  queue costs more than it saves and collecting is right. `examples/raycast_mesh.rs`
+  now shows the ordered form, the guide gains "Exact closest hit on a mesh",
+  and `benches/paired_raycast_prune.rs` carries the measurement.
+
 ## [0.31.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.30.0...psi-v0.31.0) - 2026-09-15
 
 ### API

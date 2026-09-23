@@ -2244,3 +2244,84 @@ fn estimate_honours_the_read_budget_below_the_floor() {
     let est = idx.estimate_count(window, idx.directory_floor()).unwrap();
     assert!(est.lower <= 801 && 801 <= est.upper, "{est:?}");
 }
+
+#[cfg(feature = "async")]
+#[test]
+fn async_estimate_matches_sync_and_reads_nothing_at_the_floor() {
+    use crate::{Box3D, Index3DBuilder};
+
+    // Cache the top levels only, so the floor sits above the leaves and the
+    // refined estimate below it has to read.
+    let limits = StreamLimits {
+        directory_budget_bytes: Some(24 * 48),
+        ..StreamLimits::default()
+    };
+    let no_reads = StreamLimits {
+        max_reads: Some(0),
+        ..limits
+    };
+
+    let bytes = build_bytes(4096, 16);
+    let sync = StreamIndex2D::open_with_limits(SliceReader::new(bytes.clone()), limits).unwrap();
+    let astream = pollster::block_on(StreamIndex2D::open_with_limits_async(
+        AsyncSlice(bytes.clone()),
+        limits,
+    ))
+    .unwrap();
+    let starved = pollster::block_on(StreamIndex2D::open_with_limits_async(
+        AsyncSlice(bytes),
+        no_reads,
+    ))
+    .unwrap();
+    let floor = astream.directory_floor();
+    assert_eq!(floor, sync.directory_floor());
+    assert!(floor > 0, "the test needs a floor above the leaves");
+    for window in [
+        Box2D::new(100.0, 100.0, 900.0, 900.0),
+        Box2D::new(0.0, 0.0, 5000.0, 5000.0),
+        Box2D::new(2000.0, 2000.0, 2010.0, 2010.0),
+    ] {
+        for stop in [floor, 0] {
+            assert_eq!(
+                pollster::block_on(astream.estimate_count_async(window, stop)).unwrap(),
+                sync.estimate_count(window, stop).unwrap(),
+                "{window:?} stop {stop}"
+            );
+        }
+        // At the floor a zero read budget is enough; the whole estimate is local.
+        assert_eq!(
+            pollster::block_on(starved.estimate_count_async(window, floor)).unwrap(),
+            sync.estimate_count(window, floor).unwrap()
+        );
+    }
+    let cut = Box2D::new(100.0, 100.0, 900.0, 900.0);
+    let err = pollster::block_on(starved.estimate_count_async(cut, 0)).unwrap_err();
+    assert!(matches!(err, StreamError::LimitExceeded), "{err:?}");
+
+    let mut builder = Index3DBuilder::new(4096).node_size(16);
+    for i in 0..4096 {
+        let v = i as f64 * 0.25;
+        builder.add(Box3D::new(v, v, v, v + 2.0, v + 2.0, v + 2.0));
+    }
+    let bytes_3d = builder.finish().unwrap().to_bytes();
+    let limits_3d = StreamLimits {
+        directory_budget_bytes: Some(24 * 56),
+        ..StreamLimits::default()
+    };
+    let sync_3d =
+        StreamIndex3D::open_with_limits(SliceReader::new(bytes_3d.clone()), limits_3d).unwrap();
+    let async_3d = pollster::block_on(StreamIndex3D::open_with_limits_async(
+        AsyncSlice(bytes_3d),
+        limits_3d,
+    ))
+    .unwrap();
+    let floor_3d = async_3d.directory_floor();
+    let q = Box3D::new(100.0, 100.0, 100.0, 600.0, 600.0, 600.0);
+    for stop in [floor_3d, 0] {
+        assert_eq!(
+            pollster::block_on(async_3d.estimate_count_async(q, stop)).unwrap(),
+            sync_3d.estimate_count(q, stop).unwrap(),
+            "3D stop {stop}"
+        );
+    }
+}

@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
+use crate::estimate::{Estimate, box_fraction_2d, box_fraction_3d, subtree_leaf_range};
 use crate::geometry::{Box2D, Box3D, Overlaps2D, Overlaps3D};
 use crate::persistence::{
     CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PFIX_DESC_LEN, PYLD_DESC_LEN,
@@ -858,6 +859,109 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         Ok(())
     }
 
+    /// Async mirror of [`estimate`](StreamCore::estimate): the same level-by-level
+    /// bracket, stopping at `stop_level`, with each level below the directory
+    /// floor fetched as one concurrent gather. At or above the floor it awaits
+    /// nothing that reads.
+    pub(crate) async fn estimate_async<O, C, Fr>(
+        &self,
+        stop_level: usize,
+        overlaps: O,
+        contains: C,
+        fraction: Fr,
+    ) -> Result<Estimate, StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        C: Fn(&[u8]) -> bool,
+        Fr: Fn(&[u8]) -> f64,
+    {
+        let mut out = Estimate {
+            lower: 0,
+            upper: 0,
+            estimate: 0.0,
+            nodes_tested: 0,
+        };
+        if self.num_items == 0 {
+            return Ok(out);
+        }
+
+        let mut budget = Budget::new(self.limits);
+        let mut frontier = vec![self.num_nodes - 1];
+        let mut level = self.level_count - 1;
+        let mut boxes = Vec::new();
+        let mut indices = Vec::new();
+        let mut survivors: Vec<usize> = Vec::new();
+
+        loop {
+            self.gather_async(
+                &frontier,
+                self.box0,
+                self.box_stride,
+                &self.dir_boxes,
+                &mut boxes,
+                &mut budget,
+            )
+            .await?;
+            let level_start = if level == 0 {
+                0
+            } else {
+                self.level_bounds[level - 1]
+            };
+            survivors.clear();
+            indices.clear();
+            for (i, &pos) in frontier.iter().enumerate() {
+                let slot = i * self.box_stride;
+                let record = &boxes[slot..slot + self.record];
+                out.nodes_tested += 1;
+                if !overlaps(record) {
+                    continue;
+                }
+                let (start, end) =
+                    subtree_leaf_range(pos, level, level_start, self.node_size, self.num_items);
+                let size = end - start;
+                if level == 0 || contains(record) {
+                    out.lower += size;
+                    out.upper += size;
+                    out.estimate += size as f64;
+                    continue;
+                }
+                if level <= stop_level {
+                    out.upper += size;
+                    out.estimate += size as f64 * fraction(record);
+                    continue;
+                }
+                survivors.push(pos);
+                if self.interleaved {
+                    indices.extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
+                }
+            }
+            if survivors.is_empty() {
+                break;
+            }
+            if !self.interleaved {
+                self.gather_async(
+                    &survivors,
+                    self.idx0,
+                    8,
+                    &self.dir_indices,
+                    &mut indices,
+                    &mut budget,
+                )
+                .await?;
+            }
+            frontier = expand_frontier(
+                &self.level_bounds,
+                self.node_size,
+                level,
+                survivors.len(),
+                &indices,
+            )?;
+            level -= 1;
+        }
+        out.estimate = out.estimate.clamp(out.lower as f64, out.upper as f64);
+        Ok(out)
+    }
+
     /// Async mirror of the synchronous traversal, parameterized by `want` (ids or
     /// id+payload). `overlaps` and `sink` are synchronous; only reads are awaited.
     async fn traverse_async<O, F>(
@@ -1031,6 +1135,25 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
     /// collecting them.
     pub async fn count_async(&self, query: Box2D) -> Result<usize, StreamError> {
         self.count_region_async(&query).await
+    }
+
+    /// Async mirror of [`estimate_count`](Self::estimate_count): bracket and
+    /// estimate how many items `query` would hit, from node boxes, stopping at
+    /// `stop_level`. With `stop_level >= directory_floor()` nothing is read, so
+    /// a worker can decide whether a query is worth its round trips first.
+    pub async fn estimate_count_async(
+        &self,
+        query: Box2D,
+        stop_level: usize,
+    ) -> Result<Estimate, StreamError> {
+        self.core
+            .estimate_async(
+                stop_level,
+                |record| parse_box2d(record).overlaps(query),
+                |record| query.contains(parse_box2d(record)),
+                |record| box_fraction_2d(parse_box2d(record), query),
+            )
+            .await
     }
 
     /// Stream `(item index, payload blob)` for every item intersecting `query`.
@@ -1210,6 +1333,25 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
         self.count_region_async(&query).await
     }
 
+    /// Async mirror of [`estimate_count`](Self::estimate_count): bracket and
+    /// estimate how many items `query` would hit, from node boxes, stopping at
+    /// `stop_level`. With `stop_level >= directory_floor()` nothing is read, so
+    /// a worker can decide whether a query is worth its round trips first.
+    pub async fn estimate_count_async(
+        &self,
+        query: Box3D,
+        stop_level: usize,
+    ) -> Result<Estimate, StreamError> {
+        self.core
+            .estimate_async(
+                stop_level,
+                |record| parse_box3d(record).overlaps(query),
+                |record| query.contains(parse_box3d(record)),
+                |record| box_fraction_3d(parse_box3d(record), query),
+            )
+            .await
+    }
+
     /// Stream `(item index, payload blob)` for every item intersecting `query`.
     pub async fn search_payloads_async(
         &self,
@@ -1387,6 +1529,25 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
         self.count_region_async(&query).await
     }
 
+    /// Async mirror of [`estimate_count`](Self::estimate_count): bracket and
+    /// estimate how many items `query` would hit, from node boxes, stopping at
+    /// `stop_level`. With `stop_level >= directory_floor()` nothing is read, so
+    /// a worker can decide whether a query is worth its round trips first.
+    pub async fn estimate_count_async(
+        &self,
+        query: Box2D,
+        stop_level: usize,
+    ) -> Result<Estimate, StreamError> {
+        self.core
+            .estimate_async(
+                stop_level,
+                |record| parse_box2d_f32(record).overlaps(query),
+                |record| query.contains(parse_box2d_f32(record)),
+                |record| box_fraction_2d(parse_box2d_f32(record), query),
+            )
+            .await
+    }
+
     /// Stream `(item index, payload blob)` for every item intersecting `query`.
     pub async fn search_payloads_async(
         &self,
@@ -1562,6 +1723,25 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
     /// collecting them.
     pub async fn count_async(&self, query: Box3D) -> Result<usize, StreamError> {
         self.count_region_async(&query).await
+    }
+
+    /// Async mirror of [`estimate_count`](Self::estimate_count): bracket and
+    /// estimate how many items `query` would hit, from node boxes, stopping at
+    /// `stop_level`. With `stop_level >= directory_floor()` nothing is read, so
+    /// a worker can decide whether a query is worth its round trips first.
+    pub async fn estimate_count_async(
+        &self,
+        query: Box3D,
+        stop_level: usize,
+    ) -> Result<Estimate, StreamError> {
+        self.core
+            .estimate_async(
+                stop_level,
+                |record| parse_box3d_f32(record).overlaps(query),
+                |record| query.contains(parse_box3d_f32(record)),
+                |record| box_fraction_3d(parse_box3d_f32(record), query),
+            )
+            .await
     }
 
     /// Stream `(item index, payload blob)` for every item intersecting `query`.

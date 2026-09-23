@@ -75,6 +75,16 @@ impl<R> StreamCore<R> {
         self.payload.is_some()
     }
 
+    /// The lowest level whose nodes the cached directory holds entirely.
+    /// An estimate stopping at this level or above reads nothing. No I/O, so
+    /// available for both sync and async readers.
+    pub(crate) fn directory_floor(&self) -> usize {
+        if self.num_nodes == 0 {
+            return 0;
+        }
+        crate::traversal::upper_bound_level(&self.level_bounds, self.dir_node_start)
+    }
+
     /// Byte gap below which records coalesce into one read (the caller's
     /// [`StreamLimits::coalesce_gap_bytes`] or the built-in default).
     pub(crate) fn coalesce_gap(&self) -> u64 {
@@ -506,15 +516,6 @@ impl<R: RangeReader> StreamCore<R> {
             )?;
             level -= 1;
         }
-    }
-
-    /// The lowest level whose nodes the cached directory holds entirely.
-    /// An estimate stopping at this level or above reads nothing.
-    pub(crate) fn directory_floor(&self) -> usize {
-        if self.num_nodes == 0 {
-            return 0;
-        }
-        crate::traversal::upper_bound_level(&self.level_bounds, self.dir_node_start)
     }
 
     /// Bracket and estimate a window's hit count from node boxes, descending

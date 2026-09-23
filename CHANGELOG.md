@@ -4,6 +4,16 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Persistence
+
+- **Async streaming readers can estimate before they fetch.** The four async
+  stream frontends gain `estimate_count_async`, the mirror of `estimate_count`:
+  the same bracket and point estimate from node boxes, and with
+  `stop_level >= directory_floor()` it reads nothing, so a worker behind HTTP
+  range requests can price a query before paying its round trips. Below the
+  floor each level is one concurrent gather charged to the read budget.
+  `directory_floor` is now available on async indexes too — it never read.
+
 ### Documentation
 
 - **The mesh example stops early, and the guide says what that is worth.**

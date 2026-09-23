@@ -87,6 +87,15 @@ impl<R> StreamIndex2D<R> {
         (StreamDirectory { parts }, reader)
     }
 
+    /// The lowest tree level the cached directory holds entirely, counting up
+    /// from the leaves. An estimate ([`estimate_count`](Self::estimate_count),
+    /// or `estimate_count_async` with the `async` feature) with a `stop_level`
+    /// at or above it reads nothing. No I/O, so available for both sync and
+    /// async readers.
+    pub fn directory_floor(&self) -> usize {
+        self.core.directory_floor()
+    }
+
     /// Rebuild a 2D `f64` index from a cached directory and a fresh reader. No
     /// I/O: the directory reads were paid when it was first opened.
     pub fn from_directory(dir: &StreamDirectory, reader: R) -> Result<Self, StreamError> {
@@ -177,13 +186,6 @@ impl<R: RangeReader> StreamIndex2D<R> {
         let mut count = 0usize;
         self.visit(query, |_| count += 1)?;
         Ok(count)
-    }
-
-    /// The lowest tree level the cached directory holds entirely, counting up
-    /// from the leaves. [`estimate_count`](Self::estimate_count) with a
-    /// `stop_level` at or above it reads nothing.
-    pub fn directory_floor(&self) -> usize {
-        self.core.directory_floor()
     }
 
     /// Bracket and estimate how many items `query` would hit, from node boxes,
@@ -424,6 +426,15 @@ impl<R> StreamIndex3D<R> {
         (StreamDirectory { parts }, reader)
     }
 
+    /// The lowest tree level the cached directory holds entirely, counting up
+    /// from the leaves. An estimate ([`estimate_count`](Self::estimate_count),
+    /// or `estimate_count_async` with the `async` feature) with a `stop_level`
+    /// at or above it reads nothing. No I/O, so available for both sync and
+    /// async readers.
+    pub fn directory_floor(&self) -> usize {
+        self.core.directory_floor()
+    }
+
     /// Rebuild a 3D `f64` index from a cached directory and a fresh reader. No I/O.
     pub fn from_directory(dir: &StreamDirectory, reader: R) -> Result<Self, StreamError> {
         Self::from_directory_with_limits(dir, reader, StreamLimits::default())
@@ -501,13 +512,6 @@ impl<R: RangeReader> StreamIndex3D<R> {
         let mut count = 0usize;
         self.visit(query, |_| count += 1)?;
         Ok(count)
-    }
-
-    /// The lowest tree level the cached directory holds entirely, counting up
-    /// from the leaves. [`estimate_count`](Self::estimate_count) with a
-    /// `stop_level` at or above it reads nothing.
-    pub fn directory_floor(&self) -> usize {
-        self.core.directory_floor()
     }
 
     /// Bracket and estimate how many items `query` would hit, from node boxes,
@@ -719,6 +723,15 @@ impl<R> StreamIndex2DF32<R> {
         (StreamDirectory { parts }, reader)
     }
 
+    /// The lowest tree level the cached directory holds entirely, counting up
+    /// from the leaves. An estimate ([`estimate_count`](Self::estimate_count),
+    /// or `estimate_count_async` with the `async` feature) with a `stop_level`
+    /// at or above it reads nothing. No I/O, so available for both sync and
+    /// async readers.
+    pub fn directory_floor(&self) -> usize {
+        self.core.directory_floor()
+    }
+
     /// Rebuild a 2D `f32` index from a cached directory and a fresh reader. No I/O.
     pub fn from_directory(dir: &StreamDirectory, reader: R) -> Result<Self, StreamError> {
         Self::from_directory_with_limits(dir, reader, StreamLimits::default())
@@ -794,13 +807,6 @@ impl<R: RangeReader> StreamIndex2DF32<R> {
         let mut count = 0usize;
         self.visit(query, |_| count += 1)?;
         Ok(count)
-    }
-
-    /// The lowest tree level the cached directory holds entirely, counting up
-    /// from the leaves. [`estimate_count`](Self::estimate_count) with a
-    /// `stop_level` at or above it reads nothing.
-    pub fn directory_floor(&self) -> usize {
-        self.core.directory_floor()
     }
 
     /// Bracket and estimate how many items `query` would hit, from node boxes,
@@ -974,6 +980,15 @@ impl<R> StreamIndex3DF32<R> {
         (StreamDirectory { parts }, reader)
     }
 
+    /// The lowest tree level the cached directory holds entirely, counting up
+    /// from the leaves. An estimate ([`estimate_count`](Self::estimate_count),
+    /// or `estimate_count_async` with the `async` feature) with a `stop_level`
+    /// at or above it reads nothing. No I/O, so available for both sync and
+    /// async readers.
+    pub fn directory_floor(&self) -> usize {
+        self.core.directory_floor()
+    }
+
     /// Rebuild a 3D `f32` index from a cached directory and a fresh reader. No I/O.
     pub fn from_directory(dir: &StreamDirectory, reader: R) -> Result<Self, StreamError> {
         Self::from_directory_with_limits(dir, reader, StreamLimits::default())
@@ -1047,13 +1062,6 @@ impl<R: RangeReader> StreamIndex3DF32<R> {
         let mut count = 0usize;
         self.visit(query, |_| count += 1)?;
         Ok(count)
-    }
-
-    /// The lowest tree level the cached directory holds entirely, counting up
-    /// from the leaves. [`estimate_count`](Self::estimate_count) with a
-    /// `stop_level` at or above it reads nothing.
-    pub fn directory_floor(&self) -> usize {
-        self.core.directory_floor()
     }
 
     /// Bracket and estimate how many items `query` would hit, from node boxes,

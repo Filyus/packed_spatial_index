@@ -4,6 +4,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+### API
+
+- **Async artifacts can estimate a window before fetching it.**
+  `GeoArtifactIndex2D::estimate_entries_async` and the 3D twin mirror
+  `estimate_entries` over an `AsyncRangeReader`, and `directory_floor` is now
+  available on async artifacts too. At the floor the estimate reads nothing,
+  which is what an edge worker needs to price a query before its round trips.
+  Needs the core release that adds `estimate_count_async`.
+
 ## [0.28.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.27.0...psi-geo-v0.28.0) - 2026-09-11
 
 ### API

@@ -153,6 +153,46 @@ fn async_count_matches_the_synchronous_count() {
     }
 }
 
+#[cfg(feature = "async")]
+#[test]
+fn async_estimate_matches_the_synchronous_estimate() {
+    let mut source = open_geojson_slice(sample_geojson()).unwrap();
+    let bytes = source
+        .convert(ConvertRequest {
+            envelope: EnvelopePolicy::Geographic {
+                antimeridian: AntimeridianPolicy::Split,
+            },
+            payload: PayloadPlan::RowRef,
+            ..ConvertRequest::default()
+        })
+        .unwrap();
+    let GeoArtifactIndex::D2(sync_index) = open_geo_index(SliceReader::new(bytes.clone())).unwrap()
+    else {
+        panic!("expected 2D artifact");
+    };
+    let GeoArtifactIndex::D2(async_index) = pollster::block_on(
+        packed_spatial_index_geo::open_geo_index_async(AsyncSlice(bytes)),
+    )
+    .unwrap() else {
+        panic!("expected 2D artifact");
+    };
+    let floor = async_index.directory_floor();
+    assert_eq!(floor, sync_index.directory_floor());
+    for bbox in [
+        Box2D::new(-180.0, -10.0, 180.0, 10.0),
+        Box2D::new(50.0, 50.0, 60.0, 60.0),
+        Box2D::new(-10.0, 0.0, 30.0, 5.0),
+    ] {
+        let estimate = pollster::block_on(async_index.estimate_entries_async(bbox, floor)).unwrap();
+        assert_eq!(estimate, sync_index.estimate_entries(bbox, floor).unwrap());
+        let exact = sync_index.count_entries(bbox).unwrap();
+        assert!(
+            estimate.lower <= exact && exact <= estimate.upper,
+            "{bbox:?}: {estimate:?} vs {exact}"
+        );
+    }
+}
+
 #[test]
 fn count_works_on_payload_less_artifacts() {
     let GeoArtifactIndex::D2(index) = artifact(PayloadPlan::None) else {

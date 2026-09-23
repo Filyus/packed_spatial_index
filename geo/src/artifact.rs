@@ -363,6 +363,16 @@ impl<R> GeoArtifactIndex2D<R> {
         &self.manifest
     }
 
+    /// The lowest tree level the cached directory holds entirely; an estimate
+    /// (`estimate_entries`, or `estimate_entries_async` over an async reader)
+    /// stopping there or above reads nothing. No I/O.
+    pub fn directory_floor(&self) -> usize {
+        match &self.index {
+            GeoStreamIndex2D::F64(index) => index.directory_floor(),
+            GeoStreamIndex2D::F32(index) => index.directory_floor(),
+        }
+    }
+
     fn num_entries(&self) -> usize {
         match &self.index {
             GeoStreamIndex2D::F64(index) => index.num_items(),
@@ -609,16 +619,6 @@ impl<R: RangeReader> GeoArtifactIndex2D<R> {
             .into_iter()
             .map(|m| m.feature)
             .collect())
-    }
-
-    /// The lowest tree level the cached directory holds entirely; an
-    /// [`estimate_entries`](Self::estimate_entries) stopping there or above
-    /// reads nothing.
-    pub fn directory_floor(&self) -> usize {
-        match &self.index {
-            GeoStreamIndex2D::F64(index) => index.directory_floor(),
-            GeoStreamIndex2D::F32(index) => index.directory_floor(),
-        }
     }
 
     /// Bracket and estimate how many index entries `bbox` would match, from
@@ -1136,6 +1136,22 @@ impl<R: AsyncRangeReader> GeoArtifactIndex2D<R> {
             };
         }
         Ok(count)
+    }
+
+    /// Bracket and estimate how many index entries `bbox` would match, from
+    /// node boxes; the async counterpart of
+    /// [`estimate_entries`](GeoArtifactIndex2D::estimate_entries). With
+    /// `stop_level >= directory_floor()` it reads nothing, so a worker can
+    /// price a window before fetching any of it.
+    pub async fn estimate_entries_async(
+        &self,
+        bbox: Box2D,
+        stop_level: usize,
+    ) -> Result<Estimate, GeoError> {
+        Ok(match &self.index {
+            GeoStreamIndex2D::F64(index) => index.estimate_count_async(bbox, stop_level).await?,
+            GeoStreamIndex2D::F32(index) => index.estimate_count_async(bbox, stop_level).await?,
+        })
     }
 
     /// Search and return lightweight async [`GeoMatchHeader`] records without
@@ -1732,6 +1748,16 @@ impl<R> GeoArtifactIndex3D<R> {
         &self.manifest
     }
 
+    /// The lowest tree level the cached directory holds entirely; an estimate
+    /// (`estimate_entries`, or `estimate_entries_async` over an async reader)
+    /// stopping there or above reads nothing. No I/O.
+    pub fn directory_floor(&self) -> usize {
+        match &self.index {
+            GeoStreamIndex3D::F64(index) => index.directory_floor(),
+            GeoStreamIndex3D::F32(index) => index.directory_floor(),
+        }
+    }
+
     fn num_entries(&self) -> usize {
         match &self.index {
             GeoStreamIndex3D::F64(index) => index.num_items(),
@@ -1902,16 +1928,6 @@ impl<R: RangeReader> GeoArtifactIndex3D<R> {
             .into_iter()
             .map(|m| m.feature)
             .collect())
-    }
-
-    /// The lowest tree level the cached directory holds entirely; an
-    /// [`estimate_entries`](Self::estimate_entries) stopping there or above
-    /// reads nothing.
-    pub fn directory_floor(&self) -> usize {
-        match &self.index {
-            GeoStreamIndex3D::F64(index) => index.directory_floor(),
-            GeoStreamIndex3D::F32(index) => index.directory_floor(),
-        }
     }
 
     /// Bracket and estimate how many index entries `bbox` would match, from
@@ -2389,6 +2405,21 @@ impl<R: AsyncRangeReader> GeoArtifactIndex3D<R> {
                 GeoStreamIndex3D::F64(index) => index.count_region_async(&frustum).await?,
                 GeoStreamIndex3D::F32(index) => index.count_region_async(&frustum).await?,
             },
+        })
+    }
+
+    /// Bracket and estimate how many index entries `bbox` would match, from
+    /// node boxes; the async counterpart of
+    /// [`estimate_entries`](GeoArtifactIndex3D::estimate_entries). A box
+    /// window only, like the sync form.
+    pub async fn estimate_entries_async(
+        &self,
+        bbox: Box3D,
+        stop_level: usize,
+    ) -> Result<Estimate, GeoError> {
+        Ok(match &self.index {
+            GeoStreamIndex3D::F64(index) => index.estimate_count_async(bbox, stop_level).await?,
+            GeoStreamIndex3D::F32(index) => index.estimate_count_async(bbox, stop_level).await?,
         })
     }
 

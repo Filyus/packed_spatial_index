@@ -85,13 +85,23 @@ milestone note above says. The native server takes it. `capabilities.queryShapes
 never offers it, so a client can tell before asking.
 
 `count=only` answers `numberMatched` with an empty `matches` array, counting
-the matches in the artifact instead of materializing them -- the cheapest form
-of "how many are in this bbox", and the one that shows up directly in the
+the matches in the artifact instead of materializing them -- the cheapest exact
+form of "how many are in this bbox", and the one that shows up directly in the
 `reads` counter below. It is refused with `422 unsupported_query` at
 `level=feature` on an artifact whose entries can duplicate a source row, since
 collapsing them to features means reading the matches this mode exists to
-skip; `level=entry` counts there. The native server takes the same parameter
-with the same rules.
+skip; `level=entry` counts there.
+
+`count=estimate` goes one step cheaper: it reads nothing. It answers with an
+`estimate` object -- `lower` and `upper` bound the entry count, `estimate` is a
+point guess between them, `nodesTested` is the whole cost and `stopLevel` is
+the tree level the walk stopped at -- computed from the node boxes that opening
+the artifact already fetched. There is no `numberMatched` and `matches` is
+empty. It takes a `bbox` only (a polygon or frustum prunes by a test node boxes
+cannot score, so those are `422 unsupported_query`) and follows the
+`level=feature` rule of `count=only`. Use it to decide whether a window is worth
+its round trips before paying for them. The native server takes both modes with
+the same rules.
 
 Paging happens inside the artifact whenever entry order is already answer
 order -- at `level=entry`, or when the manifest says entries cannot duplicate
@@ -133,7 +143,7 @@ the other without special cases:
 | 404 | `collection_not_found` / `not_found` | unknown collection or route |
 | 405 | `method_not_allowed` | only GET is served |
 | 409 | `artifact_changed` | the object changed between HEAD and a conditional range GET |
-| 422 | `unsupported_query` | a parameter this endpoint does not take, such as `identity` on `/items`, or `count=only` at `level=feature` where entries can duplicate a row, or `frustum` against a 2D artifact |
+| 422 | `unsupported_query` | a parameter this endpoint does not take, such as `identity` on `/items`, or `count=only` / `count=estimate` at `level=feature` where entries can duplicate a row, or `count=estimate` with a polygon or frustum, or `frustum` against a 2D artifact |
 | 422 | `unsupported_payload` | `/items` against an artifact without `feature-json` payloads |
 | 422 | `unsupported_level` | `level=feature` on an artifact that stores no feature references |
 | 422 | `query_too_large` | the query exceeded `maxReads` or the built-in budgets |

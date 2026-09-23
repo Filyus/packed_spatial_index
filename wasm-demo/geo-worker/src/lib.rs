@@ -16,7 +16,7 @@ use packed_spatial_index_geo::geo_types::{
 use packed_spatial_index_geo::{
     AsyncRangeReader, Box2D, Box3D, FeatureRef, GeoArtifactDirectory, GeoArtifactIndex,
     GeoArtifactIndex2D, GeoArtifactIndex3D, GeoArtifactManifest, GeoError, GeoMatch,
-    CoordinateDims, Frustum3D, GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery2D,
+    CoordinateDims, Estimate, Frustum3D, GeoMatchHeader, GeoMatchHeaderPage, GeoPayload, GeoQuery2D,
     GeoQuery3D, IdentityMode,
     PayloadMode, PayloadPlan, ResultLevel, StreamLimits, classify_geo_error,
     needs_payload_bodies,
@@ -148,18 +148,33 @@ pub async fn search(
         payload_mode,
         parse_identity_mode(&identity)?,
     );
-    let count_only = parse_count_only(&count)?;
-    // Same refusal the native server makes, for the same reason: the index
+    let count = parse_count(&count)?;
+    // Same refusals the native server makes, for the same reasons. The index
     // counts entries, and where an entry can duplicate a source row a
-    // feature-level count would have to read the matches this mode skips.
-    if count_only
+    // feature-level count would have to read the matches these modes skip.
+    if count != CountMode::Records
         && result_level == ResultLevel::Feature
         && index.manifest().entries_may_duplicate_rows
     {
+        let mode = count.as_str();
         return Err(worker_err(
             422,
             "unsupported_query",
-            "this artifact can store one source feature as several index entries, so a              feature-level count has to read the matches; use count=only with level=entry,              or drop count=only",
+            format!(
+                "this artifact can store one source feature as several index entries, so a \
+                 feature-level count has to read the matches; use count={mode} with \
+                 level=entry, or drop count={mode}"
+            ),
+        ));
+    }
+    // An estimate scores node boxes against a window; a polygon or frustum
+    // prunes by a region test that arithmetic cannot score.
+    if count == CountMode::Estimate && (!polygon.is_empty() || !frustum.is_empty()) {
+        return Err(worker_err(
+            422,
+            "unsupported_query",
+            "count=estimate needs a bbox window: a polygon or frustum prunes the index by a \
+             region test that node boxes cannot score; use count=only",
         ));
     }
 
@@ -178,7 +193,7 @@ pub async fn search(
                     payload_mode,
                     result_level,
                     identity_mode,
-                    count_only,
+                    count,
                 )
                 .await
             }
@@ -205,7 +220,7 @@ pub async fn search(
                     payload_mode,
                     result_level,
                     identity_mode,
-                    count_only,
+                    count,
                 )
                 .await
             }
@@ -232,7 +247,7 @@ pub async fn search(
                 payload_mode,
                 result_level,
                 identity_mode,
-                count_only,
+                count,
             )
             .await
         }
@@ -248,7 +263,7 @@ pub async fn search(
                 payload_mode,
                 result_level,
                 identity_mode,
-                count_only,
+                count,
             )
             .await
         }
@@ -268,17 +283,34 @@ async fn search_impl<I: AsyncGeoIndex>(
     payload_mode: PayloadMode,
     result_level: ResultLevel,
     identity_mode: IdentityMode,
-    count_only: bool,
+    count: CountMode,
 ) -> Result<String, JsValue> {
-    // The whole point of the mode: no header page, no bodies, no records.
-    let (number_matched, page_headers) = if count_only {
-        (index.count_entries(query).await.map_err(geo_err)?, Vec::new())
-    } else {
-        header_page(&index, query, result_level, offset, limit)
-            .await
-            .map_err(geo_err)?
+    // The whole point of the two count modes: no header page, no bodies, no
+    // records. `estimate` goes further and reads nothing at all: it stops at
+    // the directory floor, the levels opening the artifact already fetched.
+    let mut estimate = None;
+    let (number_matched, page_headers) = match count {
+        CountMode::Only => (
+            Some(index.count_entries(query).await.map_err(geo_err)?),
+            Vec::new(),
+        ),
+        CountMode::Estimate => {
+            let stop_level = index.directory_floor();
+            let e = index
+                .estimate_window(bbox, stop_level)
+                .await
+                .map_err(geo_err)?;
+            estimate = Some(estimate_json(e, stop_level));
+            (None, Vec::new())
+        }
+        CountMode::Records => {
+            let (matched, headers) = header_page(&index, query, result_level, offset, limit)
+                .await
+                .map_err(geo_err)?;
+            (Some(matched), headers)
+        }
     };
-    let records: Vec<Value> = if count_only {
+    let records: Vec<Value> = if count != CountMode::Records {
         Vec::new()
     } else if needs_payload_bodies(payload_mode, identity_mode) {
         index
@@ -302,7 +334,7 @@ async fn search_impl<I: AsyncGeoIndex>(
             .collect()
     };
 
-    let body = json!({
+    let mut body = json!({
         "collectionId": COLLECTION_ID,
         "query": query_json(
             bbox,
@@ -313,15 +345,34 @@ async fn search_impl<I: AsyncGeoIndex>(
             payload_mode,
             result_level,
             identity_mode,
-            count_only,
+            count,
         ),
         "payloadKind": payload_kind(&index.manifest().payload_plan),
-        "numberMatched": number_matched,
         "numberReturned": records.len(),
         "matches": records,
     });
+    // Like the native server: under `count=estimate` there is no exact
+    // number, so the key is absent rather than null, and `estimate` stands
+    // in for it.
+    if let Some(n) = number_matched {
+        body["numberMatched"] = json!(n);
+    }
+    if let Some(e) = estimate {
+        body["estimate"] = e;
+    }
 
     Ok(body.to_string())
+}
+
+/// The `count=estimate` answer, keyed like the native server's `EstimateInfo`.
+fn estimate_json(e: Estimate, stop_level: usize) -> Value {
+    json!({
+        "lower": e.lower,
+        "upper": e.upper,
+        "estimate": e.estimate,
+        "nodesTested": e.nodes_tested,
+        "stopLevel": stop_level,
+    })
 }
 
 #[wasm_bindgen]
@@ -470,11 +521,20 @@ trait AsyncGeoIndex {
 
     async fn count_entries(&self, query: Self::Query) -> Result<usize, GeoError>;
 
+    /// The lowest level the cached directory holds; estimating down to it
+    /// reads nothing.
+    fn directory_floor(&self) -> usize;
+
+    /// Bracket the entries a bbox window (already checked to have this
+    /// artifact's arity) matches, stopping at `stop_level`.
+    async fn estimate_window(&self, bbox: &[f64], stop_level: usize)
+    -> Result<Estimate, GeoError>;
+
     async fn fetch_matches(&self, headers: &[GeoMatchHeader]) -> Result<Vec<GeoMatch>, GeoError>;
 }
 
 macro_rules! impl_async_geo_index {
-    ($index:ty, $query:ty) => {
+    ($index:ty, $query:ty, $window:path) => {
         impl AsyncGeoIndex for $index {
             type Query = $query;
 
@@ -503,6 +563,18 @@ macro_rules! impl_async_geo_index {
                 self.count_entries_async(query).await
             }
 
+            fn directory_floor(&self) -> usize {
+                <$index>::directory_floor(self)
+            }
+
+            async fn estimate_window(
+                &self,
+                bbox: &[f64],
+                stop_level: usize,
+            ) -> Result<Estimate, GeoError> {
+                self.estimate_entries_async($window(bbox), stop_level).await
+            }
+
             async fn fetch_matches(
                 &self,
                 headers: &[GeoMatchHeader],
@@ -513,8 +585,8 @@ macro_rules! impl_async_geo_index {
     };
 }
 
-impl_async_geo_index!(GeoArtifactIndex2D<R2Reader>, GeoQuery2D);
-impl_async_geo_index!(GeoArtifactIndex3D<R2Reader>, GeoQuery3D);
+impl_async_geo_index!(GeoArtifactIndex2D<R2Reader>, GeoQuery2D, box_2d);
+impl_async_geo_index!(GeoArtifactIndex3D<R2Reader>, GeoQuery3D, box_3d);
 
 fn box_2d(bbox: &[f64]) -> Box2D {
     Box2D::new(bbox[0], bbox[1], bbox[2], bbox[3])
@@ -680,7 +752,7 @@ fn query_json(
     payload: PayloadMode,
     level: ResultLevel,
     identity: IdentityMode,
-    count_only: bool,
+    count: CountMode,
 ) -> Value {
     // The echoed query names the shape that applied, and only that one --
     // the native server omits the other key rather than sending it empty.
@@ -689,7 +761,7 @@ fn query_json(
         "level": level.as_str(),
         "payload": payload.as_str(),
         "identity": identity.as_str(),
-        "count": if count_only { "only" } else { "records" },
+        "count": count.as_str(),
         "limit": limit,
         "offset": offset,
     });
@@ -929,14 +1001,37 @@ fn multi_polygon_rings(multi: &MultiPolygon<f64>) -> Vec<Vec<Vec<[f64; 2]>>> {
         .collect()
 }
 
-fn parse_count_only(value: &str) -> Result<bool, JsValue> {
+/// What `/search` answers with, the native server's `count` parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CountMode {
+    /// The matched page, with `numberMatched` alongside it.
+    Records,
+    /// `numberMatched` only, counted without materializing a match.
+    Only,
+    /// A bracket on the count from node boxes the directory already holds:
+    /// no `numberMatched`, no matches, no read.
+    Estimate,
+}
+
+impl CountMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            CountMode::Records => "records",
+            CountMode::Only => "only",
+            CountMode::Estimate => "estimate",
+        }
+    }
+}
+
+fn parse_count(value: &str) -> Result<CountMode, JsValue> {
     match value {
-        "" | "records" => Ok(false),
-        "only" => Ok(true),
+        "" | "records" => Ok(CountMode::Records),
+        "only" => Ok(CountMode::Only),
+        "estimate" => Ok(CountMode::Estimate),
         _ => Err(worker_err(
             400,
             "invalid_count",
-            "count must be records or only",
+            "count must be records, only or estimate",
         )),
     }
 }
@@ -1085,8 +1180,9 @@ fn geo_error_class(e: &GeoError) -> (u16, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        FeatureRef, GeoError, GeoMatch, GeoPayload, IdentityMode, PayloadMode, ResultLevel,
-        bbox_arity_message, geo_error_class, match_record, object_identity, query_json,
+        CountMode, Estimate, FeatureRef, GeoError, GeoMatch, GeoPayload, IdentityMode,
+        PayloadMode, ResultLevel, bbox_arity_message, estimate_json, geo_error_class,
+        match_record, object_identity, parse_count, query_json,
     };
     use packed_spatial_index_geo::StreamError;
 
@@ -1175,27 +1271,66 @@ mod tests {
     fn query_json_echoes_the_bbox_it_was_given() {
         let two = query_json(
             &[1.0, 2.0, 3.0, 4.0],
+            None,
+            None,
             10,
             0,
             PayloadMode::Summary,
             ResultLevel::Feature,
             IdentityMode::Ref,
+            CountMode::Records,
         );
         assert_eq!(two["identity"], "ref");
+        assert_eq!(two["count"], "records");
         assert_eq!(two["bbox"], serde_json::json!([1.0, 2.0, 3.0, 4.0]));
 
         let three = query_json(
             &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            None,
+            None,
             10,
             0,
             PayloadMode::Summary,
             ResultLevel::Feature,
             IdentityMode::Full,
+            CountMode::Estimate,
         );
         assert_eq!(three["identity"], "full");
+        assert_eq!(three["count"], "estimate");
         assert_eq!(
             three["bbox"],
             serde_json::json!([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        );
+    }
+
+    #[test]
+    fn count_takes_the_native_servers_three_modes() {
+        assert_eq!(parse_count("").unwrap(), CountMode::Records);
+        assert_eq!(parse_count("records").unwrap(), CountMode::Records);
+        assert_eq!(parse_count("only").unwrap(), CountMode::Only);
+        assert_eq!(parse_count("estimate").unwrap(), CountMode::Estimate);
+        for mode in [CountMode::Records, CountMode::Only, CountMode::Estimate] {
+            assert_eq!(parse_count(mode.as_str()).unwrap(), mode);
+        }
+    }
+
+    #[test]
+    fn estimate_json_is_keyed_like_the_native_server() {
+        let e = Estimate {
+            lower: 3,
+            upper: 9,
+            estimate: 5.5,
+            nodes_tested: 17,
+        };
+        assert_eq!(
+            estimate_json(e, 2),
+            serde_json::json!({
+                "lower": 3,
+                "upper": 9,
+                "estimate": 5.5,
+                "nodesTested": 17,
+                "stopLevel": 2,
+            })
         );
     }
 

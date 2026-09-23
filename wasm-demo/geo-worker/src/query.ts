@@ -151,6 +151,13 @@ export function parseEnum<T extends string>(
   throw new HttpError(400, invalidCode(key), `${key} must be one of ${allowed.join(", ")}`);
 }
 
+/**
+ * The `count` modes `/search` takes, the native server's list. `records` is the
+ * page with `numberMatched`; `only` is `numberMatched` alone; `estimate` is a
+ * bracket from the node boxes opening the artifact already fetched.
+ */
+export const COUNT_MODES = ["records", "only", "estimate"] as const;
+
 export function maxReads(url: URL): number {
   return parseIntParam(url, "maxReads", 0, 0, 10_000);
 }

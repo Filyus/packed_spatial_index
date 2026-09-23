@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { HttpError } from "../src/artifact.ts";
 import {
+  COUNT_MODES,
   parseBbox,
   parseEnum,
   parseFrustum,
@@ -63,7 +64,7 @@ test("names the parameter in the error code, as the server does", () => {
         parseEnum(url, "payload", "summary", ["none", "summary", "full"]);
         parseEnum(url, "level", "feature", ["entry", "feature"]);
         parseEnum(url, "identity", "ref", ["ref", "full"]);
-        parseEnum(url, "count", "records", ["records", "only"]);
+        parseEnum(url, "count", "records", COUNT_MODES);
         parseIntParam(url, "limit", 100, 1, 1000);
         parseIntParam(url, "offset", 0, 0, 1e6);
       },
@@ -111,6 +112,13 @@ const SIX_PLANES = [
 ]
   .flat()
   .join(",");
+
+test("count takes the native server's three modes", () => {
+  for (const mode of ["records", "only", "estimate"]) {
+    const url = new URL(`https://example.test/search?count=${mode}`);
+    assert.equal(parseEnum(url, "count", "records", COUNT_MODES), mode);
+  }
+});
 
 test("a frustum is six planes of four numbers, or nothing at all", () => {
   assert.deepEqual(frustum("bbox=0,0,1,1"), []);

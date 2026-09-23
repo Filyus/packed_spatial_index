@@ -11,6 +11,7 @@ import wasmModule from "../pkg/psi_geo_worker_bg.wasm";
 import { withArtifact, type Metrics } from "./artifact";
 import { errorBody, HttpError } from "./errors.ts";
 import {
+  COUNT_MODES,
   maxReads,
   parseBbox,
   parseEnum,
@@ -130,8 +131,10 @@ async function route(req: Request, env: Env): Promise<Response> {
     const level = parseEnum(url, "level", "", ["entry", "feature"]);
     const identity = parseEnum(url, "identity", "ref", ["ref", "full"]);
     // `only` returns numberMatched with an empty matches array: the artifact
-    // counts the matches instead of materializing them.
-    const count = parseEnum(url, "count", "records", ["records", "only"]);
+    // counts the matches instead of materializing them. `estimate` returns a
+    // bracket instead of numberMatched, from node boxes already in hand, so it
+    // costs no range read at all.
+    const count = parseEnum(url, "count", "records", COUNT_MODES);
     // `/items` deliberately keeps its own shorter list, so `identity` there is a
     // 422 rather than a silently ignored parameter.
     rejectUnsupportedSearchParams(url, [

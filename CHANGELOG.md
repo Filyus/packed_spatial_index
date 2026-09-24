@@ -29,10 +29,11 @@ All notable changes to this crate are documented here.
 
 - **Speed claims that depend on the CPU now name the CPU.** The guide credited
   the SIMD indexes with 1.6–1.9× over the scalar ones on AVX-512, holding on
-  broad queries. Re-measured, that is a Zen 5 figure for small 2D windows and
-  large 3D ones. On large 2D windows the lead fades as the index grows; a Zen 4
-  gives ~1.6× on small windows and a tie on large ones; a Neoverse N2 stays
-  within 10% of the scalar index either way. The scalar `f32` indexes,
+  broad queries. Re-measured, that is a Zen 5 laptop's figure for small 2D
+  windows and large 3D ones. On large 2D windows the lead fades as the index
+  grows; a Zen 4 gives ~1.6× on small windows and a tie on large ones; a Zen 3,
+  on the AVX2 tier, ~1.3× and ~1.06×; a Neoverse N2 stays within 10% of the
+  scalar index either way. The scalar `f32` indexes,
   documented as ~30% slower than `f64`, take 1.0–2.8× its time; `count` on the
   SIMD `f32` indexes takes 1.6–5.8×. `docs/performance.md` gains a section with
   the four range-search frontends side by side and the SIMD kernels on each

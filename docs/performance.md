@@ -4,7 +4,9 @@ Benchmark results and how to reproduce them. See the
 [README](https://github.com/Filyus/packed_spatial_index#readme) for the API
 overview.
 
-Numbers are from one machine, a Zen 5, unless a section names another. They
+Numbers are from one machine unless a section names another: a Zen 5 laptop (a
+Ryzen AI 7 350). Its AVX-512 runs on 256-bit datapaths, as Zen 4's does; desktop
+and server Zen 5 have full-width ones and are unmeasured here. They
 depend on hardware and workload, so treat them as relative, not absolute; how
 far they move between processors is measured in
 [the four frontends, by CPU](#the-four-range-search-frontends-by-cpu).
@@ -737,7 +739,7 @@ every arm divided by the scalar `f64` index. Run it where the answer matters:
 BENCH_PIN_CORE=8 cargo bench --features simd,f32-storage --bench paired_precision
 ```
 
-On a Zen 5 (AVX-512 at full width), `search` time relative to the scalar `f64`
+On the Zen 5 laptop (AVX-512 on 256-bit datapaths), `search` time relative to the scalar `f64`
 index — lower is faster. Uniform boxes over a 10 000-unit extent; small windows
 are 10–200 units wide in 2D and 10–300 in 3D, large ones 2 000–5 000; "all"
 covers the whole index:
@@ -766,20 +768,22 @@ covers the whole index:
 
 The SIMD kernels are where machines part ways. `SimdIndex2D::search_into`
 against `Index2D::search_into`, both into reused buffers, 100k boxes
-(`benches/paired_simd_search.rs`, the Zen 4 and Neoverse N2 columns from
-`.github/workflows/bench-arm.yml` on GitHub's hosted runners):
+(`benches/paired_simd_search.rs`; the Zen 4, Zen 3 and Neoverse N2 columns come
+from `.github/workflows/bench-arm.yml` on GitHub's hosted runners):
 
-| 2D window | Zen 5 | Zen 4 | Neoverse N2 |
-| --- | ---: | ---: | ---: |
-| small | 0.54 | 0.64 | 0.95 |
-| large | 0.68 | 0.97 | 1.10 |
-| all | 1.00 | 1.01 | 1.01 |
+| 2D window | Zen 5 laptop | Zen 4 | Zen 3 (AVX2 tier) | Neoverse N2 |
+| --- | ---: | ---: | ---: | ---: |
+| small | 0.54 | 0.64 | 0.78 | 0.95 |
+| large | 0.68 | 0.97 | 0.94 | 1.10 |
+| all | 1.00 | 1.01 | 1.04 | 1.01 |
 
-A Zen 4 keeps most of the lead on small windows and loses it on large ones.
-The N2 has no AVX-512 or AVX2: its SIMD index runs the portable `wide` tier on
-NEON and stays within 10% of the scalar index either way, 0.97 / 0.91 / 0.99 in
-3D. A hosted runner is a shared VM, so only these ratios, taken inside one
-binary, carry over; its microseconds do not.
+A Zen 4 keeps most of the lead on small windows and loses it on large ones,
+although its AVX-512 datapaths are as wide as the Zen 5 laptop's. A Zen 3 has
+no AVX-512, so this is the AVX2 tier with its left-pack. The N2 has neither:
+its SIMD index runs the portable `wide` tier on NEON and stays within 10% of the
+scalar index either way, 0.97 / 0.91 / 0.99 in 3D. A hosted runner is a shared
+VM, so only these ratios, taken inside one binary, carry over; its
+microseconds do not.
 
 ## f32 storage vs f64
 
@@ -842,8 +846,9 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
   is faster when Z meaningfully prunes the tree;
 - the SIMD indexes' lead over the scalar ones on range search depends on the
-  CPU: up to 1.8× on a Zen 5, up to 1.6× on small windows but none on large
-  ones on a Zen 4, within 10% either way on a Neoverse N2;
+  CPU: up to 1.8× on the Zen 5 laptop, up to 1.6× on small windows but none on
+  large ones on a Zen 4, up to 1.3× on a Zen 3's AVX2 tier, within 10% either
+  way on a Neoverse N2;
 - the branch-free node test behind those collect numbers applies only where the
   path has no early exit *and* the per-child predicate is cheap; the callback
   forms, the shape regions and the radius queries measured worse with it and

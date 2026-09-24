@@ -103,7 +103,7 @@ Why the distinctions matter:
   from compact storage; prefer the `f64` indexes for exact queries with many
   hits.
 - Scan, scalar index, or SIMD index? Measured crossovers (uniform 2D boxes, a
-  Zen 5 unless named — treat as orders of magnitude, not exact):
+  Zen 5 laptop unless named — treat as orders of magnitude, not exact):
   - **Below ~100–130 boxes**, a plain linear scan over your own `Box2D`s beats an
     index *per query* — the traversal's fixed overhead doesn't pay off yet.
   - **Building an index amortizes after ~50–120 queries** over the same box set
@@ -111,15 +111,16 @@ Why the distinctions matter:
     boxes, just scan. Above the crossover the index pulls away fast — at 1M boxes
     it answers a window query ~30–50× faster than a scan.
   - **`SimdIndex*` over the scalar `Index*`** depends on the CPU more than
-    anything else here. On a **Zen 5** (AVX-512) range queries ran up to
-    ~**1.8×** faster across 100k–1M boxes, holding on large 3D windows and
-    fading on large 2D ones as the index grows. A **Zen 4** gave ~1.6× on small
-    2D windows and a tie on large ones. On an aarch64 **Neoverse N2** the
-    portable NEON tier stayed within 10% of the scalar index either way. A
-    window that covers the whole index is a tie
-    everywhere, since both copy the covered range. The tier is picked at
-    runtime (`AVX-512 → AVX2 → SSE2` on x86, the AVX2 tier emulating the
-    compress with a [left-pack](internals/simd.md)); `-C target-cpu=native` (see
+    anything else here. On a **Zen 5** laptop (AVX-512 on 256-bit datapaths)
+    range queries ran up to ~**1.8×** faster across 100k–1M boxes, holding on
+    large 3D windows and fading on large 2D ones as the index grows. A **Zen 4**
+    gave ~1.6× on small 2D windows and a tie on large ones; a **Zen 3**, which
+    has no AVX-512 and runs the AVX2 tier, ~1.3× and ~1.06×. On an aarch64
+    **Neoverse N2** the portable NEON tier stayed within 10% of the scalar index
+    either way. A window that covers the whole index is a tie everywhere, since
+    both copy the covered range. The tier is picked at runtime
+    (`AVX-512 → AVX2 → SSE2` on x86, the AVX2 tier emulating the compress with a
+    [left-pack](internals/simd.md)); `-C target-cpu=native` (see
     [performance.md](performance.md#build-flags)) additionally widens the scalar
     autovectorization. Per window and per machine:
     [performance.md](performance.md#the-four-range-search-frontends-by-cpu).

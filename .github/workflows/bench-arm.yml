@@ -24,7 +24,7 @@ on:
       benches:
         description: Space-separated bench targets
         required: true
-        default: paired_mask_forms paired_simd_search paired_simd_count paired_within paired_raycast_prune paired_aggregate
+        default: paired_precision paired_mask_forms paired_simd_search paired_simd_count paired_within paired_raycast_prune paired_aggregate
 
 permissions:
   contents: read

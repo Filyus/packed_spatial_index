@@ -108,6 +108,11 @@ harness = false
 required-features = ["simd"]
 
 [[bench]]
+name = "paired_precision"
+harness = false
+required-features = ["simd", "f32-storage"]
+
+[[bench]]
 name = "predicate_regions_bench"
 harness = false
 

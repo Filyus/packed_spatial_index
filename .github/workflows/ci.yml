@@ -267,6 +267,12 @@ jobs:
         run: cargo check --manifest-path wasm-demo/worker/Cargo.toml --target wasm32-unknown-unknown
       - name: Check geo worker (wasm)
         run: cargo check --manifest-path wasm-demo/geo-worker/Cargo.toml --target wasm32-unknown-unknown
+      # `check` never compiles `#[cfg(test)]`, so a worker test can stop
+      # building and nothing notices -- one did, until f78c7cb fixed it. The
+      # tests are plain Rust with no wasm runtime, so they run on the host. The
+      # other demo crates have no tests; `check` is all they need.
+      - name: Test geo worker (host)
+        run: cargo test --manifest-path wasm-demo/geo-worker/Cargo.toml
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:

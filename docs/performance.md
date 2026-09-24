@@ -223,9 +223,10 @@ aarch64 too, where the `f64` 2D paths go without it:
 | Neoverse N2 | 0.85 / 0.85 / 0.92 | 0.86 / 0.79 / 0.73 |
 
 The one loss, Zen 4 on small 3D windows, is a cell that returns almost nothing
-(164 hits over 400 queries); two Zen 4 runs read it 1.18 and 1.29. While the child test read each box through four
-bounds-checked lookups joined by `&&` it stayed scalar; the f32 mask was then
-within a few percent of the branch on x86 and lost 2–10% in 2D on the N2.
+(164 hits over 400 queries); two Zen 4 runs read it 1.18 and 1.29. While the
+child test read each box through four bounds-checked lookups joined by `&&` it
+stayed scalar; the f32 mask was then within a few percent of the branch on x86
+and lost 2–10% in 2D on the N2.
 These forms skip a subtree the window covers, like the `f64` indexes: its leaf
 range goes to the output as one slice, without a test per item.
 
@@ -275,7 +276,10 @@ paths:
   the likely reason rather than a measured one. 3D keeps the mask on aarch64 as
   well — the N2 gives 0.88 on mid and large view windows and 0.97–0.99 on
   raycast. So does the scalar `Index2DF32`: with its vectorized child test the
-  mask wins on the N2 too (see above).
+  mask wins on the N2 too (see above). x86 is not uniform either: a Zen 4 (EPYC
+  9V74) wins with the mask on mid and large windows like the other x86 machines
+  but loses on small ones — 1.35 on owned `search_into`, 1.56 on the 2D view,
+  1.51 on the 3D view, in three runs. Why is open; the mask stays on there.
 
 The radius queries sit exactly on the second boundary and split by query width
 rather than by form, which is what the next section is about.

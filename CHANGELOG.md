@@ -69,11 +69,11 @@ All notable changes to this crate are documented here.
   branching path. 3D and every x86 target are unchanged.
 - **2D range search on aarch64 goes back to the per-child branch.** The owned
   `Index2D` and `Index2DView` collect paths (`search`, `search_into`,
-  `search_with`) fold child tests into a bitmask, which wins 10–27% on x86 but
-  lost 3–17% on a Neoverse N2 on every window size. On aarch64 they now test
-  one child at a time. x86 keeps the mask; 3D keeps it everywhere. The
-  scalar `Index2DF32` keeps the mask on every target: once its child test
-  vectorized (above), the mask won 4–15% on the same N2.
+  `search_with`) fold child tests into a bitmask, which wins 10–27% on a Zen 3
+  and a Zen 5 laptop but lost 3–17% on a Neoverse N2 on every window size. On
+  aarch64 they now test one child at a time. x86 keeps the mask; 3D keeps it
+  everywhere. The scalar `Index2DF32` keeps the mask on every target: once its
+  child test vectorized (above), the mask won 4–15% on the same N2.
 - **The scalar f32 indexes skip subtrees a window covers.** `Index2DF32` and
   `Index3DF32` `search` and `count` now emit a subtree the query holds whole
   as its leaf range, without testing each item — the fast path the `f64`

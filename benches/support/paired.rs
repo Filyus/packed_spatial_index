@@ -10,9 +10,11 @@
 //! keep an arm the change cannot touch as the control.
 //!
 //! Included by a bench via `#[path = "support/paired.rs"] mod paired;`.
-//! `PAIRED_ROUNDS` (default 15) and `PAIRED_REPS` (default 5, the timed
-//! repetitions per arm per round, of which the minimum is kept) are env
-//! knobs; pair it with `BENCH_PIN_CORE` from `pin.rs`.
+//! `PAIRED_ROUNDS` (default 15), `PAIRED_REPS` (default 5, the timed
+//! repetitions per arm per round, of which the minimum is kept) and
+//! `PAIRED_SETTLE_US` (default 2000, how long each arm runs untimed after the
+//! switch to it, every round) are env knobs; pair it with `BENCH_PIN_CORE`
+//! from `pin.rs`.
 
 use std::time::Instant;
 
@@ -53,6 +55,7 @@ fn median(v: &mut [f64]) -> f64 {
 pub fn run(title: &str, arms: &mut [Arm<'_>], reference: &str) {
     let rounds = env_usize("PAIRED_ROUNDS", 15);
     let reps = env_usize("PAIRED_REPS", 5);
+    let settle_us = env_usize("PAIRED_SETTLE_US", 2000) as f64;
     let n = arms.len();
     let mut times = vec![Vec::with_capacity(rounds); n];
     let mut checksum = vec![0usize; n];
@@ -64,6 +67,14 @@ pub fn run(title: &str, arms: &mut [Arm<'_>], reference: &str) {
 
     for _ in 0..rounds {
         for (i, arm) in arms.iter_mut().enumerate() {
+            // Settle after switching from the previous arm's code before timing.
+            // The first runs after a switch are slow for longer than a few reps
+            // of a short arm: on a 0.1 ms arm, five reps read one kernel 7% worse
+            // than another that 20 or 60 reps show level with it.
+            let settle = Instant::now();
+            while settle.elapsed().as_secs_f64() * 1e6 < settle_us {
+                std::hint::black_box((arm.run)());
+            }
             let mut best = f64::INFINITY;
             for _ in 0..reps {
                 let t0 = Instant::now();

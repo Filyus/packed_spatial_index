@@ -438,6 +438,18 @@ pub(crate) fn collect_within_core<T, P, F>(
 /// "Radius queries: which traversal").
 const MIN_EXPECTED_HITS: f64 = 1.0;
 
+/// Whether this target can afford the masked 2D radius traversal at all.
+///
+/// Not on aarch64. On a Neoverse N2 the 2D mask lost to the branching test at
+/// every radius measured, from 42% slower with no hits to 7% slower at 15 635
+/// hits per query, while both x86 machines (Zen 4 and Zen 5) win with it from
+/// about 14 hits up (`benches/paired_within.rs`, kb:observation/528). The
+/// likely reason is that NEON has no movemask, so turning a vector compare into
+/// a bit mask costs more than the mispredicts it saves; a 2D box test is cheap
+/// enough that this dominates. 3D keeps the mask everywhere: its test is
+/// dearer, and on the same N2 the mask won from a few dozen hits up.
+const MASK_PAYS_IN_2D: bool = !cfg!(target_arch = "aarch64");
+
 /// Whether a radius query is wide enough for the masked traversal.
 ///
 /// The two traversals answer identically, so this only picks which one runs —
@@ -453,6 +465,9 @@ const MIN_EXPECTED_HITS: f64 = 1.0;
 /// hits expected if items were spread uniformly. Clustering makes it wrong in
 /// both directions, which is affordable: the crossover is flat, and the worst
 /// mis-call measured cost 3%, against 20-27% for having no switch at all.
+///
+/// On targets where the 2D mask never pays ([`MASK_PAYS_IN_2D`]) the answer
+/// is always no, whatever the estimate says.
 #[inline]
 pub(crate) fn prefers_mask_2d(
     root: Box2D,
@@ -460,6 +475,13 @@ pub(crate) fn prefers_mask_2d(
     max_distance: f64,
     num_items: usize,
 ) -> bool {
+    MASK_PAYS_IN_2D && mask_threshold_2d(root, query, max_distance, num_items)
+}
+
+/// The expected-hits half of [`prefers_mask_2d`], with no target in it, so the
+/// threshold stays testable on every architecture.
+#[inline]
+fn mask_threshold_2d(root: Box2D, query: Box2D, max_distance: f64, num_items: usize) -> bool {
     // A negative or NaN bound matches nothing, so the mask would be pure cost.
     if max_distance.partial_cmp(&0.0).is_none_or(|o| o.is_lt()) {
         return false;
@@ -1074,18 +1096,31 @@ mod tests {
 
         // r=20 covers (40/10_000)^2 = 1.6e-5 of the extent: 1.6 expected hits
         // at 100k items, 0.16 at 10k.
-        assert!(prefers_mask_2d(root, point, 20.0, 100_000));
-        assert!(!prefers_mask_2d(root, point, 20.0, 10_000));
+        assert!(mask_threshold_2d(root, point, 20.0, 100_000));
+        assert!(!mask_threshold_2d(root, point, 20.0, 10_000));
         // ... and at 1M the same geometry is far above the line.
-        assert!(prefers_mask_2d(root, point, 6.0, 1_000_000));
-        assert!(!prefers_mask_2d(root, point, 6.0, 100_000));
+        assert!(mask_threshold_2d(root, point, 6.0, 1_000_000));
+        assert!(!mask_threshold_2d(root, point, 6.0, 100_000));
 
         // A query with nothing to find never takes the mask.
-        assert!(!prefers_mask_2d(root, point, 0.0, 1_000_000));
-        assert!(!prefers_mask_2d(root, point, -1.0, 1_000_000));
-        assert!(!prefers_mask_2d(root, point, f64::NAN, 1_000_000));
+        assert!(!mask_threshold_2d(root, point, 0.0, 1_000_000));
+        assert!(!mask_threshold_2d(root, point, -1.0, 1_000_000));
+        assert!(!mask_threshold_2d(root, point, f64::NAN, 1_000_000));
         // An empty index is handled before the predicate, but be total anyway.
-        assert!(!prefers_mask_2d(root, point, 20.0, 0));
+        assert!(!mask_threshold_2d(root, point, 20.0, 0));
+    }
+
+    /// The switch follows the threshold where the 2D mask pays and never takes
+    /// it on aarch64, however wide the query. The arm64 CI legs run this on a
+    /// real aarch64 target, so the gate is pinned where it matters.
+    #[test]
+    fn the_2d_radius_switch_never_masks_on_aarch64() {
+        let root = Box2D::new(0.0, 0.0, 10_000.0, 10_000.0);
+        let point = Box2D::new(5_000.0, 5_000.0, 5_000.0, 5_000.0);
+        // Far above the line: ~64k expected hits at 1M items.
+        let wide = prefers_mask_2d(root, point, 1_000.0, 1_000_000);
+        assert!(mask_threshold_2d(root, point, 1_000.0, 1_000_000));
+        assert_eq!(wide, !cfg!(target_arch = "aarch64"));
     }
 
     #[test]

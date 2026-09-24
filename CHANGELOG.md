@@ -4,6 +4,15 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Performance
+
+- **2D radius queries on aarch64 keep the branching traversal.**
+  `search_within_into` and `count_within` switch to a masked traversal once a
+  query expects at least one hit — a threshold calibrated on x86, where the mask
+  wins from about 14 hits up. On a Neoverse N2 the 2D mask lost at every radius
+  measured, by 7–42%, so on aarch64 2D radius queries now always take the
+  branching path. 3D and every x86 target are unchanged.
+
 ## [0.32.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.31.0...psi-v0.32.0) - 2026-09-24
 
 ### Persistence

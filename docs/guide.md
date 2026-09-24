@@ -734,9 +734,11 @@ overhead. The estimate is the grown query's share of the total extent times the
 item count, so it costs a handful of flops once per query and no result depends
 on it — both traversals answer identically. It is worth 12–17% in the middle of
 the range and ~16% on `count_within` at any width; `docs/performance.md` has the
-table, including the one regime where it gives a few percent back. The callback
-forms keep the branching descent unconditionally, because they can stop early
-and a mask does its work before the first hit is reported.
+table, including the one regime where it gives a few percent back. On aarch64
+2D radius queries always keep the branching descent: measured on a Neoverse N2
+the 2D mask lost at every width, by 7–42%, while 3D still wins with it. The
+callback forms keep the branching descent unconditionally, because they can stop
+early and a mask does its work before the first hit is reported.
 
 ## Join by distance (ε-join)
 

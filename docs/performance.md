@@ -276,6 +276,16 @@ runtime switch read outside the timed loop, the box collect path as a control
 3D behaves the same at the narrow end (1.04–1.08 at zero hits, 0.74 at 27 hits)
 and, unlike 2D, keeps winning all the way up: 0.71 at 4 853 hits per query.
 
+**On aarch64 the 2D switch always takes the branching path.** The same harness on
+a Neoverse N2 (GitHub's `ubuntu-24.04-arm` runner, the `bench-arm.yml` workflow)
+found the 2D mask slower at every radius — masked / branching 1.42 at zero hits,
+1.32 at 2, 1.25 at 14, 1.18 at 502 and still 1.07 at 15 635 — where both x86
+machines win with it from about 14 hits (Zen 5 0.85 at 14 hits and 0.82 at 502;
+Zen 4 0.94 and 0.81). NEON has no movemask, and in 2D the box test is cheap
+enough that building the bit mask costs more than the mispredicts it saves;
+that is the likely reason, not a measured one. 3D keeps the mask there too: on
+the N2 it gave 2–6% back with no hits and won 7–11% from a few dozen hits up.
+
 Two things the table says that the switch does not act on. First, `count_within`
 wins with the mask at *every* width — a flat ~16% even in the rows where
 `search_within_into` has given the win back — because it has no output to push

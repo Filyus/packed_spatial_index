@@ -146,14 +146,16 @@ pub(crate) fn for_each_hit_rev(mut mask: u64, mut f: impl FnMut(usize)) {
 ///
 /// Not on aarch64. On a Neoverse N2 the 2D mask lost to the per-child branch on
 /// every path and window measured: 3–11% on owned `search_into`, 4–17% on the
-/// view's, 2–10% on the scalar `Index2DF32`, and 7–42% on radius queries,
+/// view's and 7–42% on radius queries,
 /// while Zen 4 and Zen 5 win with it by 10–27% on the `f64` paths
 /// (`benches/paired_mask_forms.rs`, `benches/paired_within.rs`,
 /// kb:observation/528). The likely reason is that NEON has no movemask, so
 /// turning a vector compare into a bit mask costs more than the mispredicts it
 /// saves, and a 2D box test is cheap enough for that to dominate. 3D keeps the
 /// mask everywhere: its test is dearer, and on the same N2 the 3D view mask won
-/// 12% from a few dozen hits up.
+/// 12% from a few dozen hits up. The scalar `Index2DF32` collect lost 2–10% there
+/// too until its child test vectorized; it now masks everywhere and does not
+/// read this constant.
 pub(crate) const MASK_PAYS_IN_2D: bool = !cfg!(target_arch = "aarch64");
 
 /// Visit, low to high, the positions in `boxes` that overlap `query`: through a

@@ -15,7 +15,7 @@ use crate::{
     builder2d::BuildConfig,
     f32_storage::{Box2DF32, CountSink, F32Columns2D, HitSink, columns2d_from_parsed},
     geometry::{Box2D, Overlaps2D},
-    index2d::{MASK_CHUNK, MASK_PAYS_IN_2D, for_each_hit, frame},
+    index2d::{MASK_CHUNK, for_each_hit, frame},
     ordered::{collect_ordered, search_ordered_each},
     persistence::{LoadError, parse_index},
     range::search_region_each,
@@ -2773,11 +2773,7 @@ impl Index2DF32 {
     pub fn search(&self, query: Box2D) -> Vec<usize> {
         let q = Box2DF32::from_box2d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits::<MASK_PAYS_IN_2D>(
-            |b| b.overlaps_branchless(q),
-            |b| q.contains(b),
-            &mut out,
-        );
+        self.collect_hits::<true>(|b| b.overlaps_branchless(q), |b| q.contains(b), &mut out);
         out
     }
 
@@ -2819,11 +2815,7 @@ impl Index2DF32 {
     pub fn count(&self, query: Box2D) -> usize {
         let q = Box2DF32::from_box2d_inward(query);
         let mut count = CountSink(0);
-        self.collect_hits::<MASK_PAYS_IN_2D>(
-            |b| b.overlaps_branchless(q),
-            |b| q.contains(b),
-            &mut count,
-        );
+        self.collect_hits::<true>(|b| b.overlaps_branchless(q), |b| q.contains(b), &mut count);
         count.0
     }
 
@@ -2923,6 +2915,12 @@ impl Index2DF32 {
     /// branches once per hit instead of once per child. See
     /// [`crate::index2d`]'s `overlap_mask` for why the early-exit forms keep
     /// their branches.
+    ///
+    /// Unlike the `f64` 2D collects, `search` and `count` here pass the mask on
+    /// every target, aarch64 included (not `MASK_PAYS_IN_2D`). Once the child
+    /// test read column slices and joined its comparisons with `&`, the mask
+    /// won on a Neoverse N2 too: 0.85–0.96 of the per-child branch on small to
+    /// large windows, in two runs (`benches/paired_mask_forms.rs`).
     ///
     /// A child the query covers whole (`covers`) is pushed with the
     /// contained flag and later handed to `sink` as one slice of its leaf

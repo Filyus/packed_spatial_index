@@ -6,6 +6,15 @@ All notable changes to this crate are documented here.
 
 ### SIMD
 
+- **`SimdIndex2DF32` / `SimdIndex3DF32` `count` no longer visits each hit.**
+  It ran as `visit` with a counter, testing every item even inside a subtree
+  the window covers. It now walks the tree the way the `f64` `count` does: a
+  covered subtree adds its leaf range's length, a leaf node adds the popcount
+  of its eight-lane overlap mask, and a window that covers the root answers at
+  once. The views (`SimdIndex2DF32View` / `SimdIndex3DF32View`) take the same
+  shortcuts with a per-item test. On an Intel Xeon cloud VM (family 6, model
+  207) owned `count` takes 0.10–0.26× the time it did on windows, going from
+  2.4–6.4× the scalar `f64` `count` to 0.55–0.62×; the views take 0.48–0.72×.
 - **AVX-512 search and raycast collect hits in a register, so they no longer
   stall on Zen 4.** Every AVX-512 kernel — `SimdIndex2D` / `SimdIndex3D` and
   `SimdIndex2DF32` / `SimdIndex3DF32` search, all-hits raycast in 2D and 3D —

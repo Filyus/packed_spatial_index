@@ -897,12 +897,8 @@ impl SimdIndex3DF32 {
     /// `search(query).len()`, which allocates a `Vec` to throw away. Like
     /// `search`, this counts a conservative superset of the exact answer.
     pub fn count(&self, query: Box3D) -> usize {
-        let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit(query, |_| {
-            count += 1;
-            ControlFlow::Continue(())
-        });
-        count
+        let mut stack = crate::traversal::ScratchStack::take();
+        self.count_wide(Box3DF32::from_box3d_inward(query), &mut stack)
     }
 
     /// Return `true` if at least one caller-owned f64 box intersects `query`.
@@ -1136,6 +1132,109 @@ impl SimdIndex3DF32 {
                 node_index = stack.pop().unwrap();
             } else {
                 return;
+            }
+        }
+    }
+
+    /// Count the items whose stored box overlaps `q` without collecting them,
+    /// the f32 twin of the `f64` `count_simd_impl`: the root or any subtree the
+    /// query covers adds its leaf range's length, a leaf node adds the popcount
+    /// of its overlap mask, and only the internal children a query edge cuts
+    /// are pushed. Portable `f32x8` lanes: a count has no leaf output to
+    /// compress, so the intrinsic tiers would buy nothing here.
+    fn count_wide(&self, q: Box3DF32, stack: &mut Vec<usize>) -> usize {
+        use wide::f32x8;
+
+        stack.clear();
+        if self.num_items == 0 {
+            return 0;
+        }
+        if q.contains(self.box_f32_at(self.min_xs.len() - 1)) {
+            return self.num_items;
+        }
+        let qmxx_v = f32x8::splat(q.max_x);
+        let qmnx_v = f32x8::splat(q.min_x);
+        let qmxy_v = f32x8::splat(q.max_y);
+        let qmny_v = f32x8::splat(q.min_y);
+        let qmxz_v = f32x8::splat(q.max_z);
+        let qmnz_v = f32x8::splat(q.min_z);
+        let load8 = |a: &[f32], p: usize| -> f32x8 {
+            let eight: [f32; 8] = a[p..p + 8].try_into().unwrap();
+            f32x8::from(eight)
+        };
+
+        let mut total = 0usize;
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let is_leaf = node_index < self.num_items;
+
+            if contained {
+                let start = self.leaf_start_for_entry(node_index, level);
+                let end = if end < self.level_bounds[level] {
+                    self.leaf_start_for_entry(end, level)
+                } else {
+                    self.num_items
+                };
+                total += end - start;
+            } else {
+                let mut pos = node_index;
+                while pos + 8 <= end {
+                    let mnx = load8(&self.min_xs, pos);
+                    let mxx = load8(&self.max_xs, pos);
+                    let mny = load8(&self.min_ys, pos);
+                    let mxy = load8(&self.max_ys, pos);
+                    let mnz = load8(&self.min_zs, pos);
+                    let mxz = load8(&self.max_zs, pos);
+                    let bits = (mnx.simd_le(qmxx_v)
+                        & mxx.simd_ge(qmnx_v)
+                        & mny.simd_le(qmxy_v)
+                        & mxy.simd_ge(qmny_v)
+                        & mnz.simd_le(qmxz_v)
+                        & mxz.simd_ge(qmnz_v))
+                    .to_bitmask();
+                    if is_leaf {
+                        total += bits.count_ones() as usize;
+                    } else if bits != 0 {
+                        let cbits = (mnx.simd_ge(qmnx_v)
+                            & mxx.simd_le(qmxx_v)
+                            & mny.simd_ge(qmny_v)
+                            & mxy.simd_le(qmxy_v)
+                            & mnz.simd_ge(qmnz_v)
+                            & mxz.simd_le(qmxz_v))
+                        .to_bitmask();
+                        let mut rest = bits;
+                        while rest != 0 {
+                            let k = rest.trailing_zeros();
+                            rest &= rest - 1;
+                            stack.push(self.indices[pos + k as usize]);
+                            stack.push(encode_level(level - 1, cbits & (1 << k) != 0));
+                        }
+                    }
+                    pos += 8;
+                }
+                while pos < end {
+                    if self.scalar_hit(pos, q) {
+                        if is_leaf {
+                            total += 1;
+                        } else {
+                            stack.push(self.indices[pos]);
+                            stack.push(encode_level(level - 1, self.q_contains_node(q, pos)));
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return total;
             }
         }
     }
@@ -2081,12 +2180,8 @@ impl<'a> SimdIndex3DF32View<'a> {
     /// `search(query).len()`, which allocates a `Vec` to throw away. Like
     /// `search`, this counts a conservative superset of the exact answer.
     pub fn count(&self, query: Box3D) -> usize {
-        let mut count = 0usize;
-        let _: ControlFlow<()> = self.visit(query, |_| {
-            count += 1;
-            ControlFlow::Continue(())
-        });
-        count
+        let mut stack = crate::traversal::ScratchStack::take();
+        self.count_hits(query, &mut stack)
     }
 
     /// Return `true` if at least one caller-owned f64 box intersects `query`.
@@ -2139,6 +2234,53 @@ impl<'a> SimdIndex3DF32View<'a> {
     {
         let mut stack = crate::traversal::ScratchStack::take();
         self.try_visit_refined(query, &mut stack, box_at, visitor)
+    }
+
+    /// Count the items whose stored box overlaps `query` without visiting
+    /// them: [`try_visit`](Self::try_visit)'s descent, except that a covered
+    /// root or subtree adds its leaf range's length and a leaf node adds its
+    /// hits, so nothing is called per item.
+    fn count_hits(&self, query: Box3D, stack: &mut Vec<usize>) -> usize {
+        stack.clear();
+        if self.num_items == 0 {
+            return 0;
+        }
+        let query = Box3DF32::from_box3d_inward(query);
+        if query.contains(self.box_f32_at(self.num_nodes - 1)) {
+            return self.num_items;
+        }
+        let mut total = 0usize;
+        let mut node_index = self.num_nodes - 1;
+        let mut level = self.level_count - 1;
+        let mut contained = false;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bound_unchecked(level));
+            if contained {
+                let (start, end) = self.contained_leaf_range(node_index, end, level);
+                total += end - start;
+            } else if node_index < self.num_items {
+                for pos in node_index..end {
+                    total += usize::from(self.box_f32_at(pos).overlaps_branchless(query));
+                }
+            } else {
+                for pos in node_index..end {
+                    let stored = self.box_f32_at(pos);
+                    if stored.overlaps(query) {
+                        stack.push(self.index_at(pos));
+                        stack.push(encode_level(level - 1, query.contains(stored)));
+                    }
+                }
+            }
+
+            if stack.len() > 1 {
+                let encoded = stack.pop().unwrap();
+                level = encoded & LEVEL_MASK;
+                contained = (encoded & CONTAINED_FLAG) != 0;
+                node_index = stack.pop().unwrap();
+            } else {
+                return total;
+            }
+        }
     }
 
     fn try_visit<B, F>(

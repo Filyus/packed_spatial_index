@@ -77,17 +77,23 @@ the ladder: **attack the collection, not the comparison.**
 
 ## Purple belt — AVX-512 `VPCOMPRESSQ` (compress-store)
 
-AVX-512 has the perfect instruction for the collect phase.
-`_mm512_mask_compressstoreu_epi64` takes the 8-lane overlap mask and the 8 index
-lanes and writes **only the matching indices, packed contiguously, in one
-instruction**. No per-bit loop:
+AVX-512 has the perfect instruction for the collect phase. `VPCOMPRESSQ` takes
+the 8-lane overlap mask and the 8 index lanes and packs **only the matching
+indices, contiguously, in one instruction**. No per-bit loop:
 
 ```rust
-let dst  = out.as_mut_ptr().add(out.len()).cast::<i64>();
-let vidx = _mm512_loadu_epi64(indices.as_ptr().add(pos).cast());
-_mm512_mask_compressstoreu_epi64(dst, mask, vidx);   // pack + store
-out.set_len(out.len() + mask.count_ones() as usize); // advance by popcount
+let vidx   = _mm512_loadu_epi64(indices.as_ptr().add(pos).cast());
+let packed = _mm512_maskz_compress_epi64(mask, vidx);               // pack
+_mm512_storeu_epi64(out.as_mut_ptr().add(out.len()).cast(), packed); // store all 8
+out.set_len(out.len() + mask.count_ones() as usize);                // advance by popcount
 ```
+
+The instruction also comes in a form that stores straight to memory
+(`_mm512_mask_compressstoreu_epi64`, writing only the matching lanes). The
+kernels used that one first. Zen 4 microcodes it, at about 142 cycles an
+instruction, while the register form is fast on every AVX-512 CPU; so the
+kernels compress into a register and store the whole vector
+(`leftpack::compress8`), which needs the same slack as the AVX2 left-pack below.
 
 This removed the large-N inversion: SIMD range search went from trailing the
 scalar index to **~1.6–1.9× faster** across 100k–1M (against the scalar index

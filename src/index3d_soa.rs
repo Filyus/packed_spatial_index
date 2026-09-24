@@ -15,7 +15,7 @@ mod serialization;
 
 use crate::estimate::{Estimate, box_fraction_3d, estimate_core};
 #[cfg(target_arch = "x86_64")]
-use crate::leftpack::leftpack4;
+use crate::leftpack::{compress8, leftpack4};
 use crate::{
     aggregates::{Aggregate, Aggregates, AggregatesView, aggregate_region_core},
     build::BuildError,
@@ -2021,7 +2021,7 @@ impl SimdIndex3D {
         {
             if std::is_x86_feature_detected!("avx512f") {
                 // SAFETY: this branch is selected only after checking avx512f availability.
-                unsafe { self.search_avx512_impl(query, out, stack) };
+                unsafe { self.search_avx512_impl::<true>(query, out, stack) };
                 return;
             }
             if std::is_x86_feature_detected!("avx2") {
@@ -2031,6 +2031,28 @@ impl SimdIndex3D {
             }
         }
         self.search_simd(query, out, stack);
+    }
+
+    /// Force the AVX-512 search with the given result compress (doc-hidden; for
+    /// `benches/paired_compress_store.rs`): `true` compresses in a register and
+    /// stores it whole, as shipped; `false` compresses straight to memory, the
+    /// form Zen 4 microcodes. Without AVX-512 this is the normal dispatch.
+    #[doc(hidden)]
+    pub fn search_avx512_compress_into<const IN_REGISTER: bool>(
+        &self,
+        query: Box3D,
+        out: &mut Vec<usize>,
+    ) {
+        let mut stack = crate::traversal::ScratchStack::take();
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx512f") {
+                // SAFETY: selected only after checking avx512f availability.
+                unsafe { self.search_avx512_impl::<IN_REGISTER>(query, out, &mut stack) };
+                return;
+            }
+        }
+        self.search_avx512(query, out, &mut stack);
     }
 
     /// AVX2 (256-bit, 4 boxes/chunk) range search — the runtime tier between the
@@ -2185,7 +2207,7 @@ impl SimdIndex3D {
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
-    unsafe fn search_avx512_impl(
+    unsafe fn search_avx512_impl<const IN_REGISTER: bool>(
         &self,
         query: Box3D,
         out: &mut Vec<usize>,
@@ -2248,16 +2270,17 @@ impl SimdIndex3D {
                     let mut bits: u8 = m1 & m2 & m3 & m4 & m5 & m6;
                     if is_leaf {
                         // VPCOMPRESSQ: pack the matching index lanes contiguously
-                        // into `out` in one instruction (capacity reserved above).
-                        // SAFETY: `pos + 8 <= end <= indices.len()`; `out` has at
-                        // least `end - node_index` slack reserved, so the store of
-                        // up to 8 elements past `len` stays in bounds.
+                        // into `out` (capacity reserved above).
+                        debug_assert!(out.capacity() - out.len() >= 8);
+                        // SAFETY: `pos + 8 <= end <= indices.len()`. `out` got
+                        // `end - node_index` slack at the node's start and has
+                        // used at most `pos - node_index` of it, so the eight-lane
+                        // store at `len` stays in bounds.
                         unsafe {
-                            let dst = out.as_mut_ptr().add(out.len()) as *mut i64;
-                            let vidx =
-                                _mm512_loadu_epi64(self.indices.as_ptr().add(pos) as *const i64);
-                            _mm512_mask_compressstoreu_epi64(dst, bits, vidx);
-                            out.set_len(out.len() + bits.count_ones() as usize);
+                            let dst = out.as_mut_ptr().add(out.len());
+                            let n =
+                                compress8::<IN_REGISTER>(self.indices.as_ptr().add(pos), bits, dst);
+                            out.set_len(out.len() + n);
                         }
                     } else {
                         // query contains child: qmin <= cmin && cmax <= qmax on all axes.

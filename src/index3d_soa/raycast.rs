@@ -3,7 +3,7 @@ use std::{collections::BinaryHeap, ops::ControlFlow};
 use wide::f64x4;
 
 #[cfg(target_arch = "x86_64")]
-use crate::leftpack::leftpack4;
+use crate::leftpack::{compress8, leftpack4};
 use crate::{
     config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::Box3D,
@@ -452,7 +452,7 @@ impl SimdIndex3D {
             if !ray.has_zero_direction() {
                 if std::is_x86_feature_detected!("avx512f") {
                     // SAFETY: reached only after confirming avx512f is available.
-                    unsafe { self.raycast_collect_avx512(ray, results, stack) };
+                    unsafe { self.raycast_collect_avx512::<true>(ray, results, stack) };
                     return;
                 }
                 if std::is_x86_feature_detected!("avx2") {
@@ -485,6 +485,29 @@ impl SimdIndex3D {
             }
         }
         self.raycast_collect_wide(ray, results, &mut stack);
+    }
+
+    /// Force the AVX-512 all-hits raycast with the given result compress
+    /// (doc-hidden; for `benches/paired_compress_store.rs`): `true` compresses in
+    /// a register and stores it whole, as shipped; `false` compresses straight to
+    /// memory, the form Zen 4 microcodes. Without AVX-512, or for a ray with a
+    /// zero direction component, this is the normal dispatch.
+    #[doc(hidden)]
+    pub fn raycast_avx512_compress_into<const IN_REGISTER: bool>(
+        &self,
+        ray: Ray3D,
+        results: &mut Vec<usize>,
+    ) {
+        let mut stack = Vec::new();
+        #[cfg(target_arch = "x86_64")]
+        {
+            if !ray.has_zero_direction() && std::is_x86_feature_detected!("avx512f") {
+                // SAFETY: guarded by the avx512f feature check.
+                unsafe { self.raycast_collect_avx512::<IN_REGISTER>(ray, results, &mut stack) };
+                return;
+            }
+        }
+        self.raycast_into_stack(ray, results, &mut stack);
     }
 
     fn raycast_collect_wide(&self, ray: Ray3D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
@@ -600,7 +623,7 @@ impl SimdIndex3D {
     /// slab is NaN-safe.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
-    unsafe fn raycast_collect_avx512(
+    unsafe fn raycast_collect_avx512<const IN_REGISTER: bool>(
         &self,
         ray: Ray3D,
         results: &mut Vec<usize>,
@@ -673,13 +696,15 @@ impl SimdIndex3D {
                 let mut bits: u8 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(near, far);
                 if is_leaf {
                     // VPCOMPRESSQ pack the hit indices (capacity reserved above).
-                    // SAFETY: `pos + 8 <= end <= indices.len()`; `results` has
-                    // `end - node_index` slack.
+                    debug_assert!(results.capacity() - results.len() >= 8);
+                    // SAFETY: `pos + 8 <= end <= indices.len()`. `results` got
+                    // `end - node_index` slack at the node's start and has used
+                    // at most `pos - node_index` of it, so the eight-lane store
+                    // at `len` stays in bounds.
                     unsafe {
-                        let dst = results.as_mut_ptr().add(results.len()) as *mut i64;
-                        let vidx = _mm512_loadu_epi64(self.indices.as_ptr().add(pos) as *const i64);
-                        _mm512_mask_compressstoreu_epi64(dst, bits, vidx);
-                        results.set_len(results.len() + bits.count_ones() as usize);
+                        let dst = results.as_mut_ptr().add(results.len());
+                        let n = compress8::<IN_REGISTER>(self.indices.as_ptr().add(pos), bits, dst);
+                        results.set_len(results.len() + n);
                     }
                 } else {
                     while bits != 0 {

@@ -113,6 +113,11 @@ harness = false
 required-features = ["simd", "f32-storage"]
 
 [[bench]]
+name = "paired_compress_store"
+harness = false
+required-features = ["simd", "f32-storage"]
+
+[[bench]]
 name = "predicate_regions_bench"
 harness = false
 

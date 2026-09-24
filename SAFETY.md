@@ -15,9 +15,11 @@ The public API is safe Rust. `unsafe` is confined to narrow, audited paths:
 - runtime-feature-gated x86-64 SIMD — AVX-512 **and** AVX2 — in the SoA and f32
   search, `any` and raycast paths, plus the prefetch hint, which is a pure cache
   hint on baseline SSE and dereferences nothing;
-- left-packing SIMD hits into a result buffer's reserved capacity: the buffer is
-  reserved for the widest possible write before the loop, the write goes through
-  `as_mut_ptr().add(len)` into that slack, and `set_len` follows the actual count.
+- packing SIMD hits into a result buffer's reserved capacity — an AVX2
+  left-pack, or an AVX-512 compress into a register: the buffer is reserved for
+  the widest possible write before the loop, the write (always a whole vector)
+  goes through `as_mut_ptr().add(len)` into that slack, and `set_len` follows the
+  actual count.
 
 `tests/unsafe_audit.rs` pins how many such sites each file has, so a new one
 cannot join the crate without this list being reconsidered.

@@ -44,7 +44,7 @@ use crate::{
 
 // Imports used only by the SIMD query frontend (SimdIndex2DF32 + its view).
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-use crate::leftpack::leftpack4;
+use crate::leftpack::{compress8, leftpack4};
 #[cfg(feature = "simd")]
 use crate::traversal::SearchWorkspace;
 use crate::{config::GATHER_PREFETCH_DISTANCE, traversal::prefetch_read};
@@ -972,13 +972,36 @@ impl SimdIndex2DF32 {
         self.visit_refined_with_stack(query, &mut stack, box_at, visitor)
     }
 
+    /// Force the AVX-512 search with the given result compress (doc-hidden; for
+    /// `benches/paired_compress_store.rs`): `true` compresses in a register and
+    /// stores it whole, as shipped; `false` compresses straight to memory, the
+    /// form Zen 4 microcodes. Without AVX-512 this is the normal dispatch.
+    #[doc(hidden)]
+    pub fn search_avx512_compress_into<const IN_REGISTER: bool>(
+        &self,
+        query: Box2D,
+        out: &mut Vec<usize>,
+    ) {
+        let mut stack = crate::traversal::ScratchStack::take();
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx512f") {
+                let q = Box2DF32::from_box2d_inward(query);
+                // SAFETY: selected only after checking avx512f availability.
+                unsafe { self.search_avx512::<IN_REGISTER>(q, out, &mut stack) };
+                return;
+            }
+        }
+        self.search_into_stack(query, out, &mut stack);
+    }
+
     fn search_into_stack(&self, query: Box2D, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
         let q = Box2DF32::from_box2d_inward(query);
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx512f") {
                 // SAFETY: selected only after checking avx512f availability.
-                unsafe { self.search_avx512(q, out, stack) };
+                unsafe { self.search_avx512::<true>(q, out, stack) };
                 return;
             }
             if std::is_x86_feature_detected!("avx2") {
@@ -1324,7 +1347,12 @@ impl SimdIndex2DF32 {
     /// AVX-512 path: 16 boxes per step (a full `node_size = 16` node at once).
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
-    unsafe fn search_avx512(&self, q: Box2DF32, out: &mut Vec<usize>, stack: &mut Vec<usize>) {
+    unsafe fn search_avx512<const IN_REGISTER: bool>(
+        &self,
+        q: Box2DF32,
+        out: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
         use std::arch::x86_64::*;
 
         out.clear();
@@ -1379,31 +1407,22 @@ impl SimdIndex2DF32 {
                         // nothing — the two-op cost otherwise loses on sparse
                         // leaves. Capacity reserved above.
                         if bits != 0 {
-                            // SAFETY: `pos + 16 <= end <= indices.len()`; `out` has
-                            // `end - node_index` slack reserved.
+                            debug_assert!(out.capacity() - out.len() >= 16);
+                            // SAFETY: `pos + 16 <= end <= indices.len()`. `out` got
+                            // `end - node_index` slack at the node's start and has
+                            // used at most `pos - node_index` of it before the low
+                            // half, eight more before the high half, so both
+                            // eight-lane stores stay in bounds.
                             unsafe {
                                 let base = out.as_mut_ptr();
                                 let mut len = out.len();
-                                let lo = bits as u8;
-                                let hi = (bits >> 8) as u8;
-                                let vlo = _mm512_loadu_epi64(
-                                    self.indices.as_ptr().add(pos) as *const i64
+                                let src = self.indices.as_ptr().add(pos);
+                                len += compress8::<IN_REGISTER>(src, bits as u8, base.add(len));
+                                len += compress8::<IN_REGISTER>(
+                                    src.add(8),
+                                    (bits >> 8) as u8,
+                                    base.add(len),
                                 );
-                                _mm512_mask_compressstoreu_epi64(
-                                    base.add(len) as *mut i64,
-                                    lo,
-                                    vlo,
-                                );
-                                len += lo.count_ones() as usize;
-                                let vhi = _mm512_loadu_epi64(
-                                    self.indices.as_ptr().add(pos + 8) as *const i64
-                                );
-                                _mm512_mask_compressstoreu_epi64(
-                                    base.add(len) as *mut i64,
-                                    hi,
-                                    vhi,
-                                );
-                                len += hi.count_ones() as usize;
                                 out.set_len(len);
                             }
                         }

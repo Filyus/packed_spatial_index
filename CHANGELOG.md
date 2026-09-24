@@ -17,6 +17,12 @@ All notable changes to this crate are documented here.
   `search_with`) fold child tests into a bitmask, which wins 10–27% on x86 but
   lost 3–17% on a Neoverse N2 on every window size. On aarch64 they now test
   one child at a time; x86 keeps the mask, and 3D keeps it everywhere.
+- **The scalar f32 indexes skip subtrees a window covers.** `Index2DF32` and
+  `Index3DF32` `search` and `count` now emit a subtree the query holds whole
+  as its leaf range, without testing each item — the fast path the `f64`
+  indexes and the views already had. Wide windows get much faster (2D `search`
+  1.6×, 2D `count` 2.6×, 3D 1.1–1.2× on the largest windows measured); small
+  windows pay 4–10% for the extra test per surviving child.
 
 ## [0.32.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.31.0...psi-v0.32.0) - 2026-09-24
 

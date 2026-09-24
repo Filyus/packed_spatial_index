@@ -22,7 +22,7 @@ use crate::{
     ray::Ray2D,
     sort2d::{SortKeyContext, encode_sort_by_key},
     tree::{TreeLayout, try_compute_tree_layout},
-    tree_access::TreeAccess,
+    tree_access::{TreeAccess, leaf_group_range},
     triangle::Triangle2,
 };
 
@@ -2620,7 +2620,7 @@ impl Index2DF32 {
     pub fn search(&self, query: Box2D) -> Vec<usize> {
         let q = Box2DF32::from_box2d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits::<true>(|b| b.overlaps(q), |i, _| out.push(i));
+        self.collect_hits::<true>(|b| b.overlaps(q), |b| q.contains(b), |i, _| out.push(i));
         out
     }
 
@@ -2662,7 +2662,7 @@ impl Index2DF32 {
     pub fn count(&self, query: Box2D) -> usize {
         let q = Box2DF32::from_box2d_inward(query);
         let mut count = 0usize;
-        self.collect_hits::<true>(|b| b.overlaps(q), |_, _| count += 1);
+        self.collect_hits::<true>(|b| b.overlaps(q), |b| q.contains(b), |_, _| count += 1);
         count
     }
 
@@ -2750,7 +2750,7 @@ impl Index2DF32 {
     pub fn search_forced<const MASKED: bool>(&self, query: Box2D) -> Vec<usize> {
         let q = Box2DF32::from_box2d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits::<MASKED>(|b| b.overlaps(q), |i, _| out.push(i));
+        self.collect_hits::<MASKED>(|b| b.overlaps(q), |b| q.contains(b), |i, _| out.push(i));
         out
     }
 
@@ -2762,9 +2762,16 @@ impl Index2DF32 {
     /// branches once per hit instead of once per child. See
     /// [`crate::index2d`]'s `overlap_mask` for why the early-exit forms keep
     /// their branches.
+    ///
+    /// A child the query covers whole (`covers`) is pushed with the
+    /// contained flag and later emitted as its leaf range, untested — the
+    /// same contained-subtree fast path the `f64` indexes and the views
+    /// take. Without it a wide window tested every leaf inside it
+    /// (kb:observation/529).
     fn collect_hits<const MASKED: bool>(
         &self,
         hit: impl Fn(Box2DF32) -> bool,
+        covers: impl Fn(Box2DF32) -> bool,
         mut emit: impl FnMut(usize, Box2DF32),
     ) {
         if self.indices.is_empty() {
@@ -2773,45 +2780,79 @@ impl Index2DF32 {
         let mut stack: Vec<usize> = Vec::new();
         let mut node_index = self.indices.len() - 1;
         let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
-            let is_leaf = node_index < self.num_items;
-            let child_level = level.wrapping_sub(1);
-            let mut start = node_index;
-            while start < end {
-                let stop = (start + MASK_CHUNK).min(end);
-                let mut take = |pos: usize| {
-                    let index = self.indices[pos];
-                    if is_leaf {
-                        emit(index, self.box_f32_at(pos));
-                    } else {
-                        stack.push(frame::pack(index, child_level));
-                    }
-                };
-                if MASKED {
-                    let mut mask = 0u64;
-                    for (i, pos) in (start..stop).enumerate() {
-                        mask |= u64::from(hit(self.box_f32_at(pos))) << i;
-                    }
-                    for_each_hit(mask, |i| take(start + i));
-                } else {
-                    // The per-child branch the mask replaced, for timing the two
-                    // in one binary (`benches/paired_mask_forms.rs`).
-                    for pos in start..stop {
-                        if hit(self.box_f32_at(pos)) {
-                            take(pos);
-                        }
-                    }
+            if contained {
+                // The query covers this node's box, and every stored box under
+                // it is inside that box (node boxes are folded from their
+                // children's f32 boxes), so each item passes `hit`: emit the
+                // leaf range without testing it.
+                let (first, last) = leaf_group_range(self, node_index, end, level);
+                for pos in first..last {
+                    emit(self.indices[pos], self.box_f32_at(pos));
                 }
-                start = stop;
+            } else {
+                self.collect_node::<MASKED>(
+                    node_index, end, level, &hit, &covers, &mut emit, &mut stack,
+                );
             }
             match stack.pop() {
                 Some(f) => {
                     node_index = frame::node(f);
                     level = frame::level(f);
+                    contained = frame::contained(f);
                 }
                 None => return,
             }
+        }
+    }
+
+    /// One node of [`collect_hits`](Self::collect_hits): emit the leaf items
+    /// that pass `hit`, or push the children that do, flagged when `covers`
+    /// says the query holds the whole child.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn collect_node<const MASKED: bool>(
+        &self,
+        node_index: usize,
+        end: usize,
+        level: usize,
+        hit: &impl Fn(Box2DF32) -> bool,
+        covers: &impl Fn(Box2DF32) -> bool,
+        emit: &mut impl FnMut(usize, Box2DF32),
+        stack: &mut Vec<usize>,
+    ) {
+        let is_leaf = node_index < self.num_items;
+        let child_level = level.wrapping_sub(1);
+        let mut start = node_index;
+        while start < end {
+            let stop = (start + MASK_CHUNK).min(end);
+            let mut take = |pos: usize| {
+                let index = self.indices[pos];
+                if is_leaf {
+                    emit(index, self.box_f32_at(pos));
+                } else {
+                    let flag = usize::from(covers(self.box_f32_at(pos))) * frame::CONTAINED;
+                    stack.push(frame::pack(index, child_level) | flag);
+                }
+            };
+            if MASKED {
+                let mut mask = 0u64;
+                for (i, pos) in (start..stop).enumerate() {
+                    mask |= u64::from(hit(self.box_f32_at(pos))) << i;
+                }
+                for_each_hit(mask, |i| take(start + i));
+            } else {
+                // The per-child branch the mask replaced, for timing the two
+                // in one binary (`benches/paired_mask_forms.rs`).
+                for pos in start..stop {
+                    if hit(self.box_f32_at(pos)) {
+                        take(pos);
+                    }
+                }
+            }
+            start = stop;
         }
     }
 

@@ -114,9 +114,10 @@ impl Box2DF32 {
         self.definitely_overlaps_exact(query) || exact_box().overlaps(query)
     }
 
-    /// True when `self` fully contains `other` (both already rounded).
+    /// True when `self` fully contains `other` (both already rounded). The
+    /// SIMD f32 kernels and the scalar f32 collect's contained-subtree fast
+    /// path both use it.
     #[inline]
-    #[cfg(feature = "simd")]
     pub(crate) fn contains(self, other: Self) -> bool {
         self.min_x <= other.min_x
             && other.max_x <= self.max_x
@@ -241,9 +242,10 @@ impl Box3DF32 {
         self.definitely_overlaps_exact(query) || exact_box().overlaps(query)
     }
 
-    /// True when `self` fully contains `other` (both already rounded).
+    /// True when `self` fully contains `other` (both already rounded). The
+    /// SIMD f32 kernels and the scalar f32 collect's contained-subtree fast
+    /// path both use it.
     #[inline]
-    #[cfg(feature = "simd")]
     pub(crate) fn contains(self, other: Self) -> bool {
         self.min_x <= other.min_x
             && other.max_x <= self.max_x

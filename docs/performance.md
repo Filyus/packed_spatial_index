@@ -198,11 +198,29 @@ predicts perfectly. The collect paths therefore fold a node's children into a
 `u64` mask — up to 64 tests, no branches — and then walk the set bits, paying one
 branch per *hit* instead of one per *child*. That is where the 2D and 3D search
 numbers above come from: 25–37% off 2D collect paths on wide queries, 33–52% off
-`Index3D`, 30–33% off the zero-copy views, 4–12% off the scalar `Index2DF32` /
-`Index3DF32` collect forms, 6–12% off 2D all-hits raycast, and most of the
-narrowing of the SIMD indexes' lead on range search. The ray predicate is a slab
-test rather than a box overlap, so it sits between the cheap and the expensive
-end: 2D gains clearly, 3D lands within drift.
+`Index3D`, 30–33% off the zero-copy views, 6–12% off 2D all-hits raycast, and
+most of the narrowing of the SIMD indexes' lead on range search. The ray
+predicate is a slab test rather than a box overlap, so it sits between the cheap
+and the expensive end: 2D gains clearly, 3D lands within drift.
+
+The scalar `Index2DF32` / `Index3DF32` collect forms are the exception, and
+the 4–12% once credited to the mask there came from the new collect traversal
+around it (one packed stack word, no callback), measured on narrow windows only.
+Timed in isolation (`benches/paired_mask_forms.rs`), the f32 mask is neutral on
+small windows and loses on wide ones on every machine tried. The bigger finding
+was underneath: those forms had no contained-subtree fast path at all, so a
+wide window tested every leaf inside it. With it (the flag the `f64` indexes
+already carry), on 100k boxes, Zen 5, against the build before:
+
+| scalar f32, window | small | mid | large |
+| --- | ---: | ---: | ---: |
+| 2D `search` | 1.04 | 0.99 | 0.61 |
+| 2D `count` | 1.02 | 0.94 | 0.39 |
+| 3D `search` | 1.08 | 1.02 | 0.92 |
+| 3D `count` | 1.10 | 0.99 | 0.82 |
+
+A small window pays for one more test per surviving child and almost never
+finds a node to cover — the same trade the `f64` indexes made.
 
 The spatial join is where the mask pays most. `join` expands one node against one
 box at a time, and along the other tree's boxes that per-child test is 50/50 far

@@ -3036,14 +3036,21 @@ impl<'a> Index2DView<'a> {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        results.clear();
+        // Push into a `Vec` owned by this frame, not through `results`: where
+        // the kernel is inlined under register pressure, `&mut Vec` is spilled
+        // and every covered item then reloads the pointer to the `Vec` and the
+        // `Vec`'s own pointer, one after the other. On Zen 3 that chain cost
+        // the masked form a third on large windows (kb:observation/531).
+        let mut out = std::mem::take(results);
+        out.clear();
         collect_region::<MASK_PAYS_IN_2D, _, _, _, _>(
             self,
             stack,
             |bounds: Box2D| bounds.overlaps(query),
             |bounds: Box2D| query.contains(bounds),
-            |index| results.push(index),
+            |index| out.push(index),
         );
+        *results = out;
     }
 
     /// [`search_into_stack`](Self::search_into_stack) with the child test
@@ -3051,15 +3058,18 @@ impl<'a> Index2DView<'a> {
     /// replaced. Same set, same order; for timing both in one binary.
     #[doc(hidden)]
     pub fn search_into_forced<const MASKED: bool>(&self, query: Box2D, results: &mut Vec<usize>) {
-        results.clear();
+        // A frame-owned `Vec`, as in `search_into_stack`.
+        let mut out = std::mem::take(results);
+        out.clear();
         let mut stack = crate::traversal::ScratchStack::take();
         collect_region::<MASKED, _, _, _, _>(
             self,
             &mut stack,
             |bounds: Box2D| bounds.overlaps(query),
             |bounds: Box2D| query.contains(bounds),
-            |index| results.push(index),
+            |index| out.push(index),
         );
+        *results = out;
     }
 
     /// Range search over the byte layout, with the contained-subtree fast path.

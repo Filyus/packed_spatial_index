@@ -4,6 +4,18 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Search
+
+- **`Index2DView` range search keeps its result `Vec` out of a reload
+  chain.** `search_into` and `search_with` pushed through a `&mut Vec<usize>`.
+  Where the collect kernel is inlined under register pressure, the compiler kept
+  that reference on the stack: every item of a covered subtree reloaded it,
+  then the `Vec`'s buffer pointer, one load after the other. On a Zen 3 (EPYC
+  7763) that cost the view's masked search a third on large windows, 1.39× the
+  per-child branch's time. It now collects into a `Vec` it owns for the call
+  and hands it back: 0.90× there. A Zen 4, a Neoverse N2 and a Zen 5 laptop
+  measure unchanged.
+
 ### SIMD
 
 - **`SimdIndex2DF32` / `SimdIndex3DF32` `count` no longer visits each hit.**

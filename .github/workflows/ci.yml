@@ -37,7 +37,7 @@ jobs:
 
   test:
     name: test (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -47,6 +47,11 @@ jobs:
           - { name: no-default, flags: "--no-default-features" }
           - { name: parallel, flags: "--no-default-features --features parallel" }
           - { name: simd, flags: "--no-default-features --features simd" }
+          # On aarch64 the SIMD frontends run `wide`'s NEON implementation, a
+          # different path from anything the x86 legs execute. Without these
+          # two legs it was never run at all, only assumed.
+          - { name: arm64 all-features, flags: "--all-features", os: ubuntu-24.04-arm }
+          - { name: arm64 simd, flags: "--no-default-features --features simd", os: ubuntu-24.04-arm }
     steps:
       - name: Checkout
         uses: actions/checkout@v6

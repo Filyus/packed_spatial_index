@@ -12,7 +12,7 @@
 use crate::{
     build::BuildError,
     builder3d::BuildConfig3D,
-    f32_storage::{Box3DF32, F32Columns3D, columns3d_from_parsed},
+    f32_storage::{Box3DF32, CountSink, F32Columns3D, HitSink, columns3d_from_parsed},
     geometry::{Box3D, Overlaps3D},
     index2d::{MASK_CHUNK, for_each_hit, frame},
     ordered::{collect_ordered, search_ordered_each},
@@ -2673,11 +2673,7 @@ impl Index3DF32 {
     pub fn search(&self, query: Box3D) -> Vec<usize> {
         let q = Box3DF32::from_box3d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits::<true>(
-            |b| b.overlaps_branchless(q),
-            |b| q.contains(b),
-            |i, _| out.push(i),
-        );
+        self.collect_hits::<true>(|b| b.overlaps_branchless(q), |b| q.contains(b), &mut out);
         out
     }
 
@@ -2718,13 +2714,9 @@ impl Index3DF32 {
     /// `search`, this counts a conservative superset of the exact answer.
     pub fn count(&self, query: Box3D) -> usize {
         let q = Box3DF32::from_box3d_inward(query);
-        let mut count = 0usize;
-        self.collect_hits::<true>(
-            |b| b.overlaps_branchless(q),
-            |b| q.contains(b),
-            |_, _| count += 1,
-        );
-        count
+        let mut count = CountSink(0);
+        self.collect_hits::<true>(|b| b.overlaps_branchless(q), |b| q.contains(b), &mut count);
+        count.0
     }
 
     /// Some item whose (rounded) box overlaps `query`, or `None`. Traversal order
@@ -2812,11 +2804,7 @@ impl Index3DF32 {
     pub fn search_forced<const MASKED: bool>(&self, query: Box3D) -> Vec<usize> {
         let q = Box3DF32::from_box3d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits::<MASKED>(
-            |b| b.overlaps_branchless(q),
-            |b| q.contains(b),
-            |i, _| out.push(i),
-        );
+        self.collect_hits::<MASKED>(|b| b.overlaps_branchless(q), |b| q.contains(b), &mut out);
         out
     }
 
@@ -2830,15 +2818,16 @@ impl Index3DF32 {
     /// their branches.
     ///
     /// A child the query covers whole (`covers`) is pushed with the
-    /// contained flag and later emitted as its leaf range, untested — the
-    /// same contained-subtree fast path the `f64` indexes and the views
-    /// take. Without it a wide window tested every leaf inside it
-    /// (kb:observation/529).
+    /// contained flag and later handed to `sink` as one slice of its leaf
+    /// range, untested — the same contained-subtree fast path the `f64`
+    /// indexes and the views take (`extend_from_slice` for `search`,
+    /// `+= len` for `count`). Without it a wide window tested every leaf
+    /// inside it (kb:observation/529).
     fn collect_hits<const MASKED: bool>(
         &self,
         hit: impl Fn(Box3DF32) -> bool,
         covers: impl Fn(Box3DF32) -> bool,
-        mut emit: impl FnMut(usize, Box3DF32),
+        sink: &mut impl HitSink,
     ) {
         if self.indices.is_empty() {
             return;
@@ -2855,12 +2844,10 @@ impl Index3DF32 {
                 // children's f32 boxes), so each item passes `hit`: emit the
                 // leaf range without testing it.
                 let (first, last) = leaf_group_range(self, node_index, end, level);
-                for pos in first..last {
-                    emit(self.indices[pos], self.box_f32_at(pos));
-                }
+                sink.all(&self.indices[first..last]);
             } else {
                 self.collect_node::<MASKED>(
-                    node_index, end, level, &hit, &covers, &mut emit, &mut stack,
+                    node_index, end, level, &hit, &covers, sink, &mut stack,
                 );
             }
             match stack.pop() {
@@ -2886,7 +2873,7 @@ impl Index3DF32 {
         level: usize,
         hit: &impl Fn(Box3DF32) -> bool,
         covers: &impl Fn(Box3DF32) -> bool,
-        emit: &mut impl FnMut(usize, Box3DF32),
+        sink: &mut impl HitSink,
         stack: &mut Vec<usize>,
     ) {
         let is_leaf = node_index < self.num_items;
@@ -2927,7 +2914,7 @@ impl Index3DF32 {
             let mut take = |i: usize, b: Box3DF32| {
                 let index = indices[i];
                 if is_leaf {
-                    emit(index, b);
+                    sink.one(index);
                 } else {
                     let flag = usize::from(covers(b)) * frame::CONTAINED;
                     stack.push(frame::pack(index, child_level) | flag);

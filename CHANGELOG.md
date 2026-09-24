@@ -19,6 +19,13 @@ All notable changes to this crate are documented here.
 
 ### Performance
 
+- **The scalar f32 indexes hand a covered subtree over whole.** `Index2DF32`
+  and `Index3DF32` `search` append a subtree the window covers with one
+  `extend_from_slice`, and `count` adds its length; before, both walked it
+  item by item and read each item's box for nothing. On an Intel Xeon cloud VM
+  (family 6, model 207) large windows take 0.43–0.94× the time and a
+  full-extent `search` 0.12–0.15×; a full-extent `count` drops from ~370× the
+  scalar `f64` index's time to 1.3×. Small windows are unchanged.
 - **The scalar f32 indexes test a node's children in vector lanes.**
   `Index2DF32` and `Index3DF32` `search` and `count` read a node's children
   through column slices and a branch-free overlap test, so the child loop now

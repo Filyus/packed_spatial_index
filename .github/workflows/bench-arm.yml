@@ -52,11 +52,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: bench-${{ inputs.runner }}
-      # `ubuntu-latest` draws from a mixed pool (EPYC 7763 = Zen 3 mostly, EPYC
-      # 9V74 = Zen 4 sometimes), and the VM may hide AVX-512 even on a Zen 4:
-      # one 9V74 listed avx512f, another did not. A question about one CPU and
-      # ISA sets `require_cpu` (say "9V74 avx512f") and dispatches a few runs;
-      # the others stop here, after a minute.
+      # `ubuntu-latest` draws from a mixed pool. Of 68 draws in one day
+      # (kb:observation/535): EPYC 7763 (Zen 3) 39, EPYC 9V74 (Zen 4) 16, Xeon
+      # 8370C (Ice Lake) 4, Xeon 8573C (Emerald Rapids) 4, EPYC 9V45 (Zen 5,
+      # AVX-512 at full width) 3, Xeon 6973P-C (Granite Rapids) 2. The VM may
+      # hide AVX-512 even on a Zen 4: 4 of the 16 9V74 draws lacked avx512f. A
+      # question about one CPU and ISA sets `require_cpu` (say "9V74 avx512f"
+      # or "9V45") and dispatches a few runs; the others stop here, after a
+      # minute.
       - name: Describe the machine
         id: describe
         run: |

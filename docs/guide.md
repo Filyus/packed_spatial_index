@@ -658,9 +658,10 @@ Where this changes behaviour is the streaming readers. The upper levels are
 the directory `open` already cached, so `estimate_count` with a `stop_level`
 at or above `directory_floor()` reads nothing: it is a local answer to "is
 this window worth its round trips" before the first one is paid, the point of
-decision every other streaming query lacks. Below the floor each level costs
-one coalesced gather, charged to the read budget exactly like a search, so
-the same call is also a budgeted refinement.
+decision every other streaming query lacks. Async readers (an edge worker over
+HTTP ranges) get the same answer from `estimate_count_async`. Below the floor
+each level costs one coalesced gather, charged to the read budget exactly like
+a search, so the same call is also a budgeted refinement.
 
 The bracket is on boxes, like everything here: `upper` bounds the candidates
 a window returns, not the geometries it truly touches, and for lines and

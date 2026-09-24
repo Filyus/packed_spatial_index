@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.32.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.31.0...psi-v0.32.0) - 2026-09-24
+
 ### Persistence
 
 - **Async streaming readers can estimate before they fetch.** The four async

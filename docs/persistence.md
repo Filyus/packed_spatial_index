@@ -144,7 +144,7 @@ return item indices like the in-memory `search`. Child pointers are validated as
 they are followed, so the reader is safe on untrusted data.
 
 ```rust,ignore
-// Cargo.toml: packed_spatial_index = { version = "0.7", features = ["stream"] }
+// Cargo.toml: packed_spatial_index = { version = "0.32", features = ["stream"] }
 use packed_spatial_index::{Box2D, FileReader, StreamIndex2D};
 
 let reader = FileReader::open("planet.psindex")?;
@@ -186,8 +186,8 @@ impl RangeReader for HttpRange {
 The server only needs to honor the HTTP `Range` header — S3, R2, GCS, and most
 CDNs do. For async I/O (a browser `fetch`, or a Cloudflare Worker over R2) enable
 the `async` feature and implement `AsyncRangeReader` the same way; `open_async`,
-`search_async`, and the async region/payload methods mirror sync streaming and
-issue a level's reads concurrently.
+`search_async`, `estimate_count_async`, and the async region/payload methods
+mirror sync streaming and issue a level's reads concurrently.
 
 **What streams today:** 2D and 3D range search (`search` / `search_into` /
 `visit` / `count`), optionally returning a stored blob per hit

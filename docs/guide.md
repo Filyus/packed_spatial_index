@@ -114,8 +114,9 @@ Why the distinctions matter:
     anything else here. On a **Zen 5** laptop (AVX-512 on 256-bit datapaths)
     range queries ran up to ~**1.8×** faster across 100k–1M boxes, holding on
     large 3D windows and fading on large 2D ones as the index grows. A **Zen 4**
-    gave ~1.6× on small 2D windows and a tie on large ones; a **Zen 3**, which
-    has no AVX-512 and runs the AVX2 tier, ~1.3× and ~1.06×. On an aarch64
+    gives ~1.6× on small 2D windows and ~1.4× on large ones. The AVX2 tier — a
+    **Zen 3**, or a Zen 4 whose VM hides AVX-512 — gives ~1.3–1.6× on small
+    windows and ~1.05× on large. On an aarch64
     **Neoverse N2** the portable NEON tier stayed within 10% of the scalar index
     either way. A window that covers the whole index is a tie everywhere, since
     both copy the covered range. The tier is picked at runtime

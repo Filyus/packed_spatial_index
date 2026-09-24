@@ -213,7 +213,7 @@ The scalar `Index2DF32` / `Index3DF32` collect forms are the exception. The
 it (one packed stack word, no callback), measured on narrow windows only. Timed
 on its own (`benches/paired_mask_forms.rs`), the f32 mask stays within a few
 percent of the per-child branch on x86 — a Zen 5 loses up to 8% with it on mid
-and large 2D windows, a Zen 4 gains 6% on large ones, 3D is a draw — and in 2D
+and large 2D windows, a Zen 3 gains 6% on large ones, 3D is a draw — and in 2D
 it loses 2–10% on a Neoverse N2, so 2D on aarch64 does without it. These forms
 skip a subtree the window covers, like the `f64` indexes: its leaf range is
 emitted without a test per item. A small window pays one more test per
@@ -258,7 +258,8 @@ paths:
   `bench-arm.yml` workflow) the 2D mask loses to the per-child branch on every
   window: masked / branching 1.11, 1.04, 1.03 on owned `search_into` (small,
   mid, large windows), 1.17, 1.06, 1.04 on the view and 1.02, 1.10, 1.09 on the
-  scalar `Index2DF32`, against 0.73–0.90 on Zen 4 and Zen 5 for the `f64` paths.
+  scalar `Index2DF32`, against 0.73–0.90 on a Zen 3 and the Zen 5 laptop for the
+  `f64` paths.
   So the 2D collect paths build the mask only off aarch64
   (`MASK_PAYS_IN_2D`). NEON has no movemask, and a 2D box test is cheap enough
   for building the bit mask to cost more than the mispredicts it saves; that is
@@ -739,10 +740,10 @@ every arm divided by the scalar `f64` index. Run it where the answer matters:
 BENCH_PIN_CORE=8 cargo bench --features simd,f32-storage --bench paired_precision
 ```
 
-On the Zen 5 laptop (AVX-512 on 256-bit datapaths), `search` time relative to the scalar `f64`
-index — lower is faster. Uniform boxes over a 10 000-unit extent; small windows
-are 10–200 units wide in 2D and 10–300 in 3D, large ones 2 000–5 000; "all"
-covers the whole index:
+On the Zen 5 laptop (AVX-512 on 256-bit datapaths), `search` time relative to
+the scalar `f64` index — lower is faster. Uniform boxes over a 10 000-unit
+extent; small windows are 10–200 units wide in 2D and 10–300 in 3D, large ones
+2 000–5 000; "all" covers the whole index:
 
 | frontend, items | 2D small | 2D large | 2D all | 3D small | 3D large | 3D all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -766,24 +767,31 @@ covers the whole index:
   1.6–5.8× on `SimdIndex*F32`, whose `count` runs through the visitor and tests
   every candidate.
 
+A Zen 4 with AVX-512 (an EPYC 9V74 on a hosted runner) comes out close at 100k
+boxes: `SimdIndex*` 0.66 / 0.75 / 0.99 in 2D and 0.89 / 0.51 / 1.11 in 3D,
+`SimdIndex*F32` 0.57 / 0.64 in 2D and 0.68 / 0.36 in 3D on small and large
+windows, the scalar `f32` index 1.7–2.9× on windows.
+
 The SIMD kernels are where machines part ways. `SimdIndex2D::search_into`
 against `Index2D::search_into`, both into reused buffers, 100k boxes
-(`benches/paired_simd_search.rs`; the Zen 4, Zen 3 and Neoverse N2 columns come
-from `.github/workflows/bench-arm.yml` on GitHub's hosted runners):
+(`benches/paired_simd_search.rs`; every column but the laptop's comes from
+`.github/workflows/bench-arm.yml` on GitHub's hosted runners):
 
-| 2D window | Zen 5 laptop | Zen 4 | Zen 3 (AVX2 tier) | Neoverse N2 |
-| --- | ---: | ---: | ---: | ---: |
-| small | 0.54 | 0.64 | 0.78 | 0.95 |
-| large | 0.68 | 0.97 | 0.94 | 1.10 |
-| all | 1.00 | 1.01 | 1.04 | 1.01 |
+| 2D window | Zen 5 laptop | Zen 4 | Zen 4, AVX-512 hidden | Zen 3 (AVX2) | Neoverse N2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| small | 0.54 | 0.61 | 0.64 | 0.78 | 0.95 |
+| large | 0.68 | 0.73 | 0.97 | 0.94 | 1.10 |
+| all | 1.00 | 0.99 | 1.01 | 1.04 | 1.01 |
 
-A Zen 4 keeps most of the lead on small windows and loses it on large ones,
-although its AVX-512 datapaths are as wide as the Zen 5 laptop's. A Zen 3 has
-no AVX-512, so this is the AVX2 tier with its left-pack. The N2 has neither:
-its SIMD index runs the portable `wide` tier on NEON and stays within 10% of the
-scalar index either way, 0.97 / 0.91 / 0.99 in 3D. A hosted runner is a shared
-VM, so only these ratios, taken inside one binary, carry over; its
-microseconds do not.
+With AVX-512 a Zen 4 keeps the lead on large windows as the laptop does. That
+rests on the kernels compressing hits in a register: Zen 4 microcodes the
+compress-to-memory form ([internals](internals/simd.md)). A VM may hide AVX-512
+even on a Zen 4 — one EPYC 9V74 runner listed `avx512f`, another did not — and
+the AVX2 tier runs then: it keeps most of the small-window lead and gives up the
+large-window one, on a Zen 4 as on a Zen 3. The N2 has neither: its SIMD index
+runs the portable `wide` tier on NEON and stays within 10% of the scalar index
+either way, 0.97 / 0.91 / 0.99 in 3D. A hosted runner is a shared VM, so only
+these ratios, taken inside one binary, carry over; its microseconds do not.
 
 ## f32 storage vs f64
 
@@ -846,9 +854,9 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
   is faster when Z meaningfully prunes the tree;
 - the SIMD indexes' lead over the scalar ones on range search depends on the
-  CPU: up to 1.8× on the Zen 5 laptop, up to 1.6× on small windows but none on
-  large ones on a Zen 4, up to 1.3× on a Zen 3's AVX2 tier, within 10% either
-  way on a Neoverse N2;
+  CPU: up to 1.8× on the Zen 5 laptop and 1.6× on a Zen 4 with AVX-512, up to
+  1.3× on the AVX2 tier (a Zen 3, or a Zen 4 whose VM hides AVX-512), within
+  10% either way on a Neoverse N2;
 - the branch-free node test behind those collect numbers applies only where the
   path has no early exit *and* the per-child predicate is cheap; the callback
   forms, the shape regions and the radius queries measured worse with it and
@@ -913,8 +921,8 @@ microarchitecture level for binaries you distribute.
 
 The explicit SIMD search / visit / raycast kernels are selected at runtime
 (`is_x86_feature_detected!`) and dispatch **AVX-512 → AVX2 → SSE2**: AVX-512 uses
-`VPCOMPRESSQ` result collection (up to ~1.8× over the scalar index on a Zen 5,
-less on a Zen 4; see
+`VPCOMPRESSQ` result collection (up to ~1.8× over the scalar index on the Zen 5
+laptop, ~1.6× on a Zen 4; see
 [the four frontends](#the-four-range-search-frontends-by-cpu)), the AVX2 tier uses a
 [left-pack](internals/simd.md) emulation (~1.3–1.6× over the SSE2 fallback on
 AVX2-only CPUs), and SSE2 is the floor. So these kernels do **not** need

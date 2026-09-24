@@ -4,6 +4,19 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### SIMD
+
+- **AVX-512 search and raycast collect hits in a register, so they no longer
+  stall on Zen 4.** Every AVX-512 kernel — `SimdIndex2D` / `SimdIndex3D` and
+  `SimdIndex2DF32` / `SimdIndex3DF32` search, all-hits raycast in 2D and 3D —
+  packed its hits with `VPCOMPRESSQ` straight to memory, a form Zen 4 runs in
+  microcode at about 142 cycles an instruction. They now compress into a
+  register and store the whole vector. On a Zen 4 (EPYC 9V74) range search gets
+  1.04–2.1× faster and all-hits raycast 2.0–2.3×: `SimdIndex2D`, which took
+  1.10× the scalar `Index2D`'s time on small windows there and 1.27× on large,
+  now takes 0.61× and 0.73×. Other CPUs are unchanged; on a Zen 5 laptop the
+  two forms measure within 3% of each other.
+
 ### Performance
 
 - **2D radius queries on aarch64 keep the branching traversal.**
@@ -31,9 +44,10 @@ All notable changes to this crate are documented here.
   the SIMD indexes with 1.6–1.9× over the scalar ones on AVX-512, holding on
   broad queries. Re-measured, that is a Zen 5 laptop's figure for small 2D
   windows and large 3D ones. On large 2D windows the lead fades as the index
-  grows; a Zen 4 gives ~1.6× on small windows and a tie on large ones; a Zen 3,
-  on the AVX2 tier, ~1.3× and ~1.06×; a Neoverse N2 stays within 10% of the
-  scalar index either way. The scalar `f32` indexes,
+  grows; a Zen 4 gives ~1.6× on small windows and ~1.4× on large ones with the
+  SIMD fix above; the AVX2 tier (a Zen 3, or a Zen 4 whose VM hides AVX-512)
+  ~1.3–1.6× and ~1.05×; a Neoverse N2 stays within 10% of the scalar index
+  either way. The scalar `f32` indexes,
   documented as ~30% slower than `f64`, take 1.0–2.8× its time; `count` on the
   SIMD `f32` indexes takes 1.6–5.8×. `docs/performance.md` gains a section with
   the four range-search frontends side by side and the SIMD kernels on each

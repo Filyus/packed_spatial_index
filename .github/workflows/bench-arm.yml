@@ -1,0 +1,81 @@
+name: "Bench: paired harnesses on a chosen runner"
+run-name: "bench: ${{ inputs.benches }} on ${{ inputs.runner }}"
+
+# Manual only. Almost every timing in the guide and docs/performance.md was
+# taken on one Zen5 machine, while on aarch64 the SIMD frontends run `wide`'s
+# NEON path -- a different kernel. This re-runs the paired harnesses (the ones
+# that interleave their arms in one binary and print a control and a spread)
+# somewhere else, so the architecture-dependent claims can be checked.
+#
+# A hosted runner is a shared VM: read the ratios against each harness's own
+# control arm, never the absolute microseconds, and repeat a run whose control
+# drifts from ~1.00. The x86 runner is offered as a same-cloud reference point.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner image
+        required: true
+        default: ubuntu-24.04-arm
+        type: choice
+        options:
+          - ubuntu-24.04-arm
+          - ubuntu-latest
+      benches:
+        description: Space-separated bench targets
+        required: true
+        default: paired_simd_search paired_simd_count paired_within paired_raycast_prune paired_aggregate
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench on ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    # The bench list reaches the shell through the environment, never through
+    # `${{ }}` inside a script, so an input cannot turn into a command.
+    env:
+      BENCHES: ${{ inputs.benches }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-${{ inputs.runner }}
+      - name: Describe the machine
+        run: |
+          mkdir -p bench-out
+          {
+            echo "runner: ${{ inputs.runner }}"
+            echo "commit: $GITHUB_SHA"
+            rustc -vV
+            echo
+            lscpu
+          } | tee bench-out/machine.txt
+      # Build everything first so compilation never overlaps a timed run.
+      - name: Build benches
+        run: |
+          args=()
+          for b in $BENCHES; do args+=(--bench "$b"); done
+          cargo bench --no-run --features simd "${args[@]}"
+      # `BENCH_PIN_CORE` pins only on Windows (benches/support/pin.rs); on Linux
+      # the OS tool does it. Core 1 keeps the run off core 0, where the runner
+      # agent lives.
+      - name: Run benches
+        run: |
+          for b in $BENCHES; do
+            echo "::group::$b"
+            taskset -c 1 cargo bench --features simd --bench "$b" 2>&1 | tee "bench-out/$b.txt"
+            echo "::endgroup::"
+          done
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ inputs.runner }}-${{ github.run_id }}
+          path: bench-out/

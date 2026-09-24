@@ -1,0 +1,304 @@
+//! Mask-and-iterate against the per-child branch it replaced, on every collect
+//! path that uses it, in ONE binary, interleaved.
+//!
+//! Every collect path with no early exit folds a node's child tests into a u64
+//! mask and walks its set bits (b1c7a24 and the commits after it). That was
+//! calibrated on x86 only. On aarch64 the 2D radius mask turned out slower than
+//! the branch at every radius (kb:observation/528), and the likely reason --
+//! NEON has no movemask -- applies to every other mask site too. Each path now
+//! keeps both forms behind a `const MASKED: bool`; the shipping callers pass
+//! `true`, and the `*_forced` hooks timed here reach both.
+//!
+//! Each group times one path: the branching form (the reference), the masked
+//! form, and a control that neither touches -- `any` on the same index, which
+//! is a callback path and never builds a mask. The checksum column pins that
+//! both forms return the same hits.
+//!
+//! Families: owned `Index2D`, `Index2DView` and `Index3DView` over the same
+//! bytes, `Index3D` raycast, and the scalar f32 indexes. Owned `Index3D` range
+//! search has no mask and is not here.
+//!
+//! Run:
+//!   BENCH_PIN_CORE=8 cargo bench --features f32-storage --bench paired_mask_forms
+
+use std::hint::black_box;
+use std::ops::ControlFlow;
+
+use packed_spatial_index::{
+    Box2D, Box3D, Index2D, Index2DBuilder, Index2DView, Index3D, Index3DBuilder, Index3DView,
+    Point3D, Ray3D,
+};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
+
+#[path = "support/paired.rs"]
+mod paired;
+#[path = "support/pin.rs"]
+mod pin;
+
+const N: usize = 100_000;
+const EXTENT: f64 = 10_000.0;
+const QUERIES: usize = 400;
+
+/// (label, side range): small windows hit a handful, large ones thousands.
+const WINDOWS: [(&str, f64, f64); 3] = [
+    ("small (10..200)", 10.0, 200.0),
+    ("mid (200..1000)", 200.0, 1000.0),
+    ("large (2000..5000)", 2000.0, 5000.0),
+];
+
+fn boxes_2d(seed: u64) -> Vec<Box2D> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..N)
+        .map(|_| {
+            let x: f64 = rng.random_range(0.0..EXTENT);
+            let y: f64 = rng.random_range(0.0..EXTENT);
+            let w: f64 = rng.random_range(0.1..20.0);
+            let h: f64 = rng.random_range(0.1..20.0);
+            Box2D::new(x, y, x + w, y + h)
+        })
+        .collect()
+}
+
+fn boxes_3d(seed: u64, max_side: f64) -> Vec<Box3D> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..N)
+        .map(|_| {
+            let x: f64 = rng.random_range(0.0..EXTENT);
+            let y: f64 = rng.random_range(0.0..EXTENT);
+            let z: f64 = rng.random_range(0.0..EXTENT);
+            let s: f64 = rng.random_range(0.1..max_side);
+            Box3D::new(x, y, z, x + s, y + s, z + s)
+        })
+        .collect()
+}
+
+fn windows_2d(seed: u64, lo: f64, hi: f64) -> Vec<Box2D> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..QUERIES)
+        .map(|_| {
+            let s: f64 = rng.random_range(lo..hi);
+            let x: f64 = rng.random_range(0.0..EXTENT - s);
+            let y: f64 = rng.random_range(0.0..EXTENT - s);
+            Box2D::new(x, y, x + s, y + s)
+        })
+        .collect()
+}
+
+fn windows_3d(seed: u64, lo: f64, hi: f64) -> Vec<Box3D> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..QUERIES)
+        .map(|_| {
+            let s: f64 = rng.random_range(lo..hi);
+            let x: f64 = rng.random_range(0.0..EXTENT - s);
+            let y: f64 = rng.random_range(0.0..EXTENT - s);
+            let z: f64 = rng.random_range(0.0..EXTENT - s);
+            Box3D::new(x, y, z, x + s, y + s, z + s)
+        })
+        .collect()
+}
+
+fn build_2d(boxes: &[Box2D]) -> Index2D {
+    let mut b = Index2DBuilder::new(boxes.len());
+    for &bx in boxes {
+        b.add(bx);
+    }
+    b.finish().unwrap()
+}
+
+fn build_3d(boxes: &[Box3D]) -> Index3D {
+    let mut b = Index3DBuilder::new(boxes.len());
+    for &bx in boxes {
+        b.add(bx);
+    }
+    b.finish().unwrap()
+}
+
+/// Rays entering the cube from below and crossing all of it, spread so a ray
+/// meets tens to hundreds of boxes.
+fn rays(seed: u64) -> Vec<Ray3D> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..QUERIES)
+        .map(|_| {
+            Ray3D::new(
+                Point3D::new(
+                    rng.random_range(0.0..EXTENT),
+                    rng.random_range(0.0..EXTENT),
+                    -10.0,
+                ),
+                rng.random_range(-0.15..0.15),
+                rng.random_range(-0.15..0.15),
+                1.0,
+                EXTENT * 2.0,
+            )
+        })
+        .collect()
+}
+
+macro_rules! pair {
+    ($label:expr, $any:expr, $qs:expr, $forced:expr) => {{
+        let qs = $qs;
+        let (mut out_b, mut out_m) = (Vec::new(), Vec::new());
+        let mut arms = vec![
+            paired::arm("any (control, no mask)", || {
+                let mut t = 0usize;
+                for q in black_box(qs) {
+                    t += usize::from($any(*q));
+                }
+                t
+            }),
+            paired::arm("branching", || {
+                let mut t = 0usize;
+                for q in black_box(qs) {
+                    $forced(false, *q, &mut out_b);
+                    t += out_b.len();
+                }
+                t
+            }),
+            paired::arm("masked (ships)", || {
+                let mut t = 0usize;
+                for q in black_box(qs) {
+                    $forced(true, *q, &mut out_m);
+                    t += out_m.len();
+                }
+                t
+            }),
+        ];
+        paired::run(&$label, &mut arms, "branching");
+    }};
+}
+
+fn hits_label<Q: Copy>(family: &str, window: &str, qs: &[Q], count: impl Fn(Q) -> usize) -> String {
+    let hits: usize = qs.iter().map(|q| count(*q)).sum();
+    format!(
+        "{family} {window} ({:.0} hits/query)",
+        hits as f64 / qs.len() as f64
+    )
+}
+
+fn main() {
+    pin::pin_from_env();
+
+    // ---- 2D: owned, view ----
+    let b2 = boxes_2d(0x2D);
+    let owned2 = build_2d(&b2);
+    let bytes2 = owned2.to_bytes();
+    let view2 = Index2DView::from_bytes(&bytes2).unwrap();
+    for (i, (name, lo, hi)) in WINDOWS.iter().enumerate() {
+        let qs = windows_2d(0x51 + i as u64, *lo, *hi);
+        let label = hits_label("2d owned", name, &qs, |q| owned2.count(q));
+        pair!(
+            label,
+            |q| owned2.any(q),
+            &qs,
+            |m: bool, q, out: &mut Vec<usize>| {
+                if m {
+                    owned2.search_into_forced::<true>(q, out)
+                } else {
+                    owned2.search_into_forced::<false>(q, out)
+                }
+            }
+        );
+        let label = hits_label("2d view", name, &qs, |q| view2.count(q));
+        pair!(
+            label,
+            |q| view2.any(q),
+            &qs,
+            |m: bool, q, out: &mut Vec<usize>| {
+                if m {
+                    view2.search_into_forced::<true>(q, out)
+                } else {
+                    view2.search_into_forced::<false>(q, out)
+                }
+            }
+        );
+    }
+
+    // ---- 3D: view, raycast ----
+    let b3 = boxes_3d(0x3D, 60.0);
+    let owned3 = build_3d(&b3);
+    let bytes3 = owned3.to_bytes();
+    let view3 = Index3DView::from_bytes(&bytes3).unwrap();
+    for (i, (name, lo, hi)) in WINDOWS.iter().enumerate() {
+        let qs = windows_3d(0x61 + i as u64, *lo, *hi);
+        let label = hits_label("3d view", name, &qs, |q| view3.count(q));
+        pair!(
+            label,
+            |q| view3.any(q),
+            &qs,
+            |m: bool, q, out: &mut Vec<usize>| {
+                if m {
+                    view3.search_into_forced::<true>(q, out)
+                } else {
+                    view3.search_into_forced::<false>(q, out)
+                }
+            }
+        );
+    }
+    // The window scene is too sparse for rays (about one hit per ray, where
+    // the traversal shape decides nothing), so rays get denser scenes of their
+    // own: tens and hundreds of candidates per ray.
+    let rs = rays(0x7A);
+    for (name, side) in [("sides <300", 300.0), ("sides <900", 900.0)] {
+        let scene = build_3d(&boxes_3d(0x7B, side));
+        let label = hits_label("3d raycast", name, &rs, |r| {
+            let mut out = Vec::new();
+            scene.raycast_into(r, &mut out);
+            out.len()
+        });
+        let first_hit = |r| {
+            scene
+                .raycast_each(r, |_, _| ControlFlow::Break(()))
+                .is_break()
+        };
+        pair!(label, first_hit, &rs, |m: bool, r, out: &mut Vec<usize>| {
+            if m {
+                scene.raycast_into_forced::<true>(r, out)
+            } else {
+                scene.raycast_into_forced::<false>(r, out)
+            }
+        });
+    }
+
+    // ---- f32 scalar ----
+    let mut b = Index2DBuilder::new(b2.len());
+    for &bx in &b2 {
+        b.add(bx);
+    }
+    let f32_2 = b.finish_f32().unwrap();
+    let mut b = Index3DBuilder::new(b3.len());
+    for &bx in &b3 {
+        b.add(bx);
+    }
+    let f32_3 = b.finish_f32().unwrap();
+    for (i, (name, lo, hi)) in WINDOWS.iter().enumerate() {
+        let qs = windows_2d(0x71 + i as u64, *lo, *hi);
+        let label = hits_label("2d f32", name, &qs, |q| f32_2.count(q));
+        pair!(
+            label,
+            |q| f32_2.any(q),
+            &qs,
+            |m: bool, q, out: &mut Vec<usize>| {
+                *out = if m {
+                    f32_2.search_forced::<true>(q)
+                } else {
+                    f32_2.search_forced::<false>(q)
+                };
+            }
+        );
+        let qs = windows_3d(0x81 + i as u64, *lo, *hi);
+        let label = hits_label("3d f32", name, &qs, |q| f32_3.count(q));
+        pair!(
+            label,
+            |q| f32_3.any(q),
+            &qs,
+            |m: bool, q, out: &mut Vec<usize>| {
+                *out = if m {
+                    f32_3.search_forced::<true>(q)
+                } else {
+                    f32_3.search_forced::<false>(q)
+                };
+            }
+        );
+    }
+}

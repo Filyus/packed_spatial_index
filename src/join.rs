@@ -414,7 +414,7 @@ pub(crate) fn collect_within_core<T, P, F>(
     P: PairTest<T::Bounds>,
     F: FnMut(usize),
 {
-    collect_region(
+    collect_region::<true, _, _, _, _>(
         tree,
         stack,
         |node| test.keeps(node, query),

@@ -50,7 +50,26 @@ impl Index3D {
     /// measured ~5-12% on heavy all-hits traversal, neutral when little is visited).
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray3D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        scalar_raycast::collect_hits(
+        self.raycast_into_stack_impl::<true>(ray, results, stack);
+    }
+
+    /// [`raycast_into`](Self::raycast_into) with the child test named: the
+    /// hit mask every shipping raycast runs, or the per-child branch it
+    /// replaced. Same set, same order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn raycast_into_forced<const MASKED: bool>(&self, ray: Ray3D, results: &mut Vec<usize>) {
+        let mut stack = crate::traversal::ScratchStack::take();
+        self.raycast_into_stack_impl::<MASKED>(ray, results, &mut stack);
+    }
+
+    #[inline]
+    fn raycast_into_stack_impl<const MASKED: bool>(
+        &self,
+        ray: Ray3D,
+        results: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) {
+        scalar_raycast::collect_hits::<MASKED>(
             self.entries.len(),
             self.num_items,
             self.node_size,
@@ -154,7 +173,7 @@ impl Index3DView<'_> {
     /// Buffer-explicit raycast (mirrors `search_into_stack`).
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray3D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        scalar_raycast::collect_hits(
+        scalar_raycast::collect_hits::<true>(
             self.num_nodes,
             self.num_items,
             self.node_size,

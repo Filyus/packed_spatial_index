@@ -29,8 +29,12 @@ pub(crate) fn overlap_mask_at<T: TreeAccess>(
 /// overlap tests run branch-free into a bitmask and the loop branches once per
 /// hit instead of once per child — the same trade the owned indexes make in
 /// their `search_into_stack` paths.
+///
+/// `MASKED = false` swaps the mask for the per-child branch it replaced, so the
+/// two forms can be timed in one binary (`benches/paired_mask_forms.rs`);
+/// every shipping caller passes `true`.
 #[inline]
-pub(crate) fn collect_region<T, O, C, F>(
+pub(crate) fn collect_region<const MASKED: bool, T, O, C, F>(
     tree: &T,
     stack: &mut Vec<usize>,
     overlaps: O,
@@ -73,9 +77,17 @@ pub(crate) fn collect_region<T, O, C, F>(
             let mut start = node_index;
             while start < end {
                 let stop = (start + MASK_CHUNK).min(end);
-                for_each_hit(overlap_mask_at(tree, start, stop, &overlaps), |i| {
-                    emit(tree.tree_index(start + i));
-                });
+                if MASKED {
+                    for_each_hit(overlap_mask_at(tree, start, stop, &overlaps), |i| {
+                        emit(tree.tree_index(start + i));
+                    });
+                } else {
+                    for pos in start..stop {
+                        if overlaps(tree.tree_bounds(pos)) {
+                            emit(tree.tree_index(pos));
+                        }
+                    }
+                }
                 start = stop;
             }
         } else {
@@ -84,11 +96,21 @@ pub(crate) fn collect_region<T, O, C, F>(
             let mut stop = end;
             while stop > node_index {
                 let start = stop.saturating_sub(MASK_CHUNK).max(node_index);
-                for_each_hit_rev(overlap_mask_at(tree, start, stop, &overlaps), |i| {
-                    let pos = start + i;
+                let mut push = |pos: usize| {
                     let flag = usize::from(contains(tree.tree_bounds(pos))) * frame::CONTAINED;
                     stack.push(frame::pack(tree.tree_index(pos), child_level) | flag);
-                });
+                };
+                if MASKED {
+                    for_each_hit_rev(overlap_mask_at(tree, start, stop, &overlaps), |i| {
+                        push(start + i);
+                    });
+                } else {
+                    for pos in (start..stop).rev() {
+                        if overlaps(tree.tree_bounds(pos)) {
+                            push(pos);
+                        }
+                    }
+                }
                 stop = start;
             }
         }

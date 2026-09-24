@@ -24,7 +24,7 @@ on:
       benches:
         description: Space-separated bench targets
         required: true
-        default: paired_simd_search paired_simd_count paired_within paired_raycast_prune paired_aggregate
+        default: paired_mask_forms paired_simd_search paired_simd_count paired_within paired_raycast_prune paired_aggregate
 
 permissions:
   contents: read
@@ -62,7 +62,7 @@ jobs:
         run: |
           args=()
           for b in $BENCHES; do args+=(--bench "$b"); done
-          cargo bench --no-run --features simd "${args[@]}"
+          cargo bench --no-run --features simd,f32-storage "${args[@]}"
       # `BENCH_PIN_CORE` pins only on Windows (benches/support/pin.rs); on Linux
       # the OS tool does it. Core 1 keeps the run off core 0, where the runner
       # agent lives.
@@ -70,7 +70,7 @@ jobs:
         run: |
           for b in $BENCHES; do
             echo "::group::$b"
-            taskset -c 1 cargo bench --features simd --bench "$b" 2>&1 | tee "bench-out/$b.txt"
+            taskset -c 1 cargo bench --features simd,f32-storage --bench "$b" 2>&1 | tee "bench-out/$b.txt"
             echo "::endgroup::"
           done
       - name: Upload results

@@ -141,6 +141,41 @@ pub(crate) fn for_each_hit_rev(mut mask: u64, mut f: impl FnMut(usize)) {
     }
 }
 
+/// Visit, low to high, the positions in `boxes` that overlap `query`: through a
+/// branch-free [`overlap_mask`] when `MASKED`, with one branch per box when not.
+///
+/// The shipping paths pass `true`, which compiles to exactly the mask loop they
+/// had before this helper existed. `false` is the per-child branching those
+/// paths ran before the mask (b1c7a24), kept only so the two forms can be timed
+/// in one binary on a target the mask was never measured on
+/// (`benches/paired_mask_forms.rs`).
+#[inline(always)]
+fn each_overlap<const MASKED: bool>(boxes: &[Box2D], query: Box2D, mut f: impl FnMut(usize)) {
+    if MASKED {
+        for_each_hit(overlap_mask(boxes, query), f);
+    } else {
+        for (i, b) in boxes.iter().enumerate() {
+            if b.overlaps(query) {
+                f(i);
+            }
+        }
+    }
+}
+
+/// [`each_overlap`] high to low, for pushing children so they pop in order.
+#[inline(always)]
+fn each_overlap_rev<const MASKED: bool>(boxes: &[Box2D], query: Box2D, mut f: impl FnMut(usize)) {
+    if MASKED {
+        for_each_hit_rev(overlap_mask(boxes, query), f);
+    } else {
+        for (i, b) in boxes.iter().enumerate().rev() {
+            if b.overlaps(query) {
+                f(i);
+            }
+        }
+    }
+}
+
 /// Finished static read-only index.
 ///
 /// Search methods return item positions in the original insertion order. The order
@@ -1743,7 +1778,18 @@ impl Index2D {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        self.search_into_stack_contained_impl(query, results, stack);
+        self.search_into_stack_contained_impl::<true>(query, results, stack);
+    }
+
+    /// [`search_into`](Self::search_into) on a named leaf/child test: the
+    /// branch-free mask (`MASKED = true`, what every shipping search runs) or
+    /// the per-child branch it replaced. Both return the same set in the same
+    /// order; this exists so a benchmark can time them in one binary on a new
+    /// target.
+    #[doc(hidden)]
+    pub fn search_into_forced<const MASKED: bool>(&self, query: Box2D, results: &mut Vec<usize>) {
+        let mut stack = crate::traversal::ScratchStack::take();
+        self.search_into_stack_contained_impl::<MASKED>(query, results, &mut stack);
     }
 
     /// Traversal variant that prefetches the next node from the stack.
@@ -1889,7 +1935,7 @@ impl Index2D {
         }
     }
 
-    fn search_into_stack_contained_impl(
+    fn search_into_stack_contained_impl<const MASKED: bool>(
         &self,
         query: Box2D,
         results: &mut Vec<usize>,
@@ -1918,12 +1964,12 @@ impl Index2D {
                 self.extend_contained_leaf_indices(node_index, end, level, results);
             } else if is_leaf {
                 for (boxes, indices) in chunks {
-                    for_each_hit(overlap_mask(boxes, query), |i| results.push(indices[i]));
+                    each_overlap::<MASKED>(boxes, query, |i| results.push(indices[i]));
                 }
             } else {
                 let child_level = level - 1;
                 for (boxes, indices) in chunks.rev() {
-                    for_each_hit_rev(overlap_mask(boxes, query), |i| {
+                    each_overlap_rev::<MASKED>(boxes, query, |i| {
                         let flag = usize::from(query.contains(boxes[i])) * frame::CONTAINED;
                         stack.push(frame::pack(indices[i], child_level) | flag);
                     });
@@ -2975,9 +3021,25 @@ impl<'a> Index2DView<'a> {
         stack: &mut Vec<usize>,
     ) {
         results.clear();
-        collect_region(
+        collect_region::<true, _, _, _, _>(
             self,
             stack,
+            |bounds: Box2D| bounds.overlaps(query),
+            |bounds: Box2D| query.contains(bounds),
+            |index| results.push(index),
+        );
+    }
+
+    /// [`search_into_stack`](Self::search_into_stack) with the child test
+    /// named: the mask every shipping search runs, or the per-child branch it
+    /// replaced. Same set, same order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn search_into_forced<const MASKED: bool>(&self, query: Box2D, results: &mut Vec<usize>) {
+        results.clear();
+        let mut stack = crate::traversal::ScratchStack::take();
+        collect_region::<MASKED, _, _, _, _>(
+            self,
+            &mut stack,
             |bounds: Box2D| bounds.overlaps(query),
             |bounds: Box2D| query.contains(bounds),
             |index| results.push(index),

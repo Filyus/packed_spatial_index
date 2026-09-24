@@ -98,6 +98,11 @@ name = "paired_within"
 harness = false
 
 [[bench]]
+name = "paired_mask_forms"
+harness = false
+required-features = ["f32-storage"]
+
+[[bench]]
 name = "paired_simd_search"
 harness = false
 required-features = ["simd"]

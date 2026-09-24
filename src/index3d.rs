@@ -2882,9 +2882,25 @@ impl<'a> Index3DView<'a> {
         stack: &mut Vec<usize>,
     ) {
         results.clear();
-        collect_region(
+        collect_region::<true, _, _, _, _>(
             self,
             stack,
+            |bounds: Box3D| bounds.overlaps(query),
+            |bounds: Box3D| query.contains(bounds),
+            |index| results.push(index),
+        );
+    }
+
+    /// [`search_into_stack`](Self::search_into_stack) with the child test
+    /// named: the mask every shipping search runs, or the per-child branch it
+    /// replaced. Same set, same order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn search_into_forced<const MASKED: bool>(&self, query: Box3D, results: &mut Vec<usize>) {
+        results.clear();
+        let mut stack = crate::traversal::ScratchStack::take();
+        collect_region::<MASKED, _, _, _, _>(
+            self,
+            &mut stack,
             |bounds: Box3D| bounds.overlaps(query),
             |bounds: Box3D| query.contains(bounds),
             |index| results.push(index),

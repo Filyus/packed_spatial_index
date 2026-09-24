@@ -18,11 +18,53 @@ fn hit_mask(start: usize, end: usize, hit_at: &impl Fn(usize) -> bool) -> u64 {
     mask
 }
 
+/// Visit, low to high, the positions in `start..stop` that `hit_at` accepts:
+/// through [`hit_mask`] when `MASKED`, one branch per position when not. The
+/// shipping callers pass `true`; `false` is the per-child branch the mask
+/// replaced, kept so both can be timed in one binary
+/// (`benches/paired_mask_forms.rs`).
+#[inline(always)]
+fn each_hit<const MASKED: bool>(
+    start: usize,
+    stop: usize,
+    hit_at: &impl Fn(usize) -> bool,
+    mut f: impl FnMut(usize),
+) {
+    if MASKED {
+        for_each_hit(hit_mask(start, stop, hit_at), |i| f(start + i));
+    } else {
+        for pos in start..stop {
+            if hit_at(pos) {
+                f(pos);
+            }
+        }
+    }
+}
+
+/// [`each_hit`] high to low.
+#[inline(always)]
+fn each_hit_rev<const MASKED: bool>(
+    start: usize,
+    stop: usize,
+    hit_at: &impl Fn(usize) -> bool,
+    mut f: impl FnMut(usize),
+) {
+    if MASKED {
+        for_each_hit_rev(hit_mask(start, stop, hit_at), |i| f(start + i));
+    } else {
+        for pos in (start..stop).rev() {
+            if hit_at(pos) {
+                f(pos);
+            }
+        }
+    }
+}
+
 /// Depth-first raycast collection over a packed tree. Callers provide storage
 /// accessors for hit testing and item/node indices.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-pub(crate) fn collect_hits(
+pub(crate) fn collect_hits<const MASKED: bool>(
     num_nodes: usize,
     num_items: usize,
     node_size: usize,
@@ -55,9 +97,7 @@ pub(crate) fn collect_hits(
             let mut start = node_index;
             while start < end {
                 let stop = (start + MASK_CHUNK).min(end);
-                for_each_hit(hit_mask(start, stop, &hit_at), |i| {
-                    results.push(index_at(start + i));
-                });
+                each_hit::<MASKED>(start, stop, &hit_at, |pos| results.push(index_at(pos)));
                 start = stop;
             }
         } else {
@@ -67,8 +107,8 @@ pub(crate) fn collect_hits(
                 let mut stop = end;
                 while stop > node_index {
                     let start = stop.saturating_sub(MASK_CHUNK).max(node_index);
-                    for_each_hit_rev(hit_mask(start, stop, &hit_at), |i| {
-                        stack.push(frame::pack(index_at(start + i), child_level));
+                    each_hit_rev::<MASKED>(start, stop, &hit_at, |pos| {
+                        stack.push(frame::pack(index_at(pos), child_level));
                     });
                     stop = start;
                 }
@@ -76,8 +116,8 @@ pub(crate) fn collect_hits(
                 let mut start = node_index;
                 while start < end {
                     let stop = (start + MASK_CHUNK).min(end);
-                    for_each_hit(hit_mask(start, stop, &hit_at), |i| {
-                        stack.push(frame::pack(index_at(start + i), child_level));
+                    each_hit::<MASKED>(start, stop, &hit_at, |pos| {
+                        stack.push(frame::pack(index_at(pos), child_level));
                     });
                     start = stop;
                 }

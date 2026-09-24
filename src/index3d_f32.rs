@@ -2654,7 +2654,7 @@ impl Index3DF32 {
     pub fn search(&self, query: Box3D) -> Vec<usize> {
         let q = Box3DF32::from_box3d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits(|b| b.overlaps(q), |i, _| out.push(i));
+        self.collect_hits::<true>(|b| b.overlaps(q), |i, _| out.push(i));
         out
     }
 
@@ -2696,7 +2696,7 @@ impl Index3DF32 {
     pub fn count(&self, query: Box3D) -> usize {
         let q = Box3DF32::from_box3d_inward(query);
         let mut count = 0usize;
-        self.collect_hits(|b| b.overlaps(q), |_, _| count += 1);
+        self.collect_hits::<true>(|b| b.overlaps(q), |_, _| count += 1);
         count
     }
 
@@ -2778,6 +2778,17 @@ impl Index3DF32 {
         )
     }
 
+    /// [`search`](Self::search) with the child test named: the mask every
+    /// shipping collect runs, or the per-child branch it replaced. Same set,
+    /// same order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn search_forced<const MASKED: bool>(&self, query: Box3D) -> Vec<usize> {
+        let q = Box3DF32::from_box3d_inward(query);
+        let mut out = Vec::new();
+        self.collect_hits::<MASKED>(|b| b.overlaps(q), |i, _| out.push(i));
+        out
+    }
+
     /// Shared stack descent: call `visitor` for each leaf item whose stored f32 box
     /// passes `hit`, recursing into internal nodes that pass. Stops early when
     /// `visitor` returns [`ControlFlow::Break`].
@@ -2786,7 +2797,11 @@ impl Index3DF32 {
     /// branches once per hit instead of once per child. See
     /// [`crate::index2d`]'s `overlap_mask` for why the early-exit forms keep
     /// their branches.
-    fn collect_hits(&self, hit: impl Fn(Box3DF32) -> bool, mut emit: impl FnMut(usize, Box3DF32)) {
+    fn collect_hits<const MASKED: bool>(
+        &self,
+        hit: impl Fn(Box3DF32) -> bool,
+        mut emit: impl FnMut(usize, Box3DF32),
+    ) {
         if self.indices.is_empty() {
             return;
         }
@@ -2800,19 +2815,29 @@ impl Index3DF32 {
             let mut start = node_index;
             while start < end {
                 let stop = (start + MASK_CHUNK).min(end);
-                let mut mask = 0u64;
-                for (i, pos) in (start..stop).enumerate() {
-                    mask |= u64::from(hit(self.box_f32_at(pos))) << i;
-                }
-                for_each_hit(mask, |i| {
-                    let pos = start + i;
+                let mut take = |pos: usize| {
                     let index = self.indices[pos];
                     if is_leaf {
                         emit(index, self.box_f32_at(pos));
                     } else {
                         stack.push(frame::pack(index, child_level));
                     }
-                });
+                };
+                if MASKED {
+                    let mut mask = 0u64;
+                    for (i, pos) in (start..stop).enumerate() {
+                        mask |= u64::from(hit(self.box_f32_at(pos))) << i;
+                    }
+                    for_each_hit(mask, |i| take(start + i));
+                } else {
+                    // The per-child branch the mask replaced, for timing the two
+                    // in one binary (`benches/paired_mask_forms.rs`).
+                    for pos in start..stop {
+                        if hit(self.box_f32_at(pos)) {
+                            take(pos);
+                        }
+                    }
+                }
                 start = stop;
             }
             match stack.pop() {

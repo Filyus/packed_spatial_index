@@ -48,7 +48,7 @@ impl Index2D {
     /// Buffer-explicit raycast (mirrors `search_into_stack`).
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        scalar_raycast::collect_hits(
+        scalar_raycast::collect_hits::<true>(
             self.entries.len(),
             self.num_items,
             self.node_size,
@@ -151,7 +151,7 @@ impl Index2DView<'_> {
     /// Buffer-explicit raycast (mirrors `search_into_stack`).
     #[doc(hidden)]
     pub fn raycast_into_stack(&self, ray: Ray2D, results: &mut Vec<usize>, stack: &mut Vec<usize>) {
-        scalar_raycast::collect_hits(
+        scalar_raycast::collect_hits::<true>(
             self.num_nodes,
             self.num_items,
             self.node_size,

@@ -238,6 +238,17 @@ paths:
   nothing outside run-to-run drift: a polygon SAT test is six edge normals
   against four box corners, an order of magnitude more work than the branch it
   replaces.
+- **The target has to make a mask cheap.** Everything above was measured on x86.
+  On aarch64 (a Neoverse N2, `benches/paired_mask_forms.rs` through the
+  `bench-arm.yml` workflow) the 2D mask loses to the per-child branch on every
+  window: masked / branching 1.11, 1.04, 1.03 on owned `search_into` (small,
+  mid, large windows) and 1.17, 1.06, 1.04 on the view, against 0.73–0.90 on
+  Zen 4 and Zen 5. So the 2D collect paths build the mask only off aarch64
+  (`MASK_PAYS_IN_2D`). NEON has no movemask, and a 2D box test is cheap enough
+  for building the bit mask to cost more than the mispredicts it saves; that is
+  the likely reason rather than a measured one. 3D keeps the mask on aarch64 as
+  well — the N2 gives 0.88 on mid and large view windows and 0.97–0.99 on
+  raycast.
 
 The radius queries sit exactly on the second boundary and split by query width
 rather than by form, which is what the next section is about.

@@ -15,7 +15,7 @@ use std::ops::ControlFlow;
 
 use crate::estimate::{box_fraction_2d, box_fraction_3d};
 use crate::geometry::{Box2D, Box3D};
-use crate::index2d::MASK_CHUNK;
+use crate::index2d::{MASK_CHUNK, MASK_PAYS_IN_2D};
 use crate::range::{collect_region, search_region_each};
 use crate::tree_access::{TreeAccess, leaf_range};
 
@@ -437,18 +437,6 @@ pub(crate) fn collect_within_core<T, P, F>(
 /// not, so the fraction is not what the crossover tracks (docs/performance.md,
 /// "Radius queries: which traversal").
 const MIN_EXPECTED_HITS: f64 = 1.0;
-
-/// Whether this target can afford the masked 2D radius traversal at all.
-///
-/// Not on aarch64. On a Neoverse N2 the 2D mask lost to the branching test at
-/// every radius measured, from 42% slower with no hits to 7% slower at 15 635
-/// hits per query, while both x86 machines (Zen 4 and Zen 5) win with it from
-/// about 14 hits up (`benches/paired_within.rs`, kb:observation/528). The
-/// likely reason is that NEON has no movemask, so turning a vector compare into
-/// a bit mask costs more than the mispredicts it saves; a 2D box test is cheap
-/// enough that this dominates. 3D keeps the mask everywhere: its test is
-/// dearer, and on the same N2 the mask won from a few dozen hits up.
-const MASK_PAYS_IN_2D: bool = !cfg!(target_arch = "aarch64");
 
 /// Whether a radius query is wide enough for the masked traversal.
 ///

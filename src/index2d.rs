@@ -141,14 +141,27 @@ pub(crate) fn for_each_hit_rev(mut mask: u64, mut f: impl FnMut(usize)) {
     }
 }
 
+/// Whether this target's 2D collect paths should fold child tests into a mask
+/// at all — the `MASKED` every shipping 2D collect passes.
+///
+/// Not on aarch64. On a Neoverse N2 the 2D mask lost to the per-child branch on
+/// every path and window measured: 3–11% on owned `search_into`, 4–17% on the
+/// view's, and 7–42% on radius queries, while Zen 4 and Zen 5 win with it by
+/// 10–27% (`benches/paired_mask_forms.rs`, `benches/paired_within.rs`,
+/// kb:observation/528). The likely reason is that NEON has no movemask, so
+/// turning a vector compare into a bit mask costs more than the mispredicts it
+/// saves, and a 2D box test is cheap enough for that to dominate. 3D keeps the
+/// mask everywhere: its test is dearer, and on the same N2 the 3D view mask won
+/// 12% from a few dozen hits up.
+pub(crate) const MASK_PAYS_IN_2D: bool = !cfg!(target_arch = "aarch64");
+
 /// Visit, low to high, the positions in `boxes` that overlap `query`: through a
 /// branch-free [`overlap_mask`] when `MASKED`, with one branch per box when not.
 ///
-/// The shipping paths pass `true`, which compiles to exactly the mask loop they
-/// had before this helper existed. `false` is the per-child branching those
-/// paths ran before the mask (b1c7a24), kept only so the two forms can be timed
-/// in one binary on a target the mask was never measured on
-/// (`benches/paired_mask_forms.rs`).
+/// The shipping paths pass [`MASK_PAYS_IN_2D`]: `true` compiles to exactly the
+/// mask loop they had before this helper existed, and `false` -- aarch64, and
+/// the timing hooks -- is the per-child branching those paths ran before the
+/// mask (b1c7a24) (`benches/paired_mask_forms.rs`).
 #[inline(always)]
 fn each_overlap<const MASKED: bool>(boxes: &[Box2D], query: Box2D, mut f: impl FnMut(usize)) {
     if MASKED {
@@ -1778,7 +1791,7 @@ impl Index2D {
         results: &mut Vec<usize>,
         stack: &mut Vec<usize>,
     ) {
-        self.search_into_stack_contained_impl::<true>(query, results, stack);
+        self.search_into_stack_contained_impl::<MASK_PAYS_IN_2D>(query, results, stack);
     }
 
     /// [`search_into`](Self::search_into) on a named leaf/child test: the
@@ -3021,7 +3034,7 @@ impl<'a> Index2DView<'a> {
         stack: &mut Vec<usize>,
     ) {
         results.clear();
-        collect_region::<true, _, _, _, _>(
+        collect_region::<MASK_PAYS_IN_2D, _, _, _, _>(
             self,
             stack,
             |bounds: Box2D| bounds.overlaps(query),

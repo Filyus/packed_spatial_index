@@ -30,9 +30,10 @@ pub(crate) fn overlap_mask_at<T: TreeAccess>(
 /// hit instead of once per child — the same trade the owned indexes make in
 /// their `search_into_stack` paths.
 ///
-/// `MASKED = false` swaps the mask for the per-child branch it replaced, so the
-/// two forms can be timed in one binary (`benches/paired_mask_forms.rs`);
-/// every shipping caller passes `true`.
+/// `MASKED = false` swaps the mask for the per-child branch it replaced. The
+/// 2D view passes `index2d::MASK_PAYS_IN_2D` (so branching on aarch64), the 3D
+/// view and the radius mask pass `true`, and the timing hooks reach both
+/// (`benches/paired_mask_forms.rs`).
 #[inline]
 pub(crate) fn collect_region<const MASKED: bool, T, O, C, F>(
     tree: &T,

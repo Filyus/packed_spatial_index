@@ -15,7 +15,7 @@ use crate::{
     builder2d::BuildConfig,
     f32_storage::{Box2DF32, F32Columns2D, columns2d_from_parsed},
     geometry::{Box2D, Overlaps2D},
-    index2d::{MASK_CHUNK, for_each_hit, frame},
+    index2d::{MASK_CHUNK, MASK_PAYS_IN_2D, for_each_hit, frame},
     ordered::{collect_ordered, search_ordered_each},
     persistence::{LoadError, parse_index},
     range::search_region_each,
@@ -2620,7 +2620,11 @@ impl Index2DF32 {
     pub fn search(&self, query: Box2D) -> Vec<usize> {
         let q = Box2DF32::from_box2d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits::<true>(|b| b.overlaps(q), |b| q.contains(b), |i, _| out.push(i));
+        self.collect_hits::<MASK_PAYS_IN_2D>(
+            |b| b.overlaps(q),
+            |b| q.contains(b),
+            |i, _| out.push(i),
+        );
         out
     }
 
@@ -2662,7 +2666,11 @@ impl Index2DF32 {
     pub fn count(&self, query: Box2D) -> usize {
         let q = Box2DF32::from_box2d_inward(query);
         let mut count = 0usize;
-        self.collect_hits::<true>(|b| b.overlaps(q), |b| q.contains(b), |_, _| count += 1);
+        self.collect_hits::<MASK_PAYS_IN_2D>(
+            |b| b.overlaps(q),
+            |b| q.contains(b),
+            |_, _| count += 1,
+        );
         count
     }
 

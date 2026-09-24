@@ -25,6 +25,10 @@ on:
         description: Space-separated bench targets
         required: true
         default: paired_precision paired_mask_forms paired_simd_search paired_simd_count paired_within paired_raycast_prune paired_aggregate
+      require_cpu:
+        description: Run the benches only if the CPU model contains this (e.g. 9V74); any other machine describes itself and stops
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -38,6 +42,7 @@ jobs:
     # `${{ }}` inside a script, so an input cannot turn into a command.
     env:
       BENCHES: ${{ inputs.benches }}
+      REQUIRE_CPU: ${{ inputs.require_cpu }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -47,7 +52,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: bench-${{ inputs.runner }}
+      # `ubuntu-latest` draws from a mixed pool (EPYC 9V74 = Zen 4 and EPYC
+      # 7763 = Zen 3 so far), so a question about one CPU sets `require_cpu`
+      # and dispatches a few runs: the others stop here, after a minute.
       - name: Describe the machine
+        id: describe
         run: |
           mkdir -p bench-out
           {
@@ -57,8 +66,14 @@ jobs:
             echo
             lscpu
           } | tee bench-out/machine.txt
+          model=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')
+          if [ -n "$REQUIRE_CPU" ] && ! printf '%s' "$model" | grep -qF -- "$REQUIRE_CPU"; then
+            echo "::notice::benches skipped: '$model' does not contain '$REQUIRE_CPU'"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       # Build everything first so compilation never overlaps a timed run.
       - name: Build benches
+        if: steps.describe.outputs.skip != 'true'
         run: |
           args=()
           for b in $BENCHES; do args+=(--bench "$b"); done
@@ -67,6 +82,7 @@ jobs:
       # the OS tool does it. Core 1 keeps the run off core 0, where the runner
       # agent lives.
       - name: Run benches
+        if: steps.describe.outputs.skip != 'true'
         run: |
           for b in $BENCHES; do
             echo "::group::$b"

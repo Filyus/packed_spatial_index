@@ -26,7 +26,7 @@ on:
         required: true
         default: paired_precision paired_mask_forms paired_simd_search paired_simd_count paired_within paired_raycast_prune paired_aggregate
       require_cpu:
-        description: Run the benches only if the CPU model contains this (e.g. 9V74); any other machine describes itself and stops
+        description: Run the benches only if every word here is a word of lscpu's output, model name or flags (e.g. "9V74 avx512f"); any other machine describes itself and stops
         required: false
         default: ""
 
@@ -52,9 +52,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: bench-${{ inputs.runner }}
-      # `ubuntu-latest` draws from a mixed pool (EPYC 9V74 = Zen 4 and EPYC
-      # 7763 = Zen 3 so far), so a question about one CPU sets `require_cpu`
-      # and dispatches a few runs: the others stop here, after a minute.
+      # `ubuntu-latest` draws from a mixed pool (EPYC 7763 = Zen 3 mostly, EPYC
+      # 9V74 = Zen 4 sometimes), and the VM may hide AVX-512 even on a Zen 4:
+      # one 9V74 listed avx512f, another did not. A question about one CPU and
+      # ISA sets `require_cpu` (say "9V74 avx512f") and dispatches a few runs;
+      # the others stop here, after a minute.
       - name: Describe the machine
         id: describe
         run: |
@@ -66,11 +68,14 @@ jobs:
             echo
             lscpu
           } | tee bench-out/machine.txt
-          model=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')
-          if [ -n "$REQUIRE_CPU" ] && ! printf '%s' "$model" | grep -qF -- "$REQUIRE_CPU"; then
-            echo "::notice::benches skipped: '$model' does not contain '$REQUIRE_CPU'"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
+          for word in $REQUIRE_CPU; do
+            if ! lscpu | grep -qwF -- "$word"; then
+              model=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')
+              echo "::notice::benches skipped: '$model' lacks '$word'"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
       # Build everything first so compilation never overlaps a timed run.
       - name: Build benches
         if: steps.describe.outputs.skip != 'true'

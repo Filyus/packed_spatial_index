@@ -25,6 +25,19 @@ All notable changes to this crate are documented here.
   1.6×, 2D `count` 2.6×, 3D 1.1–1.2× on the largest windows measured); small
   windows pay 4–10% for the extra test per surviving child.
 
+### Documentation
+
+- **Speed claims that depend on the CPU now name the CPU.** The guide credited
+  the SIMD indexes with 1.6–1.9× over the scalar ones on AVX-512, holding on
+  broad queries. Re-measured, that is a Zen 5 figure for small 2D windows and
+  large 3D ones. On large 2D windows the lead fades as the index grows; a Zen 4
+  gives ~1.6× on small windows and a tie on large ones; a Neoverse N2 stays
+  within 10% of the scalar index either way. The scalar `f32` indexes,
+  documented as ~30% slower than `f64`, take 1.0–2.8× its time; `count` on the
+  SIMD `f32` indexes takes 1.6–5.8×. `docs/performance.md` gains a section with
+  the four range-search frontends side by side and the SIMD kernels on each
+  machine; `benches/paired_precision.rs` measures it anywhere.
+
 ## [0.32.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.31.0...psi-v0.32.0) - 2026-09-24
 
 ### Persistence

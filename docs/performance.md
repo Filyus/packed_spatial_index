@@ -4,8 +4,11 @@ Benchmark results and how to reproduce them. See the
 [README](https://github.com/Filyus/packed_spatial_index#readme) for the API
 overview.
 
-Numbers are from one machine and depend on hardware and workload, so treat them as
-relative, not absolute. Single-thread rows are measured with the benchmark thread
+Numbers are from one machine, a Zen 5, unless a section names another. They
+depend on hardware and workload, so treat them as relative, not absolute; how
+far they move between processors is measured in
+[the four frontends, by CPU](#the-four-range-search-frontends-by-cpu).
+Single-thread rows are measured with the benchmark thread
 pinned to one performance core (`BENCH_PIN_CORE`, see [Reproducing](#reproducing));
 parallel rows run unpinned so the rayon workers can spread across cores.
 
@@ -203,24 +206,16 @@ most of the narrowing of the SIMD indexes' lead on range search. The ray
 predicate is a slab test rather than a box overlap, so it sits between the cheap
 and the expensive end: 2D gains clearly, 3D lands within drift.
 
-The scalar `Index2DF32` / `Index3DF32` collect forms are the exception, and
-the 4–12% once credited to the mask there came from the new collect traversal
-around it (one packed stack word, no callback), measured on narrow windows only.
-Timed in isolation (`benches/paired_mask_forms.rs`), the f32 mask is neutral on
-small windows and loses on wide ones on every machine tried. The bigger finding
-was underneath: those forms had no contained-subtree fast path at all, so a
-wide window tested every leaf inside it. With it (the flag the `f64` indexes
-already carry), on 100k boxes, Zen 5, against the build before:
-
-| scalar f32, window | small | mid | large |
-| --- | ---: | ---: | ---: |
-| 2D `search` | 1.04 | 0.99 | 0.61 |
-| 2D `count` | 1.02 | 0.94 | 0.39 |
-| 3D `search` | 1.08 | 1.02 | 0.92 |
-| 3D `count` | 1.10 | 0.99 | 0.82 |
-
-A small window pays for one more test per surviving child and almost never
-finds a node to cover — the same trade the `f64` indexes made.
+The scalar `Index2DF32` / `Index3DF32` collect forms are the exception. The
+4–12% once credited to the mask there came from the collect traversal around
+it (one packed stack word, no callback), measured on narrow windows only. Timed
+on its own (`benches/paired_mask_forms.rs`), the f32 mask stays within a few
+percent of the per-child branch on x86 — a Zen 5 loses up to 8% with it on mid
+and large 2D windows, a Zen 4 gains 6% on large ones, 3D is a draw — and in 2D
+it loses 2–10% on a Neoverse N2, so 2D on aarch64 does without it. These forms
+skip a subtree the window covers, like the `f64` indexes: its leaf range is
+emitted without a test per item. A small window pays one more test per
+surviving child for a node it almost never gets to cover.
 
 The spatial join is where the mask pays most. `join` expands one node against one
 box at a time, and along the other tree's boxes that per-child test is 50/50 far
@@ -350,8 +345,8 @@ just copy the contiguous index range) and everything smaller stays ahead. On
 AVX-512 a masked compress-store collects the matching leaf indices in one
 instruction, widening the SIMD lead on dense mid-to-large windows (e.g. the 3D
 flat-Z batch above, and the `large` / `thin slab` rows here). Workload: 100,000
-boxes over a 10,000-wide space, 1,000 query boxes per window class. Lower is
-better.
+boxes over a 10,000-wide space, 1,000 query boxes per window class, on a Zen 5
+built with `-C target-cpu=native`. Lower is better.
 
 The window classes also separate the two halves of the traversal. The `large`
 and `full extent` rows are almost entirely covered-range copying, so the
@@ -412,8 +407,10 @@ run, `search_into` (dispatching to AVX-512 on the Zen5 box) is about **half** th
 `wide` tier's time on small and large windows alike, and the AVX2 tier about
 two thirds of it; on a full-extent scan all three converge, because the
 contained-subtree shortcut does the work and the kernel barely matters. So the
-shape above is a 5% slice of the slowest tier. It is still the right default for
-aarch64 and for pre-AVX2 x86, which is where that tier is the whole story.
+shape above is a 5% slice of the slowest tier. On aarch64, where that tier is
+the whole story, it does not buy even that: on a Neoverse N2 mask-first against
+per-4-lane measured 0.98–1.03 in 2D and 0.98–1.02 in 3D, a tie. It ships there
+as a harmless default rather than a measured win; pre-AVX2 x86 is unmeasured.
 
 ### The same shape in the intrinsic tiers: refuted
 
@@ -728,6 +725,62 @@ the kernel: in pure scalar (no `simd` feature) `f32` is only modestly ahead of
 other benefit is size — half the payload bytes on disk and over the wire.
 Reproduce with `cargo bench --bench raytriangle3d_bench --features simd`.
 
+## The four range-search frontends, by CPU
+
+What the SIMD frontends and compact `f32` storage buy depends on the processor
+more than anything else on this page, so every number here names its machine.
+`benches/paired_precision.rs` puts `Index*`, `Index*F32`, `SimdIndex*` and
+`SimdIndex*F32` on the same boxes and windows in one binary, interleaved, with
+every arm divided by the scalar `f64` index. Run it where the answer matters:
+
+```bash
+BENCH_PIN_CORE=8 cargo bench --features simd,f32-storage --bench paired_precision
+```
+
+On a Zen 5 (AVX-512 at full width), `search` time relative to the scalar `f64`
+index — lower is faster. Uniform boxes over a 10 000-unit extent; small windows
+are 10–200 units wide in 2D and 10–300 in 3D, large ones 2 000–5 000; "all"
+covers the whole index:
+
+| frontend, items | 2D small | 2D large | 2D all | 3D small | 3D large | 3D all |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `SimdIndex*`, 100k | 0.65 | 0.73 | 0.99 | 0.98 | 0.52 | 0.99 |
+| `SimdIndex*`, 1M | 0.72 | 1.01 | 1.00 | 0.89 | 0.64 | 1.00 |
+| `SimdIndex*F32`, 100k | 0.62 | 0.64 | 0.99 | 0.82 | 0.38 | 1.02 |
+| `SimdIndex*F32`, 1M | 0.59 | 0.93 | 1.00 | 0.59 | 0.41 | 1.02 |
+| `Index*F32`, 100k | 1.95 | 1.92 | 14.1 | 2.82 | 1.48 | 15.0 |
+| `Index*F32`, 1M | 1.57 | 1.37 | 2.99 | 1.12 | 0.97 | 3.37 |
+
+- The SIMD `f64` index leads on small 2D windows and on large 3D ones. It ties
+  wherever copying a covered subtree does the work. On small 3D windows, which
+  here return almost nothing to collect, it gains little.
+- `SimdIndex*F32` is the fastest frontend on every small and large window: an
+  AVX-512 chunk holds 16 of its boxes against 8 `f64` ones, at half the bytes.
+- The scalar `f32` index trades speed for memory. It emits a covered subtree
+  one item at a time where the `f64` index copies the range, which is why a
+  window over everything costs 3–15× the `f64` time.
+- `count` costs the `f32` frontends more than `search` does. On windows short
+  of everything it takes 1.05–3.1× the `f64` count on the scalar index and
+  1.6–5.8× on `SimdIndex*F32`, whose `count` runs through the visitor and tests
+  every candidate.
+
+The SIMD kernels are where machines part ways. `SimdIndex2D::search_into`
+against `Index2D::search_into`, both into reused buffers, 100k boxes
+(`benches/paired_simd_search.rs`, the Zen 4 and Neoverse N2 columns from
+`.github/workflows/bench-arm.yml` on GitHub's hosted runners):
+
+| 2D window | Zen 5 | Zen 4 | Neoverse N2 |
+| --- | ---: | ---: | ---: |
+| small | 0.54 | 0.64 | 0.95 |
+| large | 0.68 | 0.97 | 1.10 |
+| all | 1.00 | 1.01 | 1.01 |
+
+A Zen 4 keeps most of the lead on small windows and loses it on large ones.
+The N2 has no AVX-512 or AVX2: its SIMD index runs the portable `wide` tier on
+NEON and stays within 10% of the scalar index either way, 0.97 / 0.91 / 0.99 in
+3D. A hosted runner is a shared VM, so only these ratios, taken inside one
+binary, carry over; its microseconds do not.
+
 ## f32 storage vs f64
 
 The `coord_precision` suite compares compact f32 storage with f64 storage.
@@ -753,16 +806,13 @@ Quick selector:
   `StreamIndex2DF32` / `StreamIndex3DF32` streams at half the box bytes over the
   wire. Same hits as `SimdIndex2DF32`, plus `search_exact`.
 
-  Its collect forms take the branch-free node test too: `search` fell 4-12% and
-  `count` 6-8% on 100 000 boxes, with the early-exit forms flat, so the ordering
-  below is unchanged.
-
-  It is the memory choice, not the speed one: on a 1M-box spot check range
-  queries ran ~30% slower than `Index3D`, `search_exact` ~45% slower, and the
-  build ~1.7x slower from the rounding. The gap is not per-node widening — the
-  query is rounded onto the `f32` grid once, so each node compares `f32` to
-  `f32` and the hits are bit-identical to the `f64` test — it is the extra
-  conservative candidates the outward-rounded boxes admit.
+  It is the memory choice, not the speed one: its range queries take 1.0–2.8×
+  the `f64` index's time on a Zen 5 (see
+  [the four frontends](#the-four-range-search-frontends-by-cpu)); the build
+  runs ~1.7× slower from the rounding (a 1M-box spot check). The gap is not
+  per-node widening — the query is rounded onto the `f32` grid once, so each
+  node compares `f32` to `f32` — nor the extra conservative candidates the
+  outward-rounded boxes admit, which come to a few per ten million hits there.
 
 | Range query | Items | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: | ---: |
@@ -791,15 +841,16 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
   generated inputs, and `Index2D` build is faster as well;
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
   is faster when Z meaningfully prunes the tree;
-- the SIMD indexes' lead over the scalar ones on range search narrowed to
-  1.3–1.5× once the scalar collect paths stopped branching per child; the
-  scalar path is now the one to beat on sparse queries too;
+- the SIMD indexes' lead over the scalar ones on range search depends on the
+  CPU: up to 1.8× on a Zen 5, up to 1.6× on small windows but none on large
+  ones on a Zen 4, within 10% either way on a Neoverse N2;
 - the branch-free node test behind those collect numbers applies only where the
   path has no early exit *and* the per-child predicate is cheap; the callback
   forms, the shape regions and the radius queries measured worse with it and
   keep their branching traversal;
-- f32 storage halves box memory; exact callbacks trade source-box lookup for
-  exact results;
+- f32 storage halves box memory; the SIMD `f32` index is also the fastest range
+  search, while the scalar one takes 1.0–2.8× the `f64` index's search time on
+  a Zen 5; exact callbacks trade source-box lookup for exact results;
 - SIMD persistence uses the same canonical bytes as scalar persistence; it pays
   an SoA gather/scatter cost but avoids a second file format;
 - `any` is often much faster than collecting full result sets when all you need
@@ -857,7 +908,9 @@ microarchitecture level for binaries you distribute.
 
 The explicit SIMD search / visit / raycast kernels are selected at runtime
 (`is_x86_feature_detected!`) and dispatch **AVX-512 → AVX2 → SSE2**: AVX-512 uses
-`VPCOMPRESSQ` result collection (~1.6–1.9× over scalar), the AVX2 tier uses a
+`VPCOMPRESSQ` result collection (up to ~1.8× over the scalar index on a Zen 5,
+less on a Zen 4; see
+[the four frontends](#the-four-range-search-frontends-by-cpu)), the AVX2 tier uses a
 [left-pack](internals/simd.md) emulation (~1.3–1.6× over the SSE2 fallback on
 AVX2-only CPUs), and SSE2 is the floor. So these kernels do **not** need
 `target-cpu` to pick the right width. The flag's remaining benefit is widening

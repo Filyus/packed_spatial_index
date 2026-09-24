@@ -90,7 +90,10 @@ out.set_len(out.len() + mask.count_ones() as usize); // advance by popcount
 ```
 
 This removed the large-N inversion: SIMD range search went from trailing the
-scalar index to **~1.6–1.9× faster** across 100k–1M; a dense all-hits raycast
+scalar index to **~1.6–1.9× faster** across 100k–1M (against the scalar index
+of the time, whose collect paths have since gone branch-free; today's figures
+by machine are in [performance.md](../performance.md#the-four-range-search-frontends-by-cpu));
+a dense all-hits raycast
 dropped from ~29.5 µs to ~17.1 µs at 1M (**1.73×**). It's used for AVX-512 range
 search and all-hits raycast (the raycast path a later addition).
 

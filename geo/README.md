@@ -53,7 +53,7 @@ Requires Rust 1.89 or newer.
 
 ```toml
 [dependencies]
-packed_spatial_index_geo = "0.28"
+packed_spatial_index_geo = "0.29"
 ```
 
 ### Features
@@ -76,7 +76,7 @@ feature so `arrow` / `parquet` never enter the build:
 
 ```toml
 [dependencies]
-packed_spatial_index_geo = { version = "0.28", default-features = false, features = ["async"] }
+packed_spatial_index_geo = { version = "0.29", default-features = false, features = ["async"] }
 ```
 
 That leaves the crate query-only — [`open_geo_index`][open_geo_index] /
@@ -142,6 +142,7 @@ reattach fresh range readers without rereading the container directory or
 | Cache and reattach metadata | [`GeoArtifactDirectory`][GeoArtifactDirectory], [`into_directory`][into_directory] / [`from_directory`][from_directory] |
 | Entry-id search | [`search_entry_ids`][artifact_search_entry_ids] |
 | Count matches without materializing | [`count_entries`][artifact_count_entries], `count_entries_async` (`async` feature) |
+| Estimate before querying | `estimate_entries`, `estimate_entries_async` (`async` feature) — a bracket from node boxes, read-free at or above `directory_floor` |
 | Payload search | [`GeoArtifactIndex2D::search_matches`][search_matches], [`GeoMatch`][GeoMatch] |
 | Feature-level payload search | [`GeoArtifactIndex2D::search_features`][artifact_search_features], [`GeoArtifactIndex2D::search_feature_matches`][artifact_search_feature_matches] |
 | Paged payload reads | [`search_match_headers`][search_match_headers], `search_match_headers_page`, [`search_match_headers_page_async`][search_match_headers_page_async], [`search_payload_headers_page_async`][search_payload_headers_page_async], [`fetch_matches`][fetch_matches] |
@@ -152,7 +153,8 @@ reattach fresh range readers without rereading the container directory or
 Enable the `async` feature to open the same artifacts through an
 `AsyncRangeReader`. The async surface mirrors the synchronous one on both
 dimensions: window, polygon, and 3D frustum candidate queries, payload-returning
-`search_matches_async`, counting through `count_entries_async`, and the whole
+`search_matches_async`, counting through `count_entries_async`, estimating
+through `estimate_entries_async`, and the whole
 header family — `search_match_headers_async`, `search_match_headers_page_async`,
 `fetch_matches_async`, and the `GeoPayloadHeader` variants. When
 each request needs a fresh range reader — a server or worker — split an opened

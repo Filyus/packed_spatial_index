@@ -97,6 +97,17 @@ impl Box2DF32 {
             && self.max_y >= other.min_y
     }
 
+    /// [`overlaps`](Self::overlaps) with the four comparisons joined by `&`,
+    /// not `&&`: no branch per comparison, so a loop of these over column
+    /// slices vectorizes, as `Box2D::overlaps` does in the `f64` mask.
+    #[inline]
+    pub(crate) fn overlaps_branchless(self, other: Self) -> bool {
+        (self.min_x <= other.max_x)
+            & (self.max_x >= other.min_x)
+            & (self.min_y <= other.max_y)
+            & (self.max_y >= other.min_y)
+    }
+
     #[inline]
     pub(crate) fn definitely_overlaps_exact(self, query: Box2D) -> bool {
         (self.min_x.next_up() as f64 <= query.max_x)
@@ -221,6 +232,19 @@ impl Box3DF32 {
             && self.max_y >= other.min_y
             && self.min_z <= other.max_z
             && self.max_z >= other.min_z
+    }
+
+    /// [`overlaps`](Self::overlaps) with the six comparisons joined by `&`,
+    /// not `&&`: no branch per comparison, so a loop of these over column
+    /// slices vectorizes, as `Box3D::overlaps` does in the `f64` mask.
+    #[inline]
+    pub(crate) fn overlaps_branchless(self, other: Self) -> bool {
+        (self.min_x <= other.max_x)
+            & (self.max_x >= other.min_x)
+            & (self.min_y <= other.max_y)
+            & (self.max_y >= other.min_y)
+            & (self.min_z <= other.max_z)
+            & (self.max_z >= other.min_z)
     }
 
     #[inline]

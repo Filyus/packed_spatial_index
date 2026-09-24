@@ -2673,7 +2673,11 @@ impl Index3DF32 {
     pub fn search(&self, query: Box3D) -> Vec<usize> {
         let q = Box3DF32::from_box3d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits::<true>(|b| b.overlaps(q), |b| q.contains(b), |i, _| out.push(i));
+        self.collect_hits::<true>(
+            |b| b.overlaps_branchless(q),
+            |b| q.contains(b),
+            |i, _| out.push(i),
+        );
         out
     }
 
@@ -2715,7 +2719,11 @@ impl Index3DF32 {
     pub fn count(&self, query: Box3D) -> usize {
         let q = Box3DF32::from_box3d_inward(query);
         let mut count = 0usize;
-        self.collect_hits::<true>(|b| b.overlaps(q), |b| q.contains(b), |_, _| count += 1);
+        self.collect_hits::<true>(
+            |b| b.overlaps_branchless(q),
+            |b| q.contains(b),
+            |_, _| count += 1,
+        );
         count
     }
 
@@ -2804,7 +2812,11 @@ impl Index3DF32 {
     pub fn search_forced<const MASKED: bool>(&self, query: Box3D) -> Vec<usize> {
         let q = Box3DF32::from_box3d_inward(query);
         let mut out = Vec::new();
-        self.collect_hits::<MASKED>(|b| b.overlaps(q), |b| q.contains(b), |i, _| out.push(i));
+        self.collect_hits::<MASKED>(
+            |b| b.overlaps_branchless(q),
+            |b| q.contains(b),
+            |i, _| out.push(i),
+        );
         out
     }
 
@@ -2882,27 +2894,62 @@ impl Index3DF32 {
         let mut start = node_index;
         while start < end {
             let stop = (start + MASK_CHUNK).min(end);
-            let mut take = |pos: usize| {
-                let index = self.indices[pos];
+            // The chunk's columns sliced once: the test loop below then reads
+            // them through `zip` with no per-child bounds check, which is what
+            // lets LLVM vectorize it (reading `box_f32_at(pos)` per child kept
+            // it scalar, kb:observation/530).
+            let min_xs = &self.min_xs[start..stop];
+            let min_ys = &self.min_ys[start..stop];
+            let min_zs = &self.min_zs[start..stop];
+            let max_xs = &self.max_xs[start..stop];
+            let max_ys = &self.max_ys[start..stop];
+            let max_zs = &self.max_zs[start..stop];
+            let indices = &self.indices[start..stop];
+            let boxes = || {
+                min_xs
+                    .iter()
+                    .zip(min_ys)
+                    .zip(min_zs)
+                    .zip(max_xs)
+                    .zip(max_ys)
+                    .zip(max_zs)
+                    .map(
+                        |(((((&min_x, &min_y), &min_z), &max_x), &max_y), &max_z)| Box3DF32 {
+                            min_x,
+                            min_y,
+                            min_z,
+                            max_x,
+                            max_y,
+                            max_z,
+                        },
+                    )
+            };
+            let mut take = |i: usize, b: Box3DF32| {
+                let index = indices[i];
                 if is_leaf {
-                    emit(index, self.box_f32_at(pos));
+                    emit(index, b);
                 } else {
-                    let flag = usize::from(covers(self.box_f32_at(pos))) * frame::CONTAINED;
+                    let flag = usize::from(covers(b)) * frame::CONTAINED;
                     stack.push(frame::pack(index, child_level) | flag);
                 }
             };
             if MASKED {
                 let mut mask = 0u64;
-                for (i, pos) in (start..stop).enumerate() {
-                    mask |= u64::from(hit(self.box_f32_at(pos))) << i;
+                for (i, b) in boxes().enumerate() {
+                    mask |= u64::from(hit(b)) << i;
                 }
-                for_each_hit(mask, |i| take(start + i));
+                for_each_hit(mask, |i| {
+                    take(
+                        i,
+                        Box3DF32::from_soa(min_xs, min_ys, min_zs, max_xs, max_ys, max_zs, i),
+                    )
+                });
             } else {
                 // The per-child branch the mask replaced, for timing the two
                 // in one binary (`benches/paired_mask_forms.rs`).
-                for pos in start..stop {
-                    if hit(self.box_f32_at(pos)) {
-                        take(pos);
+                for (i, b) in boxes().enumerate() {
+                    if hit(b) {
+                        take(i, b);
                     }
                 }
             }

@@ -19,6 +19,14 @@ All notable changes to this crate are documented here.
 
 ### Performance
 
+- **The scalar f32 indexes test a node's children in vector lanes.**
+  `Index2DF32` and `Index3DF32` `search` and `count` read a node's children
+  through column slices and a branch-free overlap test, so the child loop now
+  vectorizes the way the `f64` mask does; before, it read each child through
+  four (six in 3D) bounds-checked lookups joined by `&&` and stayed scalar. On
+  an Intel Xeon cloud VM (family 6, model 207) small windows take 0.36–0.50× the
+  time they did and large ones 0.48–0.77×: the scalar f32 indexes went from
+  1.7–3.1× the scalar `f64` index's time to 0.92–2.2×.
 - **2D radius queries on aarch64 keep the branching traversal.**
   `search_within_into` and `count_within` switch to a masked traversal once a
   query expects at least one hit — a threshold calibrated on x86, where the mask

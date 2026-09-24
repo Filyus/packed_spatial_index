@@ -8,7 +8,11 @@ mod prefix_chunk;
 mod tree_chunk;
 mod writer;
 
-pub(crate) use self::aggr_chunk::{TAG_AGGR, aggr_chunk_len, write_aggr_chunk};
+pub(crate) use self::aggr_chunk::TAG_AGGR;
+// Only the SoA serializers reach the writer through this path; `writer.rs`
+// imports it directly.
+#[cfg(feature = "simd")]
+pub(crate) use self::aggr_chunk::{aggr_chunk_len, write_aggr_chunk};
 use self::container::{find_chunk, parse_container};
 use crate::aggregates::{AggregatesView, parse_aggr_chunk};
 pub(crate) use container::{CHUNK_ENTRY_LEN, SUPERBLOCK_LEN, plan_container};

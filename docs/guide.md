@@ -967,13 +967,13 @@ exact range/KNN available when you pass your source boxes back. On AVX-512 the
 SIMD `f32` *rounded* range query is also **faster** than the f64 `SimdIndex`
 (~1.05–1.55× on a Zen 5 across 100k–1M boxes: half the box bytes plus a wider
 SIMD batch), so it is a win on speed and memory when the extra near-boundary
-hits are acceptable. `count` is the exception: on the SIMD `f32` indexes it
-still tests every candidate and runs 1.6–5.8× the scalar `f64` count's time.
+hits are acceptable. Its `count` is the fastest count too, 0.33–0.72× the
+scalar `f64` count's time on a Xeon, a Zen 4, a Zen 3 and a Neoverse N2.
 Prefer the `f64` indexes when you need *exact* results with many hits (the
 `f32` `*_exact` refinement pass is slower on broad queries) and for the fastest
-exact KNN. Note the *scalar* `f32` indexes (no `simd`) trade speed for memory —
-their range queries took 1.0–2.8× the scalar `f64` time on a Zen 5; the speed
-win is the SIMD `f32` path.
+exact KNN. The *scalar* `f32` indexes (no `simd`) halve the memory at about the
+scalar `f64` speed: `search` took 0.65–1.07× its time on the same four
+machines and `count` 0.87–1.41×.
 
 ## 3D
 

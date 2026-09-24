@@ -8,7 +8,7 @@
 //! NEON has no movemask -- applies to every other mask site too. Each path now
 //! keeps both forms behind a `const MASKED: bool`; the shipping callers pass
 //! the target's choice (`true`, except the `f64` 2D paths on aarch64 after this
-//! bench found them losing there), and the `*_forced` hooks timed here reach
+//! bench found them losing there). The `*_forced` hooks timed here reach
 //! both.
 //!
 //! Each group times one path: the branching form (the reference), the masked

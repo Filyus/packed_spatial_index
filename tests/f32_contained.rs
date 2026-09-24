@@ -1,8 +1,8 @@
-//! The scalar f32 `search` and `count`, and the SIMD f32 `count` (owned and
-//! view), take a subtree the query covers as its leaf range, without testing
-//! each item. That is only sound if a covered node
-//! implies every stored box under it passes the same overlap test the leaves
-//! would have run, including after rounding to f32. `visit` still tests every
+//! The scalar f32 `search` and `count` take a subtree the query covers as its
+//! leaf range without testing each item; so does the SIMD f32 `count` (owned
+//! and view). That is only sound if a covered node implies every stored box
+//! under it passes the same overlap test the leaves would have run, including
+//! after rounding to f32. `visit` still tests every
 //! leaf and never takes the shortcut, so it is the reference: the same set of
 //! items (its descent orders children differently, and the order is not part
 //! of the API), on coordinates f32 cannot represent and windows whose edges

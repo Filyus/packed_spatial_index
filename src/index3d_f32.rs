@@ -1139,8 +1139,8 @@ impl SimdIndex3DF32 {
     /// Count the items whose stored box overlaps `q` without collecting them,
     /// the f32 twin of the `f64` `count_simd_impl`: the root or any subtree the
     /// query covers adds its leaf range's length, a leaf node adds the popcount
-    /// of its overlap mask, and only the internal children a query edge cuts
-    /// are pushed. Portable `f32x8` lanes: a count has no leaf output to
+    /// of its overlap mask; only the internal children a query edge cuts are
+    /// pushed. Portable `f32x8` lanes: a count has no leaf output to
     /// compress, so the intrinsic tiers would buy nothing here.
     fn count_wide(&self, q: Box3DF32, stack: &mut Vec<usize>) -> usize {
         use wide::f32x8;

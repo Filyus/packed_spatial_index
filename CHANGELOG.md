@@ -10,11 +10,13 @@ All notable changes to this crate are documented here.
   It ran as `visit` with a counter, testing every item even inside a subtree
   the window covers. It now walks the tree the way the `f64` `count` does: a
   covered subtree adds its leaf range's length, a leaf node adds the popcount
-  of its eight-lane overlap mask, and a window that covers the root answers at
+  of its eight-lane overlap mask. A window that covers the root answers at
   once. The views (`SimdIndex2DF32View` / `SimdIndex3DF32View`) take the same
   shortcuts with a per-item test. On an Intel Xeon cloud VM (family 6, model
   207) owned `count` takes 0.10–0.26× the time it did on windows, going from
   2.4–6.4× the scalar `f64` `count` to 0.55–0.62×; the views take 0.48–0.72×.
+  On a Zen 4, a Zen 3 and a Neoverse N2 owned `count` went from 1.4–6.4× to
+  0.50–0.72×.
 - **AVX-512 search and raycast collect hits in a register, so they no longer
   stall on Zen 4.** Every AVX-512 kernel — `SimdIndex2D` / `SimdIndex3D` and
   `SimdIndex2DF32` / `SimdIndex3DF32` search, all-hits raycast in 2D and 3D —
@@ -30,7 +32,7 @@ All notable changes to this crate are documented here.
 
 - **The scalar f32 indexes hand a covered subtree over whole.** `Index2DF32`
   and `Index3DF32` `search` append a subtree the window covers with one
-  `extend_from_slice`, and `count` adds its length; before, both walked it
+  `extend_from_slice`; `count` adds its length. Before, both walked it
   item by item and read each item's box for nothing. On an Intel Xeon cloud VM
   (family 6, model 207) large windows take 0.43–0.94× the time and a
   full-extent `search` 0.12–0.15×; a full-extent `count` drops from ~370× the
@@ -42,7 +44,11 @@ All notable changes to this crate are documented here.
   four (six in 3D) bounds-checked lookups joined by `&&` and stayed scalar. On
   an Intel Xeon cloud VM (family 6, model 207) small windows take 0.36–0.50× the
   time they did and large ones 0.48–0.77×: the scalar f32 indexes went from
-  1.7–3.1× the scalar `f64` index's time to 0.92–2.2×.
+  1.7–3.1× the scalar `f64` index's time to 0.92–2.2×. With the covered-subtree
+  entry above, scalar f32 `search` on windows takes 0.65–1.07× the scalar `f64`
+  index's time on that Xeon, an EPYC 9V74 (Zen 4), an EPYC 7763 (Zen 3) and a
+  Neoverse N2, where it took 1.3–2.9×; `count` takes 0.87–1.41×, from
+  1.4–3.1×.
 - **2D radius queries on aarch64 keep the branching traversal.**
   `search_within_into` and `count_within` switch to a masked traversal once a
   query expects at least one hit — a threshold calibrated on x86, where the mask
@@ -53,9 +59,9 @@ All notable changes to this crate are documented here.
   `Index2D` and `Index2DView` collect paths (`search`, `search_into`,
   `search_with`) fold child tests into a bitmask, which wins 10–27% on x86 but
   lost 3–17% on a Neoverse N2 on every window size. On aarch64 they now test
-  one child at a time; x86 keeps the mask, and 3D keeps it everywhere. The
+  one child at a time. x86 keeps the mask; 3D keeps it everywhere. The
   scalar `Index2DF32` keeps the mask on every target: once its child test
-  vectorized (below), the mask won 4–15% on the same N2.
+  vectorized (above), the mask won 4–15% on the same N2.
 - **The scalar f32 indexes skip subtrees a window covers.** `Index2DF32` and
   `Index3DF32` `search` and `count` now emit a subtree the query holds whole
   as its leaf range, without testing each item — the fast path the `f64`
@@ -73,8 +79,9 @@ All notable changes to this crate are documented here.
   SIMD fix above; the AVX2 tier (a Zen 3, or a Zen 4 whose VM hides AVX-512)
   ~1.3–1.6× and ~1.05×; a Neoverse N2 stays within 10% of the scalar index
   either way. The scalar `f32` indexes,
-  documented as ~30% slower than `f64`, take 1.0–2.8× its time; `count` on the
-  SIMD `f32` indexes takes 1.6–5.8×. `docs/performance.md` gains a section with
+  documented as ~30% slower than `f64`, took 1.0–2.8× its time on a Zen 5 and
+  `count` on the SIMD `f32` indexes 1.6–5.8×, before the SIMD and Performance
+  entries above; the docs now give the numbers after them. `docs/performance.md` gains a section with
   the four range-search frontends side by side and the SIMD kernels on each
   machine; `benches/paired_precision.rs` measures it anywhere.
 

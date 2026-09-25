@@ -3572,9 +3572,31 @@ impl SimdIndex2DView<'_> {
     }
 
     /// Return `true` when the ray segment enters at least one item's box.
-    /// See [`Index2D::raycast_any`](crate::Index2D::raycast_any); here it stops
-    /// [`raycast_each`](Self::raycast_each) at its first hit.
+    ///
+    /// See [`Index2D::raycast_any`](crate::Index2D::raycast_any): a depth-first
+    /// descent that returns at the first leaf box the segment enters. The view
+    /// reads interleaved records from its bytes, so the slab test is the scalar
+    /// hit mask [`Index2DView::raycast_any`](crate::Index2DView::raycast_any)
+    /// runs, not the SoA vector kernel of the owned index.
     pub fn raycast_any(&self, ray: Ray2D) -> bool {
+        let mut stack = crate::traversal::ScratchStack::take();
+        crate::raycast::any_hit::<true>(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            self.level_count,
+            |level| self.level_bound_unchecked(level),
+            |pos| self.index_at(pos),
+            |pos| ray.intersects_box(self.box_at(pos)),
+            &mut stack,
+        )
+    }
+
+    /// The `raycast_any` of 0.33.0: [`raycast_each`](Self::raycast_each) stopped
+    /// at its first hit. Kept so the depth-first form can be timed against it in
+    /// one binary.
+    #[doc(hidden)]
+    pub fn raycast_any_queue(&self, ray: Ray2D) -> bool {
         self.raycast_each(ray, |_, _| ControlFlow::Break(()))
             .is_break()
     }

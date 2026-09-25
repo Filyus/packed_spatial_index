@@ -7,6 +7,7 @@ use crate::leftpack::{compress8, leftpack4};
 use crate::{
     config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
     geometry::Box3D,
+    index2d::frame,
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace},
     ray::{Ray3D, inclusive_ray_cutoff},
     traversal::{SearchWorkspace, upper_bound_level},
@@ -860,11 +861,270 @@ impl SimdIndex3D {
 
 impl SimdIndex3D {
     /// Return `true` when the ray segment enters at least one item's box.
-    /// See [`Index3D::raycast_any`](crate::Index3D::raycast_any); here it stops
-    /// [`raycast_each`](Self::raycast_each) at its first hit.
+    ///
+    /// See [`Index3D::raycast_any`](crate::Index3D::raycast_any): no order is
+    /// promised, so it descends depth-first on a stack and returns at the first
+    /// leaf box the segment enters. The slab test is vectorized as in
+    /// [`raycast`](Self::raycast): AVX-512 (eight children at a time) or AVX2
+    /// for non-degenerate rays where available, otherwise `wide::f64x4`;
+    /// axis-parallel rays always take the `wide` path, whose `select` kernel is
+    /// NaN-safe at box faces.
     pub fn raycast_any(&self, ray: Ray3D) -> bool {
+        self.raycast_any_kernel::<2>(ray)
+    }
+
+    /// The `raycast_any` of 0.33.0: [`raycast_each`](Self::raycast_each) stopped
+    /// at its first hit. Kept so the depth-first form can be timed against it in
+    /// one binary.
+    #[doc(hidden)]
+    pub fn raycast_any_queue(&self, ray: Ray3D) -> bool {
         self.raycast_each(ray, |_, _| ControlFlow::Break(()))
             .is_break()
+    }
+
+    /// `raycast_any` capped at a slab kernel (doc-hidden; the shipped form is
+    /// `2`): `2` takes AVX-512, then AVX2, then `wide`, whichever the CPU has
+    /// first; `1` starts at AVX2; `0` is `wide` alone. An axis-parallel ray
+    /// always takes `wide`.
+    #[doc(hidden)]
+    pub fn raycast_any_kernel<const KERNEL: u8>(&self, ray: Ray3D) -> bool {
+        if self.num_items == 0
+            || ray.max_distance < 0.0
+            || ray.max_distance.is_nan()
+            || ray.has_non_finite_component()
+        {
+            return false;
+        }
+        let mut stack = crate::traversal::ScratchStack::take();
+        #[cfg(target_arch = "x86_64")]
+        {
+            if KERNEL >= 1 && !ray.has_zero_direction() {
+                if KERNEL >= 2 && std::is_x86_feature_detected!("avx512f") {
+                    // SAFETY: reached only after confirming avx512f is available.
+                    return unsafe { self.raycast_any_avx512(ray, &mut stack) };
+                }
+                if std::is_x86_feature_detected!("avx2") {
+                    // SAFETY: reached only after confirming avx2 is available.
+                    return unsafe { self.raycast_any_avx2(ray, &mut stack) };
+                }
+            }
+        }
+        self.raycast_any_wide(ray, &mut stack)
+    }
+
+    /// Depth-first any-hit descent. `test(pos)` slab-tests the `LANES` children
+    /// at `pos..pos + LANES` and returns one bit per hit; a node's remainder
+    /// past the last full group takes the scalar test. The caller has rejected
+    /// an empty index and a ray that can hit nothing.
+    #[inline(always)]
+    fn any_hit_lanes<const LANES: usize>(
+        &self,
+        ray: Ray3D,
+        stack: &mut Vec<usize>,
+        test: impl Fn(usize) -> u32,
+    ) -> bool {
+        stack.clear();
+        let mut node_index = self.min_xs.len() - 1;
+        let mut level = self.level_bounds.len() - 1;
+        loop {
+            let end = (node_index + self.node_size).min(self.level_bounds[level]);
+            let mut pos = node_index;
+            if node_index < self.num_items {
+                while pos + LANES <= end {
+                    if test(pos) != 0 {
+                        return true;
+                    }
+                    pos += LANES;
+                }
+                while pos < end {
+                    if ray.intersects_box(self.box_at_soa(pos)) {
+                        return true;
+                    }
+                    pos += 1;
+                }
+            } else {
+                let child_level = level - 1;
+                while pos + LANES <= end {
+                    let mut bits = test(pos);
+                    while bits != 0 {
+                        let k = bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        stack.push(frame::pack(self.indices[pos + k], child_level));
+                    }
+                    pos += LANES;
+                }
+                while pos < end {
+                    if ray.intersects_box(self.box_at_soa(pos)) {
+                        stack.push(frame::pack(self.indices[pos], child_level));
+                    }
+                    pos += 1;
+                }
+            }
+            match stack.pop() {
+                Some(f) => {
+                    node_index = frame::node(f);
+                    level = frame::level(f);
+                }
+                None => return false,
+            }
+        }
+    }
+
+    fn raycast_any_wide(&self, ray: Ray3D, stack: &mut Vec<usize>) -> bool {
+        let ox = f64x4::splat(ray.origin.x);
+        let oy = f64x4::splat(ray.origin.y);
+        let oz = f64x4::splat(ray.origin.z);
+        let ix = f64x4::splat(ray.inv_dir_x);
+        let iy = f64x4::splat(ray.inv_dir_y);
+        let iz = f64x4::splat(ray.inv_dir_z);
+        let zero = f64x4::splat(0.0);
+        let maxd = f64x4::splat(ray.max_distance);
+        let pos_inf = f64x4::splat(f64::INFINITY);
+        let neg_inf = f64x4::splat(f64::NEG_INFINITY);
+        // The zero-direction `select` of `raycast_collect_wide`.
+        let (zx, zy, zz) = (ray.dir_x == 0.0, ray.dir_y == 0.0, ray.dir_z == 0.0);
+        let axis = |mn: f64x4, mx: f64x4, o: f64x4, inv: f64x4, degenerate: bool| {
+            if degenerate {
+                let inside = mn.simd_le(o) & o.simd_le(mx);
+                (
+                    inside.select(neg_inf, pos_inf),
+                    inside.select(pos_inf, neg_inf),
+                )
+            } else {
+                let t1 = (mn - o) * inv;
+                let t2 = (mx - o) * inv;
+                (t1.fast_min(t2), t1.fast_max(t2))
+            }
+        };
+        self.any_hit_lanes::<4>(ray, stack, |pos| {
+            let (nx, fx) = axis(
+                load4(&self.min_xs, pos),
+                load4(&self.max_xs, pos),
+                ox,
+                ix,
+                zx,
+            );
+            let (ny, fy) = axis(
+                load4(&self.min_ys, pos),
+                load4(&self.max_ys, pos),
+                oy,
+                iy,
+                zy,
+            );
+            let (nz, fz) = axis(
+                load4(&self.min_zs, pos),
+                load4(&self.max_zs, pos),
+                oz,
+                iz,
+                zz,
+            );
+            let near = nx.fast_max(ny).fast_max(nz).fast_max(zero);
+            let far = fx.fast_min(fy).fast_min(fz).fast_min(maxd);
+            near.simd_le(far).to_bitmask()
+        })
+    }
+
+    /// AVX2 depth-first `raycast_any`, four children at a time. Only called
+    /// for non-degenerate rays, so the multiply-only slab is NaN-safe.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn raycast_any_avx2(&self, ray: Ray3D, stack: &mut Vec<usize>) -> bool {
+        use std::arch::x86_64::*;
+
+        let ox = _mm256_set1_pd(ray.origin.x);
+        let oy = _mm256_set1_pd(ray.origin.y);
+        let oz = _mm256_set1_pd(ray.origin.z);
+        let ix = _mm256_set1_pd(ray.inv_dir_x);
+        let iy = _mm256_set1_pd(ray.inv_dir_y);
+        let iz = _mm256_set1_pd(ray.inv_dir_z);
+        let zero = _mm256_setzero_pd();
+        let maxd = _mm256_set1_pd(ray.max_distance);
+        self.any_hit_lanes::<4>(ray, stack, |pos| {
+            let columns = [
+                &self.min_xs[pos..pos + 4],
+                &self.max_xs[pos..pos + 4],
+                &self.min_ys[pos..pos + 4],
+                &self.max_ys[pos..pos + 4],
+                &self.min_zs[pos..pos + 4],
+                &self.max_zs[pos..pos + 4],
+            ];
+            // SAFETY: each column slice is exactly four `f64`s long.
+            let [mnx, mxx, mny, mxy, mnz, mxz] =
+                columns.map(|c| unsafe { _mm256_loadu_pd(c.as_ptr()) });
+            let t1x = _mm256_mul_pd(_mm256_sub_pd(mnx, ox), ix);
+            let t2x = _mm256_mul_pd(_mm256_sub_pd(mxx, ox), ix);
+            let t1y = _mm256_mul_pd(_mm256_sub_pd(mny, oy), iy);
+            let t2y = _mm256_mul_pd(_mm256_sub_pd(mxy, oy), iy);
+            let t1z = _mm256_mul_pd(_mm256_sub_pd(mnz, oz), iz);
+            let t2z = _mm256_mul_pd(_mm256_sub_pd(mxz, oz), iz);
+            let near = _mm256_max_pd(
+                _mm256_max_pd(
+                    _mm256_max_pd(_mm256_min_pd(t1x, t2x), _mm256_min_pd(t1y, t2y)),
+                    _mm256_min_pd(t1z, t2z),
+                ),
+                zero,
+            );
+            let far = _mm256_min_pd(
+                _mm256_min_pd(
+                    _mm256_min_pd(_mm256_max_pd(t1x, t2x), _mm256_max_pd(t1y, t2y)),
+                    _mm256_max_pd(t1z, t2z),
+                ),
+                maxd,
+            );
+            _mm256_movemask_pd(_mm256_cmp_pd::<_CMP_LE_OQ>(near, far)) as u32
+        })
+    }
+
+    /// AVX-512 depth-first `raycast_any`, eight children at a time. Only called
+    /// for non-degenerate rays, so the multiply-only slab is NaN-safe.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f")]
+    unsafe fn raycast_any_avx512(&self, ray: Ray3D, stack: &mut Vec<usize>) -> bool {
+        use std::arch::x86_64::*;
+
+        let ox = _mm512_set1_pd(ray.origin.x);
+        let oy = _mm512_set1_pd(ray.origin.y);
+        let oz = _mm512_set1_pd(ray.origin.z);
+        let ix = _mm512_set1_pd(ray.inv_dir_x);
+        let iy = _mm512_set1_pd(ray.inv_dir_y);
+        let iz = _mm512_set1_pd(ray.inv_dir_z);
+        let zero = _mm512_setzero_pd();
+        let maxd = _mm512_set1_pd(ray.max_distance);
+        self.any_hit_lanes::<8>(ray, stack, |pos| {
+            // The descent calls this only with `pos + 8 <= end <= len`.
+            let columns = [
+                &self.min_xs[pos..pos + 8],
+                &self.max_xs[pos..pos + 8],
+                &self.min_ys[pos..pos + 8],
+                &self.max_ys[pos..pos + 8],
+                &self.min_zs[pos..pos + 8],
+                &self.max_zs[pos..pos + 8],
+            ];
+            // SAFETY: each column slice is exactly eight `f64`s long.
+            let [mnx, mxx, mny, mxy, mnz, mxz] =
+                columns.map(|c| unsafe { _mm512_loadu_pd(c.as_ptr()) });
+            let t1x = _mm512_mul_pd(_mm512_sub_pd(mnx, ox), ix);
+            let t2x = _mm512_mul_pd(_mm512_sub_pd(mxx, ox), ix);
+            let t1y = _mm512_mul_pd(_mm512_sub_pd(mny, oy), iy);
+            let t2y = _mm512_mul_pd(_mm512_sub_pd(mxy, oy), iy);
+            let t1z = _mm512_mul_pd(_mm512_sub_pd(mnz, oz), iz);
+            let t2z = _mm512_mul_pd(_mm512_sub_pd(mxz, oz), iz);
+            let near = _mm512_max_pd(
+                _mm512_max_pd(
+                    _mm512_max_pd(_mm512_min_pd(t1x, t2x), _mm512_min_pd(t1y, t2y)),
+                    _mm512_min_pd(t1z, t2z),
+                ),
+                zero,
+            );
+            let far = _mm512_min_pd(
+                _mm512_min_pd(
+                    _mm512_min_pd(_mm512_max_pd(t1x, t2x), _mm512_max_pd(t1y, t2y)),
+                    _mm512_max_pd(t1z, t2z),
+                ),
+                maxd,
+            );
+            u32::from(_mm512_cmp_pd_mask::<_CMP_LE_OQ>(near, far))
+        })
     }
 
     /// Visit items in nondecreasing entry-`t` order along the ray segment.

@@ -191,6 +191,13 @@ required-features = ["f32-storage", "simd"]
 name = "stream_query"
 required-features = ["stream"]
 
+# `raycast_any` on the SIMD frontends: depth-first against the 0.33.0
+# priority-queue form, owned and view, 2D and 3D.
+[[bench]]
+name = "paired_raycast_any"
+harness = false
+required-features = ["simd"]
+
 [[bench]]
 name = "paired_raycast_prune"
 harness = false

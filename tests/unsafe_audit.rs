@@ -24,11 +24,11 @@ use std::path::{Path, PathBuf};
 const EXPECTED: &[(&str, usize)] = &[
     ("index2d.rs", 2),
     ("index2d_f32.rs", 13),
-    ("index2d_soa/raycast.rs", 17),
+    ("index2d_soa/raycast.rs", 23),
     ("index2d_soa.rs", 17),
     ("index3d.rs", 2),
     ("index3d_f32.rs", 13),
-    ("index3d_soa/raycast.rs", 17),
+    ("index3d_soa/raycast.rs", 23),
     ("index3d_soa.rs", 17),
     ("leftpack.rs", 4),
     ("persistence/mod.rs", 2),

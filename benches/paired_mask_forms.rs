@@ -13,9 +13,8 @@
 //!
 //! Each group times one path: the branching form (the reference), the masked
 //! form, and a control that neither touches -- `any` on the same index, which
-//! is a callback path, so it builds the same mask on x86 whichever form the
-//! group times. The checksum column pins that
-//! both forms return the same hits.
+//! runs the depth-first `find` whichever form the group times. The checksum
+//! column pins that both forms return the same hits.
 //!
 //! Families: owned `Index2D`, `Index2DView` and `Index3DView` over the same
 //! bytes, `Index3D` raycast, and the scalar f32 indexes. Owned `Index3D` range
@@ -186,6 +185,35 @@ macro_rules! pair {
     }};
 }
 
+/// One callback-path arm: `$call` over every window of `$qs`, with a visitor
+/// `$f` that sums the indices it gets and breaks at the first when `$early`,
+/// and `$s` a stack reused across the arm's queries. Each arm is its own
+/// closure, so each form compiles into its own loop: behind one closure and a
+/// runtime `match` on the form, the arm the match reached last read up to 25%
+/// slow on a form that was the same code (`paired_find_switch`).
+macro_rules! cb_arm {
+    ($qs:expr, $early:expr, |$q:ident, $s:ident, $f:ident| $call:expr) => {{
+        let (qs, early) = ($qs, $early);
+        let mut stack: Vec<usize> = Vec::new();
+        move || {
+            let mut t = 0usize;
+            for &$q in black_box(qs) {
+                let $f = |idx: usize| {
+                    t += idx;
+                    if early {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                };
+                let $s = &mut stack;
+                let _: ControlFlow<()> = $call;
+            }
+            t
+        }
+    }};
+}
+
 fn hits_label<Q: Copy>(family: &str, window: &str, qs: &[Q], count: impl Fn(Q) -> usize) -> String {
     let hits: usize = qs.iter().map(|q| count(*q)).sum();
     format!(
@@ -233,8 +261,10 @@ fn main() {
     }
 
     // ---- Callback paths: full visit, and `first` (what `any` runs) ----
-    // `visit_with_stack` carries `visit`; `find_with_stack` carries `any` and
-    // `first`, the same traversal without the containment test.
+    // `visit_with_stack` carries `visit`; `find` carries `any` and `first`: a
+    // depth-first descent into each node's first overlapping child, against
+    // the two forms of the traversal it replaced (`find_with_stack_forced`,
+    // every child tested and every hit pushed; kb:task/202).
     // An early exit descends a few nodes whatever the window, so 400 large
     // windows are few enough branches to learn: `first` gets 10 000 in every
     // class (kb:task/192).
@@ -245,44 +275,40 @@ fn main() {
                     let count = if early { 10_000 } else { *n };
                     let qs = $windows($seed + i as u64, *lo, *hi, count);
                     let call = if early { "first" } else { "visit" };
-                    let arm =
-                        |masked: bool| {
-                            let (qs, index) = (&qs, &$index);
-                            let mut stack = Vec::new();
-                            move || {
-                                let mut t = 0usize;
-                                for &q in black_box(qs) {
-                                    let f = |idx: usize| {
-                                        t += idx;
-                                        if early {
-                                            ControlFlow::Break(())
-                                        } else {
-                                            ControlFlow::Continue(())
-                                        }
-                                    };
-                                    let s = &mut stack;
-                                    let _ =
-                                        match (early, masked) {
-                                            (false, true) => index
-                                                .visit_with_stack_forced::<true, (), _>(q, s, f),
-                                            (false, false) => index
-                                                .visit_with_stack_forced::<false, (), _>(q, s, f),
-                                            (true, true) => {
-                                                index.find_with_stack_forced::<true, (), _>(q, s, f)
-                                            }
-                                            (true, false) => index
-                                                .find_with_stack_forced::<false, (), _>(q, s, f),
-                                        };
-                                }
-                                t
-                            }
-                        };
-                    let mut arms = vec![
-                        paired::arm("branching", arm(false)),
-                        paired::arm("masked (ships)", arm(true)),
-                    ];
+                    let (qs, index) = (&qs, &$index);
+                    let mut arms = if early {
+                        vec![
+                            paired::arm(
+                                "branching",
+                                cb_arm!(qs, early, |q, s, f| index
+                                    .find_with_stack_forced::<false, (), _>(q, s, f)),
+                            ),
+                            paired::arm(
+                                "masked",
+                                cb_arm!(qs, early, |q, s, f| index
+                                    .find_with_stack_forced::<true, (), _>(q, s, f)),
+                            ),
+                            paired::arm(
+                                "depth-first (ships)",
+                                cb_arm!(qs, early, |q, _s, f| index.find(q, f)),
+                            ),
+                        ]
+                    } else {
+                        vec![
+                            paired::arm(
+                                "branching",
+                                cb_arm!(qs, early, |q, s, f| index
+                                    .visit_with_stack_forced::<false, (), _>(q, s, f)),
+                            ),
+                            paired::arm(
+                                "masked (ships)",
+                                cb_arm!(qs, early, |q, s, f| index
+                                    .visit_with_stack_forced::<true, (), _>(q, s, f)),
+                            ),
+                        ]
+                    };
                     let label =
-                        hits_label(&format!("{} {call}", $tag), name, &qs, |q| $index.count(q));
+                        hits_label(&format!("{} {call}", $tag), name, qs, |q| $index.count(q));
                     paired::run(&label, &mut arms, "branching");
                 }
             }

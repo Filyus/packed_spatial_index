@@ -139,6 +139,67 @@ pub(crate) fn collect_hits<const MASKED: bool>(
     }
 }
 
+/// Depth-first test for any hit: `true` at the first leaf entry the ray
+/// segment enters. No order is promised, so it needs no priority queue, only
+/// the stack [`collect_hits`] uses. `MASKED` picks the child test as there.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn any_hit<const MASKED: bool>(
+    num_nodes: usize,
+    num_items: usize,
+    node_size: usize,
+    level_count: usize,
+    level_end: impl Fn(usize) -> usize,
+    index_at: impl Fn(usize) -> usize,
+    hit_at: impl Fn(usize) -> bool,
+    stack: &mut Vec<usize>,
+) -> bool {
+    stack.clear();
+    if num_items == 0 {
+        return false;
+    }
+
+    let mut node_index = num_nodes - 1;
+    let mut level = level_count - 1;
+
+    loop {
+        let end = (node_index + node_size).min(level_end(level));
+        if node_index < num_items {
+            let mut start = node_index;
+            while start < end {
+                let stop = (start + MASK_CHUNK).min(end);
+                let hit = if MASKED {
+                    hit_mask(start, stop, &hit_at) != 0
+                } else {
+                    (start..stop).any(&hit_at)
+                };
+                if hit {
+                    return true;
+                }
+                start = stop;
+            }
+        } else {
+            let child_level = level - 1;
+            let mut stop = end;
+            while stop > node_index {
+                let start = stop.saturating_sub(MASK_CHUNK).max(node_index);
+                each_hit_rev::<MASKED>(start, stop, &hit_at, |pos| {
+                    stack.push(frame::pack(index_at(pos), child_level));
+                });
+                stop = start;
+            }
+        }
+
+        match stack.pop() {
+            Some(f) => {
+                node_index = frame::node(f);
+                level = frame::level(f);
+            }
+            None => return false,
+        }
+    }
+}
+
 /// Best-first closest-hit traversal. `enter_at(pos)` returns the ray entry
 /// parameter for the box at `pos`, or `None` for a miss.
 #[allow(clippy::too_many_arguments)]

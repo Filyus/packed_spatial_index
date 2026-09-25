@@ -859,6 +859,14 @@ impl SimdIndex3D {
 }
 
 impl SimdIndex3D {
+    /// Return `true` when the ray segment enters at least one item's box.
+    /// See [`Index3D::raycast_any`](crate::Index3D::raycast_any); here it stops
+    /// [`raycast_each`](Self::raycast_each) at its first hit.
+    pub fn raycast_any(&self, ray: Ray3D) -> bool {
+        self.raycast_each(ray, |_, _| ControlFlow::Break(()))
+            .is_break()
+    }
+
     /// Visit items in nondecreasing entry-`t` order along the ray segment.
     ///
     /// The visitor receives `(item index, entry t)`. Return

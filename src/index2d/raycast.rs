@@ -101,6 +101,43 @@ impl Index2D {
         )
     }
 
+    /// Return `true` when the ray segment enters at least one item's box.
+    ///
+    /// The occlusion or shadow-ray test: it stops at the first hit it meets,
+    /// in no particular order, so it descends depth-first without the priority
+    /// queue [`raycast_each`](Self::raycast_each) and
+    /// [`raycast_closest`](Self::raycast_closest) keep. Same answer as
+    /// `!raycast(ray).is_empty()`.
+    ///
+    /// ```
+    /// # use packed_spatial_index::{Index2DBuilder, Box2D, Point2D, Ray2D};
+    /// # let mut builder = Index2DBuilder::new(1);
+    /// builder.add(Box2D::new(2.0, -1.0, 3.0, 1.0));
+    /// # let index = builder.finish().unwrap();
+    /// assert!(index.raycast_any(Ray2D::new(Point2D::new(0.0, 0.0), 1.0, 0.0, 10.0)));
+    /// assert!(!index.raycast_any(Ray2D::new(Point2D::new(0.0, 0.0), 1.0, 0.0, 1.5)));
+    /// ```
+    pub fn raycast_any(&self, ray: Ray2D) -> bool {
+        self.raycast_any_forced::<true>(ray)
+    }
+
+    /// [`raycast_any`](Self::raycast_any) with the child test named: the hit
+    /// mask it ships, or one branch per child. For timing both in one binary.
+    #[doc(hidden)]
+    pub fn raycast_any_forced<const MASKED: bool>(&self, ray: Ray2D) -> bool {
+        let mut stack = crate::traversal::ScratchStack::take();
+        scalar_raycast::any_hit::<MASKED>(
+            self.entries.len(),
+            self.num_items,
+            self.node_size,
+            self.level_bounds.len(),
+            |level| self.level_bounds[level],
+            |pos| self.indices[pos],
+            |pos| ray.intersects_box(self.entries[pos]),
+            &mut stack,
+        )
+    }
+
     /// Visit items in nondecreasing entry-`t` order along the ray segment.
     ///
     /// The visitor receives `(item index, entry t)`. Return
@@ -189,6 +226,28 @@ impl Index2DView<'_> {
             |pos| self.index_at_unchecked(pos),
             |pos| ray.enter_t(self.entry_at_unchecked(pos)),
             &mut workspace.node_queue,
+        )
+    }
+
+    /// Return `true` when the ray segment enters at least one item's box.
+    /// See [`Index2D::raycast_any`](crate::Index2D::raycast_any).
+    pub fn raycast_any(&self, ray: Ray2D) -> bool {
+        self.raycast_any_forced::<true>(ray)
+    }
+
+    /// [`raycast_any`](Self::raycast_any) with the child test named.
+    #[doc(hidden)]
+    pub fn raycast_any_forced<const MASKED: bool>(&self, ray: Ray2D) -> bool {
+        let mut stack = crate::traversal::ScratchStack::take();
+        scalar_raycast::any_hit::<MASKED>(
+            self.num_nodes,
+            self.num_items,
+            self.node_size,
+            self.level_count,
+            |level| self.level_bound_unchecked(level),
+            |pos| self.index_at_unchecked(pos),
+            |pos| ray.intersects_box(self.entry_at_unchecked(pos)),
+            &mut stack,
         )
     }
 

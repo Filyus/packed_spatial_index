@@ -6,6 +6,14 @@ All notable changes to this crate are documented here.
 
 ### Search
 
+- **`raycast_any` asks whether a ray hits anything.** The occlusion or
+  shadow-ray test, on `Index2D` / `Index3D`, their views and the SIMD indexes:
+  `true` when the ray segment enters at least one item's box. Windows had `any`
+  and radius queries `search_within_any`; rays needed `raycast_each` with a
+  `Break`. The scalar indexes and views stop at the first hit of a depth-first
+  descent, without the priority queue `raycast_each` keeps to deliver hits in
+  order. There is deliberately no `raycast_first`: the first hit along a ray is
+  `raycast_closest`.
 - **`visit`, `any` and `first` fold the child tests into a mask.** Owned and
   view, 2D and 3D: they kept one branch per child after the collect paths
   moved to the mask. Owned `visit` also hands a covered subtree's leaf range

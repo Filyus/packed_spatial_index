@@ -791,6 +791,14 @@ impl SimdIndex2D {
 }
 
 impl SimdIndex2D {
+    /// Return `true` when the ray segment enters at least one item's box.
+    /// See [`Index2D::raycast_any`](crate::Index2D::raycast_any); here it stops
+    /// [`raycast_each`](Self::raycast_each) at its first hit.
+    pub fn raycast_any(&self, ray: Ray2D) -> bool {
+        self.raycast_each(ray, |_, _| ControlFlow::Break(()))
+            .is_break()
+    }
+
     /// Visit items in nondecreasing entry-`t` order along the ray segment.
     ///
     /// The visitor receives `(item index, entry t)`. Return

@@ -437,8 +437,11 @@ search_heaviest!(
 first — "the ten largest objects in view".
 
 A best-first descent over the per-node max the aggregates already store: a
-subtree whose max cannot beat the `k`-th item found is never opened, so the cost
-follows `k` and the tree height, not the number of items in `region`. Equal
+subtree whose max cannot beat the `k`-th item found is never opened, so on a
+large region the cost follows `k` and the tree height, not the number of items
+in it. A region expected to hold only a few more items than `k` (estimated from
+its bounding box) is swept instead and the heaviest `k` selected from its hits,
+which is cheaper there; the answer is the same either way. Equal
 scalars come out in ascending item index, so `search_heaviest(region, k)` is a
 prefix of `search_heaviest(region, k + 1)`. Items whose scalar is NaN are never
 returned.

@@ -37,6 +37,7 @@ the method for each need; the notes after it explain the reasoning.
 | What a sensor cone / spotlight sees | `search(&Cone3D::try_new(..)?)` | `search` on the cone's bounding box plus a per-hit cone test |
 | To query bytes I already have, with no build step | `Index2DView::from_bytes` / `Index3DView` — the same query surface, zero-copy | loading into an owned index |
 | To query a file I do not want to download | `StreamIndex2D` / `StreamIndex3D` over a `RangeReader` | fetching the whole index |
+| That file behind a CDN, or read from a browser | `StreamLimits::align_bytes` so the CDN caches the same block ranges for every query; `Access-Control-Max-Age` and `Expose-Headers: Content-Range, ETag` on the bucket — see [Streaming](persistence.md#streaming-out-of-core--remote) and [CORS preflight](persistence.md#cors-preflight-for-browser-range-reads) | exact ranges that never repeat in the CDN's cache; a preflight `OPTIONS` before every range read |
 | The per-item blob back, not just the id | `payload(id)` / `search_payloads(query)` on a view, or `search_payloads` on a streaming reader | a side table keyed by id |
 | Exact answers from an `f32` index | `search_exact` / `neighbors_exact`, passing your own `f64` boxes | trusting the conservative superset |
 | To index fewer than ~100 boxes, or query fewer than ~50 times | a plain loop over your own `Box2D`s | building an index — see the crossovers below |

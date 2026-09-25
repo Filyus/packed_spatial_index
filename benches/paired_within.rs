@@ -37,15 +37,37 @@ fn n_items() -> usize {
 }
 const EXTENT: f64 = 10_000.0;
 
-/// Query points per set, `PAIRED_QUERIES` (default 1000). Every rep replays
-/// the same set in the same order, so a predictor big enough to learn its whole
-/// branch sequence across reps flatters the branching form; a set of tens of
-/// thousands is too long a sequence to learn.
-fn queries() -> usize {
+/// Query points per radius. Every rep replays the same set, and a Zen 4 or
+/// Zen 5 predictor learns the traversal of each query in it until the set's
+/// hard-to-predict branches outgrow its tables (~30 000 on Zen 5): a radius
+/// with 0-2 hits per query was learned over 2000 points and not over 5000
+/// (kb:task/191). So the set is sized by the output: 10 000 points up to 20
+/// hits per query, 2000 up to 500, 1000 above that, where a query has too many
+/// branches to learn and costs too much to repeat. `PAIRED_QUERIES` overrides
+/// every radius.
+const POINTS_MAX: usize = 10_000;
+
+fn set_size(hits_per_query: f64) -> usize {
+    if let Some(n) = std::env::var("PAIRED_QUERIES")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+    {
+        return n;
+    }
+    if hits_per_query <= 20.0 {
+        10_000
+    } else if hits_per_query <= 500.0 {
+        2_000
+    } else {
+        1_000
+    }
+}
+
+fn points_needed() -> usize {
     std::env::var("PAIRED_QUERIES")
         .ok()
         .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(1_000)
+        .unwrap_or(POINTS_MAX)
 }
 
 fn build_2d(seed: u64) -> Index2D {
@@ -78,7 +100,7 @@ fn build_3d(seed: u64) -> Index3D {
 
 fn points_2d(seed: u64) -> Vec<Box2D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..queries())
+    (0..points_needed())
         .map(|_| {
             let x: f64 = rng.random_range(0.0..EXTENT);
             let y: f64 = rng.random_range(0.0..EXTENT);
@@ -89,7 +111,7 @@ fn points_2d(seed: u64) -> Vec<Box2D> {
 
 fn points_3d(seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..queries())
+    (0..points_needed())
         .map(|_| {
             let x: f64 = rng.random_range(0.0..EXTENT);
             let y: f64 = rng.random_range(0.0..EXTENT);
@@ -142,15 +164,20 @@ fn main() {
 
     // ---- 2D ----
     let index = build_2d(0xB0B);
-    let qs = points_2d(0xACE);
+    let all = points_2d(0xACE);
     let root = index.extent().unwrap();
 
     for r in radii() {
+        let probe = &all[..all.len().min(1000)];
+        let per: usize = probe.iter().map(|q| index.count_within(*q, r)).sum();
+        let qs: Vec<Box2D> =
+            all[..set_size(per as f64 / probe.len() as f64).min(all.len())].to_vec();
         let frac = mean_fraction_2d(root, &qs, r);
         let hits: usize = qs.iter().map(|q| index.count_within(*q, r)).sum();
         let label = format!(
-            "2d r={r} (covered {frac:.4}, {:.0} hits/query)",
-            hits as f64 / qs.len() as f64
+            "2d r={r} (covered {frac:.4}, {:.0} hits/query, {} points)",
+            hits as f64 / qs.len() as f64,
+            qs.len()
         );
         let (mut out_c, mut out_b, mut out_m) = (Vec::new(), Vec::new(), Vec::new());
         let mut arms = vec![
@@ -200,15 +227,20 @@ fn main() {
 
     // ---- 3D ----
     let index = build_3d(0xB0B3);
-    let qs = points_3d(0xACE3);
+    let all = points_3d(0xACE3);
     let root = index.extent().unwrap();
 
     for r in radii() {
+        let probe = &all[..all.len().min(1000)];
+        let per: usize = probe.iter().map(|q| index.count_within(*q, r)).sum();
+        let qs: Vec<Box3D> =
+            all[..set_size(per as f64 / probe.len() as f64).min(all.len())].to_vec();
         let frac = mean_fraction_3d(root, &qs, r);
         let hits: usize = qs.iter().map(|q| index.count_within(*q, r)).sum();
         let label = format!(
-            "3d r={r} (covered {frac:.4}, {:.0} hits/query)",
-            hits as f64 / qs.len() as f64
+            "3d r={r} (covered {frac:.4}, {:.0} hits/query, {} points)",
+            hits as f64 / qs.len() as f64,
+            qs.len()
         );
         let (mut out_c, mut out_b, mut out_m) = (Vec::new(), Vec::new(), Vec::new());
         let mut arms = vec![

@@ -41,22 +41,27 @@ mod pin;
 const N: usize = 100_000;
 const EXTENT: f64 = 10_000.0;
 
-/// Queries per set, `PAIRED_QUERIES` (default 400). Every rep replays the same
-/// set in the same order, so a predictor big enough to learn its whole branch
-/// sequence across reps flatters the branching form; a set of tens of
-/// thousands is too long a sequence to learn.
-fn queries() -> usize {
+/// Every rep replays the same query set, and a Zen 4 or Zen 5 predictor learns
+/// the traversal of each query in it until the set's hard-to-predict branches
+/// outgrow its tables (~30 000 on Zen 5): 400 small windows were learned, and
+/// the branching form looked 1.4x faster than it is (kb:observation/534,
+/// kb:task/191). So each window class gets a set sized by its output: small
+/// windows 10 000, mid windows and rays 2000, large windows 400, where one
+/// query has too many branches to learn and costs too much to repeat.
+/// `PAIRED_QUERIES` overrides every class.
+fn queries(default: usize) -> usize {
     std::env::var("PAIRED_QUERIES")
         .ok()
         .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(400)
+        .unwrap_or(default)
 }
 
-/// (label, side range): small windows hit a handful, large ones thousands.
-const WINDOWS: [(&str, f64, f64); 3] = [
-    ("small (10..200)", 10.0, 200.0),
-    ("mid (200..1000)", 200.0, 1000.0),
-    ("large (2000..5000)", 2000.0, 5000.0),
+/// (label, side range, set size): small windows hit a handful, large ones
+/// thousands.
+const WINDOWS: [(&str, f64, f64, usize); 3] = [
+    ("small (10..200)", 10.0, 200.0, 10_000),
+    ("mid (200..1000)", 200.0, 1000.0, 2_000),
+    ("large (2000..5000)", 2000.0, 5000.0, 400),
 ];
 
 fn boxes_2d(seed: u64) -> Vec<Box2D> {
@@ -85,9 +90,9 @@ fn boxes_3d(seed: u64, max_side: f64) -> Vec<Box3D> {
         .collect()
 }
 
-fn windows_2d(seed: u64, lo: f64, hi: f64) -> Vec<Box2D> {
+fn windows_2d(seed: u64, lo: f64, hi: f64, n: usize) -> Vec<Box2D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..queries())
+    (0..queries(n))
         .map(|_| {
             let s: f64 = rng.random_range(lo..hi);
             let x: f64 = rng.random_range(0.0..EXTENT - s);
@@ -97,9 +102,9 @@ fn windows_2d(seed: u64, lo: f64, hi: f64) -> Vec<Box2D> {
         .collect()
 }
 
-fn windows_3d(seed: u64, lo: f64, hi: f64) -> Vec<Box3D> {
+fn windows_3d(seed: u64, lo: f64, hi: f64, n: usize) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..queries())
+    (0..queries(n))
         .map(|_| {
             let s: f64 = rng.random_range(lo..hi);
             let x: f64 = rng.random_range(0.0..EXTENT - s);
@@ -130,7 +135,7 @@ fn build_3d(boxes: &[Box3D]) -> Index3D {
 /// meets tens to hundreds of boxes.
 fn rays(seed: u64) -> Vec<Ray3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..queries())
+    (0..queries(2_000))
         .map(|_| {
             Ray3D::new(
                 Point3D::new(
@@ -196,8 +201,8 @@ fn main() {
     let owned2 = build_2d(&b2);
     let bytes2 = owned2.to_bytes();
     let view2 = Index2DView::from_bytes(&bytes2).unwrap();
-    for (i, (name, lo, hi)) in WINDOWS.iter().enumerate() {
-        let qs = windows_2d(0x51 + i as u64, *lo, *hi);
+    for (i, (name, lo, hi, n)) in WINDOWS.iter().enumerate() {
+        let qs = windows_2d(0x51 + i as u64, *lo, *hi, *n);
         let label = hits_label("2d owned", name, &qs, |q| owned2.count(q));
         pair!(
             label,
@@ -231,8 +236,8 @@ fn main() {
     let owned3 = build_3d(&b3);
     let bytes3 = owned3.to_bytes();
     let view3 = Index3DView::from_bytes(&bytes3).unwrap();
-    for (i, (name, lo, hi)) in WINDOWS.iter().enumerate() {
-        let qs = windows_3d(0x61 + i as u64, *lo, *hi);
+    for (i, (name, lo, hi, n)) in WINDOWS.iter().enumerate() {
+        let qs = windows_3d(0x61 + i as u64, *lo, *hi, *n);
         let label = hits_label("3d view", name, &qs, |q| view3.count(q));
         pair!(
             label,
@@ -283,8 +288,8 @@ fn main() {
         b.add(bx);
     }
     let f32_3 = b.finish_f32().unwrap();
-    for (i, (name, lo, hi)) in WINDOWS.iter().enumerate() {
-        let qs = windows_2d(0x71 + i as u64, *lo, *hi);
+    for (i, (name, lo, hi, n)) in WINDOWS.iter().enumerate() {
+        let qs = windows_2d(0x71 + i as u64, *lo, *hi, *n);
         let label = hits_label("2d f32", name, &qs, |q| f32_2.count(q));
         pair!(
             label,
@@ -298,7 +303,7 @@ fn main() {
                 };
             }
         );
-        let qs = windows_3d(0x81 + i as u64, *lo, *hi);
+        let qs = windows_3d(0x81 + i as u64, *lo, *hi, *n);
         let label = hits_label("3d f32", name, &qs, |q| f32_3.count(q));
         pair!(
             label,

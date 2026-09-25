@@ -356,6 +356,11 @@ impl Overlaps3D for Frustum3D {
     fn contains_box(&self, bx: Box3D) -> bool {
         self.contains_box(bx)
     }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box3D> {
+        self.bounding_box()
+    }
 }
 
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {

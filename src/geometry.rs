@@ -498,6 +498,16 @@ pub trait Overlaps2D {
     fn contains_box(&self, _bx: Box2D) -> bool {
         false
     }
+
+    /// A box that bounds every box this geometry accepts, or `None` for none
+    /// known (the default) or an unbounded region. Only the form of a
+    /// traversal reads it — `search_heaviest` estimates its hits from it — so
+    /// no result depends on it, and a loose box costs at most the better form.
+    #[doc(hidden)]
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box2D> {
+        None
+    }
 }
 
 impl Overlaps2D for Box2D {
@@ -510,6 +520,11 @@ impl Overlaps2D for Box2D {
     fn contains_box(&self, other: Box2D) -> bool {
         self.contains(other)
     }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box2D> {
+        Some(*self)
+    }
 }
 
 impl<T: Overlaps2D + ?Sized> Overlaps2D for &T {
@@ -521,6 +536,11 @@ impl<T: Overlaps2D + ?Sized> Overlaps2D for &T {
     #[inline]
     fn contains_box(&self, bx: Box2D) -> bool {
         (**self).contains_box(bx)
+    }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box2D> {
+        (**self).bounding_box_hint()
     }
 }
 
@@ -564,6 +584,16 @@ pub trait Overlaps3D {
     fn contains_box(&self, _bx: Box3D) -> bool {
         false
     }
+
+    /// A box that bounds every box this geometry accepts, or `None` for none
+    /// known (the default) or an unbounded region. Only the form of a
+    /// traversal reads it — `search_heaviest` estimates its hits from it — so
+    /// no result depends on it, and a loose box costs at most the better form.
+    #[doc(hidden)]
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box3D> {
+        None
+    }
 }
 
 impl Overlaps3D for Box3D {
@@ -576,6 +606,11 @@ impl Overlaps3D for Box3D {
     fn contains_box(&self, other: Box3D) -> bool {
         self.contains(other)
     }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box3D> {
+        Some(*self)
+    }
 }
 
 impl<T: Overlaps3D + ?Sized> Overlaps3D for &T {
@@ -587,6 +622,11 @@ impl<T: Overlaps3D + ?Sized> Overlaps3D for &T {
     #[inline]
     fn contains_box(&self, bx: Box3D) -> bool {
         (**self).contains_box(bx)
+    }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box3D> {
+        (**self).bounding_box_hint()
     }
 }
 

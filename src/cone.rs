@@ -434,6 +434,17 @@ impl Overlaps3D for Cone3D {
     fn contains_box(&self, bx: Box3D) -> bool {
         self.contains_box(bx)
     }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box3D> {
+        // The apex and the base disc, the disc bounded by its radius on every
+        // axis: loose, but only the traversal form reads it.
+        let r = self.height * self.tan_half;
+        let base = [0, 1, 2].map(|d| self.apex[d] + self.axis[d] * self.height);
+        let lo = [0, 1, 2].map(|d| self.apex[d].min(base[d] - r));
+        let hi = [0, 1, 2].map(|d| self.apex[d].max(base[d] + r));
+        Some(Box3D::new(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]))
+    }
 }
 
 #[cfg(test)]

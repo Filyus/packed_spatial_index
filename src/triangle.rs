@@ -201,6 +201,11 @@ impl crate::geometry::Overlaps2D for Triangle2D {
     fn contains_box(&self, bx: Box2D) -> bool {
         self.contains_box(bx)
     }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box2D> {
+        Some(self.aabb())
+    }
 }
 
 macro_rules! tri3 {

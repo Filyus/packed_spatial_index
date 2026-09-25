@@ -230,6 +230,17 @@ impl Overlaps2D for Capsule2D {
     fn contains_box(&self, bx: Box2D) -> bool {
         self.contains_box(bx)
     }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box2D> {
+        let r = self.radius;
+        Some(Box2D::new(
+            self.a[0].min(self.b[0]) - r,
+            self.a[1].min(self.b[1]) - r,
+            self.a[0].max(self.b[0]) + r,
+            self.a[1].max(self.b[1]) + r,
+        ))
+    }
 }
 
 /// A thick segment in 3D — the world-unit-tolerance picking shape.
@@ -310,6 +321,19 @@ impl Overlaps3D for Capsule3D {
     #[inline]
     fn contains_box(&self, bx: Box3D) -> bool {
         self.contains_box(bx)
+    }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box3D> {
+        let r = self.radius;
+        Some(Box3D::new(
+            self.a[0].min(self.b[0]) - r,
+            self.a[1].min(self.b[1]) - r,
+            self.a[2].min(self.b[2]) - r,
+            self.a[0].max(self.b[0]) + r,
+            self.a[1].max(self.b[1]) + r,
+            self.a[2].max(self.b[2]) + r,
+        ))
     }
 }
 

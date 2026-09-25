@@ -126,4 +126,18 @@ impl Overlaps2D for ConvexPolygon2D {
     fn contains_box(&self, bx: Box2D) -> bool {
         self.contains_box(bx)
     }
+
+    #[inline]
+    fn bounding_box_hint(&self) -> Option<Box2D> {
+        let mut out = crate::geometry::empty_box2d();
+        for &[x, y] in &self.verts {
+            out = Box2D::new(
+                out.min_x.min(x),
+                out.min_y.min(y),
+                out.max_x.max(x),
+                out.max_y.max(y),
+            );
+        }
+        Some(out)
+    }
 }

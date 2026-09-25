@@ -144,7 +144,7 @@ return item indices like the in-memory `search`. Child pointers are validated as
 they are followed, so the reader is safe on untrusted data.
 
 ```rust,ignore
-// Cargo.toml: packed_spatial_index = { version = "0.32", features = ["stream"] }
+// Cargo.toml: packed_spatial_index = { version = "0.33", features = ["stream"] }
 use packed_spatial_index::{Box2D, FileReader, StreamIndex2D};
 
 let reader = FileReader::open("planet.psindex")?;

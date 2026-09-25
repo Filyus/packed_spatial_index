@@ -4,6 +4,8 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.33.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.32.0...psi-v0.33.0) - 2026-09-25
+
 ### Search
 
 - **`raycast_any` asks whether a ray hits anything.** The occlusion or
@@ -35,7 +37,6 @@ All notable changes to this crate are documented here.
   below one expected hit, as 2D does. The 3D mask wins there too on every x86
   machine measured: 0.90–0.95 of the time at zero hits per query. The switch
   now applies only on aarch64, where a Neoverse N2 measured 1.00–1.02.
-
 - **`Index2DView` range search keeps its result `Vec` out of a reload
   chain.** `search_into` and `search_with` pushed through a `&mut Vec<usize>`.
   Where the collect kernel is inlined under register pressure, the compiler kept
@@ -123,10 +124,10 @@ All notable changes to this crate are documented here.
   index either way. These come from query sets the branch predictor cannot
   learn; the benches' earlier, smaller sets overstated the SIMD lead on small
   windows by 5–25 points and made the mask look like a loss on small windows
-  on Zen 4 and Zen 5. The scalar `f32` indexes,
-  documented as ~30% slower than `f64`, took 1.0–2.8× its time on a Zen 5 and
-  `count` on the SIMD `f32` indexes 1.6–5.8×, before the SIMD and Performance
-  entries above; the docs now give the numbers after them. `docs/performance.md` gains a section with
+  on Zen 4 and Zen 5. The scalar `f32` indexes, documented as ~30% slower
+  than `f64`, took 1.0–2.8× its time on a Zen 5 and `count` on the SIMD `f32`
+  indexes 1.6–5.8×, before the SIMD and Performance entries above; the docs
+  now give the numbers after them. `docs/performance.md` gains a section with
   the four range-search frontends side by side and the SIMD kernels on each
   machine; `benches/paired_precision.rs` measures it anywhere.
 

@@ -189,6 +189,68 @@ the `async` feature and implement `AsyncRangeReader` the same way; `open_async`,
 `search_async`, `estimate_count_async`, and the async region/payload methods
 mirror sync streaming and issue a level's reads concurrently.
 
+### CORS preflight for browser range reads
+
+A page on one origin reading `RangeReader` / `AsyncRangeReader` bytes from
+another (S3, R2, a CDN in front of either) is a cross-origin request, and the
+browser preflights it with an `OPTIONS` request whenever the actual request
+isn't "simple" under the [Fetch spec](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS).
+A `Range` header carrying a single byte range (`bytes=<start>-<end>`) is now
+itself CORS-safelisted, so it alone no longer forces a preflight in a current
+browser — but any other header the request carries (an auth token, a custom
+header, `If-Match`) still does, and older browsers may not implement the
+safelisted-`Range` exception. Budget for a preflight regardless.
+
+Reading the ranged response back also needs headers of its own, whether or not
+a preflight ran:
+
+- `Access-Control-Allow-Origin` — the calling page's origin, or `*` for a
+  public read-only bucket.
+- `Access-Control-Allow-Headers: Range` — required only when the preflight
+  fires, but harmless to always send.
+- `Access-Control-Expose-Headers: Content-Range, Content-Length, ETag` —
+  without it `fetch` can read the body but not these headers.
+  `Content-Length` is on the browser's default-exposed list already, but
+  `Content-Range` and `ETag` are not, and a reader that sizes a read off one or
+  pins a version by the other needs them listed explicitly.
+- `Access-Control-Max-Age` — how long the browser may cache the preflight
+  answer instead of repeating it before every ranged `GET`. It defaults to 5
+  seconds when the header is omitted, so a page doing many small range reads —
+  the whole point of streaming — pays a full preflight round trip per read
+  without it. Firefox caps the honored value at 86400s (24h); Chromium at
+  7200s (2h) since Chrome 76, 600s (10min) before. Asking for more than a
+  browser will honor costs nothing.
+
+An S3 bucket CORS policy for this:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://example.com"],
+    "AllowedMethods": ["GET"],
+    "AllowedHeaders": ["Range"],
+    "ExposeHeaders": ["Content-Range", "Content-Length", "ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+Cloudflare R2 buckets take the identical shape (`AllowedOrigins` /
+`AllowedMethods` / `AllowedHeaders` / `ExposeHeaders` / `MaxAgeSeconds`), set
+through the dashboard or `wrangler r2 bucket cors put`.
+
+**A CDN in front of the bucket adds its own knob.** CloudFront does not cache
+`OPTIONS` responses by default; caching them needs the cache behavior's "cache
+`OPTIONS` responses" setting turned on and the `Origin`,
+`Access-Control-Request-Headers` and `Access-Control-Request-Method` headers
+forwarded so the cache key reflects them (AWS's
+[CORS header-caching guide](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/header-caching.html#header-caching-web-cors)).
+Skip that and every preflight round-trips to the origin no matter how high
+`Access-Control-Max-Age` is set — the gap [flatgeobuf.org](https://flatgeobuf.org)
+flags: "Popular CDNs, like Cloudfront, support Range Requests, but don't cache
+the requisite preflight OPTIONS requests by default." Other CDNs vary; check
+whether yours caches `OPTIONS` before relying on `Max-Age` alone.
+
 **What streams today:** 2D and 3D range search (`search` / `search_into` /
 `visit` / `count`), optionally returning a stored blob per hit
 (`search_payloads`, when the file was written with `to_bytes_with_payloads`),

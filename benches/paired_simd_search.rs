@@ -90,7 +90,10 @@ fn main() {
     let simd = s.finish_simd().unwrap();
     let extent = owned.extent().unwrap();
     let cases: Vec<(&str, Vec<Box2D>)> = vec![
-        ("2d small (10..200)", windows_2d(0x51A11, 10.0..200.0, 1000)),
+        (
+            "2d small (10..200)",
+            windows_2d(0x51A11, 10.0..200.0, 10_000),
+        ),
         (
             "2d large (2000..5000)",
             windows_2d(0x1A96E, 2000.0..5000.0, 1000),
@@ -154,7 +157,10 @@ fn main() {
     let simd = s.finish_simd().unwrap();
     let extent = owned.extent().unwrap();
     let cases: Vec<(&str, Vec<Box3D>)> = vec![
-        ("3d small (10..300)", windows_3d(0x51A13, 10.0..300.0, 1000)),
+        (
+            "3d small (10..300)",
+            windows_3d(0x51A13, 10.0..300.0, 10_000),
+        ),
         (
             "3d large (2000..5000)",
             windows_3d(0x1A963, 2000.0..5000.0, 1000),

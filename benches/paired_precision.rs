@@ -159,7 +159,7 @@ fn main() {
     let cases: Vec<(&str, Vec<Box2D>)> = vec![
         (
             "2d small (10..200)",
-            windows_2d(0x51A11, 10.0..200.0, queries(1000, n)),
+            windows_2d(0x51A11, 10.0..200.0, queries(10_000, n)),
         ),
         (
             "2d large (2000..5000)",
@@ -200,7 +200,7 @@ fn main() {
     let cases: Vec<(&str, Vec<Box3D>)> = vec![
         (
             "3d small (10..300)",
-            windows_3d(0x51A13, 10.0..300.0, queries(1000, n)),
+            windows_3d(0x51A13, 10.0..300.0, queries(10_000, n)),
         ),
         (
             "3d large (2000..5000)",

@@ -45,9 +45,11 @@ fn build() -> Index2D {
 fn main() {
     pin::pin_from_env();
     let index = build();
-    for &side in &[1_000.0f64, 10_000.0, 100_000.0] {
+    // Small outputs get 2000 windows so a Zen 4 / Zen 5 predictor cannot
+    // learn the set (kb:task/191); the ~10 000-hit side keeps 200.
+    for &(side, count) in &[(1_000.0f64, 2000usize), (10_000.0, 2000), (100_000.0, 200)] {
         let mut rng = StdRng::seed_from_u64(2);
-        let windows: Vec<Box2D> = (0..200)
+        let windows: Vec<Box2D> = (0..count)
             .map(|_| {
                 let x: f64 = rng.random_range(0.0..EXTENT - side);
                 let y: f64 = rng.random_range(0.0..EXTENT - side);
@@ -55,7 +57,7 @@ fn main() {
             })
             .collect();
         let hits: usize = windows.iter().map(|&w| index.count(w)).sum::<usize>() / windows.len();
-        let label = format!("side {side} (~{hits} hits) x200");
+        let label = format!("side {side} (~{hits} hits) x{count}");
         let mut arms = vec![
             paired::arm("count (control)", || {
                 let mut t = 0;

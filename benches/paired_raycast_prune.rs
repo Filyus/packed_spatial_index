@@ -62,7 +62,11 @@ mod paired;
 mod pin;
 
 const EXTENT: f64 = 60.0;
+/// Rays per sparse size. A few candidates per ray is few branches per ray, so
+/// 512 repeated rays were learnable there (kb:task/191); the sparse sizes get
+/// 4096, the dense ones keep 512.
 const RAYS: usize = 512;
+const RAYS_SPARSE: usize = 4096;
 const MAX_T: f64 = 1_000.0;
 
 fn n_items() -> usize {
@@ -105,9 +109,9 @@ fn mesh(seed: u64, n: usize, size: f64) -> Vec<Triangle3D> {
 
 /// Rays entering the scene from below, so a ray crosses its whole depth and the
 /// nearest hit sits early in the stream — the case pruning is for.
-fn rays(seed: u64) -> Vec<Ray3D> {
+fn rays(seed: u64, n: usize) -> Vec<Ray3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..RAYS)
+    (0..n)
         .map(|_| {
             Ray3D::new(
                 Point3D::new(
@@ -131,7 +135,7 @@ fn main() {
     for size in sizes() {
         let tris = mesh(0x3E11 ^ size.to_bits(), n, size);
         let index = Index3D::from_triangles(&tris).unwrap();
-        let qs = rays(0xA11E5);
+        let qs = rays(0xA11E5, if size < 1.0 { RAYS_SPARSE } else { RAYS });
 
         // What the sweep is varying, measured rather than assumed: how many
         // boxes a ray crosses, and how far into that ordered stream the nearest

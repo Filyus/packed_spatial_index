@@ -27,7 +27,12 @@ mod pin;
 
 const N: usize = 100_000;
 const EXTENT: f64 = 10_000.0;
-const QUERIES: usize = 1000;
+/// Every rep replays the same queries, and a Zen 4 or Zen 5 predictor learns
+/// each one's traversal while the set is small; 1000 small windows flattered
+/// the SIMD arms by 10-25 points (kb:task/191). Small outputs get 10 000
+/// queries, large ones keep 1000, where a query costs too much to repeat.
+const SMALL_SET: usize = 10_000;
+const LARGE_SET: usize = 1000;
 
 fn boxes_2d(seed: u64, max_side: f64) -> Vec<Box2D> {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -59,9 +64,9 @@ fn boxes_3d(seed: u64, max_side: f64) -> Vec<Box3D> {
         .collect()
 }
 
-fn windows_2d(seed: u64, side: std::ops::Range<f64>) -> Vec<Box2D> {
+fn windows_2d(seed: u64, side: std::ops::Range<f64>, n: usize) -> Vec<Box2D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..n)
         .map(|_| {
             let s: f64 = rng.random_range(side.clone());
             let x: f64 = rng.random_range(0.0..EXTENT - s);
@@ -71,9 +76,9 @@ fn windows_2d(seed: u64, side: std::ops::Range<f64>) -> Vec<Box2D> {
         .collect()
 }
 
-fn windows_3d(seed: u64, side: std::ops::Range<f64>) -> Vec<Box3D> {
+fn windows_3d(seed: u64, side: std::ops::Range<f64>, n: usize) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..n)
         .map(|_| {
             let s: f64 = rng.random_range(side.clone());
             let (x, y, z): (f64, f64, f64) = (
@@ -89,7 +94,7 @@ fn windows_3d(seed: u64, side: std::ops::Range<f64>) -> Vec<Box3D> {
 /// Rays entering the square from below and crossing all of it.
 fn rays_2d(seed: u64) -> Vec<Ray2D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..LARGE_SET)
         .map(|_| {
             Ray2D::new(
                 Point2D::new(rng.random_range(0.0..EXTENT), -10.0),
@@ -104,7 +109,7 @@ fn rays_2d(seed: u64) -> Vec<Ray2D> {
 /// Rays entering the cube from below and crossing all of it.
 fn rays_3d(seed: u64) -> Vec<Ray3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..LARGE_SET)
         .map(|_| {
             Ray3D::new(
                 Point3D::new(
@@ -216,11 +221,11 @@ fn main() {
         build3().finish_simd_f32().unwrap(),
     );
 
-    for (name, seed, side) in [
-        ("small", 0x51A11, 10.0..200.0),
-        ("large", 0x1A96E, 2000.0..5000.0),
+    for (name, seed, side, n) in [
+        ("small", 0x51A11, 10.0..200.0, SMALL_SET),
+        ("large", 0x1A96E, 2000.0..5000.0, LARGE_SET),
     ] {
-        let qs = windows_2d(seed, side.clone());
+        let qs = windows_2d(seed, side.clone(), n);
         let control = |q, out: &mut Vec<usize>| owned2.search_into(q, out);
         forms(
             &format!("SimdIndex2D search {name}"),
@@ -246,7 +251,7 @@ fn main() {
                 }
             },
         );
-        let qs = windows_3d(seed + 3, side);
+        let qs = windows_3d(seed + 3, side, n);
         let control = |q, out: &mut Vec<usize>| owned3.search_into(q, out);
         forms(
             &format!("SimdIndex3D search {name}"),

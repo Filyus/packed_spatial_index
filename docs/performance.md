@@ -908,10 +908,6 @@ Median per-round time relative to `bvh` (1.00), lower is better, from
 | dense | all hits | `Index3D` | 0.54 | 0.92 | 0.80 | 0.90 | 0.78 |
 | clustered | all hits | `SimdIndex3D` | 0.52 | 0.67 | 1.11 | 0.93 | 0.94 |
 | clustered | all hits | `Index3D` | 1.24 | 1.88 | 3.25 | 3.39 | 1.60 |
-| sparse | occlusion | `Index3D` | 0.77 | 1.40 | 1.30 | 1.33 | 1.04 |
-| mid | occlusion | `Index3D` | 0.84 | 1.63 | 1.39 | 1.57 | 1.16 |
-| dense | occlusion | `Index3D` | 0.79 | 1.50 | 1.32 | 1.43 | 1.09 |
-| clustered | occlusion | `Index3D` | 1.52 | 2.40 | 2.33 | 2.33 | 2.27 |
 
 On uniform scenes `SimdIndex3D` wins closest hit by 1.4–3.8× and all hits by
 1.8–6.7× on every machine, more as the scene gets denser. On the clustered
@@ -920,13 +916,39 @@ scene the SAH tree is structurally better: `bvh` wins closest hit by
 Xeon) and a 1.1× loss (the Zen 4). The scalar `Index3D` needs the dense scene
 or the Xeon to beat `bvh`; on AMD it trails by up to 1.5× on the sparse and mid ones.
 
-Occlusion is where `bvh` does best. Its lazy iterator stops at the first leaf
-it reaches. `Index3D::raycast_any` trails it by 1.04–1.63× on the uniform
-scenes everywhere but the Xeon; on the clustered one it trails by 1.5–2.4×
-everywhere. `SimdIndex3D::raycast_any` is slower still (1.2–3.3× the `bvh`
-time): it stops a front-to-back `raycast_each`, which keeps a priority queue
-where `Index3D::raycast_any` descends depth-first. For occlusion tests prefer
-`Index3D`.
+Occlusion (`raycast_any`, any hit at all) was timed after `SimdIndex3D` moved
+to a depth-first descent, on a second set of machines: a cloud Xeon VM
+(family 6 model 85, the Skylake-SP line, AVX-512), a Zen 3 (EPYC 7763,
+two runs), a Zen 4 (EPYC 9V74) with AVX-512 exposed (one run) and a Neoverse
+N2 (one run). Same scenes and rays as above, time relative to `bvh`:
+
+| Scene | Participant | Xeon (model 85) | Zen 3 | Zen 4 | N2 |
+|---|---|---:|---:|---:|---:|
+| sparse | `SimdIndex3D` | 0.40 | 0.53 | 0.42 | 0.67 |
+| sparse | `Index3D` | 1.03 | 1.39 | 1.39 | 1.06 |
+| mid | `SimdIndex3D` | 0.47 | 0.62 | 0.52 | 0.71 |
+| mid | `Index3D` | 1.20 | 1.61 | 1.61 | 1.19 |
+| dense | `SimdIndex3D` | 0.46 | 0.59 | 0.48 | 0.65 |
+| dense | `Index3D` | 1.16 | 1.48 | 1.48 | 1.11 |
+| clustered | `SimdIndex3D` | 1.20 | 1.30 | 1.15 | 1.71 |
+| clustered | `Index3D` | 2.09 | 2.37 | 2.33 | 2.30 |
+
+`bvh`'s lazy iterator stops at the first leaf it reaches. So do both of
+ours. The scalar `Index3D::raycast_any` trails it by 1.03–1.61× on the uniform
+scenes. `SimdIndex3D::raycast_any` runs the same descent with the vector slab
+test of `raycast` and wins them by 1.4–2.5×. The clustered scene is the SAH
+tree's again: `bvh` wins by 1.15–1.7×. Before the change `SimdIndex3D` stopped
+a front-to-back `raycast_each` with a priority queue it did not need and
+took 1.2–3.3× the `bvh` time; `paired_raycast_any` times the two forms against
+each other. For oblique rays the depth-first one takes 0.16–0.25 of the old
+time on the uniform scenes on x86 and 0.34–0.41 on the N2 (0.35–0.44 and 0.59
+on the clustered scene). Axis-parallel rays always take the `wide` kernel and
+gain less: 0.27–0.39 on x86 and 0.42–0.55 on the N2. Two cells did not win.
+On the N2 the clustered scene's axis-parallel rays take 1.12× the scalar
+`Index3D::raycast_any` time (NEON `wide` against the scalar slab, on rays that
+mostly miss). On the model 85 Xeon the AVX2 kernel beats the AVX-512 one the
+dispatch picks by 8–10% on the 2D and clustered rows (the two are level on
+the others), while on the Zen 4 AVX-512 is ahead by 2–16%.
 
 The packed Hilbert tree builds ~7x faster than the SAH tree (4 ms against
 31 ms for 100k uniform boxes on the Zen 5 laptop, Criterion). Reproduce the
@@ -1109,9 +1131,9 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
   collects 1.4–1.8× faster on small windows and 2.6–3.3× on large ones. Its
   `visit` leads by 1.1–1.5× and 2.3–2.5×; its early exit is 1.3–1.6× faster on
   every window class. `Index2D` build is faster as well;
-- against the `bvh` crate, `SimdIndex3D` wins closest hit and all hits on
-  uniform scenes on every machine measured and loses closest hit on a clustered
-  one, where the SAH tree is better; `bvh`'s lazy iterator wins occlusion;
+- against the `bvh` crate, `SimdIndex3D` wins closest hit, all hits and
+  occlusion on uniform scenes on every machine measured and loses closest hit
+  and occlusion on a clustered one, where the SAH tree is better;
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
   is faster when Z meaningfully prunes the tree;
 - the SIMD indexes' lead over the scalar ones on range search depends on the
@@ -1174,6 +1196,9 @@ Benchmark coverage:
   comparisons interleaved in one binary, on the class-sized query sets of
   `benches/support/competitors.rs` (the numbers in
   [2D competitors](#2d-competitors) and the `bvh` section);
+- `paired_raycast_any` times the SIMD indexes' depth-first `raycast_any`
+  against the priority-queue form it replaced, owned and view, 2D and 3D,
+  with the scalar indexes as the control;
 - `raytriangle3d_bench` compares `closest_triangle` over `f64` vs compact `f32`
   triangle records.
 

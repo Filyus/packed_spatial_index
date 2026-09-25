@@ -30,6 +30,21 @@ All notable changes to this crate are documented here.
 
   The cells that lose are 3D windows that find nothing on the N2 (2–3%).
 
+### SIMD
+
+- **`SimdIndex2D` / `SimdIndex3D` `raycast_any` descends depth-first.** It
+  stopped `raycast_each` at its first hit, keeping a priority queue and testing
+  children one at a time for an order `any` never promised. It now returns at
+  the first leaf box the segment enters, testing children with the vector slab
+  test of `raycast` (AVX-512, AVX2 or `wide`; axis-parallel rays take `wide`).
+  On uniform 3D scenes it takes 0.16–0.25 of the old time for oblique rays
+  and 0.27–0.39 for axis-parallel ones on a Zen 3, a Zen 4 and a cloud Xeon;
+  a Neoverse N2 measured 0.34–0.41 and 0.42–0.55. Against the `bvh` crate's
+  occlusion test it went from 1.2–3.3× the time to 0.40–0.71×; on a clustered
+  scene `bvh` stays ahead by 1.15–1.7×. The views (`SimdIndex2DView` /
+  `SimdIndex3DView`) run the scalar depth-first descent of `Index2DView` /
+  `Index3DView`: 0.51–0.85 of their old time.
+
 ## [0.33.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.32.0...psi-v0.33.0) - 2026-09-25
 
 ### Search

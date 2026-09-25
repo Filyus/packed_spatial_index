@@ -248,16 +248,21 @@ into a bitmask has no `continue` in it, and that is what lets the autovectorizer
 widen it: in the shipped build (`lto = true`), the collect paths' mask loop
 compiles to 4-wide `vcmppd` against mask registers, while the branching loops it
 replaced stayed one box at a time. So the collect paths get vector compares out
-of a change that reads as a branch-prediction fix, and the callback paths, which
-keep their branches for the reason below, keep the scalar loop as well.
+of a change that reads as a branch-prediction fix. The owned 2D callback paths
+take the same mask; the search iterators keep their branches for the reason
+below, so they keep the scalar loop as well.
 
 Two boundaries on the technique are measured, and both keep it off the other
 paths:
 
-- **The callback and early-exit forms keep their branches.** `visit`, `any`,
-  `first` and the search iterators leave at the first hit, so the full mask of
-  every internal node on the way down is fixed overhead they never recover.
-  Measured at +40–60% on `any` and a loss on narrow `visit`.
+- **The search iterators keep their branches.** An iterator yields one item
+  per call, so it cannot drain a mask in one pass: masked it loses 7–14%. The
+  owned 2D `visit`, `any` and `first` take the mask. `visit` also hands a
+  covered subtree's leaf range to the callback whole; `any` and `first` skip
+  the containment test that finds one, since they stop at the first item.
+  Masked / branching on small, mid and large windows: `visit` 0.65, 0.70, 0.39
+  on Zen 3 and 0.58, 0.63, 0.36 on Zen 4; `first` 0.76 and 0.90 on Zen 3 for
+  small and mid windows, 0.68 and 0.79 on Zen 4, about even on large ones.
 - **The per-child test has to be cheap.** The saving is one mispredicted branch,
   so a predicate that costs many times that swallows it. Routing the shape-region
   collect paths (convex polygon, frustum) through the same traversal moved

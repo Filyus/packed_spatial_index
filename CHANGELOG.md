@@ -6,6 +6,14 @@ All notable changes to this crate are documented here.
 
 ### Search
 
+- **Owned 2D `visit`, `any` and `first` fold the child tests into a mask.**
+  They kept one branch per child after the collect paths moved to the mask.
+  Now `visit` takes it too, with a covered subtree's leaf range handed to the
+  callback whole. `any` and `first` take the mask without the containment
+  test. Against the old form on a Zen 4 (EPYC 9V74), from small to large
+  windows: `visit` 0.58×, 0.63×, 0.36× the time; `first` 0.68×, 0.79× and
+  about even. aarch64 keeps the branch, as it does on the collect paths.
+
 - **`Index2DView` range search keeps its result `Vec` out of a reload
   chain.** `search_into` and `search_with` pushed through a `&mut Vec<usize>`.
   Where the collect kernel is inlined under register pressure, the compiler kept

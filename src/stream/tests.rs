@@ -2591,3 +2591,268 @@ fn async_estimate_matches_sync_and_reads_nothing_at_the_floor() {
         );
     }
 }
+
+// ---- Block-aligned query reads (`StreamLimits::align_bytes`) ----
+
+/// A reader that logs every `(offset, len)` it serves.
+struct LogReader {
+    inner: Vec<u8>,
+    log: RefCell<Vec<(u64, usize)>>,
+}
+
+impl RangeReader for LogReader {
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.log.borrow_mut().push((offset, buf.len()));
+        SliceReader::new(self.inner.as_slice()).read_exact_at(offset, buf)
+    }
+    fn len(&self) -> Option<u64> {
+        Some(self.inner.len() as u64)
+    }
+}
+
+fn align_limits(block: Option<u64>) -> StreamLimits {
+    StreamLimits {
+        align_bytes: block,
+        ..StreamLimits::default()
+    }
+}
+
+/// The files the alignment tests run over: SoA, interleaved, a variable
+/// payload with a prefix section and a fixed-width payload.
+fn alignment_files() -> Vec<Vec<u8>> {
+    let (owned, soa) = random_owned(20_000, 0xA119);
+    let payloads: Vec<Vec<u8>> = (0..20_000)
+        .map(|i| format!("payload-{i}-{}", "x".repeat(i % 40)).into_bytes())
+        .collect();
+    let flat: Vec<u8> = (0..20_000 * 12).map(|i| i as u8).collect();
+    vec![
+        soa,
+        owned.serialize().interleaved().to_bytes().unwrap(),
+        owned
+            .serialize()
+            .payloads(&payloads)
+            .payload_prefix_len(8)
+            .to_bytes()
+            .unwrap(),
+        owned.serialize().records(12, &flat).to_bytes().unwrap(),
+    ]
+}
+
+const ALIGN_QUERIES: [Box2D; 3] = [
+    Box2D {
+        min_x: 500.0,
+        min_y: 500.0,
+        max_x: 500.0,
+        max_y: 500.0,
+    },
+    Box2D {
+        min_x: 300.0,
+        min_y: 300.0,
+        max_x: 340.0,
+        max_y: 340.0,
+    },
+    Box2D {
+        min_x: 100.0,
+        min_y: 100.0,
+        max_x: 600.0,
+        max_y: 600.0,
+    },
+];
+
+/// Everything the sync queries return for `bytes` under `block` and the reads
+/// the queries issued (open excluded).
+#[allow(clippy::type_complexity)]
+fn aligned_sync_run(bytes: &[u8], block: Option<u64>) -> (Vec<String>, Vec<(u64, usize)>, u64) {
+    let reader = LogReader {
+        inner: bytes.to_vec(),
+        log: RefCell::new(Vec::new()),
+    };
+    let stream = StreamIndex2D::open_with_limits(reader, align_limits(block)).unwrap();
+    stream.core.reader.log.borrow_mut().clear();
+    let mut out = Vec::new();
+    for q in ALIGN_QUERIES {
+        let mut ids = stream.search(q).unwrap();
+        ids.sort_unstable();
+        out.push(format!("{ids:?}"));
+        if stream.has_payload() {
+            let mut pairs = stream.search_payloads(q).unwrap();
+            pairs.sort_unstable();
+            out.push(format!("{pairs:?}"));
+            let mut ranks = Vec::new();
+            stream
+                .search_payload_prefixes_each(q, 8, |p| {
+                    ranks.push(p.leaf_rank);
+                    out.push(format!("{} {} {:?}", p.id, p.payload_len, p.prefix));
+                })
+                .unwrap();
+            let page: Vec<usize> = ranks.iter().copied().step_by(3).collect();
+            stream
+                .payloads_at_ranks_each(&page, |rank, blob| out.push(format!("{rank} {blob:?}")))
+                .unwrap();
+        }
+    }
+    let log = stream.core.reader.log.borrow().clone();
+    (out, log, stream.core.data_end)
+}
+
+fn assert_block_aligned(log: &[(u64, usize)], block: u64, data_end: u64) {
+    assert!(!log.is_empty());
+    for &(offset, len) in log {
+        let end = offset + len as u64;
+        assert!(
+            offset.is_multiple_of(block),
+            "read at {offset} is not aligned to {block}"
+        );
+        assert!(
+            end.is_multiple_of(block) || end == data_end,
+            "read [{offset}, {end}) does not end on a {block}-byte block"
+        );
+    }
+}
+
+#[test]
+fn aligned_reads_return_the_same_answers_on_block_boundaries() {
+    for bytes in alignment_files() {
+        let (want, exact_log, _) = aligned_sync_run(&bytes, None);
+        assert!(exact_log.iter().any(|&(offset, _)| offset % 1000 != 0));
+        for block in [1000, 16 * 1024, 64 * 1024] {
+            let (got, log, data_end) = aligned_sync_run(&bytes, Some(block));
+            assert_eq!(got, want, "block {block}");
+            assert_block_aligned(&log, block, data_end);
+        }
+        // Zero means off.
+        let (got, log, _) = aligned_sync_run(&bytes, Some(0));
+        assert_eq!(got, want);
+        assert_eq!(log, exact_log);
+    }
+}
+
+#[test]
+fn aligned_reads_merge_runs_that_share_a_block() {
+    let (_, bytes) = random_owned(50_000, 0xA11A);
+    let q = Box2D::new(100.0, 100.0, 400.0, 400.0);
+    let cost = |block: Option<u64>| {
+        let stream = StreamIndex2D::open_with_limits(
+            CountingReader::new(SliceReader::new(bytes.clone())),
+            align_limits(block),
+        )
+        .unwrap();
+        let (r0, b0) = (
+            *stream.core.reader.reads.borrow(),
+            *stream.core.reader.bytes.borrow(),
+        );
+        let mut hits = stream.search(q).unwrap();
+        hits.sort_unstable();
+        let reads = *stream.core.reader.reads.borrow() - r0;
+        let read_bytes = *stream.core.reader.bytes.borrow() - b0;
+        (reads, read_bytes, hits)
+    };
+    let (exact_reads, exact_bytes, want) = cost(None);
+    let (reads, read_bytes, hits) = cost(Some(64 * 1024));
+    assert_eq!(hits, want);
+    assert!(
+        reads < exact_reads,
+        "64 KiB blocks should merge runs: {reads} reads vs {exact_reads}"
+    );
+    assert!(read_bytes > exact_bytes);
+}
+
+#[test]
+fn aligned_reads_are_charged_whole_blocks() {
+    let (_, bytes) = random_owned(20_000, 0xA11B);
+    let q = ALIGN_QUERIES[0];
+    let stream = open_slice_counting(bytes.clone());
+    let before = *stream.core.reader.bytes.borrow();
+    stream.search(q).unwrap();
+    let exact = *stream.core.reader.bytes.borrow() - before;
+    assert!(exact > 0 && exact < 16 * 1024);
+
+    let limits = StreamLimits {
+        max_read_bytes: Some(exact),
+        ..align_limits(Some(16 * 1024))
+    };
+    let aligned = StreamIndex2D::open_with_limits(SliceReader::new(bytes.clone()), limits).unwrap();
+    assert!(matches!(aligned.search(q), Err(StreamError::LimitExceeded)));
+    let limits = StreamLimits {
+        max_read_bytes: Some(exact),
+        ..StreamLimits::default()
+    };
+    let exact_stream = StreamIndex2D::open_with_limits(SliceReader::new(bytes), limits).unwrap();
+    assert!(exact_stream.search(q).is_ok());
+}
+
+/// An async reader that logs every `(offset, len)` it serves.
+#[cfg(feature = "async")]
+struct AsyncLogReader {
+    inner: Vec<u8>,
+    log: RefCell<Vec<(u64, usize)>>,
+}
+
+#[cfg(feature = "async")]
+impl AsyncRangeReader for AsyncLogReader {
+    async fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.log.borrow_mut().push((offset, buf.len()));
+        YieldOnce(false).await;
+        SliceReader::new(self.inner.as_slice()).read_exact_at(offset, buf)
+    }
+    fn len(&self) -> Option<u64> {
+        Some(self.inner.len() as u64)
+    }
+}
+
+#[cfg(feature = "async")]
+#[allow(clippy::type_complexity)]
+fn aligned_async_run(bytes: &[u8], block: Option<u64>) -> (Vec<String>, Vec<(u64, usize)>, u64) {
+    let reader = AsyncLogReader {
+        inner: bytes.to_vec(),
+        log: RefCell::new(Vec::new()),
+    };
+    let stream = pollster::block_on(StreamIndex2D::open_with_limits_async(
+        reader,
+        align_limits(block),
+    ))
+    .unwrap();
+    stream.core.reader.log.borrow_mut().clear();
+    let mut out = Vec::new();
+    for q in ALIGN_QUERIES {
+        let mut ids = pollster::block_on(stream.search_async(q)).unwrap();
+        ids.sort_unstable();
+        out.push(format!("{ids:?}"));
+        if stream.has_payload_async() {
+            let mut pairs = pollster::block_on(stream.search_payloads_async(q)).unwrap();
+            pairs.sort_unstable();
+            out.push(format!("{pairs:?}"));
+            let mut ranks = Vec::new();
+            pollster::block_on(stream.visit_payload_prefixes_async(q, 8, |p| {
+                ranks.push(p.leaf_rank);
+                out.push(format!("{} {} {:?}", p.id, p.payload_len, p.prefix));
+            }))
+            .unwrap();
+            let page: Vec<usize> = ranks.iter().copied().step_by(3).collect();
+            pollster::block_on(stream.visit_payloads_at_ranks_async(&page, |rank, blob| {
+                out.push(format!("{rank} {blob:?}"))
+            }))
+            .unwrap();
+        }
+    }
+    let log = stream.core.reader.log.borrow().clone();
+    (out, log, stream.core.data_end)
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_aligned_reads_match_sync_on_block_boundaries() {
+    for bytes in alignment_files() {
+        let (want, _, _) = aligned_sync_run(&bytes, None);
+        let (got, _, _) = aligned_async_run(&bytes, None);
+        assert_eq!(got, want);
+        for block in [1000, 16 * 1024, 64 * 1024] {
+            let (got, log, data_end) = aligned_async_run(&bytes, Some(block));
+            assert_eq!(got, want, "block {block}");
+            assert_block_aligned(&log, block, data_end);
+            // A batch never fetches the same block twice.
+            let (_, sync_log, _) = aligned_sync_run(&bytes, Some(block));
+            assert!(log.len() <= sync_log.len());
+        }
+    }
+}

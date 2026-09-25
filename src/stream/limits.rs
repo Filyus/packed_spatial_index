@@ -75,6 +75,15 @@ pub struct StreamLimits {
     /// falls back to reading the superblock alone. `Some(0)` reads only the
     /// superblock first. Ignored by `from_directory` and by per-query checks.
     pub open_head_bytes: Option<u64>,
+    /// Round every query read out to whole blocks of this many bytes (e.g.
+    /// 16 or 64 KiB), so a caching proxy in front of the source (a CDN, nginx
+    /// `slice`) sees the same few range keys from every query instead of a new
+    /// key per byte span. Reads that land in the same block are merged into one.
+    /// `None` (the default) or `Some(0)` reads exact ranges. It costs bytes (up
+    /// to a block per read) and saves reads only where runs share a block; keep
+    /// the block small, since it is charged against `max_read_bytes` like any
+    /// read. Open-time reads are unaffected.
+    pub align_bytes: Option<u64>,
 }
 
 /// Running per-query cost counters checked against [`StreamLimits`].
@@ -83,6 +92,11 @@ pub(super) struct Budget {
     reads: usize,
     bytes: u64,
     items: usize,
+    /// The last block-aligned span a sync query fetched with
+    /// [`StreamLimits::align_bytes`] set: the next read of the same query is
+    /// served from it where it overlaps. Queries read their runs in ascending
+    /// order, so this one span catches reads that share a block.
+    pub(super) last_block: Option<(u64, Vec<u8>)>,
 }
 
 impl Budget {
@@ -92,6 +106,7 @@ impl Budget {
             reads: 0,
             bytes: 0,
             items: 0,
+            last_block: None,
         }
     }
 

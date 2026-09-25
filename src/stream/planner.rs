@@ -114,3 +114,54 @@ pub(super) fn expand_frontier(
     next.dedup();
     Ok(next)
 }
+
+/// Widen `[offset, end)` to whole `block`-byte blocks, clamped to `data_end`
+/// but never below `end`, so a read past the data still fails as it would
+/// unaligned.
+pub(super) fn align_span(offset: u64, end: u64, block: u64, data_end: u64) -> (u64, u64) {
+    let lo = offset - offset % block;
+    let hi = end
+        .div_ceil(block)
+        .saturating_mul(block)
+        .min(data_end)
+        .max(end);
+    (lo, hi)
+}
+
+/// Block-aligned fetches for a batch of reads, from [`plan_aligned`].
+#[cfg(feature = "async")]
+pub(super) struct AlignedPlan {
+    /// `(offset, len)` of each fetch, ascending and block-aligned.
+    pub(super) fetches: Vec<(u64, usize)>,
+    /// Per read, `(fetch index, byte offset within it)`; `usize::MAX` for an
+    /// empty read, which needs no fetch.
+    pub(super) place: Vec<(usize, usize)>,
+}
+
+/// Plan block-aligned fetches for a batch of `(offset, len)` reads: each read
+/// widens to whole blocks and reads sharing a block merge into one fetch.
+/// The async reader batches a level's reads this way; the sync reader issues
+/// them one at a time and reuses its last block instead.
+#[cfg(feature = "async")]
+pub(super) fn plan_aligned(reads: &[(u64, usize)], block: u64, data_end: u64) -> AlignedPlan {
+    let mut order: Vec<usize> = (0..reads.len()).filter(|&i| reads[i].1 > 0).collect();
+    order.sort_unstable_by_key(|&i| reads[i].0);
+    let mut fetches: Vec<(u64, u64)> = Vec::new();
+    let mut place = vec![(usize::MAX, 0); reads.len()];
+    for i in order {
+        let (offset, len) = reads[i];
+        let (lo, hi) = align_span(offset, offset + len as u64, block, data_end);
+        match fetches.last_mut() {
+            // Aligned spans that overlap share at least one block.
+            Some((_, end)) if lo < *end => *end = (*end).max(hi),
+            _ => fetches.push((lo, hi)),
+        }
+        let at = fetches.len() - 1;
+        place[i] = (at, (offset - fetches[at].0) as usize);
+    }
+    let fetches = fetches
+        .into_iter()
+        .map(|(lo, hi)| (lo, (hi - lo) as usize))
+        .collect();
+    AlignedPlan { fetches, place }
+}

@@ -55,6 +55,25 @@ All notable changes to this crate are documented here.
   A file smaller than the head opens in one read. A source that hides its
   length and is shorter than the head falls back to the superblock read.
 
+- **`StreamLimits::align_bytes` rounds query reads out to whole blocks.** A
+  caching proxy in front of the source (a CDN, nginx `slice`) keys on the exact
+  range, so two queries reading `1000-2000` and `1500-2500` never share an entry.
+  With a block size set, every query read starts and ends on a block boundary
+  (the last one on the data end) and reads that share a block merge into one.
+  Off by default: it buys cache hits with bytes. On 1 000 000 items (2D, sync
+  reads and bytes; exact, then 16 KiB, then 64 KiB):
+
+  | Query | Hits | Reads | Bytes |
+  |---|---:|---|---|
+  | point | 2 | 4 / 4 / 4 | 1.0 KB / 64 KB / 256 KB |
+  | 5 x 5 window | 51 | 4 / 4 / 4 | 3.6 KB / 64 KB / 256 KB |
+  | 50 x 50 window | 2 693 | 14 / 13 / 9 | 155 KB / 352 KB / 576 KB |
+  | 250 x 250 window | 62 943 | 49 / 45 / 35 | 2.8 MB / 3.4 MB / 4.5 MB |
+  | 250 x 250 with payloads | 62 943 | 87 / 83 / 73 | 5.4 MB / 6.6 MB / 9.4 MB |
+
+  The async reader merges a whole batch, so it saves more reads on wide
+  windows (29 and 51 at 64 KiB for the last two rows) for the same bytes.
+
 ### SIMD
 
 - **`SimdIndex2D` / `SimdIndex3D` `raycast_any` descends depth-first.** It

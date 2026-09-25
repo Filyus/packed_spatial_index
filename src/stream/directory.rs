@@ -27,6 +27,7 @@ pub(crate) struct StreamCoreParts {
     pub(crate) box0: u64,
     pub(crate) idx0: u64,
     pub(crate) dir_node_start: usize,
+    pub(crate) data_end: u64,
     pub(crate) dir_boxes: Arc<[u8]>,
     pub(crate) dir_indices: Arc<[u8]>,
     pub(crate) payload: Option<PayloadSection>,

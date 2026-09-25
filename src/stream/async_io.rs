@@ -10,7 +10,7 @@ use super::payload::{
     PayloadSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span, payload_run_end,
     payload_run_end_fixed,
 };
-use super::planner::{apply_gather_run, expand_frontier, plan_gather};
+use super::planner::{AlignedPlan, apply_gather_run, expand_frontier, plan_aligned, plan_gather};
 use super::{
     PayloadPrefix, StreamCore, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D,
     StreamIndex3DF32, StreamLimits, parse_box2d, parse_box2d_f32, parse_box3d, parse_box3d_f32,
@@ -113,6 +113,51 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         }
     }
 
+    /// Fetch a batch of independent `(offset, len)` reads concurrently,
+    /// charging `budget` and return one buffer per read (empty reads cost
+    /// nothing). With [`StreamLimits::align_bytes`] set, each read widens to
+    /// whole blocks and reads sharing a block share one fetch.
+    async fn read_batch_async(
+        &self,
+        reads: &[(u64, usize)],
+        budget: &mut Budget,
+    ) -> Result<Vec<Vec<u8>>, StreamError> {
+        let Some(block) = self.align_block() else {
+            let mut bufs: Vec<Vec<u8>> = reads.iter().map(|&(_, len)| vec![0u8; len]).collect();
+            for buf in bufs.iter().filter(|buf| !buf.is_empty()) {
+                budget.charge_read(buf.len())?;
+            }
+            let fetches = reads
+                .iter()
+                .zip(bufs.iter_mut())
+                .filter(|(_, buf)| !buf.is_empty())
+                .map(|(&(offset, _), buf)| self.reader.read_exact_at(offset, buf.as_mut_slice()));
+            futures_util::future::try_join_all(fetches).await?;
+            return Ok(bufs);
+        };
+        let AlignedPlan { fetches, place } = plan_aligned(reads, block, self.data_end);
+        let mut fetched: Vec<Vec<u8>> = fetches.iter().map(|&(_, len)| vec![0u8; len]).collect();
+        for buf in &fetched {
+            budget.charge_read(buf.len())?;
+        }
+        let pending = fetches
+            .iter()
+            .zip(fetched.iter_mut())
+            .map(|(&(offset, _), buf)| self.reader.read_exact_at(offset, buf.as_mut_slice()));
+        futures_util::future::try_join_all(pending).await?;
+        Ok(reads
+            .iter()
+            .zip(place)
+            .map(|(&(_, len), (at, within))| {
+                if len == 0 {
+                    Vec::new()
+                } else {
+                    fetched[at][within..within + len].to_vec()
+                }
+            })
+            .collect())
+    }
+
     /// Async mirror of [`gather`](StreamCore::gather), but issues all of a
     /// level's coalesced runs concurrently (one buffer each). On a
     /// single-threaded async executor this puts several range fetches in flight
@@ -135,15 +180,8 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             out,
             self.coalesce_gap(),
         );
-        for run in &runs {
-            budget.charge_read(run.len)?;
-        }
-        let mut bufs: Vec<Vec<u8>> = runs.iter().map(|run| vec![0u8; run.len]).collect();
-        let reads = runs
-            .iter()
-            .zip(bufs.iter_mut())
-            .map(|(run, buf)| self.reader.read_exact_at(run.offset, buf.as_mut_slice()));
-        futures_util::future::try_join_all(reads).await?;
+        let reads: Vec<(u64, usize)> = runs.iter().map(|run| (run.offset, run.len)).collect();
+        let bufs = self.read_batch_async(&reads, budget).await?;
         for (run, buf) in runs.iter().zip(&bufs) {
             apply_gather_run(out, run, buf, stride);
         }
@@ -175,19 +213,17 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         }
 
         // Phase 1: read every run's offset table concurrently.
-        let mut off_bufs: Vec<Vec<u8>> = runs
+        let off_reads: Vec<(u64, usize)> = runs
             .iter()
-            .map(|&(j, k)| vec![0u8; (leaf_positions[k] + 2 - leaf_positions[j]) * 8])
+            .map(|&(j, k)| {
+                let lo = leaf_positions[j];
+                (
+                    section.offsets_start + (lo * 8) as u64,
+                    (leaf_positions[k] + 2 - lo) * 8,
+                )
+            })
             .collect();
-        for buf in &off_bufs {
-            budget.charge_read(buf.len())?;
-        }
-        let off_reads = runs.iter().zip(off_bufs.iter_mut()).map(|(&(j, _), buf)| {
-            let lo = leaf_positions[j];
-            self.reader
-                .read_exact_at(section.offsets_start + (lo * 8) as u64, buf.as_mut_slice())
-        });
-        futures_util::future::try_join_all(off_reads).await?;
+        let off_bufs = self.read_batch_async(&off_reads, budget).await?;
 
         // Validate each run's blob span.
         let mut spans = Vec::with_capacity(runs.len());
@@ -201,23 +237,11 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         }
 
         // Phase 2: read every run's blobs concurrently (empty spans are no-ops).
-        let mut blob_bufs: Vec<Vec<u8>> = spans
+        let blob_reads: Vec<(u64, usize)> = spans
             .iter()
-            .map(|&(lo, hi)| vec![0u8; (hi - lo) as usize])
+            .map(|&(lo, hi)| (section.blobs_start + lo, (hi - lo) as usize))
             .collect();
-        for buf in &blob_bufs {
-            if !buf.is_empty() {
-                budget.charge_read(buf.len())?;
-            }
-        }
-        let blob_reads = spans
-            .iter()
-            .zip(blob_bufs.iter_mut())
-            .map(|(&(lo, _), buf)| {
-                self.reader
-                    .read_exact_at(section.blobs_start + lo, buf.as_mut_slice())
-            });
-        futures_util::future::try_join_all(blob_reads).await?;
+        let blob_bufs = self.read_batch_async(&blob_reads, budget).await?;
 
         // Emit every run.
         for ((&(j, k), off_buf), (&(blob_lo, blob_hi), blob_buf)) in
@@ -264,21 +288,17 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             j = k + 1;
         }
 
-        let mut blob_bufs: Vec<Vec<u8>> = runs
+        let reads: Vec<(u64, usize)> = runs
             .iter()
-            .map(|&(j, k)| vec![0u8; (leaf_positions[k] + 1 - leaf_positions[j]) * stride])
+            .map(|&(j, k)| {
+                let lo = leaf_positions[j];
+                (
+                    section.blobs_start + (lo * stride) as u64,
+                    (leaf_positions[k] + 1 - lo) * stride,
+                )
+            })
             .collect();
-        for buf in &blob_bufs {
-            budget.charge_read(buf.len())?;
-        }
-        let reads = runs.iter().zip(blob_bufs.iter_mut()).map(|(&(j, _), buf)| {
-            let lo = leaf_positions[j];
-            self.reader.read_exact_at(
-                section.blobs_start + (lo * stride) as u64,
-                buf.as_mut_slice(),
-            )
-        });
-        futures_util::future::try_join_all(reads).await?;
+        let blob_bufs = self.read_batch_async(&reads, budget).await?;
 
         for (&(j, k), blob_buf) in runs.iter().zip(&blob_bufs) {
             emit_run_payloads_fixed(
@@ -413,19 +433,17 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 j = k + 1;
             }
 
-            let mut off_bufs: Vec<Vec<u8>> = runs
+            let off_reads: Vec<(u64, usize)> = runs
                 .iter()
-                .map(|&(j, k)| vec![0u8; (leaf_positions[k] + 2 - leaf_positions[j]) * 8])
+                .map(|&(j, k)| {
+                    let lo = leaf_positions[j];
+                    (
+                        section.offsets_start + (lo * 8) as u64,
+                        (leaf_positions[k] + 2 - lo) * 8,
+                    )
+                })
                 .collect();
-            for buf in &off_bufs {
-                budget.charge_read(buf.len())?;
-            }
-            let off_reads = runs.iter().zip(off_bufs.iter_mut()).map(|(&(j, _), buf)| {
-                let lo = leaf_positions[j];
-                self.reader
-                    .read_exact_at(section.offsets_start + (lo * 8) as u64, buf.as_mut_slice())
-            });
-            futures_util::future::try_join_all(off_reads).await?;
+            let off_bufs = self.read_batch_async(&off_reads, budget).await?;
 
             for (&(j, k), off_buf) in runs.iter().zip(&off_bufs) {
                 let lo = leaf_positions[j];
@@ -476,18 +494,16 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 runs.push((j, k));
                 j = k + 1;
             }
-            let mut bufs: Vec<Vec<u8>> = runs
+            let reads: Vec<(u64, usize)> = runs
                 .iter()
-                .map(|&(j, k)| vec![0u8; (ranks[k] + 1 - ranks[j]) * stride])
+                .map(|&(j, k)| {
+                    (
+                        pfix.start + (ranks[j] * stride) as u64,
+                        (ranks[k] + 1 - ranks[j]) * stride,
+                    )
+                })
                 .collect();
-            for buf in &bufs {
-                budget.charge_read(buf.len())?;
-            }
-            let reads = runs.iter().zip(bufs.iter_mut()).map(|(&(j, _), buf)| {
-                self.reader
-                    .read_exact_at(pfix.start + (ranks[j] * stride) as u64, buf.as_mut_slice())
-            });
-            futures_util::future::try_join_all(reads).await?;
+            let bufs = self.read_batch_async(&reads, budget).await?;
 
             for (&(j, k), read_buf) in runs.iter().zip(&bufs) {
                 let lo = ranks[j];
@@ -529,24 +545,11 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             j = k + 1;
         }
 
-        let mut bufs: Vec<Vec<u8>> = prefix_runs
+        let reads: Vec<(u64, usize)> = prefix_runs
             .iter()
-            .map(|&(_, _, start, end)| vec![0u8; (end - start) as usize])
+            .map(|&(_, _, start, end)| (section.blobs_start + start, (end - start) as usize))
             .collect();
-        for buf in &bufs {
-            if !buf.is_empty() {
-                budget.charge_read(buf.len())?;
-            }
-        }
-        let reads = prefix_runs
-            .iter()
-            .zip(bufs.iter_mut())
-            .filter(|(_, buf)| !buf.is_empty())
-            .map(|(&(_, _, start, _), buf)| {
-                self.reader
-                    .read_exact_at(section.blobs_start + start, buf.as_mut_slice())
-            });
-        futures_util::future::try_join_all(reads).await?;
+        let bufs = self.read_batch_async(&reads, budget).await?;
 
         for (&(j, k, run_start, _), read_buf) in prefix_runs.iter().zip(&bufs) {
             for span in &spans[j..=k] {
@@ -594,21 +597,16 @@ impl<R: AsyncRangeReader> StreamCore<R> {
                 runs.push((j, k));
                 j = k + 1;
             }
-            let mut bufs: Vec<Vec<u8>> = runs
+            let reads: Vec<(u64, usize)> = runs
                 .iter()
-                .map(|&(j, k)| vec![0u8; (ranks[k] + 1 - ranks[j]) * stride])
+                .map(|&(j, k)| {
+                    (
+                        section.blobs_start + (ranks[j] * stride) as u64,
+                        (ranks[k] + 1 - ranks[j]) * stride,
+                    )
+                })
                 .collect();
-            for buf in &bufs {
-                budget.charge_read(buf.len())?;
-            }
-            let reads = runs.iter().zip(bufs.iter_mut()).map(|(&(j, _), buf)| {
-                let lo = ranks[j];
-                self.reader.read_exact_at(
-                    section.blobs_start + (lo * stride) as u64,
-                    buf.as_mut_slice(),
-                )
-            });
-            futures_util::future::try_join_all(reads).await?;
+            let bufs = self.read_batch_async(&reads, &mut budget).await?;
             for (&(j, k), buf) in runs.iter().zip(&bufs) {
                 let lo = ranks[j];
                 for &p in &ranks[j..=k] {
@@ -628,19 +626,16 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             j = k + 1;
         }
 
-        let mut off_bufs: Vec<Vec<u8>> = runs
+        let off_reads: Vec<(u64, usize)> = runs
             .iter()
-            .map(|&(j, k)| vec![0u8; (ranks[k] + 2 - ranks[j]) * 8])
+            .map(|&(j, k)| {
+                (
+                    section.offsets_start + (ranks[j] * 8) as u64,
+                    (ranks[k] + 2 - ranks[j]) * 8,
+                )
+            })
             .collect();
-        for buf in &off_bufs {
-            budget.charge_read(buf.len())?;
-        }
-        let off_reads = runs.iter().zip(off_bufs.iter_mut()).map(|(&(j, _), buf)| {
-            let lo = ranks[j];
-            self.reader
-                .read_exact_at(section.offsets_start + (lo * 8) as u64, buf.as_mut_slice())
-        });
-        futures_util::future::try_join_all(off_reads).await?;
+        let off_bufs = self.read_batch_async(&off_reads, &mut budget).await?;
 
         let mut blob_spans = Vec::with_capacity(ranks.len());
         for (&(j, k), off_buf) in runs.iter().zip(&off_bufs) {
@@ -678,23 +673,11 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             j = k + 1;
         }
 
-        let mut blob_bufs: Vec<Vec<u8>> = blob_runs
+        let blob_reads: Vec<(u64, usize)> = blob_runs
             .iter()
-            .map(|&(_, _, lo, hi)| vec![0u8; (hi - lo) as usize])
+            .map(|&(_, _, lo, hi)| (section.blobs_start + lo, (hi - lo) as usize))
             .collect();
-        for buf in &blob_bufs {
-            if !buf.is_empty() {
-                budget.charge_read(buf.len())?;
-            }
-        }
-        let blob_reads = blob_runs
-            .iter()
-            .zip(blob_bufs.iter_mut())
-            .map(|(&(_, _, lo, _), buf)| {
-                self.reader
-                    .read_exact_at(section.blobs_start + lo, buf.as_mut_slice())
-            });
-        futures_util::future::try_join_all(blob_reads).await?;
+        let blob_bufs = self.read_batch_async(&blob_reads, &mut budget).await?;
 
         for (&(j, k, blob_lo, _blob_hi), blob_buf) in blob_runs.iter().zip(&blob_bufs) {
             for span in &blob_spans[j..=k] {

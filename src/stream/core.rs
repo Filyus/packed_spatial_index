@@ -12,7 +12,7 @@ use super::payload::{
     PayloadSection, PrefixSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span,
     payload_run_end, payload_run_end_fixed,
 };
-use super::planner::{apply_gather_run, expand_frontier, plan_gather};
+use super::planner::{align_span, apply_gather_run, expand_frontier, plan_gather};
 use super::readers::RangeReader;
 
 const MAX_CONTAINER_CHUNKS_WITHOUT_LEN: usize = 1024;
@@ -48,6 +48,8 @@ pub(crate) struct StreamCore<R> {
     pub(crate) idx0: u64,
     /// First node position covered by the cached directory.
     pub(crate) dir_node_start: usize,
+    /// End of the last chunk: block-aligned query reads are clamped to it.
+    pub(crate) data_end: u64,
     /// Cached box (or node, when interleaved) bytes for positions
     /// `[dir_node_start, num_nodes)`, strided by `box_stride`. `Arc` so a
     /// directory split off with `into_parts` reattaches by a refcount bump, not
@@ -88,6 +90,11 @@ impl<R> StreamCore<R> {
         self.limits.coalesce_gap_bytes.unwrap_or(COALESCE_GAP_BYTES)
     }
 
+    /// Block size for aligned query reads, or `None` to read exact ranges.
+    pub(crate) fn align_block(&self) -> Option<u64> {
+        self.limits.align_bytes.filter(|&b| b > 0)
+    }
+
     /// Byte gap below which payload *prefixes* coalesce into one read.
     ///
     /// Defaults to `prefix_len`: never skip more than one prefix worth of
@@ -117,6 +124,7 @@ impl<R> StreamCore<R> {
             box0: self.box0,
             idx0: self.idx0,
             dir_node_start: self.dir_node_start,
+            data_end: self.data_end,
             dir_boxes: self.dir_boxes,
             dir_indices: self.dir_indices,
             payload: self.payload,
@@ -140,6 +148,7 @@ impl<R> StreamCore<R> {
             box0: layout.box0,
             idx0: layout.idx0,
             dir_node_start: layout.dir_node_start,
+            data_end: layout.data_end,
             dir_boxes: layout.dir_boxes.into(),
             dir_indices: layout.dir_indices.into(),
             payload: layout.payload,
@@ -163,6 +172,7 @@ impl<R> StreamCore<R> {
             box0: parts.box0,
             idx0: parts.idx0,
             dir_node_start: parts.dir_node_start,
+            data_end: parts.data_end,
             dir_boxes: parts.dir_boxes,
             dir_indices: parts.dir_indices,
             payload: parts.payload,
@@ -267,6 +277,51 @@ impl<R: RangeReader> StreamCore<R> {
         self.dir_boxes.get(start..start + self.record)
     }
 
+    /// Read `buf.len()` bytes at `offset` for a query, charging `budget`. With
+    /// [`StreamLimits::align_bytes`] set, the read widens to whole blocks
+    /// (clamped to the data end) and the part the query's previous aligned
+    /// fetch already holds is served from it, so runs sharing a block cost one
+    /// read. An empty read is a no-op.
+    fn read_charged(
+        &self,
+        offset: u64,
+        buf: &mut [u8],
+        budget: &mut Budget,
+    ) -> Result<(), StreamError> {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let Some(block) = self.align_block() else {
+            budget.charge_read(buf.len())?;
+            self.reader.read_exact_at(offset, buf)?;
+            return Ok(());
+        };
+        let end = offset + buf.len() as u64;
+        let (mut lo, hi) = align_span(offset, end, block, self.data_end);
+        // Serve the head of the read from the previous aligned fetch.
+        let mut done = 0usize;
+        if let Some((start, bytes)) = &budget.last_block {
+            let span_end = start + bytes.len() as u64;
+            if *start <= offset && offset < span_end {
+                done = (span_end.min(end) - offset) as usize;
+                let within = (offset - start) as usize;
+                buf[..done].copy_from_slice(&bytes[within..within + done]);
+                lo = span_end;
+            }
+        }
+        if done == buf.len() {
+            return Ok(());
+        }
+        let mut fetched = vec![0u8; (hi - lo) as usize];
+        budget.charge_read(fetched.len())?;
+        self.reader.read_exact_at(lo, &mut fetched)?;
+        let within = (offset + done as u64 - lo) as usize;
+        let rest = buf.len() - done;
+        buf[done..].copy_from_slice(&fetched[within..within + rest]);
+        budget.last_block = Some((lo, fetched));
+        Ok(())
+    }
+
     /// Gather `stride`-byte records for `positions` (sorted) from the section at
     /// `section0` into `out`. The planning and scatter live in [`plan_gather`] /
     /// [`apply_gather_run`] (shared with the async path); here we just read each
@@ -292,10 +347,9 @@ impl<R: RangeReader> StreamCore<R> {
             self.coalesce_gap(),
         );
         for run in &runs {
-            budget.charge_read(run.len)?;
             scratch.clear();
             scratch.resize(run.len, 0);
-            self.reader.read_exact_at(run.offset, scratch)?;
+            self.read_charged(run.offset, scratch, budget)?;
             apply_gather_run(out, run, scratch, stride);
         }
         Ok(())
@@ -571,17 +625,13 @@ impl<R: RangeReader> StreamCore<R> {
 
             off_buf.clear();
             off_buf.resize((hi + 2 - lo) * 8, 0);
-            budget.charge_read(off_buf.len())?;
-            self.reader
-                .read_exact_at(section.offsets_start + (lo * 8) as u64, off_buf)?;
+            self.read_charged(section.offsets_start + (lo * 8) as u64, off_buf, budget)?;
             let (blob_lo, blob_hi) = payload_blob_span(off_buf, lo, hi, section.blob_total)?;
 
             blob_buf.clear();
             blob_buf.resize((blob_hi - blob_lo) as usize, 0);
             if !blob_buf.is_empty() {
-                budget.charge_read(blob_buf.len())?;
-                self.reader
-                    .read_exact_at(section.blobs_start + blob_lo, blob_buf)?;
+                self.read_charged(section.blobs_start + blob_lo, blob_buf, budget)?;
             }
 
             emit_run_payloads(
@@ -628,9 +678,7 @@ impl<R: RangeReader> StreamCore<R> {
 
             blob_buf.clear();
             blob_buf.resize(span, 0);
-            budget.charge_read(span)?;
-            self.reader
-                .read_exact_at(section.blobs_start + (lo * stride) as u64, blob_buf)?;
+            self.read_charged(section.blobs_start + (lo * stride) as u64, blob_buf, budget)?;
 
             emit_run_payloads_fixed(
                 leaf_positions,
@@ -689,9 +737,11 @@ impl<R: RangeReader> StreamCore<R> {
                     let hi = survivors[k];
                     off_buf.clear();
                     off_buf.resize((hi + 2 - lo) * 8, 0);
-                    budget.charge_read(off_buf.len())?;
-                    self.reader
-                        .read_exact_at(section.offsets_start + (lo * 8) as u64, &mut off_buf)?;
+                    self.read_charged(
+                        section.offsets_start + (lo * 8) as u64,
+                        &mut off_buf,
+                        budget,
+                    )?;
                     for (offset, &p) in survivors[j..=k].iter().enumerate() {
                         let o0 = read_u64_le_unchecked(&off_buf, (p - lo) * 8);
                         let o1 = read_u64_le_unchecked(&off_buf, (p + 1 - lo) * 8);
@@ -723,9 +773,7 @@ impl<R: RangeReader> StreamCore<R> {
                     let hi = ranks[k];
                     read_buf.clear();
                     read_buf.resize((hi + 1 - lo) * stride, 0);
-                    budget.charge_read(read_buf.len())?;
-                    self.reader
-                        .read_exact_at(pfix.start + (lo * stride) as u64, &mut read_buf)?;
+                    self.read_charged(pfix.start + (lo * stride) as u64, &mut read_buf, budget)?;
                     for span in &spans[j..=k] {
                         let id = read_index(indices, span.run_index)?;
                         if id >= self.num_items {
@@ -765,9 +813,7 @@ impl<R: RangeReader> StreamCore<R> {
                 read_buf.clear();
                 read_buf.resize((run_end - run_start) as usize, 0);
                 if !read_buf.is_empty() {
-                    budget.charge_read(read_buf.len())?;
-                    self.reader
-                        .read_exact_at(section.blobs_start + run_start, &mut read_buf)?;
+                    self.read_charged(section.blobs_start + run_start, &mut read_buf, budget)?;
                 }
                 for span in &spans[j..=k] {
                     let id = read_index(indices, span.run_index)?;
@@ -824,9 +870,11 @@ impl<R: RangeReader> StreamCore<R> {
                 let span = (hi + 1 - lo) * stride;
                 blob_buf.clear();
                 blob_buf.resize(span, 0);
-                budget.charge_read(span)?;
-                self.reader
-                    .read_exact_at(section.blobs_start + (lo * stride) as u64, &mut blob_buf)?;
+                self.read_charged(
+                    section.blobs_start + (lo * stride) as u64,
+                    &mut blob_buf,
+                    &mut budget,
+                )?;
                 for &p in &ranks[j..=k] {
                     budget.charge_item()?;
                     let within = (p - lo) * stride;
@@ -842,9 +890,11 @@ impl<R: RangeReader> StreamCore<R> {
                 let hi = ranks[k];
                 off_buf.clear();
                 off_buf.resize((hi + 2 - lo) * 8, 0);
-                budget.charge_read(off_buf.len())?;
-                self.reader
-                    .read_exact_at(section.offsets_start + (lo * 8) as u64, &mut off_buf)?;
+                self.read_charged(
+                    section.offsets_start + (lo * 8) as u64,
+                    &mut off_buf,
+                    &mut budget,
+                )?;
                 let mut spans = Vec::with_capacity(k + 1 - j);
                 for &p in &ranks[j..=k] {
                     let blob_start = read_u64_le_unchecked(&off_buf, (p - lo) * 8);
@@ -878,9 +928,11 @@ impl<R: RangeReader> StreamCore<R> {
                     blob_buf.clear();
                     blob_buf.resize((run_end - run_start) as usize, 0);
                     if !blob_buf.is_empty() {
-                        budget.charge_read(blob_buf.len())?;
-                        self.reader
-                            .read_exact_at(section.blobs_start + run_start, &mut blob_buf)?;
+                        self.read_charged(
+                            section.blobs_start + run_start,
+                            &mut blob_buf,
+                            &mut budget,
+                        )?;
                     }
                     for span in &spans[span_start..=span_end] {
                         budget.charge_item()?;

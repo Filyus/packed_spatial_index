@@ -308,6 +308,19 @@ so a broad query still aborts rather than over-reading without limit. On a 1M
 file a wide window drops from tens of reads to a handful with both this and a
 roomy directory budget.
 
+`StreamLimits::align_bytes` is for a source behind a caching proxy (a CDN,
+nginx `slice`). The proxy keys on the exact byte range, so without it two
+queries that read overlapping ranges never share a cache entry. With a block
+size set (16 or 64 KiB), every query read is widened to whole blocks and reads
+that land in the same block merge into one, so all clients ask for the same few
+keys. It is off by default because it costs bytes: on a 1M-item file a point
+query reads 1 KB exact, 64 KB with 16 KiB blocks and 256 KB with 64 KiB blocks,
+for the same 4 reads. Wide windows save some reads (49 to 35 at 64 KiB, fewer
+still async, where a whole batch merges). The blocks are charged against
+`max_read_bytes`. Keep them small: whole-megabyte blocks turn a handful of point
+hits into megabytes read. The open reads are the same for every client and stay
+exact.
+
 `StreamLimits::prefix_coalesce_gap_bytes` is the same knob for the queries that
 read only the first few bytes of each matching payload. It defaults to the
 requested prefix length, which never skips more than one prefix worth of bytes

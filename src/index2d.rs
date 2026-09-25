@@ -2088,8 +2088,8 @@ impl Index2D {
 
         let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
-        // The masked form also skips the test under a subtree the query covers:
-        // its leaf range goes to the visitor whole, as the collect paths do.
+        // With `COVERED`, a subtree the query covers skips the test: its leaf
+        // range goes to the visitor whole, as the collect paths do.
         let mut contained = false;
 
         loop {
@@ -2098,7 +2098,7 @@ impl Index2D {
             let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
 
-            if MASKED && contained {
+            if COVERED && contained {
                 let (start, stop) = leaf_group_range(self, node_index, end, level);
                 for &index in &self.indices[start..stop] {
                     visitor(index)?;
@@ -2143,7 +2143,12 @@ impl Index2D {
                         if !b.overlaps(query) {
                             continue;
                         }
-                        stack.push(frame::pack(index, child_level));
+                        let flag = if COVERED {
+                            usize::from(query.contains(*b)) * frame::CONTAINED
+                        } else {
+                            0
+                        };
+                        stack.push(frame::pack(index, child_level) | flag);
                     }
                 }
             }

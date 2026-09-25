@@ -47,6 +47,12 @@ pub use serializer::Serializer3D;
 
 use crate::index2d::{MASK_CHUNK, for_each_hit, for_each_hit_rev, frame};
 
+/// Whether the 3D callback paths (`visit`, `any`, `first`) ship the mask. The
+/// collect paths take it on every target, but a Neoverse N2 measured the
+/// callback forms 6-19% slower with it, the covered-subtree path aside:
+/// that path runs in both forms, so aarch64 keeps it with the branch.
+pub(crate) const CALLBACK_MASK_PAYS_IN_3D: bool = !cfg!(target_arch = "aarch64");
+
 /// Overlap tests of up to 64 entries folded into a bitmask, bit `i` for entry
 /// `i` — the 3D twin of `index2d::overlap_mask`; see there for why the collect
 /// paths branch once per hit instead of once per child.
@@ -1637,7 +1643,7 @@ impl Index3D {
         // per-element `TreeAccess` kernel cannot. Measured ~1.5x faster than the
         // generic kernel on owned visit (the views, whose byte storage has no
         // slice to vectorize, keep using `visit_region`).
-        self.visit_with_stack_impl::<true, true, B, F>(query, stack, visitor)
+        self.visit_with_stack_impl::<CALLBACK_MASK_PAYS_IN_3D, true, B, F>(query, stack, visitor)
     }
 
     /// [`visit_with_stack`](Index3D::visit_with_stack) for a visitor that stops
@@ -1653,7 +1659,7 @@ impl Index3D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<true, false, B, F>(query, stack, visitor)
+        self.visit_with_stack_impl::<CALLBACK_MASK_PAYS_IN_3D, false, B, F>(query, stack, visitor)
     }
 
     /// [`visit_with_stack`](Index3D::visit_with_stack) in the form `MASKED`
@@ -1686,8 +1692,7 @@ impl Index3D {
         self.visit_with_stack_impl::<MASKED, false, B, F>(query, stack, visitor)
     }
 
-    /// The 2D `visit_with_stack_impl` in 3D, less its prefetch variant. The 3D
-    /// mask pays on every target measured, aarch64 included, so it always ships.
+    /// The 2D `visit_with_stack_impl` in 3D, less its prefetch variant.
     fn visit_with_stack_impl<const MASKED: bool, const COVERED: bool, B, F>(
         &self,
         query: Box3D,
@@ -1711,7 +1716,7 @@ impl Index3D {
             let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
 
-            if MASKED && contained {
+            if COVERED && contained {
                 let (start, stop) = leaf_group_range(self, node_index, end, level);
                 for &index in &self.indices[start..stop] {
                     visitor(index)?;
@@ -1754,7 +1759,12 @@ impl Index3D {
                     if !b.overlaps(query) {
                         continue;
                     }
-                    stack.push(frame::pack(index, child_level));
+                    let flag = if COVERED {
+                        usize::from(query.contains(*b)) * frame::CONTAINED
+                    } else {
+                        0
+                    };
+                    stack.push(frame::pack(index, child_level) | flag);
                 }
             }
 
@@ -3016,7 +3026,7 @@ impl<'a> Index3DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_forced::<true, B, F>(query, stack, visitor)
+        self.visit_with_stack_forced::<CALLBACK_MASK_PAYS_IN_3D, B, F>(query, stack, visitor)
     }
 
     /// Overlaps-only traversal, for the short-circuiting entry points.
@@ -3030,7 +3040,7 @@ impl<'a> Index3DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.find_with_stack_forced::<true, B, F>(query, stack, visitor)
+        self.find_with_stack_forced::<CALLBACK_MASK_PAYS_IN_3D, B, F>(query, stack, visitor)
     }
 
     /// [`visit_with_stack`](Self::visit_with_stack) in the form `MASKED` names:

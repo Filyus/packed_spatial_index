@@ -40,7 +40,17 @@ mod pin;
 
 const N: usize = 100_000;
 const EXTENT: f64 = 10_000.0;
-const QUERIES: usize = 400;
+
+/// Queries per set, `PAIRED_QUERIES` (default 400). Every rep replays the same
+/// set in the same order, so a predictor big enough to learn its whole branch
+/// sequence across reps flatters the branching form; a set of tens of
+/// thousands is too long a sequence to learn.
+fn queries() -> usize {
+    std::env::var("PAIRED_QUERIES")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(400)
+}
 
 /// (label, side range): small windows hit a handful, large ones thousands.
 const WINDOWS: [(&str, f64, f64); 3] = [
@@ -77,7 +87,7 @@ fn boxes_3d(seed: u64, max_side: f64) -> Vec<Box3D> {
 
 fn windows_2d(seed: u64, lo: f64, hi: f64) -> Vec<Box2D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..queries())
         .map(|_| {
             let s: f64 = rng.random_range(lo..hi);
             let x: f64 = rng.random_range(0.0..EXTENT - s);
@@ -89,7 +99,7 @@ fn windows_2d(seed: u64, lo: f64, hi: f64) -> Vec<Box2D> {
 
 fn windows_3d(seed: u64, lo: f64, hi: f64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..queries())
         .map(|_| {
             let s: f64 = rng.random_range(lo..hi);
             let x: f64 = rng.random_range(0.0..EXTENT - s);
@@ -120,7 +130,7 @@ fn build_3d(boxes: &[Box3D]) -> Index3D {
 /// meets tens to hundreds of boxes.
 fn rays(seed: u64) -> Vec<Ray3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..queries())
         .map(|_| {
             Ray3D::new(
                 Point3D::new(

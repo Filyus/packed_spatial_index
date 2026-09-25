@@ -36,7 +36,17 @@ fn n_items() -> usize {
         .unwrap_or(100_000)
 }
 const EXTENT: f64 = 10_000.0;
-const QUERIES: usize = 1_000;
+
+/// Query points per set, `PAIRED_QUERIES` (default 1000). Every rep replays
+/// the same set in the same order, so a predictor big enough to learn its whole
+/// branch sequence across reps flatters the branching form; a set of tens of
+/// thousands is too long a sequence to learn.
+fn queries() -> usize {
+    std::env::var("PAIRED_QUERIES")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(1_000)
+}
 
 fn build_2d(seed: u64) -> Index2D {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -68,7 +78,7 @@ fn build_3d(seed: u64) -> Index3D {
 
 fn points_2d(seed: u64) -> Vec<Box2D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..queries())
         .map(|_| {
             let x: f64 = rng.random_range(0.0..EXTENT);
             let y: f64 = rng.random_range(0.0..EXTENT);
@@ -79,7 +89,7 @@ fn points_2d(seed: u64) -> Vec<Box2D> {
 
 fn points_3d(seed: u64) -> Vec<Box3D> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..QUERIES)
+    (0..queries())
         .map(|_| {
             let x: f64 = rng.random_range(0.0..EXTENT);
             let y: f64 = rng.random_range(0.0..EXTENT);

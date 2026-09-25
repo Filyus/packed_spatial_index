@@ -139,21 +139,25 @@ the first hit.
 
 | Windows | Participant | Xeon (EMR) | Zen 3 | Zen 4 | Zen 4, no AVX-512 | N2 |
 |---|---|---:|---:|---:|---:|---:|
-| small | `Index2D` | 0.90 | 0.85 | 0.73 | 0.72 | 0.92 |
+| small | `Index2D` | 0.66 | 0.71 | 0.67 | 0.66 | 0.67 |
 | small | `SimdIndex2D` | 0.92 | 0.78 | 0.74 | 0.71 | 1.07 |
-| mid | `Index2D` | 1.00 | 1.00 | 0.85 | 0.83 | 1.04 |
+| mid | `Index2D` | 0.64 | 0.70 | 0.65 | 0.65 | 0.68 |
 | mid | `SimdIndex2D` | 0.88 | 0.94 | 0.86 | 0.85 | 1.36 |
-| large | `Index2D` | 1.33 | 1.35 | 1.23 | 1.22 | 1.27 |
+| large | `Index2D` | 0.65 | 0.72 | 0.69 | 0.69 | 0.75 |
 | large | `SimdIndex2D` | 0.99 | 1.06 | 1.12 | 1.04 | 1.67 |
 
-This is the one comparison the baseline wins. On a large window almost every
-item overlaps, so the first leaf reached holds a hit. The baseline stops inside
-that leaf at the first overlapping item, while this crate tests all of the
-leaf's items into the mask first. `Index2D::first` is 1.2–1.35× slower there.
-It is level on mid windows except on the Zen 4 (0.83–0.85) and 1.1–1.4×
-faster on small ones. `SimdIndex2D` lands at 0.99–1.12 of the baseline on large
-windows on x86 and is slower on the N2 (1.36 mid, 1.67 large), where its NEON
-path has no movemask.
+`Index2D::first` takes 0.64–0.75 of the baseline's time on every window class
+and machine. Until 0.33 it lost on large windows (1.22–1.35) and was level on
+mid ones: its early exit tested every child of each node on the path, where
+the baseline also tests them all but descends into the partial tail node of
+each level. The descent that replaced it stops testing at the first
+overlapping child (see [Early exit: which descent](#early-exit-which-descent)).
+The `Index2D` rows are from that change's runs (the Xeon three, the Zen 3 three,
+the Zen 4 one with AVX-512 exposed and two without, the N2 two). The
+`SimdIndex2D` rows are from the runs above: its early exit is a separate
+traversal the change did not touch. It lands at
+0.99–1.12 of the baseline on large windows on x86 and is slower on the N2
+(1.36 mid, 1.67 large), where its NEON path has no movemask.
 
 Build and persistence were measured with Criterion (`flatgeobuf2d_bench`) on
 the Zen 5 laptop, with persistence on the canonical byte format for the same
@@ -322,23 +326,15 @@ paths:
 
 - **The search iterators keep their branches.** An iterator yields one item
   per call, so it cannot drain a mask in one pass: masked it loses 7–14%.
-  `visit`, `any` and `first` take the mask, owned and view, 2D and 3D. `visit`
-  also hands a covered subtree's leaf range to the callback whole, in both
-  forms; `any` and `first` skip the containment test that finds one, since
-  they stop at the first item. Masked / branching on a Zen 3 (EPYC 7763),
-  small, mid and large windows:
-
-  | Path | `visit` | `first` |
-  |---|---|---|
-  | 2D owned | 0.63, 0.77, 0.90 | 0.73, 0.86, 1.06 |
-  | 2D view | 0.62, 0.74, 0.84 | 0.70, 0.83, 1.04 |
-  | 3D owned | 0.52, 0.51, 0.68 | 0.53, 0.65, 0.86 |
-  | 3D view | 0.52, 0.49, 0.64 | 0.52, 0.63, 0.85 |
-
-  A Zen 4 (EPYC 9V74) wins wider, `first` on large 2D windows included
-  (0.93–0.95). The one loss is that cell on Zen 3: an early exit on a large
-  window finds its hit in the first node or two, so the full mask of each is
-  work a branch would have cut short.
+  `visit` takes the mask in 2D and 3D, owned and view. It also hands a covered
+  subtree's leaf range to the callback whole, in both forms. Masked /
+  branching on a Zen 3 (EPYC 7763), small, mid and large windows: 0.63, 0.77,
+  0.90 owned and 0.62, 0.74, 0.84 on the view in 2D, 0.52, 0.51, 0.68 and 0.52,
+  0.49, 0.64 in 3D. Those runs put both arms behind one closure and a `match`,
+  which [read up to 25% off](#early-exit-which-descent) on one arm. `any` and
+  `first` have their own descent, which tests children into a mask only for
+  windows that expect almost nothing (see
+  [Early exit: which descent](#early-exit-which-descent)).
 - **The per-child test has to be cheap.** The saving is one mispredicted branch,
   so a predicate that costs many times that swallows it. Routing the shape-region
   collect paths (convex polygon, frustum) through the same traversal moved
@@ -356,10 +352,9 @@ paths:
   mask to cost more than the mispredicts it saves. That is the likely reason
   rather than a measured one. The 3D collect paths keep the mask on aarch64:
   the N2 gives 0.88 on mid and large view windows and 0.97–0.99 on raycast.
-  The 3D callback paths do not (`CALLBACK_MASK_PAYS_IN_3D`): an early exit
-  cannot spread the mask over many hits; the N2 measured 1.06–1.17 on
-  `first` and on small-window `visit`, a win only on large-window `visit`
-  (0.88–0.91). The scalar `Index2DF32` keeps the mask as well: with its
+  The 3D callback paths do not (`CALLBACK_MASK_PAYS_IN_3D`): the N2 measured
+  1.06–1.17 on small-window `visit`, a win only on large-window `visit`
+  (0.88–0.91); `any` / `first` branch there in both dimensions. The scalar `Index2DF32` keeps the mask as well: with its
   vectorized child test it wins on the N2 too (see above).
 - **The bench has to show the predictor queries it cannot learn.** Every rep
   replays the same query set. A Zen 4 or Zen 5 predictor learns each query's
@@ -446,6 +441,88 @@ inlining difference and reads as a regression that is not there.
 The callback forms (`search_within_each`, `search_within_any`) never take the
 masked path at any width. They can stop early, and a mask spends its work before
 the first hit is reported; the same change measured 40–60% worse on `any`.
+
+## Early exit: which descent
+
+`any` and `first` stop at their first item, so what they cost is the path to
+it. They used to share the callback traversal of `visit`: test every child of
+a node, push every overlapping one, descend into the lowest. On a large window
+almost every child overlaps, so every node on the path was scanned to the end.
+Counted on the [2D competitors](#2d-competitors) workload (100,000 boxes, node
+size 16), child tests per `first`:
+
+| Windows | old traversal | `static_aabb2d_index` | depth-first |
+|---|---:|---:|---:|
+| small | 72 | 66 | 50 |
+| mid | 67 | 58 | 44 |
+| large | 63 | 52 | 37 |
+
+`static_aabb2d_index` does the same full scan but descends into the last child
+it pushed, the highest. On each level the highest node is the partial tail
+of the level (2, 9, 7 and 10 children on the way down here, against 16). That
+alone was its 22% lead on large windows. The old traversal also took the scratch
+stack from thread-local storage on every call, worth 5–10% of a `first`.
+
+The descent that replaced it (`range::find_region`) enters a node's first
+overlapping child as soon as the test finds it and keeps the node's untested
+rest as the resume point of its level, one per level in a fixed array. No child
+is tested twice, so a traversal that runs to the end costs what the old one
+did; one that stops early skips the siblings after each child on its path, and
+no stack is taken. The items come in `visit` order, so `first` returns what it
+returned before.
+
+The child test has two forms; neither wins everywhere. Branching stops at
+the first hit; masked folds a node's tests into a bitmask and keeps the
+untaken bits as the resume point. Masked / branching, both depth first, over
+10,000 windows per row (`benches/paired_find_switch.rs`; owned, then view):
+
+| Windows | expected hits | Xeon (EMR) | Zen 3 | Zen 4 | N2 |
+|---|---:|---:|---:|---:|---:|
+| 2D, sides 1..10 | 0.03 | 0.78, 0.82 | 0.75, 0.81 | 0.68, 0.73 | 1.17, 1.24 |
+| 2D, sides 30..60 | 2.1 | 1.14, 1.20 | 1.01, 1.13 | 0.91, 1.05 | 1.39, 1.47 |
+| 2D, sides 200..400 | 93 | 1.19, 1.24 | 1.09, 1.24 | 1.00, 1.20 | 1.47, 1.57 |
+| 2D, sides 2000..5000 | 12,941 | 1.52, 1.67 | 1.32, 1.51 | 1.27, 1.44 | 1.77, 1.90 |
+| 3D, sides 10..200 | 0.2 | 0.65, 0.68 | 0.64, 0.69 | 0.55, 0.59 | 1.02, 1.06 |
+| 3D, sides 400..700 | 18 | 0.95, 1.01 | 0.90, 0.99 | 0.82, 0.87 | 1.23, 1.27 |
+| 3D, sides 1000..1500 | 200 | 1.10, 1.12 | 1.00, 1.11 | 0.90, 0.97 | 1.30, 1.36 |
+| 3D, sides 2000..5000 | 5,029 | 1.31, 1.41 | 1.17, 1.29 | 1.05, 1.14 | 1.44, 1.53 |
+
+The mask wins on windows that find little, where branching mispredicts and has
+no sibling to skip anyway; it loses once hits are likely. Where it crosses
+depends on the machine and the storage, so `find` switches per query on the
+same uniform estimate the radius switch reads (the window's share of the root
+box times the item count): the mask below 2 expected hits in 2D
+(`FIND_MASK_BELOW_HITS_2D`) and below 100 in 3D (`FIND_MASK_BELOW_HITS_3D`).
+aarch64 runs the branching form alone.
+
+Against the old traversal, both behind the shipping entry points (masked on
+x86, branching on aarch64), small, mid and large windows, as a fraction of the
+old time (`benches/paired_mask_forms.rs`, two or three runs per machine):
+
+| Path | Xeon (EMR) | Zen 3 | Zen 4 | N2 |
+|---|---|---|---|---|
+| 2D owned | 0.85, 0.83, 0.50 | 0.86, 0.73, 0.54 | 0.93, 0.79, 0.59 | 0.87, 0.78, 0.66 |
+| 2D view | 0.81, 0.77, 0.46 | 0.86, 0.70, 0.50 | 0.94, 0.77, 0.56 | 0.87, 0.78, 0.65 |
+| 3D owned | 0.90, 0.82, 0.65 | 0.94, 0.91, 0.65 | 0.96, 0.95, 0.75 | 1.03, 0.85, 0.66 |
+| 3D view | 0.98, 0.96, 0.63 | 1.00, 0.97, 0.67 | 0.99, 0.98, 0.77 | 1.02, 0.85, 0.67 |
+
+The one loss is 3D windows that find nothing on the N2, 2–3%: with no sibling
+to skip, the descent only adds its resume array. Zeroing it is about half
+of that (an array of 8 levels read 1.02–1.03 there against 1.05 for 32).
+
+Three measurement traps showed up on the way, each worth 20–25% on some cell:
+
+- **A runtime `match` inside one bench closure.** The callback rows of
+  `paired_mask_forms` used to put every form behind one closure and a `match`
+  on the form. The arm the match reached last read up to 25% slow on a form
+  that was the same code (an A/A arm showed it). Each arm is its own closure
+  now.
+- **Two forms inlined behind one switch.** With both kernels inlined into
+  `find`, the form it picked ran 2–10% slower than when called alone. On x86
+  `find_region` is out of line; one call per query costs less.
+- **Out of line on aarch64.** There the same boundary, or a wrapper that did not
+  inline, cost the 3D `first` on small windows about 20% on the N2, so aarch64,
+  which runs one form, inlines the whole chain.
 
 ## Large-window range search
 
@@ -1030,9 +1107,8 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 - against `static_aabb2d_index` on query sets the branch predictor cannot
   learn (a cloud Xeon, a Zen 3, a Zen 4, a Neoverse N2), scalar `Index2D`
   collects 1.4–1.8× faster on small windows and 2.6–3.3× on large ones. Its
-  `visit` leads by 1.1–1.5× and 2.3–2.5×; its early exit is 1.1–1.4× faster on
-  small windows but 1.2–1.35× slower on large ones. `Index2D` build is faster
-  as well;
+  `visit` leads by 1.1–1.5× and 2.3–2.5×; its early exit is 1.3–1.6× faster on
+  every window class. `Index2D` build is faster as well;
 - against the `bvh` crate, `SimdIndex3D` wins closest hit and all hits on
   uniform scenes on every machine measured and loses closest hit on a clustered
   one, where the SAH tree is better; `bvh`'s lazy iterator wins occlusion;
@@ -1043,8 +1119,10 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
   1.3× on the AVX2 tier (a Zen 3, or a Zen 4 whose VM hides AVX-512), within
   10% either way on a Neoverse N2;
 - the branch-free node test behind those collect numbers applies only where the
-  per-child predicate is cheap; the collect paths and `visit` / `any` / `first`
-  take it (the 2D ones keep branches on aarch64). The search iterators and the
+  per-child predicate is cheap; the collect paths and `visit` take it (the 2D
+  ones keep branches on aarch64), `any` / `first` only on windows that expect
+  almost nothing, since their depth-first descent stops testing at the first
+  hit. The search iterators and the
   shape regions keep their branching traversal; the radius queries choose per
   query;
 - f32 storage halves box memory; the SIMD `f32` index is also the fastest range
@@ -1089,6 +1167,9 @@ Benchmark coverage:
 - `persistence_knn2d_bench` / `persistence_knn3d_bench` cover scalar/SIMD
   persistence, loaded views, and KNN;
 - `raycast3d_bench` compares closest-hit raycast against the `bvh` crate;
+- `paired_find_switch` times the two child tests of the depth-first `any` /
+  `first` descent and the shipped switch across the expected-hits range (the
+  table in [Early exit: which descent](#early-exit-which-descent));
 - `paired_competitors` times the `static_aabb2d_index`, FlatGeobuf and `bvh`
   comparisons interleaved in one binary, on the class-sized query sets of
   `benches/support/competitors.rs` (the numbers in

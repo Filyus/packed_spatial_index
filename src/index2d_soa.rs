@@ -24,8 +24,8 @@ use crate::{
     geometry::{Box2D, Overlaps2D, Point2D, fold_max, fold_min, query_covers_tree_2d},
     join::{
         DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core,
-        closest_pair_to_core, collect_within_switched, join_core, pairs_components_core,
-        pairs_core, within_core,
+        closest_pair_to_core, closest_pairs_core, closest_pairs_to_core, collect_within_switched,
+        join_core, pairs_components_core, pairs_core, within_core,
     },
     neighbors::{NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first},
     ordered::{collect_ordered, search_ordered_each},
@@ -1219,6 +1219,35 @@ impl SimdIndex2D {
     /// ```
     pub fn closest_pair(&self) -> Option<(usize, usize, f64)> {
         closest_pair_core(self)
+    }
+
+    /// Return the `k` closest pairs of distinct items within this index. See
+    /// [`crate::Index2D::closest_pairs`].
+    pub fn closest_pairs(&self, k: usize) -> Vec<(usize, usize, f64)> {
+        closest_pairs_core(self, k, f64::INFINITY)
+    }
+
+    /// Return up to `k` closest pairs of distinct items within this index
+    /// that are at most `max_distance` apart. See [`crate::Index2D::closest_pairs`].
+    pub fn closest_pairs_within(&self, k: usize, max_distance: f64) -> Vec<(usize, usize, f64)> {
+        closest_pairs_core(self, k, max_distance)
+    }
+
+    /// Return the `k` closest pairs of items between this index and `other`.
+    /// See [`crate::Index2D::closest_pairs_to`].
+    pub fn closest_pairs_to(&self, other: &SimdIndex2D, k: usize) -> Vec<(usize, usize, f64)> {
+        closest_pairs_to_core(self, other, k, f64::INFINITY)
+    }
+
+    /// Return up to `k` closest pairs of items between this index and `other`
+    /// that are at most `max_distance` apart. See [`crate::Index2D::closest_pairs_to`].
+    pub fn closest_pairs_to_within(
+        &self,
+        other: &SimdIndex2D,
+        k: usize,
+        max_distance: f64,
+    ) -> Vec<(usize, usize, f64)> {
+        closest_pairs_to_core(self, other, k, max_distance)
     }
 
     fn collect_neighbors_with_queue(
@@ -3310,6 +3339,39 @@ impl<'a> SimdIndex2DView<'a> {
     /// [`SimdIndex2D::closest_pair`].
     pub fn closest_pair(&self) -> Option<(usize, usize, f64)> {
         closest_pair_core(self)
+    }
+
+    /// Return the `k` closest pairs of distinct items within this view. See
+    /// [`crate::Index2D::closest_pairs`].
+    pub fn closest_pairs(&self, k: usize) -> Vec<(usize, usize, f64)> {
+        closest_pairs_core(self, k, f64::INFINITY)
+    }
+
+    /// Return up to `k` closest pairs of distinct items within this view
+    /// that are at most `max_distance` apart. See [`crate::Index2D::closest_pairs`].
+    pub fn closest_pairs_within(&self, k: usize, max_distance: f64) -> Vec<(usize, usize, f64)> {
+        closest_pairs_core(self, k, max_distance)
+    }
+
+    /// Return the `k` closest pairs of items between this view and `other`.
+    /// See [`crate::Index2D::closest_pairs_to`].
+    pub fn closest_pairs_to(
+        &self,
+        other: &SimdIndex2DView<'_>,
+        k: usize,
+    ) -> Vec<(usize, usize, f64)> {
+        closest_pairs_to_core(self, other, k, f64::INFINITY)
+    }
+
+    /// Return up to `k` closest pairs of items between this view and `other`
+    /// that are at most `max_distance` apart. See [`crate::Index2D::closest_pairs_to`].
+    pub fn closest_pairs_to_within(
+        &self,
+        other: &SimdIndex2DView<'_>,
+        k: usize,
+        max_distance: f64,
+    ) -> Vec<(usize, usize, f64)> {
+        closest_pairs_to_core(self, other, k, max_distance)
     }
 
     fn collect_neighbors_with_queue(

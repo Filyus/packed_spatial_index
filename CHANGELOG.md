@@ -6,6 +6,19 @@ All notable changes to this crate are documented here.
 
 ### Search
 
+- **The *k* closest pairs.** `closest_pairs(k)` within one index and
+  `closest_pairs_to(&other, k)` between two return the `k` nearest pairs as
+  `(i, j, distance)`, nearest first, plus `closest_pairs_within` /
+  `closest_pairs_to_within` with a distance cap. The same best-first traversal
+  over node pairs as `closest_pair`, stopping once the frontier is farther
+  than the `k`-th pair. Ties follow the kNN rule: ordered by item ids, so the
+  answer for `k` is a prefix of the answer for `k + 1`. Within one index an
+  item is never paired with itself and each pair appears once, with `i < j`.
+  Owned and view, 2D and 3D, `SimdIndex2D` / `SimdIndex3D` included. On
+  100 000 non-overlapping points `k = 1000` costs 1.26–1.39× `closest_pair`.
+  Where the `k`-th pair overlaps, every overlapping pair has to be seen to
+  settle the ties, which costs about 1.15–1.35× `pairs()` / `join()`.
+
 - **`any` and `first` descend depth first and stop testing at the first
   hit.** Owned and view, 2D and 3D. They tested every child of each node on the
   way down and pushed every overlapping one onto a scratch stack before

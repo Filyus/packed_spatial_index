@@ -29,8 +29,8 @@ use crate::estimate::{Estimate, box_fraction_2d, estimate_core};
 use crate::geometry::{Box2D, Overlaps2D, Point2D};
 use crate::join::{
     DistanceTest, OverlapTest, anti_join_core, any_within_core, closest_pair_core,
-    closest_pair_to_core, collect_within_switched, join_core, pairs_components_core, pairs_core,
-    within_core,
+    closest_pair_to_core, closest_pairs_core, closest_pairs_to_core, collect_within_switched,
+    join_core, pairs_components_core, pairs_core, within_core,
 };
 use crate::neighbors::{
     NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first, metric_knn,
@@ -1707,6 +1707,97 @@ impl Index2D {
         closest_pair_core(self)
     }
 
+    /// Return the `k` closest pairs of *distinct* items within this index as
+    /// `(i, j, distance)` with `i < j`, nearest first.
+    ///
+    /// The `k`-deep form of [`Index2D::closest_pair`], on the same best-first
+    /// traversal over node pairs: it stops once nothing left on the frontier
+    /// can beat the `k`-th pair found. Each unordered pair appears once and an
+    /// item is never paired with itself. Fewer than `k` pairs come back only
+    /// when the index has fewer.
+    ///
+    /// Pairs at **equal** distance are ordered by `(i, j)`, smallest first, so
+    /// growing `k` only appends: `closest_pairs(k)` is always a prefix of
+    /// `closest_pairs(k + 1)`. `closest_pairs(1)` is at the distance of
+    /// [`Index2D::closest_pair`] (which, among tied pairs, may report another one).
+    /// Settling ties has one cost: every pair tied with the `k`-th is
+    /// examined. On overlapping boxes, where the `k`-th pair is zero apart,
+    /// that is every overlapping pair, so even `k = 1` costs about what
+    /// [`Index2D::pairs`] does, where `closest_pair` can stop at the first overlap.
+    ///
+    /// The distance is between boxes, as in [`Index2D::closest_pair_to`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut builder = Index2DBuilder::new(4);
+    /// builder.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// builder.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
+    /// builder.add(Box2D::new(3.5, 0.0, 4.5, 1.0));
+    /// builder.add(Box2D::new(7.0, 0.0, 8.0, 1.0));
+    /// let index = builder.finish().unwrap();
+    ///
+    /// // Items 1 and 2 overlap. Pairs 0-2 and 2-3 tie at 2.5, so the smaller
+    /// // ids come first.
+    /// assert_eq!(
+    ///     index.closest_pairs(3),
+    ///     vec![(1, 2, 0.0), (0, 1, 2.0), (0, 2, 2.5)],
+    /// );
+    /// assert_eq!(index.closest_pairs_within(10, 2.0), vec![(1, 2, 0.0), (0, 1, 2.0)]);
+    /// ```
+    pub fn closest_pairs(&self, k: usize) -> Vec<(usize, usize, f64)> {
+        closest_pairs_core(self, k, f64::INFINITY)
+    }
+
+    /// Return up to `k` closest pairs of distinct items within this index that
+    /// are at most `max_distance` apart. See [`Index2D::closest_pairs`]; a
+    /// negative or NaN `max_distance` matches nothing.
+    pub fn closest_pairs_within(&self, k: usize, max_distance: f64) -> Vec<(usize, usize, f64)> {
+        closest_pairs_core(self, k, max_distance)
+    }
+
+    /// Return the `k` closest pairs of items between `self` and `other` as
+    /// `(item_of_self, item_of_other, distance)`, nearest first.
+    ///
+    /// The `k`-deep form of [`Index2D::closest_pair_to`]; ties are ordered by
+    /// `(item_of_self, item_of_other)`, with the prefix guarantee and the cost
+    /// described on [`Index2D::closest_pairs`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use packed_spatial_index::{Box2D, Index2DBuilder};
+    ///
+    /// let mut a = Index2DBuilder::new(1);
+    /// a.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+    /// let a = a.finish().unwrap();
+    ///
+    /// let mut b = Index2DBuilder::new(3);
+    /// b.add(Box2D::new(90.0, 0.0, 91.0, 1.0));
+    /// b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
+    /// b.add(Box2D::new(-3.0, 0.0, -2.0, 1.0));
+    /// let b = b.finish().unwrap();
+    ///
+    /// assert_eq!(a.closest_pairs_to(&b, 2), vec![(0, 1, 2.0), (0, 2, 2.0)]);
+    /// assert_eq!(a.closest_pairs_to_within(&b, 5, 50.0).len(), 2);
+    /// ```
+    pub fn closest_pairs_to(&self, other: &Index2D, k: usize) -> Vec<(usize, usize, f64)> {
+        closest_pairs_to_core(self, other, k, f64::INFINITY)
+    }
+
+    /// Return up to `k` closest pairs of items between `self` and `other` that
+    /// are at most `max_distance` apart. See [`Index2D::closest_pairs_to`].
+    pub fn closest_pairs_to_within(
+        &self,
+        other: &Index2D,
+        k: usize,
+        max_distance: f64,
+    ) -> Vec<(usize, usize, f64)> {
+        closest_pairs_to_core(self, other, k, max_distance)
+    }
+
     fn collect_neighbors_with_queues(
         &self,
         query: NeighborQuery2D,
@@ -3107,6 +3198,35 @@ impl<'a> Index2DView<'a> {
     /// [`Index2D::closest_pair`].
     pub fn closest_pair(&self) -> Option<(usize, usize, f64)> {
         closest_pair_core(self)
+    }
+
+    /// Return the `k` closest pairs of distinct items within this view. See
+    /// [`Index2D::closest_pairs`].
+    pub fn closest_pairs(&self, k: usize) -> Vec<(usize, usize, f64)> {
+        closest_pairs_core(self, k, f64::INFINITY)
+    }
+
+    /// Return up to `k` closest pairs of distinct items within this view
+    /// that are at most `max_distance` apart. See [`Index2D::closest_pairs`].
+    pub fn closest_pairs_within(&self, k: usize, max_distance: f64) -> Vec<(usize, usize, f64)> {
+        closest_pairs_core(self, k, max_distance)
+    }
+
+    /// Return the `k` closest pairs of items between this view and `other`.
+    /// See [`Index2D::closest_pairs_to`].
+    pub fn closest_pairs_to(&self, other: &Index2DView<'_>, k: usize) -> Vec<(usize, usize, f64)> {
+        closest_pairs_to_core(self, other, k, f64::INFINITY)
+    }
+
+    /// Return up to `k` closest pairs of items between this view and `other`
+    /// that are at most `max_distance` apart. See [`Index2D::closest_pairs_to`].
+    pub fn closest_pairs_to_within(
+        &self,
+        other: &Index2DView<'_>,
+        k: usize,
+        max_distance: f64,
+    ) -> Vec<(usize, usize, f64)> {
+        closest_pairs_to_core(self, other, k, max_distance)
     }
 
     fn collect_neighbors_with_queues(

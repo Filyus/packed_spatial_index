@@ -28,6 +28,7 @@ the method for each need; the notes after it explain the reasoning.
 | All overlapping pairs between two indexes | `join` / `join_each` (`pairs` within one index) | a query per item |
 | Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `search_within_each` / `search_within_any` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
 | The single closest pair, with no distance to guess | `closest_pair()` within one index, `closest_pair_to(&other)` between two | `join_within` with a guessed `max_distance`, widened until it is non-empty |
+| The *k* closest pairs, nearest first — near-duplicates, matching two datasets | `closest_pairs(k)` / `closest_pairs_to(&other, k)` plus `closest_pairs_within` / `closest_pairs_to_within` to cap the distance too | `join_within` with a guessed `max_distance` and then sorting the pairs |
 | All pairs within a distance — "within 500 m", not "intersecting" | `join_within` / `join_within_each` (`pairs_within` within one index, `anti_join_within` for the unpaired items, `pairs_within_components` for groups) | joining indexes of `max_distance`-inflated boxes and filtering |
 | What a moving box sweeps over a straight-line step | plain `search` — the swept volume of an axis-aligned box along a straight line is a bigger axis-aligned box (hull of the start and end boxes) | a special "swept" query; there isn't one, and none is needed |
 | Everything on one side of a line or plane (a cross-section cut) | `search(&HalfSpace2D::new(..))` / `search(&HalfSpace3D::new(..))` — the region is unbounded, so there is no bounding box to pre-filter with | `search` on a hand-clipped box plus a filter |
@@ -880,6 +881,59 @@ some pair is zero apart — clustered or dense box data, which is most real data
 — the seed usually finds it outright and the query returns in microseconds
 whatever the index size; the ratio there is large enough to be meaningless to
 quote, which is the honest way to read those cells rather than a headline.
+
+### The k closest pairs
+
+`closest_pairs(k)` and `closest_pairs_to(&other, k)` return the `k` nearest
+pairs, nearest first, on the same traversal: the frontier now stops once its
+head is farther than the `k`-th pair found. Within one index each pair comes
+back once as `(i, j, distance)` with `i < j` and no item is paired with
+itself; fewer than `k` come back only when there are fewer pairs.
+`closest_pairs_within(k, max_distance)` and
+`closest_pairs_to_within(&other, k, max_distance)` also cap the distance, like
+`neighbors_within`.
+
+```rust
+# use packed_spatial_index::{Box2D, Index2DBuilder};
+# let mut b = Index2DBuilder::new(4);
+# b.add(Box2D::new(0.0, 0.0, 1.0, 1.0));
+# b.add(Box2D::new(3.0, 0.0, 4.0, 1.0));
+# b.add(Box2D::new(3.5, 0.0, 4.5, 1.0));
+# b.add(Box2D::new(7.0, 0.0, 8.0, 1.0));
+# let towers = b.finish()?;
+assert_eq!(
+    towers.closest_pairs(3),
+    vec![(1, 2, 0.0), (0, 1, 2.0), (0, 2, 2.5)], // (2, 3) is 2.5 too and comes next
+);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+Ties follow the rule of [equal distances](#equal-distances) in kNN: pairs at
+the same distance are ordered by `(i, j)`, smallest first, so
+`closest_pairs(k)` is a prefix of `closest_pairs(k + 1)`. `closest_pairs(1)`
+is at `closest_pair`'s distance and is the same pair whenever that distance is
+unique; among tied pairs `closest_pair` keeps its cheaper "any of them". The
+rule costs what it costs kNN: every pair tied with the `k`-th has to be seen.
+Where the `k`-th pair overlaps, that is every overlapping pair, so the
+traversal hands over to the depth-first join at that point and even `k = 1`
+costs about a `pairs()`.
+
+Measured on 100 000 items per index, one core of a 2.1 GHz Xeon VM, best of
+seven per cell, median of three runs (the VM's run-to-run noise is about ±20%).
+Points are relative to `closest_pair` (4.9 ms) / `closest_pair_to` (21 ms),
+the overlapping boxes to `pairs()` (8.3 ms) / `join()` (16 ms):
+
+| data | *k* = 1 | 10 | 100 | 1000 |
+| --- | --- | --- | --- | --- |
+| points, no overlaps, within one index | 1.07× | 1.20× | 1.30× | 1.39× |
+| points, no overlaps, between two | 0.98× | 1.06× | 1.09× | 1.26× |
+| boxes, 209 k overlapping pairs, within one | 1.16× | 1.19× | 1.26× | 1.35× |
+| boxes, 416 k overlapping pairs, between two | 1.19× | 1.14× | 1.23× | 1.30× |
+
+The overlap rows are against the join instead, because `closest_pair` stops
+at the first overlap in well under a microsecond and a ratio to that says
+nothing. This is not a kNN join: that asks for the `k` nearest partners of
+*every* item, this for the `k` nearest pairs overall.
 
 ## Find boxes that contain a point
 

@@ -248,21 +248,32 @@ into a bitmask has no `continue` in it, and that is what lets the autovectorizer
 widen it: in the shipped build (`lto = true`), the collect paths' mask loop
 compiles to 4-wide `vcmppd` against mask registers, while the branching loops it
 replaced stayed one box at a time. So the collect paths get vector compares out
-of a change that reads as a branch-prediction fix. The owned 2D callback paths
-take the same mask; the search iterators keep their branches for the reason
-below, so they keep the scalar loop as well.
+of a change that reads as a branch-prediction fix. The callback paths, owned
+and view, take the same mask; the search iterators keep their branches for
+the reason below, so they keep the scalar loop as well.
 
 Two boundaries on the technique are measured, and both keep it off the other
 paths:
 
 - **The search iterators keep their branches.** An iterator yields one item
-  per call, so it cannot drain a mask in one pass: masked it loses 7–14%. The
-  owned 2D `visit`, `any` and `first` take the mask. `visit` also hands a
-  covered subtree's leaf range to the callback whole; `any` and `first` skip
-  the containment test that finds one, since they stop at the first item.
-  Masked / branching on small, mid and large windows: `visit` 0.65, 0.70, 0.39
-  on Zen 3 and 0.58, 0.63, 0.36 on Zen 4; `first` 0.76 and 0.90 on Zen 3 for
-  small and mid windows, 0.68 and 0.79 on Zen 4, about even on large ones.
+  per call, so it cannot drain a mask in one pass: masked it loses 7–14%.
+  `visit`, `any` and `first` take the mask, owned and view, 2D and 3D. `visit`
+  also hands a covered subtree's leaf range to the callback whole, in both
+  forms; `any` and `first` skip the containment test that finds one, since
+  they stop at the first item. Masked / branching on a Zen 3 (EPYC 7763),
+  small, mid and large windows:
+
+  | Path | `visit` | `first` |
+  |---|---|---|
+  | 2D owned | 0.63, 0.77, 0.90 | 0.73, 0.86, 1.06 |
+  | 2D view | 0.62, 0.74, 0.84 | 0.70, 0.83, 1.04 |
+  | 3D owned | 0.52, 0.51, 0.68 | 0.53, 0.65, 0.86 |
+  | 3D view | 0.52, 0.49, 0.64 | 0.52, 0.63, 0.85 |
+
+  A Zen 4 (EPYC 9V74) wins wider, `first` on large 2D windows included
+  (0.93–0.95). The one loss is that cell on Zen 3: an early exit on a large
+  window finds its hit in the first node or two, so the full mask of each is
+  work a branch would have cut short.
 - **The per-child test has to be cheap.** The saving is one mispredicted branch,
   so a predicate that costs many times that swallows it. Routing the shape-region
   collect paths (convex polygon, frustum) through the same traversal moved
@@ -275,13 +286,16 @@ paths:
   window: masked / branching 1.10, 1.03, 1.02 on owned `search_into` (small,
   mid, large windows) and 1.15, 1.06, 1.04 on the view, against 0.64–0.92 on
   every x86 machine measured (Zen 3, Zen 4, both Zen 5s).
-  So the `f64` 2D collect paths build the mask only off aarch64
-  (`MASK_PAYS_IN_2D`). NEON has no movemask; a 2D box test is cheap enough
-  for building the bit mask to cost more than the mispredicts it saves. That is
-  the likely reason rather than a measured one. 3D keeps the mask on aarch64 as
-  well — the N2 gives 0.88 on mid and large view windows and 0.97–0.99 on
-  raycast. So does the scalar `Index2DF32`: with its vectorized child test the
-  mask wins on the N2 too (see above).
+  So the `f64` 2D paths build the mask only off aarch64 (`MASK_PAYS_IN_2D`).
+  NEON has no movemask; a 2D box test is cheap enough for building the bit
+  mask to cost more than the mispredicts it saves. That is the likely reason
+  rather than a measured one. The 3D collect paths keep the mask on aarch64:
+  the N2 gives 0.88 on mid and large view windows and 0.97–0.99 on raycast.
+  The 3D callback paths do not (`CALLBACK_MASK_PAYS_IN_3D`): an early exit
+  cannot spread the mask over many hits; the N2 measured 1.06–1.17 on
+  `first` and on small-window `visit`, a win only on large-window `visit`
+  (0.88–0.91). The scalar `Index2DF32` keeps the mask as well: with its
+  vectorized child test it wins on the N2 too (see above).
 - **The bench has to show the predictor queries it cannot learn.** Every rep
   replays the same query set. A Zen 4 or Zen 5 predictor learns each query's
   traversal once the set's hard-to-predict branches fit its tables: about

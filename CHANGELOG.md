@@ -6,13 +6,22 @@ All notable changes to this crate are documented here.
 
 ### Search
 
-- **Owned 2D `visit`, `any` and `first` fold the child tests into a mask.**
-  They kept one branch per child after the collect paths moved to the mask.
-  Now `visit` takes it too, with a covered subtree's leaf range handed to the
-  callback whole. `any` and `first` take the mask without the containment
-  test. Against the old form on a Zen 4 (EPYC 9V74), from small to large
-  windows: `visit` 0.58×, 0.63×, 0.36× the time; `first` 0.68×, 0.79× and
-  about even. aarch64 keeps the branch, as it does on the collect paths.
+- **`visit`, `any` and `first` fold the child tests into a mask.** Owned and
+  view, 2D and 3D: they kept one branch per child after the collect paths
+  moved to the mask. Owned `visit` also hands a covered subtree's leaf range
+  to the callback whole now, as the views and collect paths did; `any` and
+  `first` skip the containment test that finds one. Against the old form on a
+  Zen 4 (EPYC 9V74), small to large windows, as a fraction of the old time:
+
+  | Path | `visit` | `first` |
+  |---|---|---|
+  | 2D owned | 0.56, 0.61, 0.35 | 0.64, 0.73, 0.93 |
+  | 2D view | 0.56, 0.66, 0.76 | 0.64, 0.74, 0.95 |
+  | 3D owned | 0.51, 0.46, 0.55 | 0.49, 0.58, 0.75 |
+  | 3D view | 0.46, 0.43, 0.57 | 0.46, 0.53, 0.72 |
+
+  aarch64 keeps the branch, where a Neoverse N2 measured the mask slower. It
+  does get the owned covered-subtree path.
 
 - **`Index2DView` range search keeps its result `Vec` out of a reload
   chain.** `search_into` and `search_with` pushed through a `&mut Vec<usize>`.

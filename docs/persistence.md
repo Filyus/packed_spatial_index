@@ -192,13 +192,13 @@ mirror sync streaming and issue a level's reads concurrently.
 ### CORS preflight for browser range reads
 
 A page on one origin reading `RangeReader` / `AsyncRangeReader` bytes from
-another (S3, R2, a CDN in front of either) is a cross-origin request, and the
+another (S3, R2, a CDN in front of either) is a cross-origin request. The
 browser preflights it with an `OPTIONS` request whenever the actual request
 isn't "simple" under the [Fetch spec](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS).
 A `Range` header carrying a single byte range (`bytes=<start>-<end>`) is now
 itself CORS-safelisted, so it alone no longer forces a preflight in a current
 browser — but any other header the request carries (an auth token, a custom
-header, `If-Match`) still does, and older browsers may not implement the
+header, `If-Match`) still does; older browsers may not implement the
 safelisted-`Range` exception. Budget for a preflight regardless.
 
 Reading the ranged response back also needs headers of its own, whether or not
@@ -211,7 +211,7 @@ a preflight ran:
 - `Access-Control-Expose-Headers: Content-Range, Content-Length, ETag` —
   without it `fetch` can read the body but not these headers.
   `Content-Length` is on the browser's default-exposed list already, but
-  `Content-Range` and `ETag` are not, and a reader that sizes a read off one or
+  `Content-Range` and `ETag` are not. A reader that sizes a read off one or
   pins a version by the other needs them listed explicitly.
 - `Access-Control-Max-Age` — how long the browser may cache the preflight
   answer instead of repeating it before every ranged `GET`. It defaults to 5

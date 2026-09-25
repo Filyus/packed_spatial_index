@@ -553,7 +553,7 @@ The key must be an **admissible lower bound**, the same contract
 [custom-metric kNN](#geographic-and-custom-metric-knn) asks for: the key of a box
 never exceeds the key of any item inside it. `view_depth_3d` satisfies it by
 construction (a node box encloses its children, so its minimum depth is no
-larger than theirs), and so does any "smallest value over the box" score, such as
+larger than theirs). So does any "smallest value over the box" score, such as
 depth or distance. The key sees only the box, so a weight stored per item is out of
 its reach; for that, see [the heaviest *k*](#the-heaviest-k-in-a-region). The direction
 need not be normalized: a longer vector rescales the key and any `max_key`

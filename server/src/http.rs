@@ -94,7 +94,13 @@ pub fn router_with_cors(state: ServerState, origins: &[String]) -> Result<Router
     Ok(router.layer(
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(allowed))
-            .allow_methods([Method::GET, Method::HEAD]),
+            .allow_methods([Method::GET, Method::HEAD])
+            // Every GET here takes query parameters, so a browser client
+            // preflights each distinct URL shape; without this a page issuing
+            // many small queries repeats that round trip before every one.
+            // Browsers cap what they honor well under a day regardless
+            // (Firefox 24h, Chromium 2h), so asking for more costs nothing.
+            .max_age(std::time::Duration::from_secs(86400)),
     ))
 }
 

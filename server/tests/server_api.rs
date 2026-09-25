@@ -1675,6 +1675,35 @@ async fn cross_origin_reads_are_opt_in() {
     );
 }
 
+/// A browser preflights each distinct query-string shape; without
+/// `Access-Control-Max-Age` it repeats that round trip before every one.
+#[tokio::test]
+async fn cors_preflight_is_cacheable() {
+    let state = state_with_payload(PayloadPlan::RowRef);
+    let open =
+        packed_spatial_index_server::router_with_cors(state, &["https://example.org".to_string()])
+            .unwrap();
+    let response = open
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/health")
+                .header("origin", "https://example.org")
+                .header("access-control-request-method", "GET")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-max-age")
+            .map(|v| v.to_str().unwrap()),
+        Some("86400")
+    );
+}
+
 #[tokio::test]
 async fn unknown_routes_and_methods_use_the_error_envelope() {
     let app = router(state_with_payload(PayloadPlan::RowRef));

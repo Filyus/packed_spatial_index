@@ -6,6 +6,9 @@
 //!    not a one-to-one algorithm comparison.
 //!  * For queries, the query batch itself is parallelized (read-only), so the comparison is symmetric:
 //!    both the baseline crate and `Index2D` benefit.
+//!  * The `query` group runs the class-sized window sets of `support/competitors.rs` (small,
+//!    mid, large; early exits on 10 000 windows in every class), the same set for every
+//!    participant. `paired_competitors` times the same comparison interleaved in one binary.
 
 use std::{hint::black_box, ops::ControlFlow};
 
@@ -15,7 +18,12 @@ use packed_spatial_index::{Box2D, Index2D, Index2DBuilder, Index2DView};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
-use static_aabb2d_index::{StaticAABB2DIndex, StaticAABB2DIndexBuilder};
+use static_aabb2d_index::{Control, StaticAABB2DIndex, StaticAABB2DIndexBuilder};
+
+use competitors::{EARLY_EXIT_QUERIES, WINDOW_CLASSES, windows_2d};
+
+#[path = "support/competitors.rs"]
+mod competitors;
 
 const NODE_SIZE: usize = 16;
 
@@ -89,10 +97,6 @@ fn bench_build(c: &mut Criterion) {
     group.finish();
 }
 
-fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
-    make_queries_with_size(n, seed, 10.0..200.0)
-}
-
 fn make_queries_with_size(n: usize, seed: u64, size_range: std::ops::Range<f64>) -> Vec<[f64; 4]> {
     make_queries_with_ranges(n, seed, size_range.clone(), size_range)
 }
@@ -138,272 +142,346 @@ fn bench_query(c: &mut Criterion) {
     let reference: StaticAABB2DIndex<f64> = rb.build().unwrap();
     let packed: Index2D = mb.finish().unwrap();
     let simd = sb.finish_simd().unwrap();
-    let queries = make_queries(1_000, 0xACE);
 
     let mut group = c.benchmark_group("query");
+    // Full traversals run the class's set; the early exits (`any`, `first`)
+    // run 10 000 windows in every class (see `support/competitors.rs`).
+    for (i, class) in WINDOW_CLASSES.iter().enumerate() {
+        let name = class.label;
+        let queries = windows_2d(class, class.queries, 0xACE + i as u64);
+        let early = windows_2d(class, EARLY_EXIT_QUERIES, 0xEA71 + i as u64);
 
-    // --- single-threaded mode ---
-    group.bench_function("crate_serial", |b| {
-        let mut stack = Vec::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += reference
-                    .query_with_stack(q[0], q[1], q[2], q[3], &mut stack)
-                    .len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("index_serial", |b| {
-        let (mut buf, mut stack) = (Vec::new(), Vec::new());
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                packed.search_into_stack(to_bounds(q), &mut buf, &mut stack);
-                total += buf.len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("index_prefetch_serial", |b| {
-        let (mut buf, mut stack) = (Vec::new(), Vec::new());
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                packed.search_into_stack_prefetch(to_bounds(q), &mut buf, &mut stack);
-                total += buf.len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("index_any_serial", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += usize::from(packed.any(to_bounds(q)));
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_simd_serial", |b| {
-        let (mut buf, mut stack) = (Vec::new(), Vec::new());
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                simd.search_simd(to_bounds(q), &mut buf, &mut stack);
-                total += buf.len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_any_serial", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += usize::from(simd.any(to_bounds(q)));
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_any_wide4_serial", |b| {
-        let mut stack = Vec::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += usize::from(
-                    simd.visit_simd(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
-                        .is_break(),
-                );
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_any_wide4_alloc_serial", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                let mut stack = Vec::with_capacity(NODE_SIZE);
-                total += usize::from(
-                    simd.visit_simd(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
-                        .is_break(),
-                );
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_any_avx512_reused_serial", |b| {
-        let mut stack = Vec::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += usize::from(
-                    simd.visit_avx512(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
-                        .is_break(),
-                );
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_simd_prefetch_serial", |b| {
-        let (mut buf, mut stack) = (Vec::new(), Vec::new());
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                simd.search_simd_prefetch(to_bounds(q), &mut buf, &mut stack);
-                total += buf.len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_avx512_serial", |b| {
-        let (mut buf, mut stack) = (Vec::new(), Vec::new());
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                simd.search_avx512(to_bounds(q), &mut buf, &mut stack);
-                total += buf.len();
-            }
-            black_box(total)
-        })
-    });
-
-    // --- parallel mode: the query batch is spread across threads (read-only) ---
-    group.bench_function("crate_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map_init(Vec::new, |stack, q| {
-                    reference
-                        .query_with_stack(q[0], q[1], q[2], q[3], stack)
-                        .len()
-                })
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("index_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map_init(
-                    || (Vec::new(), Vec::new()),
-                    |(buf, stack), q| {
-                        packed.search_into_stack(to_bounds(q), buf, stack);
-                        buf.len()
-                    },
-                )
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("index_prefetch_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map_init(
-                    || (Vec::new(), Vec::new()),
-                    |(buf, stack), q| {
-                        packed.search_into_stack_prefetch(to_bounds(q), buf, stack);
-                        buf.len()
-                    },
-                )
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("index_any_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map(|q| usize::from(packed.any(to_bounds(q))))
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_simd_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map_init(
-                    || (Vec::new(), Vec::new()),
-                    |(buf, stack), q| {
-                        simd.search_simd(to_bounds(q), buf, stack);
-                        buf.len()
-                    },
-                )
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_any_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map(|q| usize::from(simd.any(to_bounds(q))))
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_any_wide4_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map_init(Vec::new, |stack, q| {
-                    usize::from(
-                        simd.visit_simd(to_bounds(q), stack, |_| ControlFlow::Break(()))
+        // --- single-threaded mode ---
+        group.bench_function(format!("crate_serial_{name}"), |b| {
+            let mut stack = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    total += reference
+                        .query_with_stack(q[0], q[1], q[2], q[3], &mut stack)
+                        .len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    packed.search_into_stack(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_prefetch_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    packed.search_into_stack_prefetch(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_any_serial_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &early {
+                    total += usize::from(packed.any(to_bounds(q)));
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_simd_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    simd.search_simd(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_any_serial_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &early {
+                    total += usize::from(simd.any(to_bounds(q)));
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_any_wide4_serial_{name}"), |b| {
+            let mut stack = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &early {
+                    total += usize::from(
+                        simd.visit_simd(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
                             .is_break(),
-                    )
-                })
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_any_avx512_reused_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map_init(Vec::new, |stack, q| {
-                    usize::from(
-                        simd.visit_avx512(to_bounds(q), stack, |_| ControlFlow::Break(()))
+                    );
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_any_wide4_alloc_serial_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &early {
+                    let mut stack = Vec::with_capacity(NODE_SIZE);
+                    total += usize::from(
+                        simd.visit_simd(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
                             .is_break(),
-                    )
-                })
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_simd_prefetch_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map_init(
-                    || (Vec::new(), Vec::new()),
-                    |(buf, stack), q| {
-                        simd.search_simd_prefetch(to_bounds(q), buf, stack);
-                        buf.len()
-                    },
-                )
-                .sum();
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_avx512_parallel", |b| {
-        b.iter(|| {
-            let total: usize = queries
-                .par_iter()
-                .map_init(
-                    || (Vec::new(), Vec::new()),
-                    |(buf, stack), q| {
-                        simd.search_avx512(to_bounds(q), buf, stack);
-                        buf.len()
-                    },
-                )
-                .sum();
-            black_box(total)
-        })
-    });
+                    );
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_any_avx512_reused_serial_{name}"), |b| {
+            let mut stack = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &early {
+                    total += usize::from(
+                        simd.visit_avx512(to_bounds(q), &mut stack, |_| ControlFlow::Break(()))
+                            .is_break(),
+                    );
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_simd_prefetch_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    simd.search_simd_prefetch(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_avx512_serial_{name}"), |b| {
+            let (mut buf, mut stack) = (Vec::new(), Vec::new());
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    simd.search_avx512(to_bounds(q), &mut buf, &mut stack);
+                    total += buf.len();
+                }
+                black_box(total)
+            })
+        });
 
+        group.bench_function(format!("crate_visit_serial_{name}"), |b| {
+            let mut stack = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    reference.visit_query_with_stack(
+                        q[0],
+                        q[1],
+                        q[2],
+                        q[3],
+                        &mut |i| total += i,
+                        &mut stack,
+                    );
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_visit_serial_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    let _ = packed.visit(to_bounds(q), |i| {
+                        total += i;
+                        ControlFlow::<()>::Continue(())
+                    });
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_visit_serial_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    let _ = simd.visit(to_bounds(q), |i| {
+                        total += i;
+                        ControlFlow::<()>::Continue(())
+                    });
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("crate_first_serial_{name}"), |b| {
+            let mut stack = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &early {
+                    let found: Control<usize> = reference.visit_query_with_stack(
+                        q[0],
+                        q[1],
+                        q[2],
+                        q[3],
+                        &mut |i| Control::Break(i),
+                        &mut stack,
+                    );
+                    total += usize::from(matches!(found, Control::Break(_)));
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_first_serial_{name}"), |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &early {
+                    total += usize::from(packed.first(to_bounds(q)).is_some());
+                }
+                black_box(total)
+            })
+        });
+
+        // --- parallel mode: the query batch is spread across threads (read-only) ---
+        group.bench_function(format!("crate_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = queries
+                    .par_iter()
+                    .map_init(Vec::new, |stack, q| {
+                        reference
+                            .query_with_stack(q[0], q[1], q[2], q[3], stack)
+                            .len()
+                    })
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = queries
+                    .par_iter()
+                    .map_init(
+                        || (Vec::new(), Vec::new()),
+                        |(buf, stack), q| {
+                            packed.search_into_stack(to_bounds(q), buf, stack);
+                            buf.len()
+                        },
+                    )
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_prefetch_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = queries
+                    .par_iter()
+                    .map_init(
+                        || (Vec::new(), Vec::new()),
+                        |(buf, stack), q| {
+                            packed.search_into_stack_prefetch(to_bounds(q), buf, stack);
+                            buf.len()
+                        },
+                    )
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("index_any_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = early
+                    .par_iter()
+                    .map(|q| usize::from(packed.any(to_bounds(q))))
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_simd_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = queries
+                    .par_iter()
+                    .map_init(
+                        || (Vec::new(), Vec::new()),
+                        |(buf, stack), q| {
+                            simd.search_simd(to_bounds(q), buf, stack);
+                            buf.len()
+                        },
+                    )
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_any_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = early
+                    .par_iter()
+                    .map(|q| usize::from(simd.any(to_bounds(q))))
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_any_wide4_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = early
+                    .par_iter()
+                    .map_init(Vec::new, |stack, q| {
+                        usize::from(
+                            simd.visit_simd(to_bounds(q), stack, |_| ControlFlow::Break(()))
+                                .is_break(),
+                        )
+                    })
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_any_avx512_reused_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = early
+                    .par_iter()
+                    .map_init(Vec::new, |stack, q| {
+                        usize::from(
+                            simd.visit_avx512(to_bounds(q), stack, |_| ControlFlow::Break(()))
+                                .is_break(),
+                        )
+                    })
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_simd_prefetch_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = queries
+                    .par_iter()
+                    .map_init(
+                        || (Vec::new(), Vec::new()),
+                        |(buf, stack), q| {
+                            simd.search_simd_prefetch(to_bounds(q), buf, stack);
+                            buf.len()
+                        },
+                    )
+                    .sum();
+                black_box(total)
+            })
+        });
+        group.bench_function(format!("simd_avx512_parallel_{name}"), |b| {
+            b.iter(|| {
+                let total: usize = queries
+                    .par_iter()
+                    .map_init(
+                        || (Vec::new(), Vec::new()),
+                        |(buf, stack), q| {
+                            simd.search_avx512(to_bounds(q), buf, stack);
+                            buf.len()
+                        },
+                    )
+                    .sum();
+                black_box(total)
+            })
+        });
+    }
     group.finish();
 }
 

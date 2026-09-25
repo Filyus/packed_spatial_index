@@ -14,8 +14,12 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use static_aabb2d_index::{StaticAABB2DIndex, StaticAABB2DIndexBuilder};
 
+use competitors::{WINDOW_CLASSES, windows_2d};
+
+#[path = "support/competitors.rs"]
+mod competitors;
+
 const NODE_SIZE: usize = 16;
-const QUERY_COUNT: usize = 1_000;
 
 fn gen_boxes(n: usize, seed: u64) -> Vec<[f64; 4]> {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -26,19 +30,6 @@ fn gen_boxes(n: usize, seed: u64) -> Vec<[f64; 4]> {
             let w: f64 = rng.random_range(0.1..20.0);
             let h: f64 = rng.random_range(0.1..20.0);
             [cx, cy, cx + w, cy + h]
-        })
-        .collect()
-}
-
-fn make_queries(n: usize, seed: u64) -> Vec<[f64; 4]> {
-    let mut rng = StdRng::seed_from_u64(seed);
-    (0..n)
-        .map(|_| {
-            let qx: f64 = rng.random_range(0.0..10_000.0);
-            let qy: f64 = rng.random_range(0.0..10_000.0);
-            let qw: f64 = rng.random_range(10.0..200.0);
-            let qh: f64 = rng.random_range(10.0..200.0);
-            [qx, qy, qx + qw, qy + qh]
         })
         .collect()
 }
@@ -131,6 +122,8 @@ fn bench_build(c: &mut Criterion) {
     group.finish();
 }
 
+/// One group per window class of `support/competitors.rs`, every participant on
+/// the same set; `paired_competitors` times the same comparison interleaved.
 fn bench_search(c: &mut Criterion) {
     let n = 100_000usize;
     let boxes = gen_boxes(n, 0xF6B);
@@ -138,51 +131,53 @@ fn bench_search(c: &mut Criterion) {
     let static_aabb = build_static_aabb(&boxes);
     let index = build_index(&boxes, false);
     let simd = build_simd_index(&boxes);
-    let queries = make_queries(QUERY_COUNT, 0xACE);
 
-    let mut group = c.benchmark_group("flatgeobuf_search");
-    group.bench_function("flatgeobuf_search", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += flatgeobuf.search(q[0], q[1], q[2], q[3]).unwrap().len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("static_aabb_search", |b| {
-        let mut stack = Vec::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += static_aabb
-                    .query_with_stack(q[0], q[1], q[2], q[3], &mut stack)
-                    .len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("index_search_with", |b| {
-        let mut workspace = packed_spatial_index::SearchWorkspace::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += index.search_with(to_bounds(q), &mut workspace).len();
-            }
-            black_box(total)
-        })
-    });
-    group.bench_function("simd_search_with", |b| {
-        let mut workspace = packed_spatial_index::SearchWorkspace::new();
-        b.iter(|| {
-            let mut total = 0usize;
-            for q in &queries {
-                total += simd.search_with(to_bounds(q), &mut workspace).len();
-            }
-            black_box(total)
-        })
-    });
-    group.finish();
+    for (i, class) in WINDOW_CLASSES.iter().enumerate() {
+        let queries = windows_2d(class, class.queries, 0xACE + i as u64);
+        let mut group = c.benchmark_group(format!("flatgeobuf_search_{}", class.label));
+        group.bench_function("flatgeobuf_search", |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    total += flatgeobuf.search(q[0], q[1], q[2], q[3]).unwrap().len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function("static_aabb_search", |b| {
+            let mut stack = Vec::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    total += static_aabb
+                        .query_with_stack(q[0], q[1], q[2], q[3], &mut stack)
+                        .len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function("index_search_with", |b| {
+            let mut workspace = packed_spatial_index::SearchWorkspace::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    total += index.search_with(to_bounds(q), &mut workspace).len();
+                }
+                black_box(total)
+            })
+        });
+        group.bench_function("simd_search_with", |b| {
+            let mut workspace = packed_spatial_index::SearchWorkspace::new();
+            b.iter(|| {
+                let mut total = 0usize;
+                for q in &queries {
+                    total += simd.search_with(to_bounds(q), &mut workspace).len();
+                }
+                black_box(total)
+            })
+        });
+        group.finish();
+    }
 }
 
 fn bench_persistence(c: &mut Criterion) {

@@ -117,6 +117,13 @@ name = "paired_compress_store"
 harness = false
 required-features = ["simd", "f32-storage"]
 
+# This crate against static_aabb2d_index, FlatGeobuf and bvh, interleaved, on
+# query sets sized by output class.
+[[bench]]
+name = "paired_competitors"
+harness = false
+required-features = ["simd"]
+
 [[bench]]
 name = "predicate_regions_bench"
 harness = false

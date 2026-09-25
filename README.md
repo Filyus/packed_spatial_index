@@ -13,7 +13,7 @@ of every kind:
 - **range / intersection** search
 - **nearest neighbors** (kNN) from a point or a box, under Euclidean or any custom
   metric — including **great-circle distance** for lon/lat data
-- **ray casts** (all hits or the closest)
+- **ray casts** (all hits, the closest, or just whether anything blocks the ray)
 - **spatial joins** between two indexes — intersecting or within a distance
   (ε-join), with the anti-join and the connected components of the distance graph
 - **region / culling / picking** — 2D triangle / convex-polygon and 3D

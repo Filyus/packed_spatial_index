@@ -67,6 +67,14 @@ pub struct StreamLimits {
     /// [`coalesce_gap_bytes`](Self::coalesce_gap_bytes) and charged against
     /// [`max_read_bytes`](Self::max_read_bytes).
     pub prefix_coalesce_gap_bytes: Option<u64>,
+    /// Open-time only: size of the speculative first read. `None` keeps the
+    /// built-in 16 KiB. One read of the file's head usually holds the
+    /// superblock, the chunk directory and the `TREE` descriptor (and all of a
+    /// small file) and the rest is located at once: an async cold open costs
+    /// two dependent round trips instead of one per step. A source whose length is unknown and shorter than the head
+    /// falls back to reading the superblock alone. `Some(0)` reads only the
+    /// superblock first. Ignored by `from_directory` and by per-query checks.
+    pub open_head_bytes: Option<u64>,
 }
 
 /// Running per-query cost counters checked against [`StreamLimits`].

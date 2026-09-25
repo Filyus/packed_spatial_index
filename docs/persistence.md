@@ -270,6 +270,18 @@ round-trip depth rather than the read count — measured on a 1M-item index and 
 160k-hit query, 313 reads in 4 dependent waves against 340 reads in 2. It is a
 win on a remote source and nothing on a local file.
 
+**Cold open.** `open` starts with one speculative read of the file's head
+(`StreamLimits::open_head_bytes`, 16 KiB by default). That holds the superblock,
+the chunk directory and the `TREE` descriptor of an ordinary file and all of a
+small one. Everything the head misses — the payload descriptors and the
+directory — is then located at once, so the async reader fetches it as one
+concurrent batch: a cold open is two dependent round trips whatever the layout,
+where it used to be one per step (4 to 8). The sync reader issues the same batch
+as consecutive reads, merged where they are within `coalesce_gap_bytes`. The
+price is at most the unused part of the head. A source whose length is unknown
+and shorter than the head fails that read and falls back to the superblock;
+`open_head_bytes = Some(0)` reads the superblock alone first.
+
 **Cost in practice.** A query streams only the byte ranges its traversal
 touches. Cost scales with the result rather than the file size, and the read
 count is deterministic (machine-independent). The upper tree levels (the

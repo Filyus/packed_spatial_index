@@ -274,12 +274,120 @@ fn open_is_bounded_and_does_not_read_everything() {
 
     let reads = *stream.core.reader.reads.borrow();
     let read_bytes = *stream.core.reader.bytes.borrow();
-    // open: leading read + directory + TREE descriptor + two directory ranges.
-    assert!(reads <= 6, "open should issue at most 6 reads, did {reads}");
+    // open: the speculative head (superblock, chunk directory and TREE
+    // descriptor) + the two directory ranges.
+    assert_eq!(reads, 3, "open should issue exactly 3 reads, did {reads}");
     assert!(
         read_bytes * 4 < file_len,
         "open read {read_bytes} of {file_len} bytes; should be a small fraction"
     );
+}
+
+/// Reads the sync `open` issues for `bytes` under `limits` and its hits for
+/// one query (so a changed read plan is also checked for correctness).
+fn open_reads<R: RangeReader>(
+    reader: R,
+    limits: StreamLimits,
+    payloads: bool,
+) -> (usize, u64, Vec<usize>) {
+    let stream = StreamIndex2D::open_with_limits(CountingReader::new(reader), limits).unwrap();
+    let reads = *stream.core.reader.reads.borrow();
+    let bytes = *stream.core.reader.bytes.borrow();
+    let q = Box2D::new(300.0, 300.0, 360.0, 360.0);
+    let mut hits = if payloads {
+        stream
+            .search_payloads(q)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    } else {
+        stream.search(q).unwrap()
+    };
+    hits.sort_unstable();
+    (reads, bytes, hits)
+}
+
+#[test]
+fn cold_open_reads_the_head_then_only_what_it_misses() {
+    let (owned, soa) = random_owned(20_000, 0x0C01);
+    let q = Box2D::new(300.0, 300.0, 360.0, 360.0);
+    let mut want = owned.search(q);
+    want.sort_unstable();
+    let interleaved = owned.serialize().interleaved().to_bytes().unwrap();
+    let payloads: Vec<Vec<u8>> = (0..20_000)
+        .map(|i| format!("payload-{i}").into_bytes())
+        .collect();
+    let with_payload = owned.serialize().payloads(&payloads).to_bytes().unwrap();
+    let with_prefix = owned
+        .serialize()
+        .payloads(&payloads)
+        .payload_prefix_len(8)
+        .to_bytes()
+        .unwrap();
+
+    // (bytes, has payload, reads with the default head, reads with no head)
+    // Default head: head, then the directory boxes and indices (SoA), the
+    // payload descriptor riding along with the indices it follows, the
+    // offset table's last entry and the prefix descriptor.
+    let cases = [
+        (&soa, false, 3, 5),
+        (&interleaved, false, 2, 4),
+        (&with_payload, true, 4, 7),
+        (&with_prefix, true, 5, 8),
+    ];
+    for (bytes, payload, head_reads, old_reads) in cases {
+        let (reads, _, hits) = open_reads(
+            SliceReader::new(bytes.clone()),
+            StreamLimits::default(),
+            payload,
+        );
+        assert_eq!(reads, head_reads);
+        assert_eq!(hits, want);
+        // A zero head reads the superblock alone first: the step-by-step open.
+        let no_head = StreamLimits {
+            open_head_bytes: Some(0),
+            ..StreamLimits::default()
+        };
+        let (reads, _, hits) = open_reads(SliceReader::new(bytes.clone()), no_head, payload);
+        assert_eq!(reads, old_reads);
+        assert_eq!(hits, want);
+    }
+}
+
+#[test]
+fn cold_open_of_a_file_smaller_than_the_head_is_one_read() {
+    let (owned, bytes) = random_owned(100, 0x0C02);
+    assert!((bytes.len() as u64) < 16 * 1024);
+    let q = Box2D::new(300.0, 300.0, 360.0, 360.0);
+    let mut want = owned.search(q);
+    want.sort_unstable();
+    let (reads, read_bytes, hits) = open_reads(
+        SliceReader::new(bytes.clone()),
+        StreamLimits::default(),
+        false,
+    );
+    assert_eq!(reads, 1);
+    assert_eq!(
+        read_bytes,
+        bytes.len() as u64,
+        "the head is clamped to the file"
+    );
+    assert_eq!(hits, want);
+
+    // A source that hides its length makes the head read fail short; open
+    // falls back to the superblock and still succeeds.
+    let (reads, _, hits) = open_reads(
+        NoLenReader(SliceReader::new(bytes)),
+        StreamLimits::default(),
+        false,
+    );
+    assert_eq!(
+        reads,
+        1 + 1 + 3,
+        "failed head, superblock, then one read per step"
+    );
+    assert_eq!(hits, want);
 }
 
 #[test]
@@ -1831,6 +1939,164 @@ impl AsyncRangeReader for YieldReader {
     }
     fn len(&self) -> Option<u64> {
         Some(self.inner.len() as u64)
+    }
+}
+
+/// An async reader that counts dependent round trips ("waves"): reads issued
+/// in the same poll share a wave, a read issued after one completed starts a
+/// new one. Each read yields once, so a wave ends when its reads resume.
+#[cfg(feature = "async")]
+struct WaveReader {
+    inner: Vec<u8>,
+    waves: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+#[cfg(feature = "async")]
+struct WaveYield {
+    waves: std::rc::Rc<std::cell::Cell<usize>>,
+    issued_in: Option<usize>,
+}
+
+#[cfg(feature = "async")]
+impl std::future::Future for WaveYield {
+    type Output = ();
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        match self.issued_in {
+            None => {
+                self.issued_in = Some(self.waves.get());
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+            Some(wave) => {
+                // The first read of a wave to complete closes it.
+                if self.waves.get() == wave {
+                    self.waves.set(wave + 1);
+                }
+                std::task::Poll::Ready(())
+            }
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+impl AsyncRangeReader for WaveReader {
+    async fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        WaveYield {
+            waves: self.waves.clone(),
+            issued_in: None,
+        }
+        .await;
+        let start = usize::try_from(offset).map_err(|_| unexpected_eof())?;
+        let end = start.checked_add(buf.len()).ok_or_else(unexpected_eof)?;
+        let src = self.inner.get(start..end).ok_or_else(unexpected_eof)?;
+        buf.copy_from_slice(src);
+        Ok(())
+    }
+    fn len(&self) -> Option<u64> {
+        Some(self.inner.len() as u64)
+    }
+}
+
+#[cfg(feature = "async")]
+fn async_open_waves(bytes: &[u8], limits: StreamLimits) -> (usize, Vec<(usize, Vec<u8>)>) {
+    let reader = WaveReader {
+        inner: bytes.to_vec(),
+        waves: Default::default(),
+    };
+    let stream = pollster::block_on(StreamIndex2D::open_with_limits_async(reader, limits)).unwrap();
+    let waves = stream.core.reader.waves.get();
+    let q = Box2D::new(300.0, 300.0, 360.0, 360.0);
+    let mut hits = if stream.has_payload_async() {
+        pollster::block_on(stream.search_payloads_async(q)).unwrap()
+    } else {
+        pollster::block_on(stream.search_async(q))
+            .unwrap()
+            .into_iter()
+            .map(|id| (id, Vec::new()))
+            .collect()
+    };
+    hits.sort_unstable();
+    (waves, hits)
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_cold_open_is_the_head_plus_one_batch() {
+    let (owned, soa) = random_owned(20_000, 0x0C03);
+    let interleaved = owned.serialize().interleaved().to_bytes().unwrap();
+    let payloads: Vec<Vec<u8>> = (0..20_000)
+        .map(|i| format!("payload-{i}").into_bytes())
+        .collect();
+    let with_payload = owned.serialize().payloads(&payloads).to_bytes().unwrap();
+    let flat: Vec<u8> = (0..20_000 * 4).map(|i| i as u8).collect();
+    let fixed = owned.serialize().records(4, &flat).to_bytes().unwrap();
+    let with_prefix = owned
+        .serialize()
+        .payloads(&payloads)
+        .payload_prefix_len(8)
+        .to_bytes()
+        .unwrap();
+    let (_, small) = random_owned(100, 0x0C04);
+
+    // Waves with the default head. With no head the open still batches what
+    // each step locates: superblock, chunk directory, descriptors, directory
+    // (it was one wave per read before: 5, 4, 7, 6, 8 and 5).
+    let cases = [
+        (&soa, 2),
+        (&interleaved, 2),
+        (&with_payload, 2),
+        (&fixed, 2),
+        (&with_prefix, 2),
+        (&small, 1),
+    ];
+    for (bytes, head_waves) in cases {
+        let (waves, hits) = async_open_waves(bytes, StreamLimits::default());
+        assert_eq!(waves, head_waves);
+        let no_head = StreamLimits {
+            open_head_bytes: Some(0),
+            ..StreamLimits::default()
+        };
+        let (waves, no_head_hits) = async_open_waves(bytes, no_head);
+        assert_eq!(waves, 4);
+        assert_eq!(hits, no_head_hits);
+    }
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn async_open_recovers_from_a_missed_payload_guess() {
+    // A variable-width payload behind a 12-byte descriptor (stride 0): legal,
+    // but not where the speculative read of the offset table's last entry
+    // looks, so the open takes one more batch and must still be right.
+    let (_, payloads, bytes) = random_with_payloads(5_000, 0x0C05);
+    let chunk_count = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+    let entry = (0..chunk_count)
+        .map(|i| 32 + i * 24)
+        .find(|&e| &bytes[e..e + 4] == b"PYLD")
+        .unwrap();
+    let poff = u64::from_le_bytes(bytes[entry + 8..entry + 16].try_into().unwrap()) as usize;
+    let plen = u64::from_le_bytes(bytes[entry + 16..entry + 24].try_into().unwrap()) as usize;
+    assert!(
+        poff + plen + 8 > bytes.len(),
+        "PYLD must be the last chunk to grow it in place"
+    );
+    let mut grown = bytes[..poff + 8].to_vec();
+    grown.extend_from_slice(&[0u8; 4]);
+    grown.extend_from_slice(&bytes[poff + 8..poff + plen]);
+    grown.resize(grown.len().next_multiple_of(8), 0);
+    grown[poff..poff + 4].copy_from_slice(&12u32.to_le_bytes());
+    grown[entry + 16..entry + 24].copy_from_slice(&(plen as u64 + 4).to_le_bytes());
+
+    let (waves, hits) = async_open_waves(&grown, StreamLimits::default());
+    assert_eq!(waves, 3);
+    let (_, want) = async_open_waves(&bytes, StreamLimits::default());
+    assert_eq!(hits, want);
+    assert!(!hits.is_empty());
+    for (id, blob) in &hits {
+        assert_eq!(blob, &payloads[*id]);
     }
 }
 

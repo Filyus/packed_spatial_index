@@ -30,6 +30,31 @@ All notable changes to this crate are documented here.
 
   The cells that lose are 3D windows that find nothing on the N2 (2–3%).
 
+### Persistence
+
+- **A cold stream open is two round trips.** `open` read the superblock, the
+  chunk directory, each chunk descriptor and the cached upper levels one after
+  another, so a cold open over a remote source cost 4–8 dependent round trips
+  before the first query. It now reads a speculative 16 KiB head first
+  (`StreamLimits::open_head_bytes`), which holds the superblock, the chunk
+  directory and the `TREE` descriptor of an ordinary file and all of a small
+  one. What the head misses goes out as one batch: the async reader issues the
+  payload descriptors and the directory together, with the variable-width
+  payload's total length fetched speculatively beside them. No format change.
+  Async open waves, then sync open reads, before and after (2D, 1 000 000
+  items; up to 16 KiB more bytes read):
+
+  | Layout | Async waves | Sync reads |
+  |---|---|---|
+  | SoA | 5 → 2 | 5 → 3 |
+  | interleaved | 4 → 2 | 4 → 2 |
+  | variable payload | 7 → 2 | 7 → 4 |
+  | fixed-width payload | 6 → 2 | 6 → 3 |
+  | variable payload + prefix section | 8 → 2 | 8 → 5 |
+
+  A file smaller than the head opens in one read. A source that hides its
+  length and is shorter than the head falls back to the superblock read.
+
 ### SIMD
 
 - **`SimdIndex2D` / `SimdIndex3D` `raycast_any` descends depth-first.** It

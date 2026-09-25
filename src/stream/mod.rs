@@ -31,6 +31,7 @@ mod core;
 mod directory;
 mod error;
 mod limits;
+mod open;
 mod payload;
 mod planner;
 mod readers;

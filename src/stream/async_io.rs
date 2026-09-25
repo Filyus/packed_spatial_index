@@ -1,21 +1,14 @@
 use std::io;
-use std::sync::Arc;
 
 use crate::estimate::{Estimate, box_fraction_2d, box_fraction_3d, subtree_leaf_range};
 use crate::geometry::{Box2D, Box3D, Overlaps2D, Overlaps3D};
-use crate::persistence::{
-    CHUNK_ENTRY_LEN, CHUNK_FLAG_CRITICAL, FORMAT_VERSION, LoadError, PFIX_DESC_LEN, PYLD_DESC_LEN,
-    PYLD_DESC_LEN_FIXED, SUPERBLOCK_LEN, TAG_PFIX, TAG_PYLD, TAG_TREE, TREE_DESC_LEN,
-    derive_level_bounds, expected_tree_shape, parse_pfix_chunk, parse_pyld_chunk, parse_tree_chunk,
-    read_u32_at, read_u64_at, read_u64_le_unchecked,
-};
+use crate::persistence::{LoadError, SUPERBLOCK_LEN, read_u64_le_unchecked};
 
-use super::core::{align8_u64, checked_directory_span};
-use super::directory::directory_start;
-use super::limits::{Budget, directory_node_budget};
+use super::limits::{Budget, COALESCE_GAP_BYTES};
+use super::open::{OpenBytes, OpenStep, head_len, plan_open};
 use super::payload::{
-    PayloadSection, PrefixSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span,
-    payload_run_end, payload_run_end_fixed,
+    PayloadSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span, payload_run_end,
+    payload_run_end_fixed,
 };
 use super::planner::{apply_gather_run, expand_frontier, plan_gather};
 use super::{
@@ -63,204 +56,61 @@ enum Want {
 
 #[cfg(feature = "async")]
 impl<R: AsyncRangeReader> StreamCore<R> {
+    /// Async mirror of [`open`](StreamCore::open) over the same [`plan_open`],
+    /// except that each batch of reads is issued concurrently and the variable
+    /// payload's total length is fetched speculatively with the descriptors:
+    /// a cold open is the head plus one batch.
     async fn open_async(
         reader: R,
         dimensions: usize,
         coord_bytes: usize,
         limits: StreamLimits,
     ) -> Result<Self, StreamError> {
-        let mut head = [0u8; SUPERBLOCK_LEN];
-        reader.read_exact_at(0, &mut head).await?;
-        if &head[..8] != b"PSINDEX\0" {
-            return Err(StreamError::Format(LoadError::BadMagic));
-        }
-        if u64::from_le_bytes(head[8..16].try_into().unwrap()) != FORMAT_VERSION {
-            return Err(StreamError::Format(LoadError::UnsupportedVersion));
-        }
-        let chunk_count = read_u32_at(&head, 16)? as usize;
         let file_len = reader.len();
-        let (dir_len, dir_end) = checked_directory_span(chunk_count, file_len)?;
-        let mut dir = vec![0u8; dir_len];
-        reader
-            .read_exact_at(SUPERBLOCK_LEN as u64, &mut dir)
-            .await?;
-
-        let mut max_end = dir_end;
-        let mut tree: Option<(u64, u64)> = None;
-        let mut pyld: Option<(u64, u64)> = None;
-        let mut pfix: Option<(u64, u64)> = None;
-        for i in 0..chunk_count {
-            let base = i * CHUNK_ENTRY_LEN;
-            let mut tag = [0u8; 4];
-            tag.copy_from_slice(&dir[base..base + 4]);
-            let flags = read_u32_at(&dir, base + 4)?;
-            let offset = read_u64_at(&dir, base + 8)?;
-            let len = read_u64_at(&dir, base + 16)?;
-            let end = offset.checked_add(len).ok_or(LoadError::IntegerOverflow)?;
-            if file_len.is_some_and(|fl| end > fl) {
-                return Err(StreamError::Format(LoadError::InvalidTree));
+        let mut bytes = OpenBytes::default();
+        let mut head = vec![0u8; head_len(&limits, file_len)];
+        match reader.read_exact_at(0, &mut head).await {
+            Ok(()) => bytes.insert(0, head),
+            // See the sync `open`: a short source of unknown length.
+            Err(e)
+                if e.kind() == io::ErrorKind::UnexpectedEof
+                    && file_len.is_none()
+                    && head.len() > SUPERBLOCK_LEN =>
+            {
+                head.truncate(SUPERBLOCK_LEN);
+                reader.read_exact_at(0, &mut head).await?;
+                bytes.insert(0, head);
             }
-            max_end = max_end.max(end);
-            if tag == TAG_TREE {
-                tree = Some((offset, len));
-            } else if tag == TAG_PYLD {
-                pyld = Some((offset, len));
-            } else if tag == TAG_PFIX {
-                pfix = Some((offset, len));
-            } else if flags & CHUNK_FLAG_CRITICAL != 0 {
-                return Err(StreamError::Format(LoadError::UnsupportedVersion));
-            }
+            Err(e) => return Err(e.into()),
         }
-
-        // Reject a file longer than the last chunk plus its alignment pad — a
-        // stray trailing byte the directory does not account for.
-        let aligned_end = align8_u64(max_end)?;
-        if let Some(fl) = file_len
-            && fl > aligned_end
-        {
-            return Err(StreamError::Format(LoadError::LengthMismatch {
-                expected: max_end as usize,
-                actual: fl as usize,
-            }));
-        }
-        let (toff, tlen) = tree.ok_or(LoadError::InvalidTree)?;
-        if tlen < TREE_DESC_LEN as u64 {
-            return Err(StreamError::Format(LoadError::Truncated));
-        }
-        let mut desc = [0u8; TREE_DESC_LEN];
-        reader.read_exact_at(toff, &mut desc).await?;
-        let (td, _) = parse_tree_chunk(&desc)?;
-        if td.dimensions != dimensions || td.coord_bytes != coord_bytes {
-            return Err(StreamError::Format(LoadError::UnsupportedVersion));
-        }
-        let (num_nodes, level_count) = expected_tree_shape(td.num_items, td.node_size)?;
-        let record = dimensions
-            .checked_mul(2 * coord_bytes)
-            .ok_or(LoadError::IntegerOverflow)?;
-        let box_stride = if td.interleaved { record + 8 } else { record };
-        let box0 = toff + td.desc_len as u64;
-        let node_len = num_nodes
-            .checked_mul(box_stride + if td.interleaved { 0 } else { 8 })
-            .ok_or(LoadError::IntegerOverflow)?;
-        if tlen != td.desc_len as u64 + node_len as u64 {
-            return Err(StreamError::Format(LoadError::InvalidTree));
-        }
-        let idx0 = if td.interleaved {
-            box0
-        } else {
-            box0 + (num_nodes * record) as u64
-        };
-        let level_bounds = derive_level_bounds(td.num_items, td.node_size, level_count);
-
-        let payload = match pyld {
-            Some((poff, plen)) => {
-                if plen < PYLD_DESC_LEN as u64 {
-                    return Err(StreamError::Format(LoadError::Truncated));
-                }
-                let dn = (PYLD_DESC_LEN_FIXED as u64).min(plen) as usize;
-                let mut pd = [0u8; PYLD_DESC_LEN_FIXED];
-                reader.read_exact_at(poff, &mut pd[..dn]).await?;
-                let (pdesc, _) = parse_pyld_chunk(&pd[..dn])?;
-                let body0 = poff + pdesc.desc_len as u64;
-                if pdesc.record_stride != 0 {
-                    let stride = pdesc.record_stride as u64;
-                    let blob_total = (td.num_items as u64)
-                        .checked_mul(stride)
-                        .ok_or(StreamError::Format(LoadError::IntegerOverflow))?;
-                    let need = pdesc.desc_len as u64 + blob_total;
-                    if plen != need {
-                        return Err(StreamError::Format(LoadError::InvalidTree));
+        let gap = limits.coalesce_gap_bytes.unwrap_or(COALESCE_GAP_BYTES);
+        loop {
+            match plan_open(
+                &mut bytes,
+                dimensions,
+                coord_bytes,
+                &limits,
+                file_len,
+                gap,
+                true,
+            )? {
+                OpenStep::Read(reads) => {
+                    let mut bufs: Vec<Vec<u8>> =
+                        reads.iter().map(|&(_, len)| vec![0u8; len]).collect();
+                    let fetches = reads
+                        .iter()
+                        .zip(bufs.iter_mut())
+                        .map(|(&(offset, _), buf)| {
+                            reader.read_exact_at(offset, buf.as_mut_slice())
+                        });
+                    futures_util::future::try_join_all(fetches).await?;
+                    for (&(offset, _), buf) in reads.iter().zip(bufs) {
+                        bytes.insert(offset, buf);
                     }
-                    Some(PayloadSection {
-                        offsets_start: 0,
-                        blobs_start: body0,
-                        blob_total,
-                        stride,
-                    })
-                } else {
-                    let offsets_start = body0;
-                    let last_at = offsets_start + (td.num_items as u64) * 8;
-                    let mut last = [0u8; 8];
-                    reader.read_exact_at(last_at, &mut last).await?;
-                    let blob_total = u64::from_le_bytes(last);
-                    let blobs_start = offsets_start + (td.num_items as u64 + 1) * 8;
-                    let need = pdesc.desc_len as u64 + (td.num_items as u64 + 1) * 8 + blob_total;
-                    if plen != need {
-                        return Err(StreamError::Format(LoadError::InvalidTree));
-                    }
-                    Some(PayloadSection {
-                        offsets_start,
-                        blobs_start,
-                        blob_total,
-                        stride: 0,
-                    })
                 }
+                OpenStep::Ready(layout) => return Ok(Self::from_layout(*layout, reader, limits)),
             }
-            None => None,
-        };
-
-        // The optional prefix section: a dense copy of the blob heads. Only
-        // useful next to a payload, and only when its stride can satisfy the
-        // requested prefix, both of which the scan re-checks per query.
-        let prefix = match pfix {
-            Some((poff, plen)) if payload.is_some() => {
-                if plen < PFIX_DESC_LEN as u64 {
-                    return Err(StreamError::Format(LoadError::Truncated));
-                }
-                let mut pd = [0u8; PFIX_DESC_LEN];
-                reader.read_exact_at(poff, &mut pd).await?;
-                let desc = parse_pfix_chunk(&pd)?;
-                let need = desc.desc_len as u64 + td.num_items as u64 * desc.record_stride as u64;
-                if plen != need {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                Some(PrefixSection {
-                    start: poff + desc.desc_len as u64,
-                    stride: desc.record_stride,
-                })
-            }
-            _ => None,
-        };
-
-        // Directory prefetch (mirror of the sync `open` epilogue).
-        let budget = directory_node_budget(&limits, box_stride, td.interleaved);
-        let dir_node_start = directory_start(&level_bounds, level_count, budget);
-        let cached_nodes = num_nodes - dir_node_start;
-        let mut dir_boxes = vec![0u8; cached_nodes * box_stride];
-        if !dir_boxes.is_empty() {
-            let offset = box0 + (dir_node_start * box_stride) as u64;
-            reader.read_exact_at(offset, &mut dir_boxes).await?;
         }
-        let mut dir_indices = if td.interleaved {
-            Vec::new()
-        } else {
-            vec![0u8; cached_nodes * 8]
-        };
-        if !dir_indices.is_empty() {
-            let offset = idx0 + (dir_node_start * 8) as u64;
-            reader.read_exact_at(offset, &mut dir_indices).await?;
-        }
-        let dir_boxes: Arc<[u8]> = dir_boxes.into();
-        let dir_indices: Arc<[u8]> = dir_indices.into();
-        Ok(StreamCore {
-            reader,
-            node_size: td.node_size,
-            num_items: td.num_items,
-            num_nodes,
-            level_count,
-            level_bounds,
-            record,
-            box_stride,
-            interleaved: td.interleaved,
-            box0,
-            idx0,
-            dir_node_start,
-            dir_boxes,
-            dir_indices,
-            payload,
-            prefix,
-            limits,
-        })
     }
 
     /// Async mirror of [`gather`](StreamCore::gather), but issues all of a

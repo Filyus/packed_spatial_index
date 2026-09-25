@@ -13,7 +13,8 @@
 //!
 //! Each group times one path: the branching form (the reference), the masked
 //! form, and a control that neither touches -- `any` on the same index, which
-//! is a callback path and never builds a mask. The checksum column pins that
+//! is a callback path, so it builds the same mask on x86 whichever form the
+//! group times. The checksum column pins that
 //! both forms return the same hits.
 //!
 //! Families: owned `Index2D`, `Index2DView` and `Index3DView` over the same
@@ -157,7 +158,7 @@ macro_rules! pair {
         let qs = $qs;
         let (mut out_b, mut out_m) = (Vec::new(), Vec::new());
         let mut arms = vec![
-            paired::arm("any (control, no mask)", || {
+            paired::arm("any (control)", || {
                 let mut t = 0usize;
                 for q in black_box(qs) {
                     t += usize::from($any(*q));
@@ -229,6 +230,48 @@ fn main() {
                 }
             }
         );
+    }
+
+    // ---- 2D owned callback paths: full visit, and `first` (what `any` runs) ----
+    // `visit_with_stack` carries `visit`, `any` and `first`, so one hook times
+    // both forms of all three.
+    // An early exit descends a few nodes whatever the window, so 400 large
+    // windows are few enough branches to learn: `first` gets 10 000 in every
+    // class (kb:task/192).
+    for (i, (name, lo, hi, n)) in WINDOWS.iter().enumerate() {
+        for early in [false, true] {
+            let qs = windows_2d(0x91 + i as u64, *lo, *hi, if early { 10_000 } else { *n });
+            let call = if early { "first" } else { "visit" };
+            let arm = |masked: bool| {
+                let (qs, owned2) = (&qs, &owned2);
+                let mut stack = Vec::new();
+                move || {
+                    let mut t = 0usize;
+                    for &q in black_box(qs) {
+                        let f = |idx: usize| {
+                            t += idx;
+                            if early {
+                                ControlFlow::Break(())
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        };
+                        let _ = if masked {
+                            owned2.visit_with_stack_forced::<true, (), _>(q, &mut stack, f)
+                        } else {
+                            owned2.visit_with_stack_forced::<false, (), _>(q, &mut stack, f)
+                        };
+                    }
+                    t
+                }
+            };
+            let mut arms = vec![
+                paired::arm("branching", arm(false)),
+                paired::arm("masked (ships)", arm(true)),
+            ];
+            let label = hits_label(&format!("2d owned {call}"), name, &qs, |q| owned2.count(q));
+            paired::run(&label, &mut arms, "branching");
+        }
     }
 
     // ---- 3D: view, raycast ----

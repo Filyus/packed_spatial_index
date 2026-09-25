@@ -80,6 +80,43 @@ fn owned_2d_and_views_agree_in_both_forms() {
 }
 
 #[test]
+fn owned_2d_callback_paths_agree_in_both_forms() {
+    use std::ops::ControlFlow;
+    // Node size 128 takes a node in two mask chunks.
+    for node_size in [16, 128] {
+        let mut b = Index2DBuilder::new(N).node_size(node_size);
+        for bx in boxes_2d() {
+            b.add(bx);
+        }
+        let owned = b.finish().unwrap();
+        let mut stack = Vec::new();
+        for q in windows_2d() {
+            let (mut a, mut m) = (Vec::new(), Vec::new());
+            let _ = owned.visit_with_stack_forced::<false, (), _>(q, &mut stack, |i| {
+                a.push(i);
+                ControlFlow::Continue(())
+            });
+            let _ = owned.visit_with_stack_forced::<true, (), _>(q, &mut stack, |i| {
+                m.push(i);
+                ControlFlow::Continue(())
+            });
+            assert_eq!(a, m, "visit {node_size} {q:?}");
+            let first_b =
+                owned.visit_with_stack_forced::<false, _, _>(q, &mut stack, ControlFlow::Break);
+            let first_m =
+                owned.visit_with_stack_forced::<true, _, _>(q, &mut stack, ControlFlow::Break);
+            assert_eq!(first_b, first_m, "first {node_size} {q:?}");
+            assert_eq!(
+                owned.first(q),
+                a.first().copied(),
+                "shipped first {node_size} {q:?}"
+            );
+            assert_eq!(owned.any(q), !a.is_empty(), "shipped any {node_size} {q:?}");
+        }
+    }
+}
+
+#[test]
 fn view_3d_and_raycast_agree_in_both_forms() {
     let mut b = Index3DBuilder::new(N).node_size(16);
     for bx in boxes_3d() {

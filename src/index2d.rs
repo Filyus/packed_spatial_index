@@ -110,7 +110,9 @@ pub(crate) const MASK_CHUNK: usize = u64::BITS as usize;
 /// where the rejected-child branch is well predicted and the writes are pure
 /// cost; the mask pays for neither. Measured on the collect paths (`search`,
 /// `search_into`, `search_with`): −25–37% on wide queries, −7–25% on narrow.
-/// The callback paths do not use it; see `visit_with_stack_impl`.
+/// The owned 2D callback paths (`visit`, `any`, `first`) use it too since a
+/// re-measure over query sets the predictor cannot learn (kb:task/192); see
+/// `visit_with_stack_impl`.
 #[inline(always)]
 fn overlap_mask(entries: &[Box2D], query: Box2D) -> u64 {
     debug_assert!(entries.len() <= MASK_CHUNK);
@@ -1769,7 +1771,23 @@ impl Index2D {
         // per-element `TreeAccess` kernel cannot. Measured ~1.5x faster than the
         // generic kernel on owned visit, so kept specialized (views, whose byte
         // storage has no slice to vectorize, keep using `visit_overlaps`).
-        self.visit_with_stack_impl::<false, B, F>(query, stack, visitor)
+        self.visit_with_stack_impl::<false, MASK_PAYS_IN_2D, B, F>(query, stack, visitor)
+    }
+
+    /// [`visit_with_stack`](Index2D::visit_with_stack) in the form `MASKED`
+    /// names: the child tests folded into a bit mask, or one branch per child.
+    /// Same items, same order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn visit_with_stack_forced<const MASKED: bool, B, F>(
+        &self,
+        query: Box2D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        self.visit_with_stack_impl::<false, MASKED, B, F>(query, stack, visitor)
     }
 
     /// Hidden prefetch variant of [`visit_with_stack`](Index2D::visit_with_stack).
@@ -1783,7 +1801,7 @@ impl Index2D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<true, B, F>(query, stack, visitor)
+        self.visit_with_stack_impl::<true, MASK_PAYS_IN_2D, B, F>(query, stack, visitor)
     }
 
     /// Hottest path: both result buffer and traversal stack are reused by the caller.
@@ -2023,7 +2041,7 @@ impl Index2D {
         results.extend_from_slice(&self.indices[start..end]);
     }
 
-    fn visit_with_stack_impl<const PREFETCH: bool, B, F>(
+    fn visit_with_stack_impl<const PREFETCH: bool, const MASKED: bool, B, F>(
         &self,
         query: Box2D,
         stack: &mut Vec<usize>,
@@ -2039,34 +2057,59 @@ impl Index2D {
 
         let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
+        // The masked form also skips the test under a subtree the query covers:
+        // its leaf range goes to the visitor whole, as the collect paths do.
+        let mut contained = false;
 
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
-            let children = node_entries.iter().zip(node_indices);
 
-            // The callback paths keep the branching loops on purpose. `any` and
-            // `first` leave after the first hit, and there the full overlap mask
-            // of every internal node on the way down costs more than the branches
-            // it replaces, which are well predicted while most children miss:
-            // mask-and-iterate measured +40–60% on `any` and lost on narrow
-            // `visit`, while winning every collect path (see `overlap_mask`).
-            if is_leaf {
-                for (b, &index) in children {
-                    if !b.overlaps(query) {
-                        continue;
-                    }
+            if MASKED && contained {
+                let (start, stop) = leaf_group_range(self, node_index, end, level);
+                for &index in &self.indices[start..stop] {
                     visitor(index)?;
                 }
-            } else {
-                let child_level = level - 1;
-                for (b, &index) in children.rev() {
-                    if !b.overlaps(query) {
-                        continue;
+            } else if MASKED {
+                let chunks = node_entries
+                    .chunks(MASK_CHUNK)
+                    .zip(node_indices.chunks(MASK_CHUNK));
+                if is_leaf {
+                    for (boxes, indices) in chunks {
+                        let mut mask = overlap_mask(boxes, query);
+                        while mask != 0 {
+                            visitor(indices[mask.trailing_zeros() as usize])?;
+                            mask &= mask - 1;
+                        }
                     }
-                    stack.push(frame::pack(index, child_level));
+                } else {
+                    let child_level = level - 1;
+                    for (boxes, indices) in chunks.rev() {
+                        for_each_hit_rev(overlap_mask(boxes, query), |i| {
+                            let flag = usize::from(query.contains(boxes[i])) * frame::CONTAINED;
+                            stack.push(frame::pack(indices[i], child_level) | flag);
+                        });
+                    }
+                }
+            } else {
+                let children = node_entries.iter().zip(node_indices);
+                if is_leaf {
+                    for (b, &index) in children {
+                        if !b.overlaps(query) {
+                            continue;
+                        }
+                        visitor(index)?;
+                    }
+                } else {
+                    let child_level = level - 1;
+                    for (b, &index) in children.rev() {
+                        if !b.overlaps(query) {
+                            continue;
+                        }
+                        stack.push(frame::pack(index, child_level));
+                    }
                 }
             }
 
@@ -2082,6 +2125,7 @@ impl Index2D {
                     }
                     node_index = frame::node(f);
                     level = frame::level(f);
+                    contained = frame::contained(f);
                 }
                 None => return ControlFlow::Continue(()),
             }

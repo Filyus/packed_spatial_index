@@ -15,6 +15,20 @@ pub(crate) trait TreeAccess {
     fn tree_level_bound(&self, level: usize) -> usize;
     fn tree_bounds(&self, pos: usize) -> Self::Bounds;
     fn tree_index(&self, pos: usize) -> usize;
+
+    /// `overlaps` of the entries `[start, end)` (at most 64) as a bitmask, bit
+    /// `i` for entry `start + i`. The owned indexes override it with a loop
+    /// over their entry slice, which LLVM vectorizes; element by element
+    /// through [`tree_bounds`](Self::tree_bounds) it does not; the owned
+    /// masked `find` ran about 1.3x slower that way on a Xeon.
+    #[inline(always)]
+    fn tree_mask(&self, start: usize, end: usize, overlaps: &impl Fn(Self::Bounds) -> bool) -> u64 {
+        let mut mask = 0u64;
+        for (i, pos) in (start..end).enumerate() {
+            mask |= u64::from(overlaps(self.tree_bounds(pos))) << i;
+        }
+        mask
+    }
 }
 
 /// Leaf-array `[start, end)` range covered by the subtree of the entry at

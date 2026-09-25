@@ -4,6 +4,32 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Search
+
+- **`any` and `first` descend depth first and stop testing at the first
+  hit.** Owned and view, 2D and 3D. They tested every child of each node on the
+  way down and pushed every overlapping one onto a scratch stack before
+  descending. On a large window almost every child overlaps, so every node on
+  the path cost a full scan: 63 child tests per `first` on 100 000 boxes, where
+  `static_aabb2d_index` spent 52 and ran 1.22–1.35× faster. The descent now
+  enters a node's first overlapping child as soon as the test finds it and keeps
+  the node's rest as the resume point of its level, in a fixed array, so no
+  scratch stack is taken either (37 tests). A window that expects under 2 hits
+  in 2D or 100 in 3D (from its share of the root box) tests a node's children
+  into a mask instead, which costs a query that finds nothing less; aarch64
+  keeps one branch per child. `Index2D::first` now takes 0.64–0.75 of
+  `static_aabb2d_index`'s time on every window class and machine measured.
+  Against the old traversal, small, mid and large windows:
+
+  | Path | Zen 3 (EPYC 7763) | Zen 4 (EPYC 9V74) | Neoverse N2 |
+  |---|---|---|---|
+  | 2D owned | 0.86, 0.73, 0.54 | 0.93, 0.79, 0.59 | 0.87, 0.78, 0.66 |
+  | 2D view | 0.86, 0.70, 0.50 | 0.94, 0.77, 0.56 | 0.87, 0.78, 0.65 |
+  | 3D owned | 0.94, 0.91, 0.65 | 0.96, 0.95, 0.75 | 1.03, 0.85, 0.66 |
+  | 3D view | 1.00, 0.97, 0.67 | 0.99, 0.98, 0.77 | 1.02, 0.85, 0.67 |
+
+  The cells that lose are 3D windows that find nothing on the N2 (2–3%).
+
 ## [0.33.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.32.0...psi-v0.33.0) - 2026-09-25
 
 ### Search

@@ -40,7 +40,7 @@ use crate::persistence::{
     LoadError, ParsedPayload, PayloadError, build_id_to_leaf, declares_records, parse_aggregates,
     parse_index, parse_index_owned, payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
 };
-use crate::range::{collect_region, visit_region};
+use crate::range::{collect_region, find_region, find_region_switched, visit_region};
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 use crate::tree_access::{TreeAccess, leaf_group_range};
 use crate::triangle::{Triangle2, blobs_as_records};
@@ -110,9 +110,10 @@ pub(crate) const MASK_CHUNK: usize = u64::BITS as usize;
 /// where the rejected-child branch is well predicted and the writes are pure
 /// cost; the mask pays for neither. Measured on the collect paths (`search`,
 /// `search_into`, `search_with`): −25–37% on wide queries, −7–25% on narrow.
-/// The owned 2D callback paths (`visit`, `any`, `first`) use it too since a
-/// re-measure over query sets the predictor cannot learn (kb:task/192); see
-/// `visit_with_stack_impl`.
+/// The owned 2D `visit` uses it too since a re-measure over query sets the
+/// predictor cannot learn (kb:task/192); see `visit_with_stack_impl`. `any`
+/// and `first` do not: their depth-first descent stops testing a node's
+/// children at the first hit ([`find_region`]).
 #[inline(always)]
 fn overlap_mask(entries: &[Box2D], query: Box2D) -> u64 {
     debug_assert!(entries.len() <= MASK_CHUNK);
@@ -159,6 +160,36 @@ pub(crate) fn for_each_hit_rev(mut mask: u64, mut f: impl FnMut(usize)) {
 /// too until its child test vectorized; it now masks everywhere and does not
 /// read this constant.
 pub(crate) const MASK_PAYS_IN_2D: bool = !cfg!(target_arch = "aarch64");
+
+/// Expected hits below which the 2D `find` behind `any` and `first` takes the
+/// masked child test ([`find_region`]).
+///
+/// The masked form wins on a query that finds little: it tests every child of
+/// a node without a mispredict; a query with no hit has no sibling to skip
+/// anyway. The branching form wins once hits are likely, since it stops
+/// testing a node's children at the first hit. Where the two cross depends on
+/// the machine and the storage (`benches/paired_find_switch.rs`, 100 000
+/// boxes): about 1 expected hit for the view everywhere measured, 2 for the
+/// owned index on a Xeon (Emerald Rapids) and a Zen 3 (EPYC 7763) and 10-20 on
+/// a Zen 4 (EPYC 9V74). On windows that expect a fraction of a hit the mask
+/// takes 0.70-0.84 of the branching time; on large windows it costs 1.3-1.7x.
+/// On aarch64 only the branching form runs
+/// ([`MASK_PAYS_IN_2D`]).
+pub(crate) const FIND_MASK_BELOW_HITS_2D: f64 = 2.0;
+
+/// Whether a 2D `find` over `num_items` items under `root` expects fewer than
+/// [`FIND_MASK_BELOW_HITS_2D`] hits.
+#[inline(always)]
+fn find_prefers_mask_2d(root: Box2D, query: Box2D, num_items: usize) -> bool {
+    crate::range::expects_fewer_hits(
+        [root.min_x, root.min_y],
+        [root.max_x, root.max_y],
+        [query.min_x, query.min_y],
+        [query.max_x, query.max_y],
+        num_items,
+        FIND_MASK_BELOW_HITS_2D,
+    )
+}
 
 /// Visit, low to high, the positions in `boxes` that overlap `query`: through a
 /// branch-free [`overlap_mask`] when `MASKED`, with one branch per box when not.
@@ -1774,24 +1805,48 @@ impl Index2D {
         self.visit_with_stack_impl::<false, MASK_PAYS_IN_2D, true, B, F>(query, stack, visitor)
     }
 
-    /// [`visit_with_stack`](Index2D::visit_with_stack) for a visitor that stops
-    /// at its first item, as `any` and `first` do. It never reaches a covered
-    /// subtree's leaf range whole, so it skips the containment test that finds
-    /// one: that test cost the masked `first` 4-12% on large windows.
+    /// The items overlapping `query` in [`visit`](Index2D::visit) order, for a
+    /// visitor that stops at its first item, as `any` and `first` do: the
+    /// shared depth-first `range::find_region`, which enters a node's first
+    /// overlapping child as soon as it finds it and needs no stack. It tests
+    /// children one by one, or into a mask below [`FIND_MASK_BELOW_HITS_2D`]
+    /// expected hits. The branching test is scalar either way, so the generic
+    /// kernel costs owned nothing: timed level with a local slice-based copy.
+    /// The mask reads the entry slice (`TreeAccess::tree_mask`), which
+    /// vectorizes.
     #[doc(hidden)]
-    pub fn find_with_stack<B, F>(
-        &self,
-        query: Box2D,
-        stack: &mut Vec<usize>,
-        visitor: F,
-    ) -> ControlFlow<B>
+    #[inline]
+    pub fn find<B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<false, MASK_PAYS_IN_2D, false, B, F>(query, stack, visitor)
+        find_region_switched::<MASK_PAYS_IN_2D, _, _, _, _, _>(
+            self,
+            move |bounds: Box2D| bounds.overlaps(query),
+            |root| find_prefers_mask_2d(root, query, self.tree_num_items()),
+            visitor,
+        )
     }
 
-    /// [`find_with_stack`](Index2D::find_with_stack) in the form `MASKED` names.
+    /// [`find`](Self::find) in the form `MASKED` names: each node's child
+    /// tests folded into a bit mask, or one branch per child. Same items, same
+    /// order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn find_forced<const MASKED: bool, B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        find_region::<MASKED, _, _, _, _>(
+            self,
+            move |bounds: Box2D| bounds.overlaps(query),
+            visitor,
+        )
+    }
+
+    /// The early-exit traversal `any` and `first` ran before [`find`](Index2D::find),
+    /// in the form `MASKED` names: every child of a node tested (into a mask,
+    /// or one branch each) and every hit pushed before descending. For timing
+    /// against `find` in one binary.
     #[doc(hidden)]
     pub fn find_with_stack_forced<const MASKED: bool, B, F>(
         &self,
@@ -3110,9 +3165,9 @@ impl<'a> Index2DView<'a> {
     ///
     /// The shared region traversal, not the overlaps-only one: a subtree the
     /// query fully contains is emitted whole, so its items are never parsed out
-    /// of the buffer or tested one by one. `any` / `first` deliberately keep the
-    /// overlaps-only path -- they stop at the first hit, so a containment test
-    /// per node could only add work.
+    /// of the buffer or tested one by one. `any` / `first` deliberately take the
+    /// overlaps-only [`find`](Self::find) -- they stop at the first hit, so a
+    /// containment test per node could only add work.
     #[doc(hidden)]
     pub fn search_into_stack(
         &self,
@@ -3160,9 +3215,9 @@ impl<'a> Index2DView<'a> {
     ///
     /// The shared region traversal, not the overlaps-only one: a subtree the
     /// query fully contains is emitted whole, so its items are never parsed out
-    /// of the buffer or tested one by one. `any` / `first` keep the
-    /// overlaps-only path -- they stop at the first hit, so a containment test
-    /// per node could only add work.
+    /// of the buffer or tested one by one. `any` / `first` take the
+    /// overlaps-only [`find`](Self::find) -- they stop at the first hit, so a
+    /// containment test per node could only add work.
     #[doc(hidden)]
     pub fn visit_with_stack<B, F>(
         &self,
@@ -3176,18 +3231,35 @@ impl<'a> Index2DView<'a> {
         self.visit_with_stack_forced::<MASK_PAYS_IN_2D, B, F>(query, stack, visitor)
     }
 
-    /// Overlaps-only traversal, for the short-circuiting entry points.
+    /// [`Index2D::find`] on the view: the depth-first early-exit traversal
+    /// behind `any` and `first`.
     #[doc(hidden)]
-    pub fn visit_overlaps_with_stack<B, F>(
-        &self,
-        query: Box2D,
-        stack: &mut Vec<usize>,
-        visitor: F,
-    ) -> ControlFlow<B>
+    #[inline]
+    pub fn find<B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.find_with_stack_forced::<MASK_PAYS_IN_2D, B, F>(query, stack, visitor)
+        find_region_switched::<MASK_PAYS_IN_2D, _, _, _, _, _>(
+            self,
+            move |bounds: Box2D| bounds.overlaps(query),
+            |root| find_prefers_mask_2d(root, query, self.tree_num_items()),
+            visitor,
+        )
+    }
+
+    /// [`find`](Self::find) in the form `MASKED` names: each node's child
+    /// tests folded into a bit mask, or one branch per child. Same items, same
+    /// order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn find_forced<const MASKED: bool, B, F>(&self, query: Box2D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        find_region::<MASKED, _, _, _, _>(
+            self,
+            move |bounds: Box2D| bounds.overlaps(query),
+            visitor,
+        )
     }
 
     /// [`visit_with_stack`](Self::visit_with_stack) in the form `MASKED` names:
@@ -3212,8 +3284,9 @@ impl<'a> Index2DView<'a> {
         )
     }
 
-    /// [`visit_overlaps_with_stack`](Self::visit_overlaps_with_stack) in the
-    /// form `MASKED` names.
+    /// The early-exit traversal `any` and `first` ran before
+    /// [`find`](Self::find), in the form `MASKED` names; see
+    /// [`Index2D::find_with_stack_forced`].
     #[doc(hidden)]
     pub fn find_with_stack_forced<const MASKED: bool, B, F>(
         &self,
@@ -3326,6 +3399,14 @@ impl TreeAccess for Index2D {
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
+    }
+    #[inline(always)]
+    fn tree_mask(&self, start: usize, end: usize, overlaps: &impl Fn(Box2D) -> bool) -> u64 {
+        let mut mask = 0u64;
+        for (i, b) in self.entries[start..end].iter().enumerate() {
+            mask |= u64::from(overlaps(*b)) << i;
+        }
+        mask
     }
 }
 

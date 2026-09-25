@@ -113,6 +113,36 @@ fn owned_2d_callback_paths_agree_in_both_forms() {
             assert_eq!(find_b, first_b, "find branching {node_size} {q:?}");
             assert_eq!(find_m, first_b, "find masked {node_size} {q:?}");
             assert_eq!(
+                owned.find(q, ControlFlow::Break),
+                first_b,
+                "find depth-first {node_size} {q:?}"
+            );
+            for masked in [false, true] {
+                let mut d = Vec::new();
+                let push = |i| {
+                    d.push(i);
+                    ControlFlow::<()>::Continue(())
+                };
+                let _ = if masked {
+                    owned.find_forced::<true, _, _>(q, push)
+                } else {
+                    owned.find_forced::<false, _, _>(q, push)
+                };
+                assert_eq!(
+                    d, a,
+                    "find depth-first to the end {node_size} {masked} {q:?}"
+                );
+                let found = if masked {
+                    owned.find_forced::<true, _, _>(q, ControlFlow::Break)
+                } else {
+                    owned.find_forced::<false, _, _>(q, ControlFlow::Break)
+                };
+                assert_eq!(
+                    found, first_b,
+                    "find depth-first {node_size} {masked} {q:?}"
+                );
+            }
+            assert_eq!(
                 owned.first(q),
                 a.first().copied(),
                 "shipped first {node_size} {q:?}"
@@ -146,8 +176,24 @@ macro_rules! callback_forms_agree {
             index.visit_with_stack_forced::<true, _, _>(q, stack, ControlFlow::Break),
             index.find_with_stack_forced::<false, _, _>(q, stack, ControlFlow::Break),
             index.find_with_stack_forced::<true, _, _>(q, stack, ControlFlow::Break),
+            index.find(q, ControlFlow::Break),
+            index.find_forced::<false, _, _>(q, ControlFlow::Break),
+            index.find_forced::<true, _, _>(q, ControlFlow::Break),
         ] {
             assert_eq!(f, first, "first {tag} {q:?}");
+        }
+        for masked in [false, true] {
+            let mut d = Vec::new();
+            let push = |i| {
+                d.push(i);
+                ControlFlow::<()>::Continue(())
+            };
+            let _ = if masked {
+                index.find_forced::<true, _, _>(q, push)
+            } else {
+                index.find_forced::<false, _, _>(q, push)
+            };
+            assert_eq!(d, a, "find depth-first to the end {tag} {masked} {q:?}");
         }
         assert_eq!(
             index.first(q),

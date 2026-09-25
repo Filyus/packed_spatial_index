@@ -90,16 +90,12 @@ impl SearchQuery3D for Box3D {
 
     #[inline]
     fn any_index(self, index: &Index3D) -> bool {
-        let mut stack = crate::traversal::ScratchStack::take();
-        index
-            .find_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
-            .is_break()
+        index.find(self, |_| ControlFlow::Break(())).is_break()
     }
 
     #[inline]
     fn first_index(self, index: &Index3D) -> Option<usize> {
-        let mut stack = crate::traversal::ScratchStack::take();
-        match index.find_with_stack(self, &mut stack, ControlFlow::Break) {
+        match index.find(self, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }
@@ -140,15 +136,12 @@ impl SearchQuery3D for Box3D {
 
     #[inline]
     fn any_view(self, view: &Index3DView<'_>) -> bool {
-        let mut stack = crate::traversal::ScratchStack::take();
-        view.visit_overlaps_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
-            .is_break()
+        view.find(self, |_| ControlFlow::Break(())).is_break()
     }
 
     #[inline]
     fn first_view(self, view: &Index3DView<'_>) -> Option<usize> {
-        let mut stack = crate::traversal::ScratchStack::take();
-        match view.visit_overlaps_with_stack(self, &mut stack, ControlFlow::Break) {
+        match view.find(self, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }

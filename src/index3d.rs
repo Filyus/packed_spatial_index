@@ -31,7 +31,7 @@ use crate::{
         parse_aggregates, parse_index, parse_index_owned, payload_slice, read_f64_le_unchecked,
         read_u64_le_unchecked,
     },
-    range::{collect_region, visit_region},
+    range::{collect_region, find_region, find_region_switched, visit_region},
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree_access::{TreeAccess, leaf_group_range},
@@ -47,11 +47,37 @@ pub use serializer::Serializer3D;
 
 use crate::index2d::{MASK_CHUNK, for_each_hit, for_each_hit_rev, frame};
 
-/// Whether the 3D callback paths (`visit`, `any`, `first`) ship the mask. The
-/// collect paths take it on every target, but a Neoverse N2 measured the
-/// callback forms 6-19% slower with it, the covered-subtree path aside:
-/// that path runs in both forms, so aarch64 keeps it with the branch.
+/// Whether the 3D callback paths (`visit` and the masked form of the `find`
+/// behind `any` and `first`) ship the mask. The collect paths take it on every
+/// target, but a Neoverse N2 measured the callback forms 6-19% slower with it,
+/// the covered-subtree path aside: that path runs in both forms, so aarch64
+/// keeps it with the branch.
 pub(crate) const CALLBACK_MASK_PAYS_IN_3D: bool = !cfg!(target_arch = "aarch64");
+
+/// [`FIND_MASK_BELOW_HITS_2D`](crate::index2d::FIND_MASK_BELOW_HITS_2D) in 3D.
+///
+/// A 3D child test costs more branches, so the masked form wins further up:
+/// the crossing is about 20-60 expected hits on a Xeon (Emerald Rapids), 40
+/// (view) to 200 (owned) on a Zen 3 (EPYC 7763) and 400 (view) to 2000 (owned)
+/// on a Zen 4 (EPYC 9V74) (`benches/paired_find_switch.rs`, 100 000 boxes).
+/// Windows that find nothing are where it matters: there the branching form
+/// takes 1.5-1.8x the masked time on those machines. On aarch64 only the
+/// branching form runs ([`CALLBACK_MASK_PAYS_IN_3D`]).
+pub(crate) const FIND_MASK_BELOW_HITS_3D: f64 = 100.0;
+
+/// Whether a 3D `find` over `num_items` items under `root` expects fewer than
+/// [`FIND_MASK_BELOW_HITS_3D`] hits.
+#[inline(always)]
+fn find_prefers_mask_3d(root: Box3D, query: Box3D, num_items: usize) -> bool {
+    crate::range::expects_fewer_hits(
+        [root.min_x, root.min_y, root.min_z],
+        [root.max_x, root.max_y, root.max_z],
+        [query.min_x, query.min_y, query.min_z],
+        [query.max_x, query.max_y, query.max_z],
+        num_items,
+        FIND_MASK_BELOW_HITS_3D,
+    )
+}
 
 /// Overlap tests of up to 64 entries folded into a bitmask, bit `i` for entry
 /// `i` — the 3D twin of `index2d::overlap_mask`; see there for why the collect
@@ -1646,20 +1672,35 @@ impl Index3D {
         self.visit_with_stack_impl::<CALLBACK_MASK_PAYS_IN_3D, true, B, F>(query, stack, visitor)
     }
 
-    /// [`visit_with_stack`](Index3D::visit_with_stack) for a visitor that stops
-    /// at its first item, as `any` and `first` do: it skips the containment
-    /// test, since it never takes a covered subtree's leaf range whole.
+    /// [`Index2D::find`](crate::Index2D::find) in 3D: the depth-first
+    /// early-exit traversal behind `any` and `first`.
     #[doc(hidden)]
-    pub fn find_with_stack<B, F>(
-        &self,
-        query: Box3D,
-        stack: &mut Vec<usize>,
-        visitor: F,
-    ) -> ControlFlow<B>
+    #[inline]
+    pub fn find<B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<CALLBACK_MASK_PAYS_IN_3D, false, B, F>(query, stack, visitor)
+        find_region_switched::<CALLBACK_MASK_PAYS_IN_3D, _, _, _, _, _>(
+            self,
+            move |bounds: Box3D| bounds.overlaps(query),
+            |root| find_prefers_mask_3d(root, query, self.tree_num_items()),
+            visitor,
+        )
+    }
+
+    /// [`find`](Self::find) in the form `MASKED` names: each node's child
+    /// tests folded into a bit mask, or one branch per child. Same items, same
+    /// order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn find_forced<const MASKED: bool, B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        find_region::<MASKED, _, _, _, _>(
+            self,
+            move |bounds: Box3D| bounds.overlaps(query),
+            visitor,
+        )
     }
 
     /// [`visit_with_stack`](Index3D::visit_with_stack) in the form `MASKED`
@@ -1678,7 +1719,9 @@ impl Index3D {
         self.visit_with_stack_impl::<MASKED, true, B, F>(query, stack, visitor)
     }
 
-    /// [`find_with_stack`](Index3D::find_with_stack) in the form `MASKED` names.
+    /// The early-exit traversal `any` and `first` ran before
+    /// [`find`](Index3D::find), in the form `MASKED` names; see
+    /// [`Index2D::find_with_stack_forced`](crate::Index2D::find_with_stack_forced).
     #[doc(hidden)]
     pub fn find_with_stack_forced<const MASKED: bool, B, F>(
         &self,
@@ -3029,18 +3072,34 @@ impl<'a> Index3DView<'a> {
         self.visit_with_stack_forced::<CALLBACK_MASK_PAYS_IN_3D, B, F>(query, stack, visitor)
     }
 
-    /// Overlaps-only traversal, for the short-circuiting entry points.
+    /// [`Index3D::find`] on the view.
     #[doc(hidden)]
-    pub fn visit_overlaps_with_stack<B, F>(
-        &self,
-        query: Box3D,
-        stack: &mut Vec<usize>,
-        visitor: F,
-    ) -> ControlFlow<B>
+    #[inline]
+    pub fn find<B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.find_with_stack_forced::<CALLBACK_MASK_PAYS_IN_3D, B, F>(query, stack, visitor)
+        find_region_switched::<CALLBACK_MASK_PAYS_IN_3D, _, _, _, _, _>(
+            self,
+            move |bounds: Box3D| bounds.overlaps(query),
+            |root| find_prefers_mask_3d(root, query, self.tree_num_items()),
+            visitor,
+        )
+    }
+
+    /// [`find`](Self::find) in the form `MASKED` names: each node's child
+    /// tests folded into a bit mask, or one branch per child. Same items, same
+    /// order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn find_forced<const MASKED: bool, B, F>(&self, query: Box3D, visitor: F) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        find_region::<MASKED, _, _, _, _>(
+            self,
+            move |bounds: Box3D| bounds.overlaps(query),
+            visitor,
+        )
     }
 
     /// [`visit_with_stack`](Self::visit_with_stack) in the form `MASKED` names:
@@ -3065,8 +3124,8 @@ impl<'a> Index3DView<'a> {
         )
     }
 
-    /// [`visit_overlaps_with_stack`](Self::visit_overlaps_with_stack) in the
-    /// form `MASKED` names.
+    /// The early-exit traversal `any` and `first` ran before
+    /// [`find`](Self::find), in the form `MASKED` names.
     #[doc(hidden)]
     pub fn find_with_stack_forced<const MASKED: bool, B, F>(
         &self,
@@ -3181,6 +3240,14 @@ impl TreeAccess for Index3D {
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
+    }
+    #[inline(always)]
+    fn tree_mask(&self, start: usize, end: usize, overlaps: &impl Fn(Box3D) -> bool) -> u64 {
+        let mut mask = 0u64;
+        for (i, b) in self.entries[start..end].iter().enumerate() {
+            mask |= u64::from(overlaps(*b)) << i;
+        }
+        mask
     }
 }
 

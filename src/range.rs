@@ -268,3 +268,323 @@ where
         }
     }
 }
+
+/// Tree levels whose resume points [`find_region`] keeps on the call stack. A
+/// deeper tree needs node size 2 and more than 2^31 items, so the heap
+/// fallback never runs on a tree that fits in memory at that node size.
+const FIND_LEVELS: usize = 32;
+
+/// Depth-first search for the items `overlaps` accepts, in the order
+/// [`visit_region`] visits them, built for a visitor that stops early (`any`,
+/// `first`).
+///
+/// It descends into a node's first overlapping child as soon as it finds it
+/// and keeps the node's rest as the resume point of its level, where
+/// [`visit_region`] pushes every overlapping child of a node before descending
+/// into the first. One resume point per level, in a fixed array, also takes
+/// the scratch stack off the call (kb:task/202).
+///
+/// `MASKED` picks the child test. Branching tests children one by one and
+/// stops at the first hit, so a traversal that stops early skips the siblings
+/// after each child on its path: on 100 000 boxes and node size 16, 37 child
+/// tests per `first` against 63 on large windows and 50 against 72 on small
+/// ones. Masked folds a node's tests into a bitmask, as [`visit_region`] does,
+/// and keeps the untaken bits as the resume point: every sibling is tested,
+/// but without a data-dependent branch per child, which is what a query that
+/// finds nothing (and so skips nothing) pays for. [`find_region_switched`]
+/// picks one per query.
+///
+/// Out of line off aarch64: inlined next to the other form behind that switch,
+/// the form it picked ran 2-10% slower than alone on a Xeon
+/// (`benches/paired_find_switch.rs`); one call per query costs less.
+/// aarch64 runs the branching form alone and inlines the whole chain into the
+/// caller: out of line, or under a wrapper that did not inline, the 3D `first`
+/// on small windows ran about 20% slower on a Neoverse N2
+/// (`benches/paired_mask_forms.rs`).
+#[cfg_attr(not(target_arch = "aarch64"), inline(never))]
+#[cfg_attr(target_arch = "aarch64", inline(always))]
+pub(crate) fn find_region<const MASKED: bool, R, T, O, F>(
+    tree: &T,
+    overlaps: O,
+    visitor: F,
+) -> ControlFlow<R>
+where
+    T: TreeAccess,
+    O: Fn(T::Bounds) -> bool,
+    F: FnMut(usize) -> ControlFlow<R>,
+{
+    if MASKED {
+        find_region_masked::<FIND_LEVELS, R, T, O, F>(tree, overlaps, visitor)
+    } else {
+        find_region_branching::<FIND_LEVELS, R, T, O, F>(tree, overlaps, visitor)
+    }
+}
+
+/// Whether a window over `root` expects fewer than `below` of `num_items`
+/// hits, spread uniformly: the clipped overlap product against `below` root
+/// areas (volumes in 3D), without a division. A flat root has zero area, so it
+/// reads as "not fewer". Only the form of the traversal depends on the answer,
+/// never its items, so a NaN coordinate costs at most the better form.
+#[inline(always)]
+pub(crate) fn expects_fewer_hits<const D: usize>(
+    root_min: [f64; D],
+    root_max: [f64; D],
+    query_min: [f64; D],
+    query_max: [f64; D],
+    num_items: usize,
+    below: f64,
+) -> bool {
+    let (mut overlap, mut size) = (num_items as f64, below);
+    for d in 0..D {
+        overlap *= (query_max[d].min(root_max[d]) - query_min[d].max(root_min[d])).max(0.0);
+        size *= root_max[d] - root_min[d];
+    }
+    overlap < size
+}
+
+/// [`find_region`] in the form `masked` picks from the root box: the
+/// frontends' switch on expected hits. Without `SWITCH` (a target where the
+/// mask never pays) it is the branching form alone, with no root read in
+/// front.
+#[inline(always)]
+pub(crate) fn find_region_switched<const SWITCH: bool, R, T, O, M, F>(
+    tree: &T,
+    overlaps: O,
+    masked: M,
+    visitor: F,
+) -> ControlFlow<R>
+where
+    T: TreeAccess,
+    O: Fn(T::Bounds) -> bool,
+    M: FnOnce(T::Bounds) -> bool,
+    F: FnMut(usize) -> ControlFlow<R>,
+{
+    if !SWITCH {
+        return find_region::<false, R, T, O, F>(tree, overlaps, visitor);
+    }
+    if tree.tree_num_items() == 0 {
+        return ControlFlow::Continue(());
+    }
+    if masked(tree.tree_bounds(tree.tree_num_nodes() - 1)) {
+        find_region::<true, R, T, O, F>(tree, overlaps, visitor)
+    } else {
+        find_region::<false, R, T, O, F>(tree, overlaps, visitor)
+    }
+}
+
+/// The branching [`find_region`] with `LEVELS` resume points on the call
+/// stack, so a test can reach the heap fallback on a tree that fits in memory.
+#[inline(always)]
+fn find_region_branching<const LEVELS: usize, R, T, O, F>(
+    tree: &T,
+    overlaps: O,
+    mut visitor: F,
+) -> ControlFlow<R>
+where
+    T: TreeAccess,
+    O: Fn(T::Bounds) -> bool,
+    F: FnMut(usize) -> ControlFlow<R>,
+{
+    if tree.tree_num_items() == 0 {
+        return ControlFlow::Continue(());
+    }
+    let top = tree.tree_level_count() - 1;
+    let mut local = [(0usize, 0usize); LEVELS];
+    let mut heap = Vec::new();
+    // `resume[level]`: the untested `[pos, end)` rest of the node last entered
+    // at `level`, written on the way down before any read on the way up.
+    let resume: &mut [(usize, usize)] = if top < LEVELS {
+        &mut local
+    } else {
+        heap.resize(top + 1, (0, 0));
+        &mut heap
+    };
+    let node_size = tree.tree_node_size();
+    let mut pos = tree.tree_num_nodes() - 1;
+    let mut end = pos + 1;
+    let mut level = top;
+    'node: loop {
+        if level == 0 {
+            for p in pos..end {
+                if overlaps(tree.tree_bounds(p)) {
+                    visitor(tree.tree_index(p))?;
+                }
+            }
+        } else {
+            while pos < end {
+                let p = pos;
+                pos += 1;
+                if overlaps(tree.tree_bounds(p)) {
+                    resume[level] = (pos, end);
+                    level -= 1;
+                    pos = tree.tree_index(p);
+                    end = (pos + node_size).min(tree.tree_level_bound(level));
+                    continue 'node;
+                }
+            }
+        }
+        // This node is done: resume the nearest level above with children left.
+        loop {
+            level += 1;
+            if level > top {
+                return ControlFlow::Continue(());
+            }
+            (pos, end) = resume[level];
+            if pos < end {
+                continue 'node;
+            }
+        }
+    }
+}
+
+/// The masked [`find_region`]; `LEVELS` as in [`find_region_branching`].
+#[inline(always)]
+fn find_region_masked<const LEVELS: usize, R, T, O, F>(
+    tree: &T,
+    overlaps: O,
+    mut visitor: F,
+) -> ControlFlow<R>
+where
+    T: TreeAccess,
+    O: Fn(T::Bounds) -> bool,
+    F: FnMut(usize) -> ControlFlow<R>,
+{
+    if tree.tree_num_items() == 0 {
+        return ControlFlow::Continue(());
+    }
+    let top = tree.tree_level_count() - 1;
+    let mut local = [(0usize, 0u64, 0usize); LEVELS];
+    let mut heap = Vec::new();
+    // `resume[level]`: `(base, mask, end)` of the node last entered at
+    // `level`: the untaken hits of its chunk at `base` and the chunks after
+    // it up to `end`, written on the way down before any read on the way up.
+    let resume: &mut [(usize, u64, usize)] = if top < LEVELS {
+        &mut local
+    } else {
+        heap.resize(top + 1, (0, 0, 0));
+        &mut heap
+    };
+    let node_size = tree.tree_node_size();
+    let mut pos = tree.tree_num_nodes() - 1;
+    let mut end = pos + 1;
+    let mut level = top;
+    loop {
+        if level == 0 {
+            let mut start = pos;
+            while start < end {
+                let stop = (start + MASK_CHUNK).min(end);
+                let mut mask = tree.tree_mask(start, stop, &overlaps);
+                while mask != 0 {
+                    visitor(tree.tree_index(start + mask.trailing_zeros() as usize))?;
+                    mask &= mask - 1;
+                }
+                start = stop;
+            }
+            level = 1;
+        } else {
+            let stop = (pos + MASK_CHUNK).min(end);
+            resume[level] = (pos, tree.tree_mask(pos, stop, &overlaps), end);
+        }
+        // Take the next hit at `level`, or climb to the nearest level with one.
+        loop {
+            if level > top {
+                return ControlFlow::Continue(());
+            }
+            let (base, mask, node_end) = resume[level];
+            if mask != 0 {
+                resume[level].1 = mask & (mask - 1);
+                pos = tree.tree_index(base + mask.trailing_zeros() as usize);
+                level -= 1;
+                end = (pos + node_size).min(tree.tree_level_bound(level));
+                break;
+            }
+            let next = base + MASK_CHUNK;
+            if next < node_end {
+                let stop = (next + MASK_CHUNK).min(node_end);
+                resume[level] = (next, tree.tree_mask(next, stop, &overlaps), node_end);
+            } else {
+                level += 1;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::ControlFlow;
+
+    use crate::{Box2D, Index2DBuilder};
+
+    use super::{find_region_branching, find_region_masked};
+
+    /// The heap fallback for trees deeper than the local array and nodes
+    /// wider than one mask chunk (node size 100, 7000 items: 70 children
+    /// under the root), visit what `visit` does, in its order.
+    #[test]
+    fn find_region_forms_match_visit() {
+        for node_size in [2, 100] {
+            let mut b = Index2DBuilder::new(7000).node_size(node_size);
+            for i in 0..7000 {
+                let x = f64::from((i * 37) % 1001);
+                let y = f64::from((i * 53) % 997);
+                b.add(Box2D::new(x, y, x + 3.0, y + 2.0));
+            }
+            let index = b.finish().unwrap();
+            for q in [
+                Box2D::new(10.0, 10.0, 30.0, 40.0),
+                Box2D::new(0.0, 0.0, 2000.0, 2000.0),
+                Box2D::new(900.0, 900.0, 1000.0, 1000.0),
+                Box2D::new(5000.0, 5000.0, 5001.0, 5001.0),
+            ] {
+                let mut want = Vec::new();
+                let _ = index.visit(q, |i| {
+                    want.push(i);
+                    ControlFlow::<()>::Continue(())
+                });
+                let overlaps = |b: Box2D| b.overlaps(q);
+                for got in [
+                    collect(|f| find_region_branching::<2, (), _, _, _>(&index, overlaps, f)),
+                    collect(|f| find_region_branching::<32, (), _, _, _>(&index, overlaps, f)),
+                    collect(|f| find_region_masked::<2, (), _, _, _>(&index, overlaps, f)),
+                    collect(|f| find_region_masked::<32, (), _, _, _>(&index, overlaps, f)),
+                ] {
+                    assert_eq!(got, want, "{node_size} {q:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expected_hits_switch_reads_the_covered_share() {
+        let root = ([0.0, 0.0], [100.0, 100.0]);
+        // A 10 x 10 window over 10 000 items spread on 100 x 100 expects 100.
+        let fewer = |q: ([f64; 2], [f64; 2]), below| {
+            super::expects_fewer_hits(root.0, root.1, q.0, q.1, 10_000, below)
+        };
+        assert!(fewer(([0.0, 0.0], [10.0, 10.0]), 101.0));
+        assert!(!fewer(([0.0, 0.0], [10.0, 10.0]), 99.0));
+        // Clipped to the root; a miss expects nothing.
+        assert!(fewer(([-50.0, 0.0], [10.0, 10.0]), 101.0));
+        assert!(fewer(([200.0, 200.0], [300.0, 300.0]), 0.5));
+        // A flat root reads as "not fewer".
+        assert!(!super::expects_fewer_hits(
+            [0.0, 0.0],
+            [100.0, 0.0],
+            [0.0, 0.0],
+            [1.0, 1.0],
+            10,
+            1e9
+        ));
+    }
+
+    fn collect(
+        run: impl FnOnce(&mut dyn FnMut(usize) -> ControlFlow<()>) -> ControlFlow<()>,
+    ) -> Vec<usize> {
+        let mut out = Vec::new();
+        let _ = run(&mut |i| {
+            out.push(i);
+            ControlFlow::Continue(())
+        });
+        out
+    }
+}

@@ -4,6 +4,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.30.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.29.0...psi-geo-v0.30.0) - 2026-09-25
+
+### API
+
+- **Requires `packed_spatial_index` 0.33.** This crate's own API is unchanged,
+  but it hands out core types (`Box2D`, `Index2D`, the re-exported readers), so
+  a project on core 0.33 needs this release to share them with it. The core
+  release adds `raycast_any` and makes `visit`, `any` and `first` faster on x86
+  (a bitmask per node instead of a branch per child); see its changelog.
+
 ## [0.29.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.28.0...psi-geo-v0.29.0) - 2026-09-24
 
 ### API

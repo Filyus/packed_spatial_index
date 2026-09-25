@@ -94,6 +94,8 @@ kernels used that one first. Zen 4 microcodes it, at about 142 cycles an
 instruction, while the register form is fast on every AVX-512 CPU; so the
 kernels compress into a register and store the whole vector
 (`leftpack::compress8`), which needs the same slack as the AVX2 left-pack below.
+On a server Zen 5 (an EPYC 9V45) the two forms time alike, 0.97–1.01 in every
+search and raycast cell, so the register form costs nothing there.
 
 This removed the large-N inversion: SIMD range search went from trailing the
 scalar index to **~1.6–1.9× faster** across 100k–1M (against the scalar index

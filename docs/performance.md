@@ -775,25 +775,28 @@ extent; small windows are 10–200 units wide in 2D and 10–300 in 3D, large on
 A Zen 4 with AVX-512 (an EPYC 9V74 on a hosted runner) comes out close at 100k
 boxes: `SimdIndex*` 0.66 / 0.75 / 0.99 in 2D and 0.89 / 0.51 / 1.11 in 3D,
 `SimdIndex*F32` 0.57 / 0.64 in 2D and 0.68 / 0.36 in 3D on small and large
-windows.
+windows. A server Zen 5 (an EPYC 9V45, AVX-512 at full width, also a hosted
+runner) is the fastest measured: `SimdIndex*` 0.59 / 0.69 / 0.97 in 2D and
+0.86 / 0.46 / 1.00 in 3D, `SimdIndex*F32` 0.52 / 0.57 in 2D and 0.69 / 0.34 in
+3D.
 
 The `f32` frontends run close to the `f64` speed or ahead of it on every
 machine measured. 100k boxes, the same windows, time relative to the scalar `f64` index
 on the same call, small / large / all (the Xeon is a cloud VM, the others
 hosted runners through `.github/workflows/bench-arm.yml`):
 
-| frontend, call | Xeon (model 207) | Zen 4 (EPYC 9V74) | Zen 3 (EPYC 7763) | Neoverse N2 |
-| --- | --- | --- | --- | --- |
-| `Index2DF32::search` | 0.99 / 0.94 / 1.01 | 1.00 / 0.92 / 1.00 | 0.98 / 0.90 / 1.00 | 0.92 / 0.89 / 1.01 |
-| `Index3DF32::search` | 1.01 / 0.77 / 1.01 | 0.96 / 0.74 / 1.03 | 1.07 / 0.79 / 1.00 | 0.92 / 0.65 / 1.02 |
-| `Index2DF32::count` | 1.23 / 1.35 / 1.26 | 0.96 / 1.38 / 1.11 | 1.17 / 1.33 / 1.00 | 0.91 / 0.97 / 1.13 |
-| `Index3DF32::count` | 0.98 / 1.38 / 1.34 | 0.88 / 1.38 / 1.07 | 1.05 / 1.41 / 1.09 | 0.87 / 1.00 / 1.29 |
-| `SimdIndex2DF32::count` | 0.56 / 0.62 / 0.55 | 0.50 / 0.68 / 0.42 | 0.65 / 0.67 / 0.36 | 0.60 / 0.62 / 0.33 |
-| `SimdIndex3DF32::count` | 0.61 / 0.58 / 0.67 | 0.54 / 0.63 / 0.53 | 0.72 / 0.68 / 0.48 | 0.72 / 0.64 / 0.44 |
+| frontend, call | Xeon (model 207) | Zen 5 (EPYC 9V45) | Zen 4 (EPYC 9V74) | Zen 3 (EPYC 7763) | Neoverse N2 |
+| --- | --- | --- | --- | --- | --- |
+| `Index2DF32::search` | 0.99 / 0.94 / 1.01 | 1.01 / 0.90 / 1.00 | 1.00 / 0.92 / 1.00 | 0.98 / 0.90 / 1.00 | 0.92 / 0.89 / 1.01 |
+| `Index3DF32::search` | 1.01 / 0.77 / 1.01 | 1.01 / 0.77 / 1.01 | 0.96 / 0.74 / 1.03 | 1.07 / 0.79 / 1.00 | 0.92 / 0.65 / 1.02 |
+| `Index2DF32::count` | 1.23 / 1.35 / 1.26 | 1.10 / 1.45 / 1.27 | 0.96 / 1.38 / 1.11 | 1.17 / 1.33 / 1.00 | 0.91 / 0.97 / 1.13 |
+| `Index3DF32::count` | 0.98 / 1.38 / 1.34 | 0.94 / 1.55 / 1.31 | 0.88 / 1.38 / 1.07 | 1.05 / 1.41 / 1.09 | 0.87 / 1.00 / 1.29 |
+| `SimdIndex2DF32::count` | 0.56 / 0.62 / 0.55 | 0.47 / 0.70 / 0.54 | 0.50 / 0.68 / 0.42 | 0.65 / 0.67 / 0.36 | 0.60 / 0.62 / 0.33 |
+| `SimdIndex3DF32::count` | 0.61 / 0.58 / 0.67 | 0.52 / 0.65 / 0.72 | 0.54 / 0.63 / 0.53 | 0.72 / 0.68 / 0.48 | 0.72 / 0.64 / 0.44 |
 
 - The scalar `f32` index costs about what the `f64` one does on `search`,
   0.65–1.07× across these machines. It takes a covered subtree as one slice
-  as the `f64` index does. Its `count` runs 0.87–1.41×, the one call here
+  as the `f64` index does. Its `count` runs 0.87–1.55×, the one call here
   still behind the `f64` index.
 - `SimdIndex*F32::count` is the fastest count on these machines, 0.33–0.72× the
   scalar `f64` one: it adds a covered subtree's leaf range and a leaf's
@@ -809,15 +812,17 @@ against `Index2D::search_into`, both into reused buffers, 100k boxes
 (`benches/paired_simd_search.rs`; every column but the laptop's comes from
 `.github/workflows/bench-arm.yml` on GitHub's hosted runners):
 
-| 2D window | Zen 5 laptop | Zen 4 | Zen 4, AVX-512 hidden | Zen 3 (AVX2) | Neoverse N2 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| small | 0.54 | 0.61 | 0.64 | 0.78 | 0.95 |
-| large | 0.68 | 0.73 | 0.97 | 0.94 | 1.10 |
-| all | 1.00 | 0.99 | 1.01 | 1.04 | 1.01 |
+| 2D window | Zen 5 laptop | Zen 5 server | Zen 4 | Zen 4, AVX-512 hidden | Zen 3 (AVX2) | Neoverse N2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| small | 0.54 | 0.50 | 0.61 | 0.64 | 0.78 | 0.95 |
+| large | 0.68 | 0.67 | 0.73 | 0.97 | 0.94 | 1.10 |
+| all | 1.00 | 1.00 | 0.99 | 1.01 | 1.04 | 1.01 |
 
-With AVX-512 a Zen 4 keeps the lead on large windows as the laptop does. That
-rests on the kernels compressing hits in a register: Zen 4 microcodes the
-compress-to-memory form ([internals](internals/simd.md)). A VM may hide AVX-512
+The server Zen 5 is an EPYC 9V45 with AVX-512 at full width; it leads by the
+most on small windows. With AVX-512 a Zen 4 keeps the lead on large windows as
+the Zen 5s do. That rests on the kernels compressing hits in a register: Zen 4
+microcodes the compress-to-memory form ([internals](internals/simd.md)), which
+the server Zen 5 runs as fast as the register one. A VM may hide AVX-512
 even on a Zen 4 — one EPYC 9V74 runner listed `avx512f`, another did not — and
 the AVX2 tier runs then: it keeps most of the small-window lead and gives up the
 large-window one, on a Zen 4 as on a Zen 3. The N2 has neither: its SIMD index

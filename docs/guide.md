@@ -113,8 +113,9 @@ Why the distinctions matter:
   - **`SimdIndex*` over the scalar `Index*`** depends on the CPU more than
     anything else here. On a **Zen 5** laptop (AVX-512 on 256-bit datapaths)
     range queries ran up to ~**1.8×** faster across 100k–1M boxes, holding on
-    large 3D windows and fading on large 2D ones as the index grows. A **Zen 4**
-    gives ~1.6× on small 2D windows and ~1.4× on large ones. The AVX2 tier — a
+    large 3D windows and fading on large 2D ones as the index grows. A server
+    **Zen 5** (AVX-512 at full width) gives ~2.0× on small 2D windows and ~1.5×
+    on large ones, a **Zen 4** ~1.6× and ~1.4×. The AVX2 tier — a
     **Zen 3**, or a Zen 4 whose VM hides AVX-512 — gives ~1.3–1.6× on small
     windows and ~1.05× on large. On an aarch64
     **Neoverse N2** the portable NEON tier stayed within 10% of the scalar index

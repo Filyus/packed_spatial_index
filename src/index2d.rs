@@ -145,12 +145,11 @@ pub(crate) fn for_each_hit_rev(mut mask: u64, mut f: impl FnMut(usize)) {
 /// at all — the `MASKED` every shipping 2D collect passes.
 ///
 /// Not on aarch64. On a Neoverse N2 the 2D mask lost to the per-child branch on
-/// every path and window measured: 3–11% on owned `search_into`, 4–17% on the
-/// view's and 7–42% on radius queries,
-/// while a Zen 3 and a Zen 5 laptop win with it by 10–27% on the `f64` paths
-/// (a Zen 4 wins on mid and large windows but loses on small ones, kb:observation/534)
-/// (`benches/paired_mask_forms.rs`, `benches/paired_within.rs`,
-/// kb:observation/528). The likely reason is that NEON has no movemask, so
+/// every path and window measured: 2–10% on owned `search_into`, 4–15% on the
+/// view's and 6–40% on radius queries, while every x86 machine measured (Zen 3,
+/// Zen 4, a Zen 5 laptop and server) wins with it by 8–36% on the `f64` paths
+/// (`benches/paired_mask_forms.rs`, `benches/paired_within.rs`, over query sets
+/// the branch predictor cannot learn; kb:observation/528, kb:task/191). The likely reason is that NEON has no movemask, so
 /// turning a vector compare into a bit mask costs more than the mispredicts it
 /// saves, and a 2D box test is cheap enough for that to dominate. 3D keeps the
 /// mask everywhere: its test is dearer, and on the same N2 the 3D view mask won

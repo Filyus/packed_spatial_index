@@ -87,10 +87,13 @@ All notable changes to this crate are documented here.
   the SIMD indexes with 1.6–1.9× over the scalar ones on AVX-512, holding on
   broad queries. Re-measured, that is a Zen 5 laptop's figure for small 2D
   windows and large 3D ones. On large 2D windows the lead fades as the index
-  grows; a Zen 4 gives ~1.6× on small windows and ~1.4× on large ones with the
-  SIMD fix above; a server Zen 5 (EPYC 9V45) ~2.0× and ~1.5×; the AVX2 tier
-  (a Zen 3, or a Zen 4 whose VM hides AVX-512) ~1.3–1.6× and ~1.05×; a
-  Neoverse N2 stays within 10% of the scalar index either way. The scalar `f32` indexes,
+  grows; a Zen 4 gives ~1.6× on small windows and ~1.35× on large ones with
+  the SIMD fix above; a server Zen 5 (EPYC 9V45) ~1.8× and ~1.5×; the AVX2 tier
+  on a Zen 3 ~1.25× and ~1.05×; a Neoverse N2 stays within 10% of the scalar
+  index either way. These come from query sets the branch predictor cannot
+  learn; the benches' earlier, smaller sets overstated the SIMD lead on small
+  windows by 5–25 points and made the mask look like a loss on small windows
+  on Zen 4 and Zen 5. The scalar `f32` indexes,
   documented as ~30% slower than `f64`, took 1.0–2.8× its time on a Zen 5 and
   `count` on the SIMD `f32` indexes 1.6–5.8×, before the SIMD and Performance
   entries above; the docs now give the numbers after them. `docs/performance.md` gains a section with

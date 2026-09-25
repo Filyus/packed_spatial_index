@@ -5,8 +5,8 @@ Benchmark results and how to reproduce them. See the
 overview.
 
 Numbers are from one machine unless a section names another: a Zen 5 laptop (a
-Ryzen AI 7 350). Its AVX-512 runs on 256-bit datapaths, as Zen 4's does; desktop
-and server Zen 5 have full-width ones and are unmeasured here. They
+Ryzen AI 7 350). Its AVX-512 runs on 256-bit datapaths, as Zen 4's does; a
+server Zen 5 with full-width ones is measured where a section names it. They
 depend on hardware and workload, so treat them as relative, not absolute; how
 far they move between processors is measured in
 [the four frontends, by CPU](#the-four-range-search-frontends-by-cpu).
@@ -217,16 +217,16 @@ aarch64 too, where the `f64` 2D paths go without it:
 
 | machine | 2D f32 | 3D f32 |
 | --- | --- | --- |
+| Zen 5 laptop (Ryzen AI 7 350) | 0.60 / 0.70 / 0.82 | 0.44 / 0.48 / 0.61 |
+| Zen 5 server (EPYC 9V45) | 0.54 / 0.64 / 0.74 | 0.40 / 0.45 / 0.55 |
+| Zen 4 (EPYC 9V74) | 0.51 / 0.60 / 0.73 | 0.41 / 0.43 / 0.54 |
+| Zen 3 (EPYC 7763) | 0.56 / 0.66 / 0.77 | 0.45 / 0.49 / 0.59 |
 | Intel Xeon (family 6 model 207), cloud VM | 0.50 / 0.75 / 0.92 | 0.40 / 0.49 / 0.70 |
-| Zen 4 (EPYC 9V74, AVX-512) | 0.61 / 0.60 / 0.72 | 1.29 / 0.38 / 0.54 |
-| Zen 3 (EPYC 7763) | 0.57 / 0.70 / 0.82 | 0.51 / 0.49 / 0.60 |
-| Neoverse N2 | 0.85 / 0.85 / 0.92 | 0.86 / 0.79 / 0.73 |
+| Neoverse N2 | 0.87 / 0.85 / 0.92 | 0.85 / 0.79 / 0.72 |
 
-The one loss, Zen 4 on small 3D windows, is a cell that returns almost nothing
-(164 hits over 400 queries); two Zen 4 runs read it 1.18 and 1.29. While the
-child test read each box through four bounds-checked lookups joined by `&&` it
-stayed scalar; the f32 mask was then within a few percent of the branch on x86
-and lost 2–10% in 2D on the N2.
+While the child test read each box through four bounds-checked lookups joined
+by `&&` it stayed scalar; the f32 mask was then within a few percent of the
+branch on x86 and lost 2–10% in 2D on the N2.
 These forms skip a subtree the window covers, like the `f64` indexes: its leaf
 range goes to the output as one slice, without a test per item.
 
@@ -267,19 +267,25 @@ paths:
 - **The target has to make a mask cheap.** Everything above was measured on x86.
   On aarch64 (a Neoverse N2, `benches/paired_mask_forms.rs` through the
   `bench-arm.yml` workflow) the 2D mask loses to the per-child branch on every
-  window: masked / branching 1.11, 1.04, 1.03 on owned `search_into` (small,
-  mid, large windows) and 1.17, 1.06, 1.04 on the view, against 0.73–0.90 on a
-  Zen 3 and the Zen 5 laptop.
+  window: masked / branching 1.10, 1.03, 1.02 on owned `search_into` (small,
+  mid, large windows) and 1.15, 1.06, 1.04 on the view, against 0.64–0.92 on
+  every x86 machine measured (Zen 3, Zen 4, both Zen 5s).
   So the `f64` 2D collect paths build the mask only off aarch64
   (`MASK_PAYS_IN_2D`). NEON has no movemask; a 2D box test is cheap enough
   for building the bit mask to cost more than the mispredicts it saves. That is
   the likely reason rather than a measured one. 3D keeps the mask on aarch64 as
   well — the N2 gives 0.88 on mid and large view windows and 0.97–0.99 on
   raycast. So does the scalar `Index2DF32`: with its vectorized child test the
-  mask wins on the N2 too (see above). x86 is not uniform either: a Zen 4 (EPYC
-  9V74) wins with the mask on mid and large windows like the other x86 machines
-  but loses on small ones — 1.35 on owned `search_into`, 1.56 on the 2D view,
-  1.51 on the 3D view, in three runs. Why is open; the mask stays on there.
+  mask wins on the N2 too (see above).
+- **The bench has to show the predictor queries it cannot learn.** Every rep
+  replays the same query set. A Zen 4 or Zen 5 predictor learns each query's
+  traversal once the set's hard-to-predict branches fit its tables: about
+  30 000 on Zen 5 per Lemire's measurement, against about 70 per small window
+  (callgrind). Over a replayed set of 400 small windows the branching form then
+  looked faster than it is; the mask seemed to lose 23–71% on Zen 4 and
+  Zen 5; over 10 000 windows it wins there as everywhere, 0.53–0.75. So the
+  paired benches size each query set by its output: 10 000 queries for small
+  ones, fewer where one query does too much work to be learned.
 
 The radius queries sit exactly on the second boundary and split by query width
 rather than by form, which is what the next section is about.
@@ -300,45 +306,47 @@ worth writing down because the first attempt got it wrong. At 100k items a query
 covering 1e-6 of the extent lost 25% on the mask; at 1M items the *same fraction*
 won 9.5%. Same geometry, opposite sign, so the fraction is not what the crossover
 tracks — the hit count is, and a threshold calibrated as a fraction would have
-been tuned to one corpus size. Measured on Zen5, one binary, arms behind a
-runtime switch read outside the timed loop, the box collect path as a control
-(`benches/paired_within.rs`, ratios of masked to branching):
+been tuned to one corpus size. One binary, the arms behind a runtime switch read
+outside the timed loop, the box collect path as a control, query sets sized so
+the predictor cannot learn them (`benches/paired_within.rs`, masked /
+branching on `search_within_into`, 100k items):
 
-| 2d, 100k items | hits/query | masked / branching |
-| --- | ---: | ---: |
-| r=1 | 0 | 1.31 |
-| r=20 | 2 | 1.03 |
-| r=60 | 14 | 0.83 |
-| r=400 | 502 | 0.84 |
-| r=700 | 1 478 | 0.88 |
-| r=1200 | 4 110 | 0.95 |
-| r=1800 | 8 691 | 1.01 |
-| r=2500 | 15 635 | 1.07 |
+| 2d radius | hits/query | Zen 5 laptop | Zen 5 server | Zen 4 | Zen 3 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| r=1 | 0 | 1.07 | 1.09 | 1.08 | 1.08 |
+| r=20 | 2 | 0.99 | 1.00 | 0.99 | 1.01 |
+| r=60 | 14 | 0.86 | 0.85 | 0.83 | 0.88 |
+| r=150 | 76 | 0.81 | 0.80 | 0.77 | 0.84 |
+| r=400 | 502 | 0.82 | 0.84 | 0.81 | 0.87 |
+| r=1000 | 2 916 | 0.85 | 0.97 | 0.93 | 0.99 |
+| r=2500 | 15 635 | 0.89 | 1.19 | 1.13 | 1.16 |
 
-3D behaves the same at the narrow end (1.04–1.08 at zero hits, 0.74 at 27 hits)
-and, unlike 2D, keeps winning all the way up: 0.71 at 4 853 hits per query.
+The switch sits where every machine crosses: a query with no expected hit
+loses 7–9% with the mask, one with two breaks even. In 3D the mask wins from
+the narrowest radius on (0.91–0.95 at zero hits, 0.72–0.78 at 27, 0.73–0.81 at
+4 853 hits per query), so the 3D switch gives 5–9% away on empty queries.
 
 **On aarch64 the 2D switch always takes the branching path.** The same harness on
 a Neoverse N2 (GitHub's `ubuntu-24.04-arm` runner, the `bench-arm.yml` workflow)
-found the 2D mask slower at every radius — masked / branching 1.42 at zero hits,
-1.32 at 2, 1.25 at 14, 1.18 at 502 and still 1.07 at 15 635 — where both x86
-machines win with it from about 14 hits (Zen 5 0.85 at 14 hits and 0.82 at 502;
-Zen 4 0.94 and 0.81). NEON has no movemask, and in 2D the box test is cheap
-enough that building the bit mask costs more than the mispredicts it saves;
-that is the likely reason, not a measured one. 3D keeps the mask there too: on
-the N2 it gave 2–6% back with no hits and won 7–11% from a few dozen hits up.
+found the 2D mask slower at every radius — masked / branching 1.40 at zero hits,
+1.34 at 2, 1.25 at 14, 1.17 at 502 and still 1.06 at 15 635 — where every x86
+machine wins with it from about 14 hits. NEON has no movemask; in 2D the box
+test is cheap enough that building the bit mask costs more than the mispredicts
+it saves; that is the likely reason, not a measured one. 3D keeps the mask
+there too: on the N2 it gives 1–2% back with no hits and wins 7–10% from a few
+dozen hits up.
 
 Two things the table says that the switch does not act on. First, `count_within`
-wins with the mask at *every* width — a flat ~16% even in the rows where
-`search_within_into` has given the win back — because it has no output to push
-and nothing else to be limited by. Second, the 2D collect form degrades once the
-output gets very large, and that upper crossover is not predictable: it sits near
-8 700 hits per query at 100k items and near 760 at 1M, a tenfold disagreement, so
-it is explained by neither an absolute count nor a share of the index. A second
-constant fitted to it would be fitted to this machine and this corpus, so there
-is none. The cost of leaving it is the bottom two rows — up to 7% on 2D radius
-queries that return roughly a sixth of the index — against 12–17% won in the
-middle of the range and ~16% on every `count_within`.
+keeps winning with the mask as the output grows — 0.46–0.55 on x86 at 15 635
+hits per query, where `search_within_into` has given the win back — because it
+has no output to push and nothing else to be limited by. Second, the 2D collect
+form degrades once the output gets very large. That upper crossover depends
+on the machine: the servers lose 13–19% at 15 635 hits per query, the Zen 5
+laptop still wins 11% there. An earlier laptop measurement put it near 8 700
+hits at 100k items and near 760 at 1M. A second constant fitted to it would be
+fitted to one machine and one corpus, so there is none. The cost of leaving it
+is the bottom rows — up to 19% on 2D radius queries that return roughly a
+sixth of the index — against 12–23% won in the middle of the range.
 
 Which arm the switch picks is pinned by unit tests on the predicate itself
 rather than read off this table, and the two traversals are reachable
@@ -761,44 +769,42 @@ extent; small windows are 10–200 units wide in 2D and 10–300 in 3D, large on
 
 | frontend, items | 2D small | 2D large | 2D all | 3D small | 3D large | 3D all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `SimdIndex*`, 100k | 0.65 | 0.73 | 0.99 | 0.98 | 0.52 | 0.99 |
-| `SimdIndex*`, 1M | 0.72 | 1.01 | 1.00 | 0.89 | 0.64 | 1.00 |
-| `SimdIndex*F32`, 100k | 0.62 | 0.64 | 0.99 | 0.82 | 0.38 | 1.02 |
-| `SimdIndex*F32`, 1M | 0.59 | 0.93 | 1.00 | 0.59 | 0.41 | 1.02 |
+| `SimdIndex*`, 100k | 0.71 | 0.73 | 0.99 | 1.05 | 0.52 | 1.00 |
+| `SimdIndex*`, 1M | 0.71 | 0.98 | 1.00 | 0.99 | 0.71 | 1.00 |
+| `SimdIndex*F32`, 100k | 0.67 | 0.65 | 1.00 | 0.92 | 0.37 | 0.99 |
+| `SimdIndex*F32`, 1M | 0.48 | 0.91 | 1.01 | 0.69 | 0.46 | 1.01 |
 
 - The SIMD `f64` index leads on small 2D windows and on large 3D ones. It ties
   wherever copying a covered subtree does the work. On small 3D windows, which
-  here return almost nothing to collect, it gains little.
+  here return almost nothing to collect, it gains nothing.
 - `SimdIndex*F32` is the fastest frontend on every small and large window: an
   AVX-512 chunk holds 16 of its boxes against 8 `f64` ones, at half the bytes.
 
-A Zen 4 with AVX-512 (an EPYC 9V74 on a hosted runner) comes out close at 100k
-boxes: `SimdIndex*` 0.66 / 0.75 / 0.99 in 2D and 0.89 / 0.51 / 1.11 in 3D,
-`SimdIndex*F32` 0.57 / 0.64 in 2D and 0.68 / 0.36 in 3D on small and large
-windows. A server Zen 5 (an EPYC 9V45, AVX-512 at full width, also a hosted
-runner) is the fastest measured: `SimdIndex*` 0.59 / 0.69 / 0.97 in 2D and
-0.86 / 0.46 / 1.00 in 3D, `SimdIndex*F32` 0.52 / 0.57 in 2D and 0.69 / 0.34 in
-3D.
+The hosted runners at 100k boxes, small / large windows: a Zen 4 with AVX-512
+(an EPYC 9V74) gives `SimdIndex*` 0.71 / 0.76 in 2D and 0.97 / 0.51 in 3D,
+`SimdIndex*F32` 0.67 / 0.64 and 0.85 / 0.36. A server Zen 5 (an EPYC 9V45,
+AVX-512 at full width) is the fastest measured: `SimdIndex*` 0.61 / 0.68 and
+0.92 / 0.48, `SimdIndex*F32` 0.61 / 0.59 and 0.87 / 0.35.
 
 The `f32` frontends run close to the `f64` speed or ahead of it on every
-machine measured. 100k boxes, the same windows, time relative to the scalar `f64` index
-on the same call, small / large / all (the Xeon is a cloud VM, the others
-hosted runners through `.github/workflows/bench-arm.yml`):
+machine measured. 100k boxes, the same windows, time relative to the scalar
+`f64` index on the same call, small / large / all (hosted runners through
+`.github/workflows/bench-arm.yml`):
 
-| frontend, call | Xeon (model 207) | Zen 5 (EPYC 9V45) | Zen 4 (EPYC 9V74) | Zen 3 (EPYC 7763) | Neoverse N2 |
-| --- | --- | --- | --- | --- | --- |
-| `Index2DF32::search` | 0.99 / 0.94 / 1.01 | 1.01 / 0.90 / 1.00 | 1.00 / 0.92 / 1.00 | 0.98 / 0.90 / 1.00 | 0.92 / 0.89 / 1.01 |
-| `Index3DF32::search` | 1.01 / 0.77 / 1.01 | 1.01 / 0.77 / 1.01 | 0.96 / 0.74 / 1.03 | 1.07 / 0.79 / 1.00 | 0.92 / 0.65 / 1.02 |
-| `Index2DF32::count` | 1.23 / 1.35 / 1.26 | 1.10 / 1.45 / 1.27 | 0.96 / 1.38 / 1.11 | 1.17 / 1.33 / 1.00 | 0.91 / 0.97 / 1.13 |
-| `Index3DF32::count` | 0.98 / 1.38 / 1.34 | 0.94 / 1.55 / 1.31 | 0.88 / 1.38 / 1.07 | 1.05 / 1.41 / 1.09 | 0.87 / 1.00 / 1.29 |
-| `SimdIndex2DF32::count` | 0.56 / 0.62 / 0.55 | 0.47 / 0.70 / 0.54 | 0.50 / 0.68 / 0.42 | 0.65 / 0.67 / 0.36 | 0.60 / 0.62 / 0.33 |
-| `SimdIndex3DF32::count` | 0.61 / 0.58 / 0.67 | 0.52 / 0.65 / 0.72 | 0.54 / 0.63 / 0.53 | 0.72 / 0.68 / 0.48 | 0.72 / 0.64 / 0.44 |
+| frontend, call | Zen 5 (EPYC 9V45) | Zen 4 (EPYC 9V74) | Zen 3 (EPYC 7763) | Neoverse N2 |
+| --- | --- | --- | --- | --- |
+| `Index2DF32::search` | 1.01 / 0.90 / 1.00 | 1.01 / 0.91 / 0.98 | 0.98 / 0.91 / 1.00 | 0.93 / 0.89 / 1.00 |
+| `Index3DF32::search` | 1.06 / 0.76 / 1.00 | 1.08 / 0.77 / 0.97 | 1.06 / 0.78 / 1.07 | 0.94 / 0.66 / 1.01 |
+| `Index2DF32::count` | 1.29 / 1.44 / 1.22 | 1.23 / 1.38 / 1.10 | 1.21 / 1.34 / 1.01 | 0.94 / 0.97 / 1.13 |
+| `Index3DF32::count` | 1.05 / 1.54 / 1.29 | 1.05 / 1.42 / 1.08 | 1.05 / 1.41 / 1.08 | 0.89 / 1.01 / 1.27 |
+| `SimdIndex2DF32::count` | 0.69 / 0.70 / 0.52 | 0.70 / 0.68 / 0.42 | 0.68 / 0.67 / 0.36 | 0.62 / 0.63 / 0.32 |
+| `SimdIndex3DF32::count` | 0.77 / 0.66 / 0.71 | 0.78 / 0.65 / 0.54 | 0.77 / 0.68 / 0.48 | 0.72 / 0.65 / 0.42 |
 
 - The scalar `f32` index costs about what the `f64` one does on `search`,
-  0.65–1.07× across these machines. It takes a covered subtree as one slice
-  as the `f64` index does. Its `count` runs 0.87–1.55×, the one call here
+  0.66–1.08× across these machines. It takes a covered subtree as one slice
+  as the `f64` index does. Its `count` runs 0.89–1.54×, the one call here
   still behind the `f64` index.
-- `SimdIndex*F32::count` is the fastest count on these machines, 0.33–0.72× the
+- `SimdIndex*F32::count` is the fastest count on these machines, 0.32–0.78× the
   scalar `f64` one: it adds a covered subtree's leaf range and a leaf's
   popcount, like the `f64` `SimdIndex*::count`, with eight `f32` lanes to a
   test against four `f64` ones.
@@ -812,11 +818,11 @@ against `Index2D::search_into`, both into reused buffers, 100k boxes
 (`benches/paired_simd_search.rs`; every column but the laptop's comes from
 `.github/workflows/bench-arm.yml` on GitHub's hosted runners):
 
-| 2D window | Zen 5 laptop | Zen 5 server | Zen 4 | Zen 4, AVX-512 hidden | Zen 3 (AVX2) | Neoverse N2 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| small | 0.54 | 0.50 | 0.61 | 0.64 | 0.78 | 0.95 |
-| large | 0.68 | 0.67 | 0.73 | 0.97 | 0.94 | 1.10 |
-| all | 1.00 | 1.00 | 0.99 | 1.01 | 1.04 | 1.01 |
+| 2D window | Zen 5 laptop | Zen 5 server | Zen 4 | Zen 3 (AVX2) | Neoverse N2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| small | 0.61 | 0.56 | 0.64 | 0.80 | 0.97 |
+| large | 0.69 | 0.67 | 0.74 | 0.94 | 1.09 |
+| all | 1.00 | 0.98 | 0.99 | 0.96 | 1.00 |
 
 The server Zen 5 is an EPYC 9V45 with AVX-512 at full width; it leads by the
 most on small windows. With AVX-512 a Zen 4 keeps the lead on large windows as
@@ -827,8 +833,11 @@ even on a Zen 4 — one EPYC 9V74 runner listed `avx512f`, another did not — a
 the AVX2 tier runs then: it keeps most of the small-window lead and gives up the
 large-window one, on a Zen 4 as on a Zen 3. The N2 has neither: its SIMD index
 runs the portable `wide` tier on NEON and stays within 10% of the scalar index
-either way, 0.97 / 0.91 / 0.99 in 3D. A hosted runner is a shared VM, so only
-these ratios, taken inside one binary, carry over; its microseconds do not.
+either way. A hosted runner is a shared VM, so only these ratios, taken inside
+one binary, carry over; its microseconds do not. Every number in this section
+comes from query sets sized so the branch predictor cannot learn them (see
+[Branch-free node tests](#branch-free-node-tests)); over the smaller sets used
+before, the SIMD indexes looked 5–25 points further ahead on small windows.
 
 ## f32 storage vs f64
 

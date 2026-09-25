@@ -22,6 +22,11 @@ All notable changes to this crate are documented here.
 
   aarch64 keeps the branch, where a Neoverse N2 measured the mask slower. It
   does get the owned covered-subtree path.
+- **3D radius queries take the mask even when they expect no hit.**
+  `search_within_into` and `count_within` in 3D kept the branching descent
+  below one expected hit, as 2D does. The 3D mask wins there too on every x86
+  machine measured: 0.90–0.95 of the time at zero hits per query. The switch
+  now applies only on aarch64, where a Neoverse N2 measured 1.00–1.02.
 
 - **`Index2DView` range search keeps its result `Vec` out of a reload
   chain.** `search_into` and `search_with` pushed through a `&mut Vec<usize>`.

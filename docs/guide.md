@@ -731,7 +731,7 @@ the exact distance costs two axis gaps and two multiplies, but the extra
 subtrees it descends cost 1.2–2.2× more than the predicate saves, measured
 with both arms in one binary.
 
-`search_within_into` and `count_within` pick their traversal per query. A query
+`search_within_into` and `count_within` pick their traversal per query in 2D. A query
 expected to hit at least one item folds each node's distance tests into a
 bitmask and branches once per child kept; one expected to hit nothing keeps the
 plain branching descent, where that test is predicted and the mask would be pure
@@ -741,7 +741,9 @@ on it — both traversals answer identically. It is worth 12–17% in the middle
 the range and ~16% on `count_within` at any width; `docs/performance.md` has the
 table, including the one regime where it gives a few percent back. On aarch64
 2D radius queries always keep the branching descent: measured on a Neoverse N2
-the 2D mask lost at every width, by 7–42%, while 3D still wins with it. The
+the 2D mask lost at every width, by 7–42%, while 3D still wins with it. In 3D
+the mask wins even on empty queries on x86 (5–10%), so there every query takes
+it and only aarch64 keeps the expected-hit switch. The
 callback forms keep the branching descent unconditionally, because they can stop
 early and a mask does its work before the first hit is reported.
 

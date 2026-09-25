@@ -566,7 +566,14 @@ impl RadiusBounds for Box3D {
     }
 }
 
-/// The 3D twin of [`prefers_mask_2d`].
+/// The 3D twin of [`prefers_mask_2d`], with no threshold off aarch64.
+///
+/// Queries with nothing to find are where the 2D branch wins, but the 3D mask
+/// wins there as well on every x86 machine measured: 0.87-0.95 of the
+/// branching time at zero hits per query, from Zen 3 to both Zen 5s
+/// (`benches/paired_within.rs`, query sets the predictor cannot learn). The
+/// expected-hits threshold holds only on aarch64, where a Neoverse N2 measured
+/// the mask 1.00-1.02 at zero hits.
 #[inline]
 pub(crate) fn prefers_mask_3d(
     root: Box3D,
@@ -578,6 +585,13 @@ pub(crate) fn prefers_mask_3d(
     if max_distance.partial_cmp(&0.0).is_none_or(|o| o.is_lt()) {
         return false;
     }
+    !cfg!(target_arch = "aarch64") || mask_threshold_3d(root, query, max_distance, num_items)
+}
+
+/// The expected-hits half of [`prefers_mask_3d`], with no target in it, so the
+/// threshold stays testable on every architecture.
+#[inline]
+fn mask_threshold_3d(root: Box3D, query: Box3D, max_distance: f64, num_items: usize) -> bool {
     let grown = Box3D::new(
         query.min_x - max_distance,
         query.min_y - max_distance,
@@ -1112,13 +1126,17 @@ mod tests {
     }
 
     #[test]
-    fn the_3d_radius_switch_uses_the_same_threshold() {
+    fn the_3d_radius_switch_keeps_its_threshold_only_on_aarch64() {
         let root = Box3D::new(0.0, 0.0, 0.0, 10_000.0, 10_000.0, 10_000.0);
         let point = Box3D::new(5_000.0, 5_000.0, 5_000.0, 5_000.0, 5_000.0, 5_000.0);
 
         // r=60 covers (120/10_000)^3 = 1.7e-6: 1.7 expected hits at 1M, 0.17 at 100k.
-        assert!(prefers_mask_3d(root, point, 60.0, 1_000_000));
-        assert!(!prefers_mask_3d(root, point, 60.0, 100_000));
+        assert!(mask_threshold_3d(root, point, 60.0, 1_000_000));
+        assert!(!mask_threshold_3d(root, point, 60.0, 100_000));
         assert!(!prefers_mask_3d(root, point, f64::NAN, 1_000_000));
+        assert!(!prefers_mask_3d(root, point, -1.0, 1_000_000));
+        // Off aarch64 the 3D mask wins at zero expected hits too.
+        let below = prefers_mask_3d(root, point, 60.0, 100_000);
+        assert_eq!(below, !cfg!(target_arch = "aarch64"));
     }
 }

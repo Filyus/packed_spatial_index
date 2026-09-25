@@ -316,9 +316,11 @@ the masked one per query, because neither wins everywhere. The two answer
 identically — the switch changes only which code produced the answer — so the
 whole question is speed.
 
-What the switch reads is the expected hit count: the fraction of the root box
+What the 2D switch reads is the expected hit count: the fraction of the root box
 covered by the query grown by `max_distance`, times the item count. Below one
-expected hit it takes the branching path, at or above it the masked one.
+expected hit it takes the branching path, at or above it the masked one. The 3D
+switch reads it only on aarch64; elsewhere a 3D radius query always takes the
+mask (below).
 
 That threshold is an item count and **not** a covered fraction, which is the part
 worth writing down because the first attempt got it wrong. At 100k items a query
@@ -342,8 +344,9 @@ branching on `search_within_into`, 100k items):
 
 The switch sits where every machine crosses: a query with no expected hit
 loses 7–9% with the mask, one with two breaks even. In 3D the mask wins from
-the narrowest radius on (0.91–0.95 at zero hits, 0.72–0.78 at 27, 0.73–0.81 at
-4 853 hits per query), so the 3D switch gives 5–9% away on empty queries.
+the narrowest radius on (0.90–0.95 at zero hits, 0.72–0.78 at 27, 0.73–0.81 at
+4 853 hits per query), so off aarch64 the 3D switch no longer applies the
+threshold: it gave those 5–10% away on empty queries.
 
 **On aarch64 the 2D switch always takes the branching path.** The same harness on
 a Neoverse N2 (GitHub's `ubuntu-24.04-arm` runner, the `bench-arm.yml` workflow)
@@ -352,8 +355,8 @@ found the 2D mask slower at every radius — masked / branching 1.40 at zero hit
 machine wins with it from about 14 hits. NEON has no movemask; in 2D the box
 test is cheap enough that building the bit mask costs more than the mispredicts
 it saves; that is the likely reason, not a measured one. 3D keeps the mask
-there too: on the N2 it gives 1–2% back with no hits and wins 7–10% from a few
-dozen hits up.
+there too: on the N2 it gives 0–2% back with no hits and wins 7–10% from a few
+dozen hits up. That is the one place the 3D threshold still acts.
 
 Two things the table says that the switch does not act on. First, `count_within`
 keeps winning with the mask as the output grows — 0.46–0.55 on x86 at 15 635

@@ -3159,10 +3159,6 @@ impl TreeAccess for Index3DF32 {
     fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
     }
-    #[inline]
-    fn bounds_overlap(a: Box3D, b: Box3D) -> bool {
-        a.overlaps(b)
-    }
 }
 
 #[cfg(feature = "simd")]
@@ -3197,10 +3193,6 @@ impl TreeAccess for SimdIndex3DF32 {
     fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
     }
-    #[inline]
-    fn bounds_overlap(a: Box3D, b: Box3D) -> bool {
-        a.overlaps(b)
-    }
 }
 
 #[cfg(feature = "simd")]
@@ -3234,10 +3226,6 @@ impl TreeAccess for SimdIndex3DF32View<'_> {
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
         self.index_at(pos)
-    }
-    #[inline]
-    fn bounds_overlap(a: Box3D, b: Box3D) -> bool {
-        a.overlaps(b)
     }
 }
 

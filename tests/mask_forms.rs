@@ -122,6 +122,78 @@ fn owned_2d_callback_paths_agree_in_both_forms() {
     }
 }
 
+/// `visit` and the early-exit traversal behind `any` / `first` in both forms,
+/// against each other and the shipped entry points. One macro, four frontends:
+/// owned and view, 2D and 3D.
+macro_rules! callback_forms_agree {
+    ($index:expr, $q:expr, $stack:expr, $tag:expr) => {{
+        use std::ops::ControlFlow;
+        let (index, q, stack, tag) = (&$index, $q, &mut *$stack, $tag);
+        let (mut a, mut m) = (Vec::new(), Vec::new());
+        let _ = index.visit_with_stack_forced::<false, (), _>(q, stack, |i| {
+            a.push(i);
+            ControlFlow::Continue(())
+        });
+        let _ = index.visit_with_stack_forced::<true, (), _>(q, stack, |i| {
+            m.push(i);
+            ControlFlow::Continue(())
+        });
+        assert_eq!(a, m, "visit {tag} {q:?}");
+        let first = a.first().copied().map(ControlFlow::Break);
+        let first = first.unwrap_or(ControlFlow::Continue(()));
+        for f in [
+            index.visit_with_stack_forced::<false, _, _>(q, stack, ControlFlow::Break),
+            index.visit_with_stack_forced::<true, _, _>(q, stack, ControlFlow::Break),
+            index.find_with_stack_forced::<false, _, _>(q, stack, ControlFlow::Break),
+            index.find_with_stack_forced::<true, _, _>(q, stack, ControlFlow::Break),
+        ] {
+            assert_eq!(f, first, "first {tag} {q:?}");
+        }
+        assert_eq!(
+            index.first(q),
+            a.first().copied(),
+            "shipped first {tag} {q:?}"
+        );
+        assert_eq!(index.any(q), !a.is_empty(), "shipped any {tag} {q:?}");
+        let mut shipped = Vec::new();
+        let _ = index.visit(q, |i| {
+            shipped.push(i);
+            ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(shipped, a, "shipped visit {tag} {q:?}");
+    }};
+}
+
+#[test]
+fn views_and_3d_callback_paths_agree_in_both_forms() {
+    // Node size 128 takes a node in two mask chunks.
+    for node_size in [16, 128] {
+        let mut stack = Vec::new();
+        let mut b = Index2DBuilder::new(N).node_size(node_size);
+        for bx in boxes_2d() {
+            b.add(bx);
+        }
+        let owned = b.finish().unwrap();
+        let bytes = owned.to_bytes();
+        let view = Index2DView::from_bytes(&bytes).unwrap();
+        for q in windows_2d() {
+            callback_forms_agree!(owned, q, &mut stack, format!("owned 2d {node_size}"));
+            callback_forms_agree!(view, q, &mut stack, format!("view 2d {node_size}"));
+        }
+        let mut b = Index3DBuilder::new(N).node_size(node_size);
+        for bx in boxes_3d() {
+            b.add(bx);
+        }
+        let owned = b.finish().unwrap();
+        let bytes = owned.to_bytes();
+        let view = Index3DView::from_bytes(&bytes).unwrap();
+        for q in windows_3d() {
+            callback_forms_agree!(owned, q, &mut stack, format!("owned 3d {node_size}"));
+            callback_forms_agree!(view, q, &mut stack, format!("view 3d {node_size}"));
+        }
+    }
+}
+
 #[test]
 fn view_3d_and_raycast_agree_in_both_forms() {
     let mut b = Index3DBuilder::new(N).node_size(16);

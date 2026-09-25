@@ -40,7 +40,7 @@ use crate::persistence::{
     LoadError, ParsedPayload, PayloadError, build_id_to_leaf, declares_records, parse_aggregates,
     parse_index, parse_index_owned, payload_slice, read_f64_le_unchecked, read_u64_le_unchecked,
 };
-use crate::range::{collect_region, search_region_each, visit_overlaps};
+use crate::range::{collect_region, visit_region};
 use crate::traversal::{SearchWorkspace, prefetch_read, upper_bound_level};
 use crate::tree_access::{TreeAccess, leaf_group_range};
 use crate::triangle::{Triangle2, blobs_as_records};
@@ -1766,11 +1766,11 @@ impl Index2D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        // Local slice-based traversal (not the shared `visit_overlaps`): iterating
+        // Local slice-based traversal (not the shared `visit_region`): iterating
         // `&entries[node..end]` lets LLVM autovectorize the overlap test, which a
         // per-element `TreeAccess` kernel cannot. Measured ~1.5x faster than the
         // generic kernel on owned visit, so kept specialized (views, whose byte
-        // storage has no slice to vectorize, keep using `visit_overlaps`).
+        // storage has no slice to vectorize, keep using `visit_region`).
         self.visit_with_stack_impl::<false, MASK_PAYS_IN_2D, true, B, F>(query, stack, visitor)
     }
 
@@ -3155,7 +3155,7 @@ impl<'a> Index2DView<'a> {
     ///
     /// The shared region traversal, not the overlaps-only one: a subtree the
     /// query fully contains is emitted whole, so its items are never parsed out
-    /// of the buffer or tested one by one. `any` / `first` deliberately keep the
+    /// of the buffer or tested one by one. `any` / `first` keep the
     /// overlaps-only path -- they stop at the first hit, so a containment test
     /// per node could only add work.
     #[doc(hidden)]
@@ -3168,13 +3168,7 @@ impl<'a> Index2DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        search_region_each(
-            self,
-            stack,
-            |bounds: Box2D| bounds.overlaps(query),
-            |bounds: Box2D| query.contains(bounds),
-            visitor,
-        )
+        self.visit_with_stack_forced::<MASK_PAYS_IN_2D, B, F>(query, stack, visitor)
     }
 
     /// Overlaps-only traversal, for the short-circuiting entry points.
@@ -3188,7 +3182,50 @@ impl<'a> Index2DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        visit_overlaps(self, query, stack, visitor)
+        self.find_with_stack_forced::<MASK_PAYS_IN_2D, B, F>(query, stack, visitor)
+    }
+
+    /// [`visit_with_stack`](Self::visit_with_stack) in the form `MASKED` names:
+    /// the child tests folded into a bit mask, or one branch per child. Same
+    /// items, same order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn visit_with_stack_forced<const MASKED: bool, B, F>(
+        &self,
+        query: Box2D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region::<MASKED, true, _, _, _, _, _>(
+            self,
+            stack,
+            |bounds: Box2D| bounds.overlaps(query),
+            |bounds: Box2D| query.contains(bounds),
+            visitor,
+        )
+    }
+
+    /// [`visit_overlaps_with_stack`](Self::visit_overlaps_with_stack) in the
+    /// form `MASKED` names.
+    #[doc(hidden)]
+    pub fn find_with_stack_forced<const MASKED: bool, B, F>(
+        &self,
+        query: Box2D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region::<MASKED, false, _, _, _, _, _>(
+            self,
+            stack,
+            |bounds: Box2D| bounds.overlaps(query),
+            |_| false,
+            visitor,
+        )
     }
 
     fn visit_neighbors_with_queue<B, F>(
@@ -3285,10 +3322,6 @@ impl TreeAccess for Index2D {
     fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
     }
-    #[inline]
-    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
-        a.overlaps(b)
-    }
 }
 
 impl TreeAccess for Index2DView<'_> {
@@ -3321,10 +3354,6 @@ impl TreeAccess for Index2DView<'_> {
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
         self.index_at_unchecked(pos)
-    }
-    #[inline]
-    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
-        a.overlaps(b)
     }
 }
 

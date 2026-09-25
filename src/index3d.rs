@@ -31,7 +31,7 @@ use crate::{
         parse_aggregates, parse_index, parse_index_owned, payload_slice, read_f64_le_unchecked,
         read_u64_le_unchecked,
     },
-    range::{collect_region, search_region_each, visit_overlaps},
+    range::{collect_region, visit_region},
     ray::Ray3D,
     traversal::{SearchWorkspace, prefetch_read, upper_bound_level},
     tree_access::{TreeAccess, leaf_group_range},
@@ -1627,16 +1627,76 @@ impl Index3D {
         &self,
         query: Box3D,
         stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        // Local slice-based traversal (not the shared `visit_region`): iterating
+        // `&entries[node..end]` lets LLVM autovectorize the overlap test, which a
+        // per-element `TreeAccess` kernel cannot. Measured ~1.5x faster than the
+        // generic kernel on owned visit (the views, whose byte storage has no
+        // slice to vectorize, keep using `visit_region`).
+        self.visit_with_stack_impl::<true, true, B, F>(query, stack, visitor)
+    }
+
+    /// [`visit_with_stack`](Index3D::visit_with_stack) for a visitor that stops
+    /// at its first item, as `any` and `first` do: it skips the containment
+    /// test, since it never takes a covered subtree's leaf range whole.
+    #[doc(hidden)]
+    pub fn find_with_stack<B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        self.visit_with_stack_impl::<true, false, B, F>(query, stack, visitor)
+    }
+
+    /// [`visit_with_stack`](Index3D::visit_with_stack) in the form `MASKED`
+    /// names: the child tests folded into a bit mask, or one branch per child.
+    /// Same items, same order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn visit_with_stack_forced<const MASKED: bool, B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        self.visit_with_stack_impl::<MASKED, true, B, F>(query, stack, visitor)
+    }
+
+    /// [`find_with_stack`](Index3D::find_with_stack) in the form `MASKED` names.
+    #[doc(hidden)]
+    pub fn find_with_stack_forced<const MASKED: bool, B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        self.visit_with_stack_impl::<MASKED, false, B, F>(query, stack, visitor)
+    }
+
+    /// The 2D `visit_with_stack_impl` in 3D, less its prefetch variant. The 3D
+    /// mask pays on every target measured, aarch64 included, so it always ships.
+    fn visit_with_stack_impl<const MASKED: bool, const COVERED: bool, B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        // Local slice-based traversal (not the shared `visit_overlaps`): iterating
-        // `&entries[node..end]` lets LLVM autovectorize the overlap test, which a
-        // per-element `TreeAccess` kernel cannot. Measured ~1.5x faster than the
-        // generic kernel on owned visit (the views, whose byte storage has no
-        // slice to vectorize, keep using `visit_overlaps`).
         stack.clear();
         if self.num_items == 0 {
             return ControlFlow::Continue(());
@@ -1644,13 +1704,44 @@ impl Index3D {
 
         let mut node_index = self.entries.len() - 1;
         let mut level = self.level_bounds.len() - 1;
+        let mut contained = false;
         loop {
             let end = (node_index + self.node_size).min(self.level_bounds[level]);
             let is_leaf = node_index < self.num_items;
             let node_entries = &self.entries[node_index..end];
             let node_indices = &self.indices[node_index..end];
 
-            if is_leaf {
+            if MASKED && contained {
+                let (start, stop) = leaf_group_range(self, node_index, end, level);
+                for &index in &self.indices[start..stop] {
+                    visitor(index)?;
+                }
+            } else if MASKED {
+                let chunks = node_entries
+                    .chunks(MASK_CHUNK)
+                    .zip(node_indices.chunks(MASK_CHUNK));
+                if is_leaf {
+                    for (boxes, indices) in chunks {
+                        let mut mask = overlap_mask3d(boxes, query);
+                        while mask != 0 {
+                            visitor(indices[mask.trailing_zeros() as usize])?;
+                            mask &= mask - 1;
+                        }
+                    }
+                } else {
+                    let child_level = level - 1;
+                    for (boxes, indices) in chunks.rev() {
+                        for_each_hit_rev(overlap_mask3d(boxes, query), |i| {
+                            let flag = if COVERED {
+                                usize::from(query.contains(boxes[i])) * frame::CONTAINED
+                            } else {
+                                0
+                            };
+                            stack.push(frame::pack(indices[i], child_level) | flag);
+                        });
+                    }
+                }
+            } else if is_leaf {
                 for (b, &index) in node_entries.iter().zip(node_indices) {
                     if !b.overlaps(query) {
                         continue;
@@ -1671,6 +1762,7 @@ impl Index3D {
                 Some(f) => {
                     node_index = frame::node(f);
                     level = frame::level(f);
+                    contained = frame::contained(f);
                 }
                 None => return ControlFlow::Continue(()),
             }
@@ -2911,7 +3003,7 @@ impl<'a> Index3DView<'a> {
     ///
     /// The shared region traversal, not the overlaps-only one: a subtree the
     /// query fully contains is emitted whole, so its items are never parsed out
-    /// of the buffer or tested one by one. `any` / `first` deliberately keep the
+    /// of the buffer or tested one by one. `any` / `first` keep the
     /// overlaps-only path -- they stop at the first hit, so a containment test
     /// per node could only add work.
     #[doc(hidden)]
@@ -2924,13 +3016,7 @@ impl<'a> Index3DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        search_region_each(
-            self,
-            stack,
-            |bounds: Box3D| bounds.overlaps(query),
-            |bounds: Box3D| query.contains(bounds),
-            visitor,
-        )
+        self.visit_with_stack_forced::<true, B, F>(query, stack, visitor)
     }
 
     /// Overlaps-only traversal, for the short-circuiting entry points.
@@ -2944,7 +3030,50 @@ impl<'a> Index3DView<'a> {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        visit_overlaps(self, query, stack, visitor)
+        self.find_with_stack_forced::<true, B, F>(query, stack, visitor)
+    }
+
+    /// [`visit_with_stack`](Self::visit_with_stack) in the form `MASKED` names:
+    /// the child tests folded into a bit mask, or one branch per child. Same
+    /// items, same order; for timing both in one binary.
+    #[doc(hidden)]
+    pub fn visit_with_stack_forced<const MASKED: bool, B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region::<MASKED, true, _, _, _, _, _>(
+            self,
+            stack,
+            |bounds: Box3D| bounds.overlaps(query),
+            |bounds: Box3D| query.contains(bounds),
+            visitor,
+        )
+    }
+
+    /// [`visit_overlaps_with_stack`](Self::visit_overlaps_with_stack) in the
+    /// form `MASKED` names.
+    #[doc(hidden)]
+    pub fn find_with_stack_forced<const MASKED: bool, B, F>(
+        &self,
+        query: Box3D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        visit_region::<MASKED, false, _, _, _, _, _>(
+            self,
+            stack,
+            |bounds: Box3D| bounds.overlaps(query),
+            |_| false,
+            visitor,
+        )
     }
 
     fn visit_neighbors_with_queue<B, F>(
@@ -3043,10 +3172,6 @@ impl TreeAccess for Index3D {
     fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
     }
-    #[inline]
-    fn bounds_overlap(a: Box3D, b: Box3D) -> bool {
-        a.overlaps(b)
-    }
 }
 
 impl TreeAccess for Index3DView<'_> {
@@ -3079,10 +3204,6 @@ impl TreeAccess for Index3DView<'_> {
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
         self.index_at_unchecked(pos)
-    }
-    #[inline]
-    fn bounds_overlap(a: Box3D, b: Box3D) -> bool {
-        a.overlaps(b)
     }
 }
 

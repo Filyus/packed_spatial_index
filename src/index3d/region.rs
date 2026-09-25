@@ -92,13 +92,14 @@ impl SearchQuery3D for Box3D {
     fn any_index(self, index: &Index3D) -> bool {
         let mut stack = crate::traversal::ScratchStack::take();
         index
-            .visit_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
+            .find_with_stack(self, &mut stack, |_| ControlFlow::Break(()))
             .is_break()
     }
 
     #[inline]
     fn first_index(self, index: &Index3D) -> Option<usize> {
-        match self.visit_index(index, ControlFlow::Break) {
+        let mut stack = crate::traversal::ScratchStack::take();
+        match index.find_with_stack(self, &mut stack, ControlFlow::Break) {
             ControlFlow::Break(index) => Some(index),
             ControlFlow::Continue(()) => None,
         }

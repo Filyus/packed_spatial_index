@@ -127,68 +127,41 @@ pub(crate) fn collect_region<const MASKED: bool, T, O, C, F>(
     }
 }
 
-/// Visit every leaf item whose bounds overlap `query`.
-///
-/// This is the dimension-independent overlap traversal shared by scalar f64
-/// owned indexes and zero-copy views. Hotter specialized search paths may still
-/// layer prefetching or contained-subtree shortcuts on top of the same
-/// [`TreeAccess`] contract.
-#[inline]
-pub(crate) fn visit_overlaps<R, T, F>(
-    tree: &T,
-    query: T::Bounds,
-    stack: &mut Vec<usize>,
-    mut visitor: F,
-) -> ControlFlow<R>
-where
-    T: TreeAccess,
-    F: FnMut(usize) -> ControlFlow<R>,
-{
-    stack.clear();
-    if tree.tree_num_items() == 0 {
-        return ControlFlow::Continue(());
-    }
-
-    let mut node_index = tree.tree_num_nodes() - 1;
-    let mut level = tree.tree_level_count() - 1;
-
-    loop {
-        let end = (node_index + tree.tree_node_size()).min(tree.tree_level_bound(level));
-        let is_leaf = node_index < tree.tree_num_items();
-
-        if is_leaf {
-            for pos in node_index..end {
-                if !T::bounds_overlap(tree.tree_bounds(pos), query) {
-                    continue;
-                }
-                visitor(tree.tree_index(pos))?;
-            }
-        } else {
-            let child_level = level - 1;
-            for pos in (node_index..end).rev() {
-                if !T::bounds_overlap(tree.tree_bounds(pos), query) {
-                    continue;
-                }
-                stack.push(frame::pack(tree.tree_index(pos), child_level));
-            }
-        }
-
-        match stack.pop() {
-            Some(f) => {
-                node_index = frame::node(f);
-                level = frame::level(f);
-            }
-            None => return ControlFlow::Continue(()),
-        }
-    }
-}
-
 /// Visit every item whose bounds overlap an arbitrary region predicate.
 ///
 /// `overlaps` decides whether a node must be descended or a leaf item emitted;
 /// `contains` accepts a whole subtree without per-leaf region tests.
 #[inline]
 pub(crate) fn search_region_each<R, T, O, C, F>(
+    tree: &T,
+    stack: &mut Vec<usize>,
+    overlaps: O,
+    contains: C,
+    visitor: F,
+) -> ControlFlow<R>
+where
+    T: TreeAccess,
+    O: Fn(T::Bounds) -> bool,
+    C: Fn(T::Bounds) -> bool,
+    F: FnMut(usize) -> ControlFlow<R>,
+{
+    visit_region::<false, true, R, T, O, C, F>(tree, stack, overlaps, contains, visitor)
+}
+
+/// The callback traversal both of the above run, in the forms two const
+/// parameters pick.
+///
+/// `COVERED` adds the contained-subtree shortcut: each pushed child is also
+/// tested with `contains`, and a covered one hands its leaf range to the
+/// visitor whole. A visitor that stops at its first item never gets that far,
+/// so `any` and `first` leave it off.
+///
+/// `MASKED` folds each node's overlap tests into a bitmask, as
+/// [`collect_region`] does, and branches once per hit instead of once per
+/// child. The views pass it for box queries, whose test is cheap; the region
+/// predicates keep the branch (see the boundary in `docs/performance.md`).
+#[inline]
+pub(crate) fn visit_region<const MASKED: bool, const COVERED: bool, R, T, O, C, F>(
     tree: &T,
     stack: &mut Vec<usize>,
     overlaps: O,
@@ -206,16 +179,18 @@ where
         return ControlFlow::Continue(());
     }
 
-    let root = tree.tree_bounds(tree.tree_num_nodes() - 1);
-    // `overlaps` first, even though containment implies it for any well-formed box:
-    // a box built through the unchecked `Box2D::new` may have `min > max`, and such a
-    // box is contained by a query it does not overlap. Without this the shortcut
-    // answers "every item" where the per-item test answers "none".
-    if overlaps(root) && contains(root) {
-        for pos in 0..tree.tree_num_items() {
-            visitor(tree.tree_index(pos))?;
+    if COVERED {
+        let root = tree.tree_bounds(tree.tree_num_nodes() - 1);
+        // `overlaps` first, even though containment implies it for any well-formed box:
+        // a box built through the unchecked `Box2D::new` may have `min > max`, and such a
+        // box is contained by a query it does not overlap. Without this the shortcut
+        // answers "every item" where the per-item test answers "none".
+        if overlaps(root) && contains(root) {
+            for pos in 0..tree.tree_num_items() {
+                visitor(tree.tree_index(pos))?;
+            }
+            return ControlFlow::Continue(());
         }
-        return ControlFlow::Continue(());
     }
 
     let mut node_index = tree.tree_num_nodes() - 1;
@@ -226,10 +201,38 @@ where
         let end = (node_index + tree.tree_node_size()).min(tree.tree_level_bound(level));
         let is_leaf = node_index < tree.tree_num_items();
 
-        if contained {
+        if COVERED && contained {
             let (start, leaf_end) = leaf_group_range(tree, node_index, end, level);
             for pos in start..leaf_end {
                 visitor(tree.tree_index(pos))?;
+            }
+        } else if MASKED && is_leaf {
+            let mut start = node_index;
+            while start < end {
+                let stop = (start + MASK_CHUNK).min(end);
+                let mut mask = overlap_mask_at(tree, start, stop, &overlaps);
+                while mask != 0 {
+                    visitor(tree.tree_index(start + mask.trailing_zeros() as usize))?;
+                    mask &= mask - 1;
+                }
+                start = stop;
+            }
+        } else if MASKED {
+            let child_level = level - 1;
+            // Chunks from the back, bits from the top: children pop in forward order.
+            let mut stop = end;
+            while stop > node_index {
+                let start = stop.saturating_sub(MASK_CHUNK).max(node_index);
+                for_each_hit_rev(overlap_mask_at(tree, start, stop, &overlaps), |i| {
+                    let pos = start + i;
+                    let flag = if COVERED {
+                        usize::from(contains(tree.tree_bounds(pos))) * frame::CONTAINED
+                    } else {
+                        0
+                    };
+                    stack.push(frame::pack(tree.tree_index(pos), child_level) | flag);
+                });
+                stop = start;
             }
         } else if is_leaf {
             for pos in node_index..end {
@@ -246,7 +249,11 @@ where
                 if !overlaps(bounds) {
                     continue;
                 }
-                let flag = usize::from(contains(bounds)) * frame::CONTAINED;
+                let flag = if COVERED {
+                    usize::from(contains(bounds)) * frame::CONTAINED
+                } else {
+                    0
+                };
                 stack.push(frame::pack(tree.tree_index(pos), child_level) | flag);
             }
         }
@@ -255,7 +262,7 @@ where
             Some(f) => {
                 node_index = frame::node(f);
                 level = frame::level(f);
-                contained = frame::contained(f);
+                contained = COVERED && frame::contained(f);
             }
             None => return ControlFlow::Continue(()),
         }

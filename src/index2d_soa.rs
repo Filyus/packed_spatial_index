@@ -3412,10 +3412,6 @@ impl TreeAccess for SimdIndex2D {
     fn tree_index(&self, pos: usize) -> usize {
         self.indices[pos]
     }
-    #[inline]
-    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
-        a.overlaps(b)
-    }
 }
 
 impl TreeAccess for SimdIndex2DView<'_> {
@@ -3448,10 +3444,6 @@ impl TreeAccess for SimdIndex2DView<'_> {
     #[inline]
     fn tree_index(&self, pos: usize) -> usize {
         self.index_at(pos)
-    }
-    #[inline]
-    fn bounds_overlap(a: Box2D, b: Box2D) -> bool {
-        a.overlaps(b)
     }
 }
 

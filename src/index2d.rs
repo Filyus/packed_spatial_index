@@ -1771,7 +1771,38 @@ impl Index2D {
         // per-element `TreeAccess` kernel cannot. Measured ~1.5x faster than the
         // generic kernel on owned visit, so kept specialized (views, whose byte
         // storage has no slice to vectorize, keep using `visit_overlaps`).
-        self.visit_with_stack_impl::<false, MASK_PAYS_IN_2D, B, F>(query, stack, visitor)
+        self.visit_with_stack_impl::<false, MASK_PAYS_IN_2D, true, B, F>(query, stack, visitor)
+    }
+
+    /// [`visit_with_stack`](Index2D::visit_with_stack) for a visitor that stops
+    /// at its first item, as `any` and `first` do. It never reaches a covered
+    /// subtree's leaf range whole, so it skips the containment test that finds
+    /// one: that test cost the masked `first` 4-12% on large windows.
+    #[doc(hidden)]
+    pub fn find_with_stack<B, F>(
+        &self,
+        query: Box2D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        self.visit_with_stack_impl::<false, MASK_PAYS_IN_2D, false, B, F>(query, stack, visitor)
+    }
+
+    /// [`find_with_stack`](Index2D::find_with_stack) in the form `MASKED` names.
+    #[doc(hidden)]
+    pub fn find_with_stack_forced<const MASKED: bool, B, F>(
+        &self,
+        query: Box2D,
+        stack: &mut Vec<usize>,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize) -> ControlFlow<B>,
+    {
+        self.visit_with_stack_impl::<false, MASKED, false, B, F>(query, stack, visitor)
     }
 
     /// [`visit_with_stack`](Index2D::visit_with_stack) in the form `MASKED`
@@ -1787,7 +1818,7 @@ impl Index2D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<false, MASKED, B, F>(query, stack, visitor)
+        self.visit_with_stack_impl::<false, MASKED, true, B, F>(query, stack, visitor)
     }
 
     /// Hidden prefetch variant of [`visit_with_stack`](Index2D::visit_with_stack).
@@ -1801,7 +1832,7 @@ impl Index2D {
     where
         F: FnMut(usize) -> ControlFlow<B>,
     {
-        self.visit_with_stack_impl::<true, MASK_PAYS_IN_2D, B, F>(query, stack, visitor)
+        self.visit_with_stack_impl::<true, MASK_PAYS_IN_2D, true, B, F>(query, stack, visitor)
     }
 
     /// Hottest path: both result buffer and traversal stack are reused by the caller.
@@ -2041,7 +2072,7 @@ impl Index2D {
         results.extend_from_slice(&self.indices[start..end]);
     }
 
-    fn visit_with_stack_impl<const PREFETCH: bool, const MASKED: bool, B, F>(
+    fn visit_with_stack_impl<const PREFETCH: bool, const MASKED: bool, const COVERED: bool, B, F>(
         &self,
         query: Box2D,
         stack: &mut Vec<usize>,
@@ -2088,7 +2119,11 @@ impl Index2D {
                     let child_level = level - 1;
                     for (boxes, indices) in chunks.rev() {
                         for_each_hit_rev(overlap_mask(boxes, query), |i| {
-                            let flag = usize::from(query.contains(boxes[i])) * frame::CONTAINED;
+                            let flag = if COVERED {
+                                usize::from(query.contains(boxes[i])) * frame::CONTAINED
+                            } else {
+                                0
+                            };
                             stack.push(frame::pack(indices[i], child_level) | flag);
                         });
                     }

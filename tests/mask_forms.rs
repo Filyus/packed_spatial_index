@@ -106,6 +106,12 @@ fn owned_2d_callback_paths_agree_in_both_forms() {
             let first_m =
                 owned.visit_with_stack_forced::<true, _, _>(q, &mut stack, ControlFlow::Break);
             assert_eq!(first_b, first_m, "first {node_size} {q:?}");
+            let find_b =
+                owned.find_with_stack_forced::<false, _, _>(q, &mut stack, ControlFlow::Break);
+            let find_m =
+                owned.find_with_stack_forced::<true, _, _>(q, &mut stack, ControlFlow::Break);
+            assert_eq!(find_b, first_b, "find branching {node_size} {q:?}");
+            assert_eq!(find_m, first_b, "find masked {node_size} {q:?}");
             assert_eq!(
                 owned.first(q),
                 a.first().copied(),

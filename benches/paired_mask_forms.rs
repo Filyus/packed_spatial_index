@@ -233,8 +233,8 @@ fn main() {
     }
 
     // ---- 2D owned callback paths: full visit, and `first` (what `any` runs) ----
-    // `visit_with_stack` carries `visit`, `any` and `first`, so one hook times
-    // both forms of all three.
+    // `visit_with_stack` carries `visit`; `find_with_stack` carries `any` and
+    // `first`, the same traversal without the containment test.
     // An early exit descends a few nodes whatever the window, so 400 large
     // windows are few enough branches to learn: `first` gets 10 000 in every
     // class (kb:task/192).
@@ -242,29 +242,36 @@ fn main() {
         for early in [false, true] {
             let qs = windows_2d(0x91 + i as u64, *lo, *hi, if early { 10_000 } else { *n });
             let call = if early { "first" } else { "visit" };
-            let arm = |masked: bool| {
-                let (qs, owned2) = (&qs, &owned2);
-                let mut stack = Vec::new();
-                move || {
-                    let mut t = 0usize;
-                    for &q in black_box(qs) {
-                        let f = |idx: usize| {
-                            t += idx;
-                            if early {
-                                ControlFlow::Break(())
-                            } else {
-                                ControlFlow::Continue(())
-                            }
-                        };
-                        let _ = if masked {
-                            owned2.visit_with_stack_forced::<true, (), _>(q, &mut stack, f)
-                        } else {
-                            owned2.visit_with_stack_forced::<false, (), _>(q, &mut stack, f)
-                        };
+            let arm =
+                |masked: bool| {
+                    let (qs, owned2) = (&qs, &owned2);
+                    let mut stack = Vec::new();
+                    move || {
+                        let mut t = 0usize;
+                        for &q in black_box(qs) {
+                            let f = |idx: usize| {
+                                t += idx;
+                                if early {
+                                    ControlFlow::Break(())
+                                } else {
+                                    ControlFlow::Continue(())
+                                }
+                            };
+                            let _ =
+                                match (early, masked) {
+                                    (false, true) => owned2
+                                        .visit_with_stack_forced::<true, (), _>(q, &mut stack, f),
+                                    (false, false) => owned2
+                                        .visit_with_stack_forced::<false, (), _>(q, &mut stack, f),
+                                    (true, true) => owned2
+                                        .find_with_stack_forced::<true, (), _>(q, &mut stack, f),
+                                    (true, false) => owned2
+                                        .find_with_stack_forced::<false, (), _>(q, &mut stack, f),
+                                };
+                        }
+                        t
                     }
-                    t
-                }
-            };
+                };
             let mut arms = vec![
                 paired::arm("branching", arm(false)),
                 paired::arm("masked (ships)", arm(true)),

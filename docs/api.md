@@ -25,7 +25,7 @@ unspecified unless you asked for one with `search_ordered`.
 | Nearest neighbors (box) | [`neighbors_of_box`][neighbors_of_box], [`neighbors_of_box_within`][neighbors_of_box_within], [`neighbors_of_box_into`][neighbors_of_box_into], [`neighbors_of_box_with`][neighbors_of_box_with], [`neighbors_of_box_each`][neighbors_of_box_each] |
 | Geographic / custom-metric kNN | [`neighbors_metric`][neighbors_metric], [`neighbors_metric_into`][neighbors_metric_into], [`neighbors_metric_each`][neighbors_metric_each] — pass a `\|box\| -> f64` distance (e.g. [`haversine_distance_2d`][haversine_distance_2d] for lon/lat) |
 | Ordered region | [`search_ordered`][search_ordered], [`search_ordered_into`][search_ordered_into], [`search_ordered_each`][search_ordered_each] — the same region shapes, emitted in nondecreasing order of a `\|box\| -> f64` key (e.g. [`view_depth_3d`][view_depth_3d] for front-to-back), so a budget can stop the traversal |
-| Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`raycast_each`][raycast_each] |
+| Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`raycast_each`][raycast_each], [`raycast_any`][raycast_any] |
 | Spatial join | [`join`][join], [`join_each`][join_each] between two indexes; [`pairs`][pairs], [`pairs_each`][pairs_each] for the overlapping pairs within one |
 | Aggregate over a window | [`aggregate`][aggregate] — the exact count / sum / min / max / mask-OR of the hits, folded from per-node summaries (`AGGR` chunk); needs `aggregate_scalar` / `aggregate_mask` at build time |
 | Estimate before you query | [`estimate_count`][estimate_count] — an exact `[lower, upper]` bracket on the hit count from node boxes alone, plus a point estimate; the streaming readers answer it from the cached directory without a read |
@@ -142,6 +142,7 @@ assert_eq!(build().finish_simd().unwrap().search_region(&tri), vec![0]);
 [raycast_closest]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_closest
 [raycast_closest_with]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_closest_with
 [raycast_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_each
+[raycast_any]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.raycast_any
 [join]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join
 [join_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.join_each
 [pairs]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.pairs

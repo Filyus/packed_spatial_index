@@ -109,6 +109,8 @@ impl Index2D {
     /// [`raycast_closest`](Self::raycast_closest) keep. Same answer as
     /// `!raycast(ray).is_empty()`.
     ///
+    /// # Example
+    ///
     /// ```
     /// # use packed_spatial_index::{Index2DBuilder, Box2D, Point2D, Ray2D};
     /// # let mut builder = Index2DBuilder::new(1);

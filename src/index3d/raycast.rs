@@ -131,6 +131,8 @@ impl Index3D {
     /// [`raycast_closest`](Self::raycast_closest) keep. Same answer as
     /// `!raycast(ray).is_empty()`.
     ///
+    /// # Example
+    ///
     /// ```
     /// # use packed_spatial_index::{Index3DBuilder, Box3D, Point3D, Ray3D};
     /// # let mut builder = Index3DBuilder::new(1);

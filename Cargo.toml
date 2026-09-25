@@ -89,6 +89,10 @@ name = "paired_aggregate"
 harness = false
 
 [[bench]]
+name = "paired_heaviest"
+harness = false
+
+[[bench]]
 name = "paired_simd_count"
 harness = false
 required-features = ["simd"]

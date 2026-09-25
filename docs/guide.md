@@ -22,6 +22,7 @@ the method for each need; the notes after it explain the reasoning.
 | The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
 | Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `search_ordered_each` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
 | The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `search_pick_each` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express; `search_pick_into` / `search_pick_with` reuse the buffers | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
+| The *k* heaviest (largest, most important) items in a window | `search_heaviest(region, k)` / `search_heaviest_each` over the `aggregate_scalar` column — best-first on the per-node max, ties by item index; see [The heaviest *k* in a region](#the-heaviest-k-in-a-region) | `search(region)` and then sorting the hits by weight, or `search_ordered`, whose key never sees the stored max |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `_each` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `raycast_each`, and `raycast_closest` when only the nearest *box* matters | — |
 | Whether a ray is blocked at all (shadow ray, line of sight) | `raycast_any(ray)` — stops at the first box the segment enters, in no order, with no priority queue | `!raycast(ray).is_empty()`, which collects every hit, or `raycast_closest`, which pays for the order |
@@ -552,8 +553,9 @@ The key must be an **admissible lower bound**, the same contract
 [custom-metric kNN](#geographic-and-custom-metric-knn) asks for: the key of a box
 never exceeds the key of any item inside it. `view_depth_3d` satisfies it by
 construction (a node box encloses its children, so its minimum depth is no
-larger than theirs), and so does any "smallest value over the box" score — depth,
-distance, a priority you store per item and summarize per subtree. The direction
+larger than theirs), and so does any "smallest value over the box" score, such as
+depth or distance. The key sees only the box, so a weight stored per item is out of
+its reach; for that, see [the heaviest *k*](#the-heaviest-k-in-a-region). The direction
 need not be normalized: a longer vector rescales the key and any `max_key`
 cutoff, never the order.
 
@@ -570,10 +572,11 @@ when you genuinely need every hit ordered.
 `search_ordered_each` gives the same sequence through a visitor that receives the key
 alongside the id, so a renderer can accumulate until its budget is spent and
 break. That is also the general **top-k** form: any monotone score whose
-box key is an admissible lower bound — depth, distance, a per-item priority
-summarized per subtree — becomes "the best `k` by my score" through
+box key is an admissible lower bound, such as depth or distance, becomes "the best
+`k` by my score" through
 `search_ordered(region, score_key, k, f64::INFINITY)`, and the budget stops the
-traversal once the `k` are found. Every f64 and `f32` in-memory frontend answers it, SIMD included, though
+traversal once the `k` are found (for a stored per-item weight, use
+[`search_heaviest`](#the-heaviest-k-in-a-region)). Every f64 and `f32` in-memory frontend answers it, SIMD included, though
 the descent is scalar everywhere (a heap pops one node at a time). Streaming
 readers do not carry the method — a heap costs one round trip per node it opens
 — but they can still answer the question it is usually asked for; see below.
@@ -619,6 +622,66 @@ typical. A useful first estimate costs no I/O at all, since `open` caches the
 upper levels: a node's *far*-corner depth is an upper bound on the nearest depth
 of anything inside it. Widen generously rather than tightly — an over-large cap
 costs bytes, an over-small one costs a whole extra round.
+
+## The heaviest *k* in a region
+
+"The ten largest objects in view", LOD labels, picking by importance: the order
+is a weight you store per item, not a distance. Build with
+`aggregate_scalar(&weights)` and ask `search_heaviest`:
+
+```rust
+use packed_spatial_index::{Box2D, Index2DBuilder};
+
+let mut b = Index2DBuilder::new(5);
+b.add(Box2D::new(0.0, 0.0, 1.0, 1.0)); // 0
+b.add(Box2D::new(2.0, 0.0, 3.0, 1.0)); // 1
+b.add(Box2D::new(4.0, 0.0, 5.0, 1.0)); // 2
+b.add(Box2D::new(6.0, 0.0, 7.0, 1.0)); // 3
+b.add(Box2D::new(90.0, 0.0, 91.0, 1.0)); // 4, off screen
+let areas = [2.0, 8.0, 5.0, 8.0, 100.0];
+let index = b.aggregate_scalar(&areas).finish()?;
+
+let screen = Box2D::new(0.0, 0.0, 10.0, 10.0);
+// Heaviest first; the tie at 8.0 goes to the smaller index.
+assert_eq!(index.search_heaviest(screen, 3), Some(vec![1, 3, 2]));
+
+// Or everything above a threshold, without choosing k.
+let mut big = Vec::new();
+index.search_heaviest_each(screen, |id, area| {
+    if area < 5.0 {
+        return std::ops::ControlFlow::Break(());
+    }
+    big.push(id);
+    std::ops::ControlFlow::Continue(())
+});
+assert_eq!(big, vec![1, 3, 2]);
+# Ok::<(), packed_spatial_index::BuildError>(())
+```
+
+Every node of the `AGGR` chunk stores the max of its items, an upper bound on
+anything below it, so a best-first descent opens a subtree only while its max can
+still beat or tie the heaviest item already found. That is the same descent as
+kNN with the order flipped and it settles ties the same way: equal weights come
+out in ascending item index, so `search_heaviest(region, k)` is a prefix of
+`search_heaviest(region, k + 1)`. Items whose weight is NaN are never returned.
+The answer is `None` when the index carries no scalar column; the method is on
+the owned `f64` indexes, their views and the SIMD indexes and views, the rows
+that carry aggregates.
+
+This is not a `search_ordered` recipe, though it looks like one: that key is a
+function of a node's *box* and never sees the node, so it cannot read the stored
+max.
+
+**When it wins.** On 1M boxes with random weights
+(`cargo bench --bench paired_heaviest`), the top 10 of a window holding ~10 000
+items took a tenth of the time of `search` + `select_nth_unstable` and 0.024 of
+`search` + a full sort; a window over everything took a few microseconds against
+tens of milliseconds. On a window of ~100 hits collecting them is cheaper
+(about 1.45× faster than the heap at `k = 10`), because the heap opens a node at
+a time where `search` sweeps. The descent is fast when heavy items are spread
+through the tree. When the heaviest items sit just outside the window, the node
+maxes near its edge promise weights the window does not hold and the descent
+opens those nodes for nothing.
 
 ## Estimate before you query
 

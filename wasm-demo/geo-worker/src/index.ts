@@ -9,6 +9,7 @@ import initSync, {
 } from "../pkg/psi_geo_worker.js";
 import wasmModule from "../pkg/psi_geo_worker_bg.wasm";
 import { withArtifact, type Metrics } from "./artifact";
+import { corsHeaders } from "./cors.ts";
 import { errorBody, HttpError } from "./errors.ts";
 import {
   COUNT_MODES,
@@ -231,12 +232,3 @@ function jsonResponse(
   });
 }
 
-function corsHeaders(): Headers {
-  return new Headers({
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Expose-Headers":
-      "X-PSI-Reads, X-PSI-Bytes, X-PSI-R2-Operations",
-  });
-}

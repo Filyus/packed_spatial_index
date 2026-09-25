@@ -22,7 +22,7 @@ the method for each need; the notes after it explain the reasoning.
 | The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
 | Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `search_ordered_each` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
 | The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `search_pick_each` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express; `search_pick_into` / `search_pick_with` reuse the buffers | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
-| The *k* heaviest (largest, most important) items in a window | `search_heaviest(region, k)` / `search_heaviest_each` over the `aggregate_scalar` column — best-first on the per-node max, ties by item index; see [The heaviest *k* in a region](#the-heaviest-k-in-a-region) | `search(region)` and then sorting the hits by weight, or `search_ordered`, whose key never sees the stored max |
+| The *k* heaviest (largest, most important) items in a window | `search_heaviest(region, k)` / `search_heaviest_each` over the `aggregate_scalar` column — best-first on the per-node max (a sweep and a select on small windows), ties by item index; see [The heaviest *k* in a region](#the-heaviest-k-in-a-region) | `search(region)` and then sorting the hits by weight, or `search_ordered`, whose key never sees the stored max |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `_each` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `raycast_each`, and `raycast_closest` when only the nearest *box* matters | — |
 | Whether a ray is blocked at all (shadow ray, line of sight) | `raycast_any(ray)` — stops at the first box the segment enters, in no order, with no priority queue | `!raycast(ray).is_empty()`, which collects every hit, or `raycast_closest`, which pays for the order |
@@ -672,16 +672,28 @@ This is not a `search_ordered` recipe, though it looks like one: that key is a
 function of a node's *box* and never sees the node, so it cannot read the stored
 max.
 
-**When it wins.** On 1M boxes with random weights
-(`cargo bench --bench paired_heaviest`), the top 10 of a window holding ~10 000
-items took a tenth of the time of `search` + `select_nth_unstable` and 0.024 of
-`search` + a full sort; a window over everything took a few microseconds against
-tens of milliseconds. On a window of ~100 hits collecting them is cheaper
-(about 1.45× faster than the heap at `k = 10`), because the heap opens a node at
-a time where `search` sweeps. The descent is fast when heavy items are spread
-through the tree. When the heaviest items sit just outside the window, the node
-maxes near its edge promise weights the window does not hold and the descent
-opens those nodes for nothing.
+**When it wins.** The descent costs about the same whatever the window holds
+once it holds well over `k` items and grows with `k`; a plain sweep of the
+window costs the same per hit whatever `k` is. So `search_heaviest` estimates
+the hits from the region's bounding box (the share of the root it covers, times
+the item count) and sweeps instead from 2 up to `10 + 50 * (k - 1)` expected
+hits: it collects the window and splits the `k` heaviest off with
+`select_nth_unstable`, with the same answer in the same order. Regions without a
+bounding box (half-spaces, your own `Overlaps2D` types) always descend and so
+does `search_heaviest_each`, whose visitor may stop at the first item before a
+sweep would have paid for itself.
+
+On 1M boxes with random weights (`cargo bench --bench paired_heaviest`), the
+top 10 of a window holding ~10 000 items took 0.13–0.14 of the time of
+`search_into` + `select_nth_unstable` with reused buffers on Zen 3 (EPYC 7763)
+and Zen 4 (EPYC 9V74), 0.08 on Neoverse N2; a window of ~30 000 took 0.05 on the
+Zens and 0.03 on N2. On ~100 hits, where the descent alone ran 1.4–1.8× the
+select, the sweep brings it to 0.82–0.92× on those three and a Xeon (Emerald
+Rapids). Under one expected hit the method costs 1.04× (Xeon) to 1.34× (Zen 4)
+of a caller's reused-buffer select, for the `Vec` it returns. The descent is fast
+when heavy items are spread through the tree. When the heaviest items sit just
+outside the window, the node maxes near its edge promise weights the window does
+not hold and the descent opens those nodes for nothing.
 
 ## Estimate before you query
 

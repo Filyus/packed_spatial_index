@@ -28,19 +28,29 @@ All notable changes to this crate are documented here.
   a prefix of the first `k + 1`; NaN weights are never returned. On `Index2D` /
   `Index3D`, their views and the SIMD indexes and views; `None` without a
   scalar column. `search_ordered` could not express it: its key sees a node's
-  box, never its summary. On 1M boxes with random weights, time against
-  collecting the window and sorting it (against `select_nth_unstable` in
-  brackets):
+  box, never its summary. Below a line in the expected hits (from 2 up to
+  `10 + 50 * (k - 1)`, read off the region's bounding box) the descent loses
+  to a plain sweep, so there `search_heaviest` collects the window and selects
+  the `k` instead; same items, same order. `search_heaviest_each` always
+  descends, since its visitor may stop at the first item. On 1M boxes with
+  random weights, time against `search_into` + `select_nth_unstable` with
+  reused buffers, Zen 3 (EPYC 7763):
 
-  | Window (hits) | k = 10 | k = 100 |
-  |---|---|---|
-  | ~100 | 0.93 (1.45) | 1.80 (1.80) |
-  | ~10 000 | 0.024 (0.10) | 0.15 (0.59) |
-  | ~90 000 | 0.002 (0.008) | 0.018 (0.09) |
-  | everything (1M) | 0.00004 (0.0003) | 0.0008 (0.005) |
+  | Window (hits) | k = 1 | k = 10 | k = 100 | k = 1000 |
+  |---|---|---|---|---|
+  | ~10 | 0.88 | 0.91 | 0.90 | 0.88 |
+  | ~100 | 0.55 | 0.83 | 0.82 | 0.83 |
+  | ~1000 | 0.13 | 0.74 | 0.94 | 0.82 |
+  | ~10 000 | 0.02 | 0.14 | 0.86 | 1.07 |
+  | ~30 000 | 0.01 | 0.05 | 0.38 | 0.91 |
 
-  On a window of a hundred hits collecting them is cheaper; at ten thousand
-  the heap already takes a tenth of `select_nth_unstable`'s time for `k = 10`.
+  Where it collects, it takes from 0.25 of the descent's time (large `k`) to
+  about the same (the edges of the band) on Zen 3, Zen 4 (EPYC 9V74),
+  Neoverse N2 and a Xeon (Emerald Rapids). On a window of ~100 hits with
+  `k = 10` the descent alone ran 1.4–1.8× the select on those four; now it
+  runs 0.82–0.92×. Windows expecting under one hit still cost 1.04× (Xeon) to
+  1.34× (Zen 4) of the reused-buffer select: the result `Vec` and the
+  traversal state are allocated per call.
 
 - **`any` and `first` descend depth first and stop testing at the first
   hit.** Owned and view, 2D and 3D. They tested every child of each node on the

@@ -26,6 +26,8 @@ use crate::range::overlap_mask_at;
 use crate::traversal::ScratchStack;
 use crate::tree_access::TreeAccess;
 
+mod heaviest;
+
 /// Which summary columns an [`Aggregates`] carries.
 pub(crate) const COLUMN_SCALAR: u8 = 1;
 pub(crate) const COLUMN_MASK: u8 = 2;

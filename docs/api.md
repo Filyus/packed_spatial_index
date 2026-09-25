@@ -28,6 +28,7 @@ unspecified unless you asked for one with `search_ordered`.
 | Ray segment | [`raycast`][raycast], [`raycast_into`][raycast_into], [`raycast_with`][raycast_with], [`raycast_closest`][raycast_closest], [`raycast_closest_with`][raycast_closest_with], [`raycast_each`][raycast_each], [`raycast_any`][raycast_any] |
 | Spatial join | [`join`][join], [`join_each`][join_each] between two indexes; [`pairs`][pairs], [`pairs_each`][pairs_each] for the overlapping pairs within one |
 | Aggregate over a window | [`aggregate`][aggregate] — the exact count / sum / min / max / mask-OR of the hits, folded from per-node summaries (`AGGR` chunk); needs `aggregate_scalar` / `aggregate_mask` at build time |
+| Top-k by weight in a region | [`search_heaviest`][search_heaviest], [`search_heaviest_each`][search_heaviest_each] — the `k` items of a region with the largest `aggregate_scalar` value, heaviest first (ties by item index), best-first over the per-node max of the `AGGR` chunk; `None` without a scalar column |
 | Estimate before you query | [`estimate_count`][estimate_count] — an exact `[lower, upper]` bracket on the hit count from node boxes alone, plus a point estimate; the streaming readers answer it from the cached directory without a read |
 | Radius (within ε) | [`search_within`][search_within], [`search_within_into`][search_within_into], [`search_within_each`][search_within_each], [`search_within_any`][search_within_any], [`count_within`][count_within] — every item whose box lies within `max_distance` of a query box, `max_distance = 0.0` reproducing `search` |
 | Distance join (ε-join) | [`join_within`][join_within], [`join_within_each`][join_within_each], [`pairs_within`][pairs_within], [`pairs_within_each`][pairs_within_each], [`anti_join_within`][anti_join_within], [`pairs_within_components`][pairs_within_components] |
@@ -212,3 +213,5 @@ assert_eq!(build().finish_simd().unwrap().search_region(&tri), vec![0]);
 [LoadError]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/enum.LoadError.html
 
 [aggregate]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.aggregate
+[search_heaviest]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_heaviest
+[search_heaviest_each]: https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Index2D.html#method.search_heaviest_each

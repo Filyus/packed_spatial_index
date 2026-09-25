@@ -18,6 +18,29 @@ All notable changes to this crate are documented here.
   100 000 non-overlapping points `k = 1000` costs 1.26–1.39× `closest_pair`.
   Where the `k`-th pair overlaps, every overlapping pair has to be seen to
   settle the ties, which costs about 1.15–1.35× `pairs()` / `join()`.
+- **`search_heaviest(region, k)`: the `k` heaviest items of a region.**
+  "The ten largest objects in view", by the per-item
+  `aggregate_scalar` value, heaviest first. A best-first descent over the max
+  every node of the `AGGR` chunk already stores, so the format is unchanged and
+  the cost follows `k` rather than the number of items in the window.
+  `search_heaviest_each` hands the visitor the weight too, so a threshold can
+  stop it. Equal weights come out in ascending item index, so the first `k` are
+  a prefix of the first `k + 1`; NaN weights are never returned. On `Index2D` /
+  `Index3D`, their views and the SIMD indexes and views; `None` without a
+  scalar column. `search_ordered` could not express it: its key sees a node's
+  box, never its summary. On 1M boxes with random weights, time against
+  collecting the window and sorting it (against `select_nth_unstable` in
+  brackets):
+
+  | Window (hits) | k = 10 | k = 100 |
+  |---|---|---|
+  | ~100 | 0.93 (1.45) | 1.80 (1.80) |
+  | ~10 000 | 0.024 (0.10) | 0.15 (0.59) |
+  | ~90 000 | 0.002 (0.008) | 0.018 (0.09) |
+  | everything (1M) | 0.00004 (0.0003) | 0.0008 (0.005) |
+
+  On a window of a hundred hits collecting them is cheaper; at ten thousand
+  the heap already takes a tenth of `select_nth_unstable`'s time for `k = 10`.
 
 - **`any` and `first` descend depth first and stop testing at the first
   hit.** Owned and view, 2D and 3D. They tested every child of each node on the

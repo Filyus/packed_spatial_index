@@ -67,15 +67,101 @@ it is not a Hilbert curve and is not used for ordering. Reproduce with
 
 ## 2D competitors
 
-Lower is better. The 2D competitor workload uses 100,000 random AABBs and
-1,000 random query boxes; build and search competitors are measured in the
-same benchmark suite on the same generated inputs. Persistence rows use the
-canonical byte format for 100,000 boxes.
+Lower is better. The workload is 100,000 random AABBs (sides `0.1..20` in a
+10,000 square) with `node_size = 16` for every participant.
+
+Queries come in three classes by output: small windows (sides `10..200`, 13
+hits a query on average), mid (`200..1000`, 380 hits) and large
+(`2000..5000`, about 12,700 hits). A class gets 10,000, 2000 or 400 windows;
+an early exit gets 10,000 in every class. A set that repeats every
+iteration and is small enough lets the branch predictor learn each query's
+path through the tree, which flatters branchy traversals on a Zen 4 or Zen 5
+(see [Branch-free node tests](#branch-free-node-tests)); these sets are too
+large for that. Every participant runs the same set.
+
+Search, `visit` and `first` below are
+[`paired_competitors`](#reproducing): all participants in one binary,
+interleaved, 15 rounds, as the median per-round time relative to
+`static_aabb2d_index` (1.00), averaged over two or three runs per machine.
+Runs of one machine agree within 0.07 and mostly within 0.02. The machines:
+a cloud Xeon VM (Emerald Rapids, family 6 model 207), a Zen 3 (EPYC 7763), a
+Zen 4 (EPYC 9V74) with AVX-512 exposed, the same Zen 4 in VMs that hide it and
+a Neoverse N2. The last four are GitHub-hosted runners.
+
+**Search batch** (collect every hit). The reference is `static_aabb2d_index`'s
+`query_with_stack`, its collecting call, which returns a fresh `Vec` per query;
+FlatGeobuf's `PackedRTree::search` does the same. This crate's rows are
+`search_with`, which reuses a workspace. Driving `static_aabb2d_index`'s
+`visit_query_with_stack` into a reused `Vec` instead costs it 0.77–0.95 of
+the reference, so a caller who reuses buffers there narrows the gap by that
+much.
+
+| Windows | Participant | Xeon (EMR) | Zen 3 | Zen 4 | Zen 4, no AVX-512 | N2 |
+|---|---|---:|---:|---:|---:|---:|
+| small | FlatGeobuf | 1.15 | 1.18 | 1.22 | 1.22 | 1.08 |
+| small | `Index2D` | 0.67 | 0.58 | 0.56 | 0.55 | 0.70 |
+| small | `SimdIndex2D` | 0.51 | 0.48 | 0.38 | 0.47 | 0.68 |
+| mid | FlatGeobuf | 1.00 | 0.99 | 1.07 | 1.07 | 0.98 |
+| mid | `Index2D` | 0.59 | 0.54 | 0.54 | 0.54 | 0.69 |
+| mid | `SimdIndex2D` | 0.40 | 0.48 | 0.34 | 0.49 | 0.72 |
+| large | FlatGeobuf | 1.12 | 0.97 | 1.17 | 1.17 | 0.92 |
+| large | `Index2D` | 0.34 | 0.30 | 0.33 | 0.33 | 0.39 |
+| large | `SimdIndex2D` | 0.28 | 0.27 | 0.25 | 0.30 | 0.44 |
+
+So scalar `Index2D` collects 1.4–1.8× faster than `static_aabb2d_index` on
+small windows, 1.4–1.9× on mid ones and 2.6–3.3× on large ones. The lead grows
+with the output because the collect paths fold a node's child tests into a
+bitmask and branch once per hit (see
+[Branch-free node tests](#branch-free-node-tests)), while the baseline branches
+once per child. FlatGeobuf's search sits within 0.92–1.22 of the baseline.
+
+**Full traversal with a callback** (`visit`). The reference is
+`static_aabb2d_index`'s `visit_query_with_stack` with a unit visitor, which
+skips its break test; this crate's `visit` gets a closure returning
+`ControlFlow::Continue`. FlatGeobuf's `PackedRTree` has no callback query.
+
+| Windows | Participant | Xeon (EMR) | Zen 3 | Zen 4 | Zen 4, no AVX-512 | N2 |
+|---|---|---:|---:|---:|---:|---:|
+| small | `Index2D` | 0.83 | 0.76 | 0.69 | 0.68 | 0.88 |
+| small | `SimdIndex2D` | 0.72 | 0.68 | 0.62 | 0.62 | 0.98 |
+| mid | `Index2D` | 0.72 | 0.66 | 0.60 | 0.60 | 0.80 |
+| mid | `SimdIndex2D` | 0.87 | 0.69 | 0.64 | 0.66 | 0.96 |
+| large | `Index2D` | 0.43 | 0.40 | 0.40 | 0.40 | 0.44 |
+| large | `SimdIndex2D` | 0.51 | 0.42 | 0.42 | 0.43 | 0.54 |
+
+`visit` leads by less than collecting does on small windows (1.1–1.5×) and by
+2.3–2.5× on large ones, where a covered subtree reaches the callback as a whole
+leaf range without per-item tests.
+
+**Early exit** (`first`; `any` runs the same traversal and lands within 0.02 of
+it). The reference is `visit_query_with_stack` with a visitor that breaks on
+the first hit.
+
+| Windows | Participant | Xeon (EMR) | Zen 3 | Zen 4 | Zen 4, no AVX-512 | N2 |
+|---|---|---:|---:|---:|---:|---:|
+| small | `Index2D` | 0.90 | 0.85 | 0.73 | 0.72 | 0.92 |
+| small | `SimdIndex2D` | 0.92 | 0.78 | 0.74 | 0.71 | 1.07 |
+| mid | `Index2D` | 1.00 | 1.00 | 0.85 | 0.83 | 1.04 |
+| mid | `SimdIndex2D` | 0.88 | 0.94 | 0.86 | 0.85 | 1.36 |
+| large | `Index2D` | 1.33 | 1.35 | 1.23 | 1.22 | 1.27 |
+| large | `SimdIndex2D` | 0.99 | 1.06 | 1.12 | 1.04 | 1.67 |
+
+This is the one comparison the baseline wins. On a large window almost every
+item overlaps, so the first leaf reached holds a hit. The baseline stops inside
+that leaf at the first overlapping item, while this crate tests all of the
+leaf's items into the mask first. `Index2D::first` is 1.2–1.35× slower there.
+It is level on mid windows except on the Zen 4 (0.83–0.85) and 1.1–1.4×
+faster on small ones. `SimdIndex2D` lands at 0.99–1.12 of the baseline on large
+windows on x86 and is slower on the N2 (1.36 mid, 1.67 large), where its NEON
+path has no movemask.
+
+Build and persistence were measured with Criterion (`flatgeobuf2d_bench`) on
+the Zen 5 laptop, with persistence on the canonical byte format for the same
+100,000 boxes:
 
 | Benchmark | FlatGeobuf | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
 | --- | ---: | ---: | ---: | ---: |
 | Full build | 46.82 ms | 6.31 ms | 2.23 ms serial / 1.73 ms parallel | - |
-| Search batch | 588.75 us | 485.64 us | 205.62 us | 127.36 us |
 | Serialize built tree (fresh buffer) | - | - | 399.11 us | 613.21 us |
 | Serialize built tree (reused buffer) | 131.28 us | - | 68.02 us | 160.86 us |
 | Load owned tree | 646.49 us | - | 372.24 us | 554.75 us |
@@ -92,27 +178,6 @@ scatters AoS→SoA to load. The `reused buffer` row isolates this best:
 `SimdIndex2D` pays at serialize/load to win at query time — prefer it when you
 query far more than you persist, and load read-mostly bytes through the zero-copy
 `Index2DView` (34.96 us) rather than rebuilding an owned SoA index.
-
-Scalar `Index2D` search leads `static_aabb2d_index` on both generated inputs,
-by 2.4× on the `0xF6B` set and 3.0× on `0xB0B`. That used to be a
-dataset-sensitive call — a few percent to 1.8× depending on the inputs, and the
-other way round on `0xF6B` under `2.0.0` of the baseline crate (see below) —
-until the scalar collect paths stopped branching once per child: each node's
-overlap tests now fold into a bitmask and the traversal branches once per hit,
-which removed the mispredicts that dominated wide queries. The margin is now
-well outside the run-to-run spread on either side (about 1% here, with the
-baseline crate's own column moving by 2–3% between runs), so the ordering holds
-across the inputs tried, while the 2D competitor table's warning about the
-baseline version still applies to that column:
-
-| Search batch | `static_aabb2d_index` | `Index2D` | `SimdIndex2D` |
-| --- | ---: | ---: | ---: |
-| `flatgeobuf2d_bench`, seed `0xF6B` (`search_with`) | 485.64 us | 205.62 us | 127.36 us |
-| `index2d_bench`, seed `0xB0B` (`search_into_stack` / `search_simd`) | 645.93 us | 215.56 us | 208.98 us |
-
-The `SimdIndex2D` columns are not the same entry point: `search_with` picks a
-kernel for the query, while `search_simd` is the explicit wide-4 path, so read
-each row against itself rather than down the column.
 
 ### `static_aabb2d_index` 2.0.0 vs 2.1.0
 
@@ -728,23 +793,67 @@ not for speed.
 
 ## Closest-hit raycast vs the `bvh` crate
 
-Closest-hit raycast over the packed index against the
-[`bvh`](https://crates.io/crates/bvh) crate (100k boxes, 1,000 rays of length
-4,000). For closest hit, "BVH" is a fair hand-rolled ordered traversal over its
-SAH tree; for all hits, its broad-phase `traverse_iterator`.
+Raycasts over the packed index against the [`bvh`](https://crates.io/crates/bvh)
+crate's SAH tree, 100,000 boxes in a 10,000 cube, rays of length 4,000 from
+random origins in random directions. Three uniform scenes set by box size cover
+a few to hundreds of boxes per ray: sparse (sides `1..150`, 2.5 boxes crossed
+per ray on average), mid (`1..450`, 23) and dense (`1..1400`, 209). The
+clustered scene puts boxes with sides `1..40` in four dense blobs; a random
+ray crosses 0.2 of them. All hits run 10,000, 2000 and 400 rays by density
+(2000 on the clustered scene); closest hit and occlusion run 10,000 in every
+scene.
 
-| metric | packed SoA/SIMD | BVH |
-|---|---:|---:|
-| build (uniform) | **4 ms** | 31 ms |
-| closest hit, uniform | **0.72 ms** | 1.6 ms |
-| closest hit, clustered | 58 µs | **27 µs** |
-| all hits, uniform | **0.5 ms** | 1.5 ms |
-| all hits, clustered | 53 µs | **41 µs** |
+The `bvh` side of each row is the fair counterpart it offers. For closest hit
+that is a hand-rolled front-to-back traversal of its tree with the same
+pruning, since its API has no closest-hit query. For all hits it is the
+broad-phase `traverse_iterator`. For occlusion it is that iterator's first
+item, which it yields lazily.
 
-The packed Hilbert tree builds ~7x faster. All-hits has no early-exit, so the
-SIMD slab test wins on uniform scenes but is edged out on heavily clustered ones;
-for closest hit a SAH BVH builds a structurally better tree and wins on clustered
-scenes. Reproduce with `cargo bench --bench raycast3d_bench --features simd`.
+Median per-round time relative to `bvh` (1.00), lower is better, from
+[`paired_competitors`](#reproducing) on the machines of
+[2D competitors](#2d-competitors):
+
+| Scene | Query | Participant | Xeon (EMR) | Zen 3 | Zen 4 | Zen 4, no AVX-512 | N2 |
+|---|---|---|---:|---:|---:|---:|---:|
+| sparse | closest hit | `SimdIndex3D` | 0.38 | 0.73 | 0.46 | 0.64 | 0.71 |
+| sparse | closest hit | `Index3D` | 0.90 | 1.53 | 1.34 | 1.45 | 1.13 |
+| mid | closest hit | `SimdIndex3D` | 0.37 | 0.69 | 0.44 | 0.61 | 0.61 |
+| mid | closest hit | `Index3D` | 0.78 | 1.35 | 1.14 | 1.30 | 0.95 |
+| dense | closest hit | `SimdIndex3D` | 0.26 | 0.47 | 0.30 | 0.43 | 0.38 |
+| dense | closest hit | `Index3D` | 0.48 | 0.81 | 0.67 | 0.79 | 0.56 |
+| clustered | closest hit | `SimdIndex3D` | 1.09 | 1.50 | 1.21 | 1.41 | 1.77 |
+| clustered | closest hit | `Index3D` | 1.92 | 2.41 | 2.39 | 2.39 | 2.39 |
+| sparse | all hits | `SimdIndex3D` | 0.32 | 0.41 | 0.33 | 0.35 | 0.57 |
+| sparse | all hits | `Index3D` | 0.74 | 1.31 | 1.20 | 1.25 | 1.02 |
+| mid | all hits | `SimdIndex3D` | 0.24 | 0.37 | 0.25 | 0.31 | 0.52 |
+| mid | all hits | `Index3D` | 0.67 | 1.21 | 1.12 | 1.14 | 0.98 |
+| dense | all hits | `SimdIndex3D` | 0.17 | 0.29 | 0.15 | 0.26 | 0.40 |
+| dense | all hits | `Index3D` | 0.54 | 0.92 | 0.80 | 0.90 | 0.78 |
+| clustered | all hits | `SimdIndex3D` | 0.52 | 0.67 | 1.11 | 0.93 | 0.94 |
+| clustered | all hits | `Index3D` | 1.24 | 1.88 | 3.25 | 3.39 | 1.60 |
+| sparse | occlusion | `Index3D` | 0.77 | 1.40 | 1.30 | 1.33 | 1.04 |
+| mid | occlusion | `Index3D` | 0.84 | 1.63 | 1.39 | 1.57 | 1.16 |
+| dense | occlusion | `Index3D` | 0.79 | 1.50 | 1.32 | 1.43 | 1.09 |
+| clustered | occlusion | `Index3D` | 1.52 | 2.40 | 2.33 | 2.33 | 2.27 |
+
+On uniform scenes `SimdIndex3D` wins closest hit by 1.4–3.8× and all hits by
+1.8–6.7× on every machine, more as the scene gets denser. On the clustered
+scene the SAH tree is structurally better: `bvh` wins closest hit by
+1.1–1.8×. All hits there come out between a 1.9× win for `SimdIndex3D` (the
+Xeon) and a 1.1× loss (the Zen 4). The scalar `Index3D` needs the dense scene
+or the Xeon to beat `bvh`; on AMD it trails by up to 1.5× on the sparse and mid ones.
+
+Occlusion is where `bvh` does best. Its lazy iterator stops at the first leaf
+it reaches. `Index3D::raycast_any` trails it by 1.04–1.63× on the uniform
+scenes everywhere but the Xeon; on the clustered one it trails by 1.5–2.4×
+everywhere. `SimdIndex3D::raycast_any` is slower still (1.2–3.3× the `bvh`
+time): it stops a front-to-back `raycast_each`, which keeps a priority queue
+where `Index3D::raycast_any` descends depth-first. For occlusion tests prefer
+`Index3D`.
+
+The packed Hilbert tree builds ~7x faster than the SAH tree (4 ms against
+31 ms for 100k uniform boxes on the Zen 5 laptop, Criterion). Reproduce the
+Criterion view with `cargo bench --bench raycast3d_bench --features simd`.
 
 ## Ray-triangle closest hit (mesh payload)
 
@@ -918,8 +1027,15 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 - `Index2D` is the general-purpose path;
 - `SimdIndex2D` and `SimdIndex3D` are best for heavier query batches where SIMD
   work amortizes well;
-- scalar `Index2D` search leads `static_aabb2d_index` by 2.4–3.0× on both
-  generated inputs, and `Index2D` build is faster as well;
+- against `static_aabb2d_index` on query sets the branch predictor cannot
+  learn (a cloud Xeon, a Zen 3, a Zen 4, a Neoverse N2), scalar `Index2D`
+  collects 1.4–1.8× faster on small windows and 2.6–3.3× on large ones. Its
+  `visit` leads by 1.1–1.5× and 2.3–2.5×; its early exit is 1.1–1.4× faster on
+  small windows but 1.2–1.35× slower on large ones. `Index2D` build is faster
+  as well;
+- against the `bvh` crate, `SimdIndex3D` wins closest hit and all hits on
+  uniform scenes on every machine measured and loses closest hit on a clustered
+  one, where the SAH tree is better; `bvh`'s lazy iterator wins occlusion;
 - `Index3D` build and KNN are still slower than `Index2D`, but uniform 3D search
   is faster when Z meaningfully prunes the tree;
 - the SIMD indexes' lead over the scalar ones on range search depends on the
@@ -927,9 +1043,10 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
   1.3× on the AVX2 tier (a Zen 3, or a Zen 4 whose VM hides AVX-512), within
   10% either way on a Neoverse N2;
 - the branch-free node test behind those collect numbers applies only where the
-  path has no early exit *and* the per-child predicate is cheap; the callback
-  forms, the shape regions and the radius queries measured worse with it and
-  keep their branching traversal;
+  per-child predicate is cheap; the collect paths and `visit` / `any` / `first`
+  take it (the 2D ones keep branches on aarch64). The search iterators and the
+  shape regions keep their branching traversal; the radius queries choose per
+  query;
 - f32 storage halves box memory; the SIMD `f32` index is also the fastest range
   search and count; the scalar one runs `search` at 0.65–1.07× the `f64`
   index's time (a Xeon, a Zen 4, a Zen 3, a Neoverse N2); exact callbacks trade
@@ -972,6 +1089,10 @@ Benchmark coverage:
 - `persistence_knn2d_bench` / `persistence_knn3d_bench` cover scalar/SIMD
   persistence, loaded views, and KNN;
 - `raycast3d_bench` compares closest-hit raycast against the `bvh` crate;
+- `paired_competitors` times the `static_aabb2d_index`, FlatGeobuf and `bvh`
+  comparisons interleaved in one binary, on the class-sized query sets of
+  `benches/support/competitors.rs` (the numbers in
+  [2D competitors](#2d-competitors) and the `bvh` section);
 - `raytriangle3d_bench` compares `closest_triangle` over `f64` vs compact `f32`
   triangle records.
 
@@ -1041,6 +1162,7 @@ cargo bench --bench persistence_knn3d_bench --no-default-features --features sim
 cargo bench --bench flatgeobuf2d_bench --no-default-features --features parallel,simd,bench-internals
 cargo bench --bench coord_precision --no-default-features --features f32-storage,simd
 cargo bench --bench raycast3d_bench --features simd
+taskset -c 1 cargo bench --bench paired_competitors --features simd
 cargo bench --bench raytriangle3d_bench --features simd
 ```
 

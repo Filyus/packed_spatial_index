@@ -2856,3 +2856,152 @@ fn async_aligned_reads_match_sync_on_block_boundaries() {
         }
     }
 }
+
+#[cfg(feature = "async")]
+#[test]
+fn async_wave_counts_match_layout_and_payload_mode() {
+    let (owned, soa) = random_owned(20_000, 0x5A7E);
+    let interleaved = owned.serialize().interleaved().to_bytes().unwrap();
+    let payloads: Vec<Vec<u8>> = (0..owned.num_items())
+        .map(|i| vec![(i & 0xff) as u8; 24 + (i % 32)])
+        .collect();
+    let var_soa = owned.serialize().payloads(&payloads).to_bytes().unwrap();
+    let var_ilv = owned
+        .serialize()
+        .interleaved()
+        .payloads(&payloads)
+        .to_bytes()
+        .unwrap();
+    let flat: Vec<u8> = (0..owned.num_items() * 12).map(|i| i as u8).collect();
+    let fixed_soa = owned.serialize().records(12, &flat).to_bytes().unwrap();
+    let fixed_ilv = owned
+        .serialize()
+        .interleaved()
+        .records(12, &flat)
+        .to_bytes()
+        .unwrap();
+
+    let open_waves = |bytes: &[u8]| {
+        let reader = WaveReader {
+            inner: bytes.to_vec(),
+            waves: Default::default(),
+        };
+        let stream = pollster::block_on(StreamIndex2D::open_async(reader)).unwrap();
+        stream.core.reader.waves.set(0);
+        stream
+    };
+
+    let q = Box2D::new(300.0, 300.0, 420.0, 420.0);
+
+    let s_soa = open_waves(&soa);
+    assert!(
+        !pollster::block_on(s_soa.search_async(q))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(s_soa.core.reader.waves.get(), 2);
+
+    let s_ilv = open_waves(&interleaved);
+    assert!(
+        !pollster::block_on(s_ilv.search_async(q))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(s_ilv.core.reader.waves.get(), 1);
+
+    let s_est = open_waves(&soa);
+    let floor = s_est.directory_floor();
+    assert!(floor > 0);
+    pollster::block_on(s_est.estimate_count_async(q, floor)).unwrap();
+    assert_eq!(s_est.core.reader.waves.get(), 0);
+    pollster::block_on(s_est.estimate_count_async(q, 0)).unwrap();
+    assert_eq!(s_est.core.reader.waves.get(), 1);
+
+    let s_f_soa = open_waves(&fixed_soa);
+    assert!(
+        !pollster::block_on(s_f_soa.search_payloads_async(q))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(s_f_soa.core.reader.waves.get(), 3);
+
+    let s_f_ilv = open_waves(&fixed_ilv);
+    assert!(
+        !pollster::block_on(s_f_ilv.search_payloads_async(q))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(s_f_ilv.core.reader.waves.get(), 2);
+
+    let s_v_soa = open_waves(&var_soa);
+    assert!(
+        !pollster::block_on(s_v_soa.search_payloads_async(q))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(s_v_soa.core.reader.waves.get(), 4);
+
+    let s_v_ilv = open_waves(&var_ilv);
+    assert!(
+        !pollster::block_on(s_v_ilv.search_payloads_async(q))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(s_v_ilv.core.reader.waves.get(), 3);
+}
+
+#[test]
+fn prefix_len_zero_with_prefix_section_reads_no_prefixes() {
+    let (owned, _) = random_owned(20_000, 0x2E80);
+    let payloads: Vec<Vec<u8>> = (0..owned.num_items())
+        .map(|i| vec![(i & 0xff) as u8; 64 + (i % 64)])
+        .collect();
+    let without_pfix = owned.serialize().payloads(&payloads).to_bytes().unwrap();
+    let with_pfix = owned
+        .serialize()
+        .payloads(&payloads)
+        .payload_prefix_len(16)
+        .to_bytes()
+        .unwrap();
+    let q = Box2D::new(300.0, 300.0, 420.0, 420.0);
+
+    let run_sync = |bytes: Vec<u8>| {
+        let s = open_slice_counting(bytes);
+        *s.core.reader.reads.borrow_mut() = 0;
+        *s.core.reader.bytes.borrow_mut() = 0;
+        let mut out = Vec::new();
+        s.search_payload_prefixes_each(q, 0, |p| {
+            assert!(p.prefix.is_empty());
+            out.push((p.id, p.leaf_rank, p.payload_len));
+        })
+        .unwrap();
+        let reads = *s.core.reader.reads.borrow();
+        let read_bytes = *s.core.reader.bytes.borrow();
+        (out, reads, read_bytes)
+    };
+
+    let (want_out, want_reads, want_bytes) = run_sync(without_pfix);
+    let (got_out, got_reads, got_bytes) = run_sync(with_pfix.clone());
+    assert!(!want_out.is_empty());
+    assert_eq!(got_out, want_out);
+    assert_eq!((got_reads, got_bytes), (want_reads, want_bytes));
+
+    #[cfg(feature = "async")]
+    {
+        let reader = WaveReader {
+            inner: with_pfix,
+            waves: Default::default(),
+        };
+        let a = pollster::block_on(StreamIndex2D::open_async(reader)).unwrap();
+        a.core.reader.waves.set(0);
+        let mut a_out = Vec::new();
+        pollster::block_on(a.visit_payload_prefixes_async(q, 0, |p| {
+            assert!(p.prefix.is_empty());
+            a_out.push((p.id, p.leaf_rank, p.payload_len));
+        }))
+        .unwrap();
+        assert_eq!(a_out, want_out);
+        // 2 descent waves (boxes + indices) + 1 offset-table wave = 3 (no PFIX wave).
+        assert_eq!(a.core.reader.waves.get(), 3);
+    }
+}

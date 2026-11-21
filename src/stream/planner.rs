@@ -10,6 +10,14 @@ pub(super) struct GatherRun {
     scatter: Vec<(usize, usize)>,
 }
 
+/// A planned gather wave for one level: coalesced runs to fetch and the buffer
+/// into which the driver scatters them.
+pub(super) struct GatherBatch<'a> {
+    pub(super) runs: Vec<GatherRun>,
+    pub(super) stride: usize,
+    pub(super) out: &'a mut [u8],
+}
+
 /// Plan the reads to gather `stride`-byte records for `positions` (sorted) from
 /// the section at `section0`. Records covered by the directory `cache` are
 /// copied into `out` immediately; the rest become coalesced [`GatherRun`]s for

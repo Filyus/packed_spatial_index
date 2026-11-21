@@ -9,10 +9,12 @@ use super::directory::StreamCoreParts;
 use super::limits::{Budget, COALESCE_GAP_BYTES, StreamLimits};
 use super::open::{OpenBytes, OpenLayout, OpenStep, head_len, plan_open};
 use super::payload::{
-    PayloadSection, PrefixSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span,
-    payload_run_end, payload_run_end_fixed,
+    PayloadSection, PayloadsMachine, PrefixSection, PrefixesMachine, RankPayloadsMachine,
+    WaveMachine,
 };
-use super::planner::{align_span, apply_gather_run, expand_frontier, plan_gather};
+use super::planner::{
+    GatherBatch, GatherRun, align_span, apply_gather_run, expand_frontier, plan_gather,
+};
 use super::readers::RangeReader;
 
 const MAX_CONTAINER_CHUNKS_WITHOUT_LEN: usize = 1024;
@@ -210,6 +212,380 @@ pub(super) fn align8_u64(value: u64) -> Result<u64, LoadError> {
         .ok_or(LoadError::IntegerOverflow)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DescentPhase {
+    NeedBoxes,
+    BoxesReady,
+    IndicesReady,
+    Done,
+}
+
+enum EstimateAction {
+    Boxes(Vec<GatherRun>),
+    Indices(Vec<GatherRun>),
+    Done,
+}
+
+pub(super) enum EstimateStep<'a> {
+    Gather(GatherBatch<'a>),
+    Done(Estimate),
+}
+
+/// Sans-IO state machine for level-by-level selectivity estimation.
+pub(super) struct EstimateMachine<'a, R, O, C, Fr> {
+    core: &'a StreamCore<R>,
+    stop_level: usize,
+    overlaps: O,
+    contains: C,
+    fraction: Fr,
+    out: Estimate,
+    frontier: Vec<usize>,
+    level: usize,
+    boxes: Vec<u8>,
+    indices: Vec<u8>,
+    survivors: Vec<usize>,
+    phase: DescentPhase,
+}
+
+impl<'a, R, O, C, Fr> EstimateMachine<'a, R, O, C, Fr>
+where
+    O: Fn(&[u8]) -> bool,
+    C: Fn(&[u8]) -> bool,
+    Fr: Fn(&[u8]) -> f64,
+{
+    pub(super) fn new(
+        core: &'a StreamCore<R>,
+        stop_level: usize,
+        overlaps: O,
+        contains: C,
+        fraction: Fr,
+    ) -> Self {
+        let (frontier, level, phase) = if core.num_items == 0 {
+            (Vec::new(), 0, DescentPhase::Done)
+        } else {
+            (
+                vec![core.num_nodes - 1],
+                core.level_count - 1,
+                DescentPhase::NeedBoxes,
+            )
+        };
+        Self {
+            core,
+            stop_level,
+            overlaps,
+            contains,
+            fraction,
+            out: Estimate {
+                lower: 0,
+                upper: 0,
+                estimate: 0.0,
+                nodes_tested: 0,
+            },
+            frontier,
+            level,
+            boxes: Vec::new(),
+            indices: Vec::new(),
+            survivors: Vec::new(),
+            phase,
+        }
+    }
+
+    #[inline]
+    pub(super) fn step(&mut self) -> Result<EstimateStep<'_>, StreamError> {
+        let action = if self.phase == DescentPhase::Done {
+            self.out.estimate = self
+                .out
+                .estimate
+                .clamp(self.out.lower as f64, self.out.upper as f64);
+            EstimateAction::Done
+        } else {
+            loop {
+                if self.phase == DescentPhase::NeedBoxes {
+                    let runs = plan_gather(
+                        &self.frontier,
+                        self.core.box0,
+                        self.core.box_stride,
+                        self.core.dir_node_start,
+                        &self.core.dir_boxes,
+                        &mut self.boxes,
+                        self.core.coalesce_gap(),
+                    );
+                    self.phase = DescentPhase::BoxesReady;
+                    if !runs.is_empty() {
+                        break EstimateAction::Boxes(runs);
+                    }
+                }
+                if self.phase == DescentPhase::BoxesReady {
+                    let level = self.level;
+                    let stop_level = self.stop_level;
+                    let level_start = if level == 0 {
+                        0
+                    } else {
+                        self.core.level_bounds[level - 1]
+                    };
+                    let box_stride = self.core.box_stride;
+                    let record_len = self.core.record;
+                    let interleaved = self.core.interleaved;
+                    let node_size = self.core.node_size;
+                    let num_items = self.core.num_items;
+                    let boxes = self.boxes.as_slice();
+                    let survivors = &mut self.survivors;
+                    let indices = &mut self.indices;
+                    let overlaps = &self.overlaps;
+                    let contains = &self.contains;
+                    let fraction = &self.fraction;
+                    let out = &mut self.out;
+                    survivors.clear();
+                    indices.clear();
+                    for (i, &pos) in self.frontier.iter().enumerate() {
+                        let slot = i * box_stride;
+                        let record = &boxes[slot..slot + record_len];
+                        out.nodes_tested += 1;
+                        if !overlaps(record) {
+                            continue;
+                        }
+                        let (start, end) =
+                            subtree_leaf_range(pos, level, level_start, node_size, num_items);
+                        let size = end - start;
+                        if level == 0 || contains(record) {
+                            out.lower += size;
+                            out.upper += size;
+                            out.estimate += size as f64;
+                            continue;
+                        }
+                        if level <= stop_level {
+                            out.upper += size;
+                            out.estimate += size as f64 * fraction(record);
+                            continue;
+                        }
+                        survivors.push(pos);
+                        if interleaved {
+                            indices.extend_from_slice(
+                                &boxes[slot + record_len..slot + record_len + 8],
+                            );
+                        }
+                    }
+                    if self.survivors.is_empty() {
+                        self.phase = DescentPhase::Done;
+                        self.out.estimate = self
+                            .out
+                            .estimate
+                            .clamp(self.out.lower as f64, self.out.upper as f64);
+                        break EstimateAction::Done;
+                    }
+                    self.phase = DescentPhase::IndicesReady;
+                    if !self.core.interleaved {
+                        let runs = plan_gather(
+                            &self.survivors,
+                            self.core.idx0,
+                            8,
+                            self.core.dir_node_start,
+                            &self.core.dir_indices,
+                            &mut self.indices,
+                            self.core.coalesce_gap(),
+                        );
+                        if !runs.is_empty() {
+                            break EstimateAction::Indices(runs);
+                        }
+                    }
+                }
+                self.frontier = expand_frontier(
+                    &self.core.level_bounds,
+                    self.core.node_size,
+                    self.level,
+                    self.survivors.len(),
+                    &self.indices,
+                )?;
+                self.level -= 1;
+                self.phase = DescentPhase::NeedBoxes;
+            }
+        };
+        Ok(match action {
+            EstimateAction::Boxes(runs) => EstimateStep::Gather(GatherBatch {
+                runs,
+                stride: self.core.box_stride,
+                out: &mut self.boxes,
+            }),
+            EstimateAction::Indices(runs) => EstimateStep::Gather(GatherBatch {
+                runs,
+                stride: 8,
+                out: &mut self.indices,
+            }),
+            EstimateAction::Done => EstimateStep::Done(self.out),
+        })
+    }
+}
+
+enum TraverseAction {
+    Boxes(Vec<GatherRun>),
+    Indices(Vec<GatherRun>),
+    Leaves,
+    Empty,
+}
+
+pub(super) enum TraverseStep<'a> {
+    Gather(GatherBatch<'a>),
+    Leaves,
+    Empty,
+}
+
+/// Sans-IO state machine for level-by-level tree descent to matching leaves.
+pub(super) struct TraverseMachine<'a, R, O> {
+    core: &'a StreamCore<R>,
+    overlaps: O,
+    frontier: Vec<usize>,
+    level: usize,
+    boxes: Vec<u8>,
+    indices: Vec<u8>,
+    survivors: Vec<usize>,
+    phase: DescentPhase,
+}
+
+impl<'a, R, O> TraverseMachine<'a, R, O>
+where
+    O: Fn(&[u8]) -> bool,
+{
+    pub(super) fn new(core: &'a StreamCore<R>, overlaps: O) -> Self {
+        let (frontier, level, phase) = if core.num_items == 0 {
+            (Vec::new(), 0, DescentPhase::Done)
+        } else {
+            (
+                vec![core.num_nodes - 1],
+                core.level_count - 1,
+                DescentPhase::NeedBoxes,
+            )
+        };
+        Self {
+            core,
+            overlaps,
+            frontier,
+            level,
+            boxes: Vec::new(),
+            indices: Vec::new(),
+            survivors: Vec::new(),
+            phase,
+        }
+    }
+
+    pub(super) fn into_leaves(self) -> (Vec<usize>, Vec<u8>) {
+        (self.survivors, self.indices)
+    }
+
+    #[inline]
+    pub(super) fn step(&mut self) -> Result<TraverseStep<'_>, StreamError> {
+        let action = if self.phase == DescentPhase::Done {
+            TraverseAction::Empty
+        } else {
+            loop {
+                if self.phase == DescentPhase::NeedBoxes {
+                    let runs = plan_gather(
+                        &self.frontier,
+                        self.core.box0,
+                        self.core.box_stride,
+                        self.core.dir_node_start,
+                        &self.core.dir_boxes,
+                        &mut self.boxes,
+                        self.core.coalesce_gap(),
+                    );
+                    self.phase = DescentPhase::BoxesReady;
+                    if !runs.is_empty() {
+                        break TraverseAction::Boxes(runs);
+                    }
+                }
+                if self.phase == DescentPhase::BoxesReady {
+                    let box_stride = self.core.box_stride;
+                    let record_len = self.core.record;
+                    let interleaved = self.core.interleaved;
+                    let boxes = self.boxes.as_slice();
+                    let survivors = &mut self.survivors;
+                    let indices = &mut self.indices;
+                    let overlaps = &self.overlaps;
+                    survivors.clear();
+                    indices.clear();
+                    for (i, &pos) in self.frontier.iter().enumerate() {
+                        let slot = i * box_stride;
+                        if overlaps(&boxes[slot..slot + record_len]) {
+                            survivors.push(pos);
+                            // Interleaved: the index trails the box in the same record,
+                            // so no second gather is needed.
+                            if interleaved {
+                                indices.extend_from_slice(
+                                    &boxes[slot + record_len..slot + record_len + 8],
+                                );
+                            }
+                        }
+                    }
+                    if self.survivors.is_empty() {
+                        self.phase = DescentPhase::Done;
+                        break TraverseAction::Empty;
+                    }
+                    self.phase = DescentPhase::IndicesReady;
+                    if !self.core.interleaved {
+                        let runs = plan_gather(
+                            &self.survivors,
+                            self.core.idx0,
+                            8,
+                            self.core.dir_node_start,
+                            &self.core.dir_indices,
+                            &mut self.indices,
+                            self.core.coalesce_gap(),
+                        );
+                        if !runs.is_empty() {
+                            break TraverseAction::Indices(runs);
+                        }
+                    }
+                }
+                if self.level == 0 {
+                    self.phase = DescentPhase::Done;
+                    break TraverseAction::Leaves;
+                }
+                self.frontier = expand_frontier(
+                    &self.core.level_bounds,
+                    self.core.node_size,
+                    self.level,
+                    self.survivors.len(),
+                    &self.indices,
+                )?;
+                self.level -= 1;
+                self.phase = DescentPhase::NeedBoxes;
+            }
+        };
+        Ok(match action {
+            TraverseAction::Boxes(runs) => TraverseStep::Gather(GatherBatch {
+                runs,
+                stride: self.core.box_stride,
+                out: &mut self.boxes,
+            }),
+            TraverseAction::Indices(runs) => TraverseStep::Gather(GatherBatch {
+                runs,
+                stride: 8,
+                out: &mut self.indices,
+            }),
+            TraverseAction::Leaves => TraverseStep::Leaves,
+            TraverseAction::Empty => TraverseStep::Empty,
+        })
+    }
+}
+
+/// Validate gathered leaf insertion ids and emit each while charging `budget`.
+pub(super) fn emit_leaf_ids<F: FnMut(usize)>(
+    survivors: &[usize],
+    indices: &[u8],
+    num_items: usize,
+    budget: &mut Budget,
+    mut emit: F,
+) -> Result<(), StreamError> {
+    for i in 0..survivors.len() {
+        let id = read_index(indices, i)?;
+        if id >= num_items {
+            return Err(StreamError::Format(LoadError::InvalidTree));
+        }
+        budget.charge_item()?;
+        emit(id);
+    }
+    Ok(())
+}
+
 impl<R: RangeReader> StreamCore<R> {
     /// Open and validate a chunk-container index from `reader`: check the
     /// superblock, read the directory, locate the `TREE` (and optional `PYLD`)
@@ -322,126 +698,79 @@ impl<R: RangeReader> StreamCore<R> {
         Ok(())
     }
 
-    /// Gather `stride`-byte records for `positions` (sorted) from the section at
-    /// `section0` into `out`. The planning and scatter live in [`plan_gather`] /
-    /// [`apply_gather_run`] (shared with the async path); here we just read each
-    /// coalesced run.
-    #[allow(clippy::too_many_arguments)]
-    fn gather(
+    /// Execute one planned gather wave sequentially, reusing `scratch`.
+    #[inline]
+    fn run_gather(
         &self,
-        positions: &[usize],
-        section0: u64,
-        stride: usize,
-        cache: &[u8],
-        out: &mut Vec<u8>,
+        batch: GatherBatch<'_>,
         scratch: &mut Vec<u8>,
         budget: &mut Budget,
     ) -> Result<(), StreamError> {
-        let runs = plan_gather(
-            positions,
-            section0,
-            stride,
-            self.dir_node_start,
-            cache,
-            out,
-            self.coalesce_gap(),
-        );
-        for run in &runs {
+        for run in &batch.runs {
             scratch.clear();
             scratch.resize(run.len, 0);
             self.read_charged(run.offset, scratch, budget)?;
-            apply_gather_run(out, run, scratch, stride);
+            apply_gather_run(batch.out, run, scratch, batch.stride);
         }
         Ok(())
     }
 
-    /// Descend the tree level by level, calling `leaf` once at the leaf level
-    /// with the surviving leaf positions (sorted) and their gathered index bytes
-    /// (the insertion ids, in the same order). `overlaps` decides box
-    /// intersection; this keeps the traversal dimension- and payload-independent.
-    ///
-    /// At each level the frontier's boxes are fetched (cached or
-    /// coalesced-streamed) and tested; survivors expand to their child groups,
-    /// and a parent that fails the test prunes its whole subtree.
-    fn traverse<O, L>(&self, overlaps: O, mut leaf: L) -> Result<(), StreamError>
-    where
-        O: Fn(&[u8]) -> bool,
-        L: FnMut(&[usize], &[u8], &mut Budget) -> Result<(), StreamError>,
-    {
-        if self.num_items == 0 {
-            return Ok(());
-        }
-
-        let mut budget = Budget::new(self.limits);
-        let mut frontier = vec![self.num_nodes - 1];
-        let mut level = self.level_count - 1;
-        let mut boxes = Vec::new();
-        let mut indices = Vec::new();
+    /// Execute a sans-IO [`WaveMachine`] sequentially, reusing `reads` and
+    /// `scratch` across waves.
+    fn run_waves<M: WaveMachine<F>, F>(
+        &self,
+        mut machine: M,
+        budget: &mut Budget,
+        mut emit: F,
+    ) -> Result<(), StreamError> {
+        let mut reads = Vec::new();
         let mut scratch = Vec::new();
-        let mut survivors: Vec<usize> = Vec::new();
-
-        loop {
-            // One gather fetches each frontier node's box (interleaved: box +
-            // index in the same `box_stride`-byte record; SoA: box only).
-            self.gather(
-                &frontier,
-                self.box0,
-                self.box_stride,
-                &self.dir_boxes,
-                &mut boxes,
-                &mut scratch,
-                &mut budget,
-            )?;
-            survivors.clear();
-            indices.clear();
-            for (i, &pos) in frontier.iter().enumerate() {
-                let slot = i * self.box_stride;
-                if overlaps(&boxes[slot..slot + self.record]) {
-                    survivors.push(pos);
-                    // Interleaved: the index trails the box in the same record, so
-                    // no second gather is needed.
-                    if self.interleaved {
-                        indices
-                            .extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
-                    }
+        while machine.next_wave(&mut reads, budget, &mut emit)? {
+            for (run_idx, &(offset, len)) in reads.iter().enumerate() {
+                if len == 0 {
+                    machine.feed_read(run_idx, &[], budget, &mut emit)?;
+                } else {
+                    scratch.clear();
+                    scratch.resize(len, 0);
+                    self.read_charged(offset, &mut scratch, budget)?;
+                    machine.feed_read(run_idx, &scratch, budget, &mut emit)?;
                 }
             }
-            if survivors.is_empty() {
-                return Ok(());
-            }
-
-            if !self.interleaved {
-                self.gather(
-                    &survivors,
-                    self.idx0,
-                    8,
-                    &self.dir_indices,
-                    &mut indices,
-                    &mut scratch,
-                    &mut budget,
-                )?;
-            }
-
-            if level == 0 {
-                // `survivors` are sorted leaf positions; `indices` their ids.
-                return leaf(&survivors, &indices, &mut budget);
-            }
-
-            frontier = expand_frontier(
-                &self.level_bounds,
-                self.node_size,
-                level,
-                survivors.len(),
-                &indices,
-            )?;
-            level -= 1;
         }
+        Ok(())
+    }
+
+    /// Descend the tree level by level via [`TraverseMachine`], calling `leaf`
+    /// once at the leaf level with the surviving leaf positions (sorted) and
+    /// their gathered index bytes (the insertion ids, in the same order).
+    fn traverse<O, L>(&self, overlaps: O, leaf: L) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        L: FnOnce(&[usize], &[u8], &mut Budget) -> Result<(), StreamError>,
+    {
+        let mut budget = Budget::new(self.limits);
+        let mut scratch = Vec::new();
+        let mut machine = TraverseMachine::new(self, overlaps);
+        let found = loop {
+            match machine.step()? {
+                TraverseStep::Gather(batch) => {
+                    self.run_gather(batch, &mut scratch, &mut budget)?;
+                }
+                TraverseStep::Leaves => break true,
+                TraverseStep::Empty => break false,
+            }
+        };
+        if !found {
+            return Ok(());
+        }
+        let (survivors, indices) = machine.into_leaves();
+        leaf(&survivors, &indices, &mut budget)
     }
 
     /// Bracket and estimate a window's hit count from node boxes, descending
-    /// level by level exactly as [`traverse`](Self::traverse) does but never
-    /// below `stop_level`. Levels the directory caches cost no reads; the
-    /// budget is charged only for levels fetched below it.
+    /// level by level via [`EstimateMachine`] and stopping at `stop_level`.
+    /// Levels the directory caches cost no reads; the budget is charged only
+    /// for levels fetched below it.
     pub(crate) fn estimate<O, C, Fr>(
         &self,
         stop_level: usize,
@@ -454,247 +783,45 @@ impl<R: RangeReader> StreamCore<R> {
         C: Fn(&[u8]) -> bool,
         Fr: Fn(&[u8]) -> f64,
     {
-        let mut out = Estimate {
-            lower: 0,
-            upper: 0,
-            estimate: 0.0,
-            nodes_tested: 0,
-        };
-        if self.num_items == 0 {
-            return Ok(out);
-        }
-
         let mut budget = Budget::new(self.limits);
-        let mut frontier = vec![self.num_nodes - 1];
-        let mut level = self.level_count - 1;
-        let mut boxes = Vec::new();
-        let mut indices = Vec::new();
         let mut scratch = Vec::new();
-        let mut survivors: Vec<usize> = Vec::new();
-
+        let mut machine = EstimateMachine::new(self, stop_level, overlaps, contains, fraction);
         loop {
-            self.gather(
-                &frontier,
-                self.box0,
-                self.box_stride,
-                &self.dir_boxes,
-                &mut boxes,
-                &mut scratch,
-                &mut budget,
-            )?;
-            let level_start = if level == 0 {
-                0
-            } else {
-                self.level_bounds[level - 1]
-            };
-            survivors.clear();
-            indices.clear();
-            for (i, &pos) in frontier.iter().enumerate() {
-                let slot = i * self.box_stride;
-                let record = &boxes[slot..slot + self.record];
-                out.nodes_tested += 1;
-                if !overlaps(record) {
-                    continue;
+            match machine.step()? {
+                EstimateStep::Gather(batch) => {
+                    self.run_gather(batch, &mut scratch, &mut budget)?;
                 }
-                let (start, end) =
-                    subtree_leaf_range(pos, level, level_start, self.node_size, self.num_items);
-                let size = end - start;
-                if level == 0 || contains(record) {
-                    out.lower += size;
-                    out.upper += size;
-                    out.estimate += size as f64;
-                    continue;
-                }
-                if level <= stop_level {
-                    out.upper += size;
-                    out.estimate += size as f64 * fraction(record);
-                    continue;
-                }
-                survivors.push(pos);
-                if self.interleaved {
-                    indices.extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
-                }
+                EstimateStep::Done(out) => return Ok(out),
             }
-            if survivors.is_empty() {
-                break;
-            }
-            if !self.interleaved {
-                self.gather(
-                    &survivors,
-                    self.idx0,
-                    8,
-                    &self.dir_indices,
-                    &mut indices,
-                    &mut scratch,
-                    &mut budget,
-                )?;
-            }
-            frontier = expand_frontier(
-                &self.level_bounds,
-                self.node_size,
-                level,
-                survivors.len(),
-                &indices,
-            )?;
-            level -= 1;
         }
-        out.estimate = out.estimate.clamp(out.lower as f64, out.upper as f64);
-        Ok(out)
     }
 
     /// Visit the insertion id of every leaf whose box satisfies `overlaps`.
-    pub(crate) fn visit_ids<O, F>(&self, overlaps: O, mut visit: F) -> Result<(), StreamError>
+    pub(crate) fn visit_ids<O, F>(&self, overlaps: O, visit: F) -> Result<(), StreamError>
     where
         O: Fn(&[u8]) -> bool,
         F: FnMut(usize),
     {
         self.traverse(overlaps, |survivors, indices, budget| {
-            for i in 0..survivors.len() {
-                let id = read_index(indices, i)?;
-                if id >= self.num_items {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                budget.charge_item()?;
-                visit(id);
-            }
-            Ok(())
+            emit_leaf_ids(survivors, indices, self.num_items, budget, visit)
         })
     }
 
     /// Visit `(insertion id, payload blob)` for every leaf whose box satisfies
     /// `overlaps`, streaming the payload section in leaf order during the leaf
     /// pass so the offset table and blobs are read in coalesced runs.
-    pub(crate) fn search_payloads_each<O, F>(
-        &self,
-        overlaps: O,
-        mut emit: F,
-    ) -> Result<(), StreamError>
+    pub(crate) fn search_payloads_each<O, F>(&self, overlaps: O, emit: F) -> Result<(), StreamError>
     where
         O: Fn(&[u8]) -> bool,
         F: FnMut(usize, &[u8]),
     {
         let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
-        let mut off_buf = Vec::new();
-        let mut blob_buf = Vec::new();
+        let coalesce_gap = self.coalesce_gap();
         self.traverse(overlaps, |survivors, indices, budget| {
-            if section.stride != 0 {
-                self.gather_payloads_fixed(
-                    section,
-                    survivors,
-                    indices,
-                    &mut blob_buf,
-                    budget,
-                    &mut emit,
-                )
-            } else {
-                self.gather_payloads(
-                    section,
-                    survivors,
-                    indices,
-                    &mut off_buf,
-                    &mut blob_buf,
-                    budget,
-                    &mut emit,
-                )
-            }
+            let machine =
+                PayloadsMachine::new(section, survivors, indices, self.num_items, coalesce_gap);
+            self.run_waves(machine, budget, emit)
         })
-    }
-
-    /// Stream the blobs for `leaf_positions` (sorted leaf ranks) and their
-    /// `indices` (insertion ids, same order), coalescing the leaf-ordered offset
-    /// table and blob region into runs. Emits `(id, blob)` per leaf.
-    #[allow(clippy::too_many_arguments)]
-    fn gather_payloads<F>(
-        &self,
-        section: &PayloadSection,
-        leaf_positions: &[usize],
-        indices: &[u8],
-        off_buf: &mut Vec<u8>,
-        blob_buf: &mut Vec<u8>,
-        budget: &mut Budget,
-        emit: &mut F,
-    ) -> Result<(), StreamError>
-    where
-        F: FnMut(usize, &[u8]),
-    {
-        let mut j = 0;
-        while j < leaf_positions.len() {
-            let k = payload_run_end(leaf_positions, j, self.coalesce_gap());
-            let lo = leaf_positions[j];
-            let hi = leaf_positions[k];
-
-            off_buf.clear();
-            off_buf.resize((hi + 2 - lo) * 8, 0);
-            self.read_charged(section.offsets_start + (lo * 8) as u64, off_buf, budget)?;
-            let (blob_lo, blob_hi) = payload_blob_span(off_buf, lo, hi, section.blob_total)?;
-
-            blob_buf.clear();
-            blob_buf.resize((blob_hi - blob_lo) as usize, 0);
-            if !blob_buf.is_empty() {
-                self.read_charged(section.blobs_start + blob_lo, blob_buf, budget)?;
-            }
-
-            emit_run_payloads(
-                leaf_positions,
-                indices,
-                j,
-                k,
-                lo,
-                off_buf,
-                blob_lo,
-                blob_hi,
-                blob_buf,
-                self.num_items,
-                budget,
-                emit,
-            )?;
-            j = k + 1;
-        }
-        Ok(())
-    }
-
-    /// Fixed-width payload variant of [`gather_payloads`](Self::gather_payloads):
-    /// no offset table, so each coalesced run is one contiguous blob read whose
-    /// byte span is pure arithmetic (`lo * stride`).
-    fn gather_payloads_fixed<F>(
-        &self,
-        section: &PayloadSection,
-        leaf_positions: &[usize],
-        indices: &[u8],
-        blob_buf: &mut Vec<u8>,
-        budget: &mut Budget,
-        emit: &mut F,
-    ) -> Result<(), StreamError>
-    where
-        F: FnMut(usize, &[u8]),
-    {
-        let stride = section.stride as usize;
-        let mut j = 0;
-        while j < leaf_positions.len() {
-            let k = payload_run_end_fixed(leaf_positions, j, stride, self.coalesce_gap());
-            let lo = leaf_positions[j];
-            let hi = leaf_positions[k];
-            let span = (hi + 1 - lo) * stride;
-
-            blob_buf.clear();
-            blob_buf.resize(span, 0);
-            self.read_charged(section.blobs_start + (lo * stride) as u64, blob_buf, budget)?;
-
-            emit_run_payloads_fixed(
-                leaf_positions,
-                indices,
-                j,
-                k,
-                lo,
-                stride,
-                blob_buf,
-                self.num_items,
-                budget,
-                emit,
-            )?;
-            j = k + 1;
-        }
-        Ok(())
     }
 
     /// Visit a [`PayloadPrefix`] for every leaf whose box satisfies `overlaps`:
@@ -706,133 +833,27 @@ impl<R: RangeReader> StreamCore<R> {
         &self,
         overlaps: O,
         prefix_len: usize,
-        mut emit: F,
+        emit: F,
     ) -> Result<(), StreamError>
     where
         O: Fn(&[u8]) -> bool,
         F: FnMut(PayloadPrefix<'_>),
     {
         let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
-        let mut off_buf = Vec::new();
-        let mut spans: Vec<PrefixSpan> = Vec::new();
-        let mut read_buf = Vec::new();
+        let coalesce_gap = self.coalesce_gap();
+        let prefix_coalesce_gap = self.prefix_coalesce_gap(prefix_len);
         self.traverse(overlaps, |survivors, indices, budget| {
-            // Resolve each survivor's blob start and full length first.
-            spans.clear();
-            if section.stride != 0 {
-                let stride = section.stride as usize;
-                for (i, &p) in survivors.iter().enumerate() {
-                    spans.push(PrefixSpan {
-                        run_index: i,
-                        leaf_rank: p,
-                        blob_start: (p * stride) as u64,
-                        payload_len: stride,
-                    });
-                }
-            } else {
-                let mut j = 0;
-                while j < survivors.len() {
-                    let k = payload_run_end(survivors, j, self.coalesce_gap());
-                    let lo = survivors[j];
-                    let hi = survivors[k];
-                    off_buf.clear();
-                    off_buf.resize((hi + 2 - lo) * 8, 0);
-                    self.read_charged(
-                        section.offsets_start + (lo * 8) as u64,
-                        &mut off_buf,
-                        budget,
-                    )?;
-                    for (offset, &p) in survivors[j..=k].iter().enumerate() {
-                        let o0 = read_u64_le_unchecked(&off_buf, (p - lo) * 8);
-                        let o1 = read_u64_le_unchecked(&off_buf, (p + 1 - lo) * 8);
-                        if o1 < o0 || o1 > section.blob_total {
-                            return Err(StreamError::Format(LoadError::InvalidTree));
-                        }
-                        spans.push(PrefixSpan {
-                            run_index: j + offset,
-                            leaf_rank: p,
-                            blob_start: o0,
-                            payload_len: (o1 - o0) as usize,
-                        });
-                    }
-                    j = k + 1;
-                }
-            }
-
-            // With a prefix section the same bytes sit in a dense array, so the
-            // scan reads rank runs instead of one strided range per match. The
-            // ordinary record gap applies: what lies between two prefixes here
-            // is other prefixes, not bodies, so over-reading is cheap.
-            if let Some(pfix) = self.prefix.as_ref().filter(|p| prefix_len <= p.stride) {
-                let stride = pfix.stride;
-                let ranks: Vec<usize> = spans.iter().map(|s| s.leaf_rank).collect();
-                let mut j = 0;
-                while j < spans.len() {
-                    let k = payload_run_end_fixed(&ranks, j, stride, self.coalesce_gap());
-                    let lo = ranks[j];
-                    let hi = ranks[k];
-                    read_buf.clear();
-                    read_buf.resize((hi + 1 - lo) * stride, 0);
-                    self.read_charged(pfix.start + (lo * stride) as u64, &mut read_buf, budget)?;
-                    for span in &spans[j..=k] {
-                        let id = read_index(indices, span.run_index)?;
-                        if id >= self.num_items {
-                            return Err(StreamError::Format(LoadError::InvalidTree));
-                        }
-                        budget.charge_item()?;
-                        let at = (span.leaf_rank - lo) * stride;
-                        let take = span.payload_len.min(prefix_len);
-                        emit(PayloadPrefix {
-                            id,
-                            leaf_rank: span.leaf_rank,
-                            prefix: &read_buf[at..at + take],
-                            payload_len: span.payload_len,
-                        });
-                    }
-                    j = k + 1;
-                }
-                return Ok(());
-            }
-
-            // Coalesce the prefix byte spans into runs and emit each survivor.
-            let gap = self.prefix_coalesce_gap(prefix_len);
-            let mut j = 0;
-            while j < spans.len() {
-                let run_start = spans[j].blob_start;
-                let mut run_end = spans[j].prefix_end(prefix_len);
-                let mut k = j;
-                while k + 1 < spans.len() {
-                    let next = &spans[k + 1];
-                    if next.blob_start < run_start || next.blob_start.saturating_sub(run_end) > gap
-                    {
-                        break;
-                    }
-                    run_end = run_end.max(next.prefix_end(prefix_len));
-                    k += 1;
-                }
-                read_buf.clear();
-                read_buf.resize((run_end - run_start) as usize, 0);
-                if !read_buf.is_empty() {
-                    self.read_charged(section.blobs_start + run_start, &mut read_buf, budget)?;
-                }
-                for span in &spans[j..=k] {
-                    let id = read_index(indices, span.run_index)?;
-                    if id >= self.num_items {
-                        return Err(StreamError::Format(LoadError::InvalidTree));
-                    }
-                    budget.charge_item()?;
-                    let at = (span.blob_start - run_start) as usize;
-                    let take = span.payload_len.min(prefix_len);
-                    emit(PayloadPrefix {
-                        id,
-                        leaf_rank: span.leaf_rank,
-                        prefix: &read_buf[at..at + take],
-                        payload_len: span.payload_len,
-                    });
-                }
-                j = k + 1;
-            }
-            Ok(())
+            let machine = PrefixesMachine::new(
+                section,
+                self.prefix.as_ref(),
+                survivors,
+                indices,
+                prefix_len,
+                self.num_items,
+                coalesce_gap,
+                prefix_coalesce_gap,
+            );
+            self.run_waves(machine, budget, emit)
         })
     }
 
@@ -845,134 +866,16 @@ impl<R: RangeReader> StreamCore<R> {
     pub(crate) fn payloads_at_ranks_each<F>(
         &self,
         leaf_ranks: &[usize],
-        mut emit: F,
+        emit: F,
     ) -> Result<(), StreamError>
     where
         F: FnMut(usize, &[u8]),
     {
         let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
-        let mut ranks = leaf_ranks.to_vec();
-        ranks.sort_unstable();
-        ranks.dedup();
-        if ranks.last().is_some_and(|&max| max >= self.num_items) {
-            return Err(StreamError::InvalidRank);
-        }
+        let machine =
+            RankPayloadsMachine::new(section, leaf_ranks, self.num_items, self.coalesce_gap())?;
         let mut budget = Budget::new(self.limits);
-        let mut off_buf = Vec::new();
-        let mut blob_buf = Vec::new();
-        if section.stride != 0 {
-            let stride = section.stride as usize;
-            let mut j = 0;
-            while j < ranks.len() {
-                let k = payload_run_end_fixed(&ranks, j, stride, self.coalesce_gap());
-                let lo = ranks[j];
-                let hi = ranks[k];
-                let span = (hi + 1 - lo) * stride;
-                blob_buf.clear();
-                blob_buf.resize(span, 0);
-                self.read_charged(
-                    section.blobs_start + (lo * stride) as u64,
-                    &mut blob_buf,
-                    &mut budget,
-                )?;
-                for &p in &ranks[j..=k] {
-                    budget.charge_item()?;
-                    let within = (p - lo) * stride;
-                    emit(p, &blob_buf[within..within + stride]);
-                }
-                j = k + 1;
-            }
-        } else {
-            let mut j = 0;
-            while j < ranks.len() {
-                let k = payload_run_end(&ranks, j, self.coalesce_gap());
-                let lo = ranks[j];
-                let hi = ranks[k];
-                off_buf.clear();
-                off_buf.resize((hi + 2 - lo) * 8, 0);
-                self.read_charged(
-                    section.offsets_start + (lo * 8) as u64,
-                    &mut off_buf,
-                    &mut budget,
-                )?;
-                let mut spans = Vec::with_capacity(k + 1 - j);
-                for &p in &ranks[j..=k] {
-                    let blob_start = read_u64_le_unchecked(&off_buf, (p - lo) * 8);
-                    let blob_end = read_u64_le_unchecked(&off_buf, (p + 1 - lo) * 8);
-                    if blob_end < blob_start || blob_end > section.blob_total {
-                        return Err(StreamError::Format(LoadError::InvalidTree));
-                    }
-                    spans.push(RankBlobSpan {
-                        rank: p,
-                        blob_start,
-                        blob_end,
-                    });
-                }
-
-                let gap = self.coalesce_gap();
-                let mut span_start = 0;
-                while span_start < spans.len() {
-                    let run_start = spans[span_start].blob_start;
-                    let mut run_end = spans[span_start].blob_end;
-                    let mut span_end = span_start;
-                    while span_end + 1 < spans.len() {
-                        let next = &spans[span_end + 1];
-                        if next.blob_start < run_start
-                            || next.blob_start.saturating_sub(run_end) > gap
-                        {
-                            break;
-                        }
-                        run_end = run_end.max(next.blob_end);
-                        span_end += 1;
-                    }
-                    blob_buf.clear();
-                    blob_buf.resize((run_end - run_start) as usize, 0);
-                    if !blob_buf.is_empty() {
-                        self.read_charged(
-                            section.blobs_start + run_start,
-                            &mut blob_buf,
-                            &mut budget,
-                        )?;
-                    }
-                    for span in &spans[span_start..=span_end] {
-                        budget.charge_item()?;
-                        emit(
-                            span.rank,
-                            &blob_buf[(span.blob_start - run_start) as usize
-                                ..(span.blob_end - run_start) as usize],
-                        );
-                    }
-                    span_start = span_end + 1;
-                }
-                j = k + 1;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// One matching leaf's payload location resolved during a prefix visit.
-struct PrefixSpan {
-    /// Position within the leaf batch (indexes into the gathered id bytes).
-    run_index: usize,
-    /// Leaf rank — position in the leaf-ordered payload section.
-    leaf_rank: usize,
-    /// Blob start, relative to the blob region.
-    blob_start: u64,
-    /// Full payload byte length.
-    payload_len: usize,
-}
-
-struct RankBlobSpan {
-    rank: usize,
-    blob_start: u64,
-    blob_end: u64,
-}
-
-impl PrefixSpan {
-    /// Exclusive end of the prefix read for this span.
-    fn prefix_end(&self, prefix_len: usize) -> u64 {
-        self.blob_start + self.payload_len.min(prefix_len) as u64
+        self.run_waves(machine, &mut budget, emit)
     }
 }
 

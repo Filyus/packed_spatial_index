@@ -1,30 +1,26 @@
 use std::io;
 
-use crate::estimate::{Estimate, box_fraction_2d, box_fraction_3d, subtree_leaf_range};
+use crate::estimate::{Estimate, box_fraction_2d, box_fraction_3d};
 use crate::geometry::{Box2D, Box3D, Overlaps2D, Overlaps3D};
-use crate::persistence::{LoadError, SUPERBLOCK_LEN, read_u64_le_unchecked};
+use crate::persistence::SUPERBLOCK_LEN;
 
+use super::core::{EstimateMachine, EstimateStep, TraverseMachine, TraverseStep, emit_leaf_ids};
 use super::limits::{Budget, COALESCE_GAP_BYTES};
 use super::open::{OpenBytes, OpenStep, head_len, plan_open};
-use super::payload::{
-    PayloadSection, emit_run_payloads, emit_run_payloads_fixed, payload_blob_span, payload_run_end,
-    payload_run_end_fixed,
-};
-use super::planner::{AlignedPlan, apply_gather_run, expand_frontier, plan_aligned, plan_gather};
+use super::payload::{PayloadsMachine, PrefixesMachine, RankPayloadsMachine, WaveMachine};
+use super::planner::{AlignedPlan, GatherBatch, apply_gather_run, plan_aligned};
 use super::{
     PayloadPrefix, StreamCore, StreamError, StreamIndex2D, StreamIndex2DF32, StreamIndex3D,
     StreamIndex3DF32, StreamLimits, parse_box2d, parse_box2d_f32, parse_box3d, parse_box3d_f32,
-    read_index,
 };
 
 // ---- Async streaming (behind the `async` feature) ----
 //
-// Mirror of the synchronous traversal for sources whose reads are async (browser
-// / edge worker over HTTP range or object storage). The descent logic is the
-// same — only the reads are awaited; the overlap test and the result sink stay
-// synchronous closures so no async closures are needed. (The sync and async
-// paths are kept in lockstep by an equivalence test; a future sans-io refactor
-// could share one core.)
+// Thin async I/O driver over the shared sans-IO traversal, estimation, and
+// payload state machines in `core.rs`, `open.rs`, and `payload.rs`. Each wave
+// of independent byte ranges is issued concurrently (`read_batch_async` via
+// `try_join_all`), so per-level round trips match the wave depth while
+// predicates and callbacks stay synchronous.
 
 /// Async counterpart of [`RangeReader`](super::RangeReader): read a byte range,
 /// returning a future.
@@ -44,14 +40,6 @@ pub trait AsyncRangeReader {
     fn len(&self) -> Option<u64> {
         None
     }
-}
-
-/// What a traversal collects at the leaves.
-#[cfg(feature = "async")]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Want {
-    Ids,
-    Payloads,
 }
 
 #[cfg(feature = "async")]
@@ -158,544 +146,158 @@ impl<R: AsyncRangeReader> StreamCore<R> {
             .collect())
     }
 
-    /// Async mirror of [`gather`](StreamCore::gather), but issues all of a
-    /// level's coalesced runs concurrently (one buffer each). On a
-    /// single-threaded async executor this puts several range fetches in flight
-    /// at once, so the level's latency is one round trip rather than the sum.
-    async fn gather_async(
+    /// Execute one planned gather wave concurrently (`try_join_all`).
+    async fn run_gather_async(
         &self,
-        positions: &[usize],
-        section0: u64,
-        stride: usize,
-        cache: &[u8],
-        out: &mut Vec<u8>,
+        batch: GatherBatch<'_>,
         budget: &mut Budget,
     ) -> Result<(), StreamError> {
-        let runs = plan_gather(
-            positions,
-            section0,
-            stride,
-            self.dir_node_start,
-            cache,
-            out,
+        let reads: Vec<(u64, usize)> = batch.runs.iter().map(|run| (run.offset, run.len)).collect();
+        let bufs = self.read_batch_async(&reads, budget).await?;
+        for (run, buf) in batch.runs.iter().zip(&bufs) {
+            apply_gather_run(batch.out, run, buf, batch.stride);
+        }
+        Ok(())
+    }
+
+    /// Execute a sans-IO [`WaveMachine`], issuing each wave's reads concurrently.
+    async fn run_waves_async<M: WaveMachine<F>, F>(
+        &self,
+        mut machine: M,
+        budget: &mut Budget,
+        mut emit: F,
+    ) -> Result<(), StreamError> {
+        let mut reads = Vec::new();
+        while machine.next_wave(&mut reads, budget, &mut emit)? {
+            if reads.iter().all(|&(_, len)| len == 0) {
+                for i in 0..reads.len() {
+                    machine.feed_read(i, &[], budget, &mut emit)?;
+                }
+            } else {
+                let bufs = self.read_batch_async(&reads, budget).await?;
+                for (i, buf) in bufs.iter().enumerate() {
+                    machine.feed_read(i, buf, budget, &mut emit)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Descend the tree level by level via [`TraverseMachine`], returning the
+    /// surviving leaf positions and gathered index bytes, or `None` if empty.
+    async fn traverse_leaves_async<O>(
+        &self,
+        overlaps: O,
+        budget: &mut Budget,
+    ) -> Result<Option<(Vec<usize>, Vec<u8>)>, StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+    {
+        let mut machine = TraverseMachine::new(self, overlaps);
+        let found = loop {
+            match machine.step()? {
+                TraverseStep::Gather(batch) => self.run_gather_async(batch, budget).await?,
+                TraverseStep::Leaves => break true,
+                TraverseStep::Empty => break false,
+            }
+        };
+        if !found {
+            return Ok(None);
+        }
+        Ok(Some(machine.into_leaves()))
+    }
+
+    /// Async counterpart of [`visit_ids`](StreamCore::visit_ids).
+    pub(crate) async fn visit_ids_async<O, F>(
+        &self,
+        overlaps: O,
+        emit: F,
+    ) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        F: FnMut(usize),
+    {
+        let mut budget = Budget::new(self.limits);
+        let Some((survivors, indices)) = self.traverse_leaves_async(overlaps, &mut budget).await?
+        else {
+            return Ok(());
+        };
+        emit_leaf_ids(&survivors, &indices, self.num_items, &mut budget, emit)
+    }
+
+    /// Async counterpart of [`search_payloads_each`](StreamCore::search_payloads_each).
+    pub(crate) async fn search_payloads_each_async<O, F>(
+        &self,
+        overlaps: O,
+        emit: F,
+    ) -> Result<(), StreamError>
+    where
+        O: Fn(&[u8]) -> bool,
+        F: FnMut(usize, &[u8]),
+    {
+        let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
+        let mut budget = Budget::new(self.limits);
+        let Some((survivors, indices)) = self.traverse_leaves_async(overlaps, &mut budget).await?
+        else {
+            return Ok(());
+        };
+        let machine = PayloadsMachine::new(
+            section,
+            &survivors,
+            &indices,
+            self.num_items,
             self.coalesce_gap(),
         );
-        let reads: Vec<(u64, usize)> = runs.iter().map(|run| (run.offset, run.len)).collect();
-        let bufs = self.read_batch_async(&reads, budget).await?;
-        for (run, buf) in runs.iter().zip(&bufs) {
-            apply_gather_run(out, run, buf, stride);
-        }
-        Ok(())
-    }
-
-    /// Async mirror of [`gather_payloads`](StreamCore::gather_payloads). Reads
-    /// every run's offset table concurrently, then every run's blobs
-    /// concurrently — two round trips for the whole leaf frontier rather than two
-    /// per run.
-    async fn gather_payloads_async<F>(
-        &self,
-        section: &PayloadSection,
-        leaf_positions: &[usize],
-        indices: &[u8],
-        budget: &mut Budget,
-        sink: &mut F,
-    ) -> Result<(), StreamError>
-    where
-        F: FnMut(usize, &[u8]),
-    {
-        // Group leaf positions into coalesced runs.
-        let mut runs: Vec<(usize, usize)> = Vec::new();
-        let mut j = 0;
-        while j < leaf_positions.len() {
-            let k = payload_run_end(leaf_positions, j, self.coalesce_gap());
-            runs.push((j, k));
-            j = k + 1;
-        }
-
-        // Phase 1: read every run's offset table concurrently.
-        let off_reads: Vec<(u64, usize)> = runs
-            .iter()
-            .map(|&(j, k)| {
-                let lo = leaf_positions[j];
-                (
-                    section.offsets_start + (lo * 8) as u64,
-                    (leaf_positions[k] + 2 - lo) * 8,
-                )
-            })
-            .collect();
-        let off_bufs = self.read_batch_async(&off_reads, budget).await?;
-
-        // Validate each run's blob span.
-        let mut spans = Vec::with_capacity(runs.len());
-        for (&(j, k), off_buf) in runs.iter().zip(&off_bufs) {
-            spans.push(payload_blob_span(
-                off_buf,
-                leaf_positions[j],
-                leaf_positions[k],
-                section.blob_total,
-            )?);
-        }
-
-        // Phase 2: read every run's blobs concurrently (empty spans are no-ops).
-        let blob_reads: Vec<(u64, usize)> = spans
-            .iter()
-            .map(|&(lo, hi)| (section.blobs_start + lo, (hi - lo) as usize))
-            .collect();
-        let blob_bufs = self.read_batch_async(&blob_reads, budget).await?;
-
-        // Emit every run.
-        for ((&(j, k), off_buf), (&(blob_lo, blob_hi), blob_buf)) in
-            runs.iter().zip(&off_bufs).zip(spans.iter().zip(&blob_bufs))
-        {
-            emit_run_payloads(
-                leaf_positions,
-                indices,
-                j,
-                k,
-                leaf_positions[j],
-                off_buf,
-                blob_lo,
-                blob_hi,
-                blob_buf,
-                self.num_items,
-                budget,
-                sink,
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Fixed-width async payload gather: one contiguous blob read per coalesced
-    /// run, all runs issued concurrently. No offset-table phase (the variable
-    /// `gather_payloads_async` needs two round trips; this needs one).
-    async fn gather_payloads_fixed_async<F>(
-        &self,
-        section: &PayloadSection,
-        leaf_positions: &[usize],
-        indices: &[u8],
-        budget: &mut Budget,
-        sink: &mut F,
-    ) -> Result<(), StreamError>
-    where
-        F: FnMut(usize, &[u8]),
-    {
-        let stride = section.stride as usize;
-        let mut runs: Vec<(usize, usize)> = Vec::new();
-        let mut j = 0;
-        while j < leaf_positions.len() {
-            let k = payload_run_end_fixed(leaf_positions, j, stride, self.coalesce_gap());
-            runs.push((j, k));
-            j = k + 1;
-        }
-
-        let reads: Vec<(u64, usize)> = runs
-            .iter()
-            .map(|&(j, k)| {
-                let lo = leaf_positions[j];
-                (
-                    section.blobs_start + (lo * stride) as u64,
-                    (leaf_positions[k] + 1 - lo) * stride,
-                )
-            })
-            .collect();
-        let blob_bufs = self.read_batch_async(&reads, budget).await?;
-
-        for (&(j, k), blob_buf) in runs.iter().zip(&blob_bufs) {
-            emit_run_payloads_fixed(
-                leaf_positions,
-                indices,
-                j,
-                k,
-                leaf_positions[j],
-                stride,
-                blob_buf,
-                self.num_items,
-                budget,
-                sink,
-            )?;
-        }
-        Ok(())
+        self.run_waves_async(machine, &mut budget, emit).await
     }
 
     async fn visit_payload_prefixes_async<O, F>(
         &self,
         overlaps: O,
         prefix_len: usize,
-        mut emit: F,
+        emit: F,
     ) -> Result<(), StreamError>
     where
         O: Fn(&[u8]) -> bool,
         F: FnMut(PayloadPrefix<'_>),
     {
         let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
-        if self.num_items == 0 {
-            return Ok(());
-        }
-
         let mut budget = Budget::new(self.limits);
-        let mut frontier = vec![self.num_nodes - 1];
-        let mut level = self.level_count - 1;
-        let mut boxes = Vec::new();
-        let mut indices = Vec::new();
-        let mut survivors: Vec<usize> = Vec::new();
-
-        loop {
-            self.gather_async(
-                &frontier,
-                self.box0,
-                self.box_stride,
-                &self.dir_boxes,
-                &mut boxes,
-                &mut budget,
-            )
-            .await?;
-            survivors.clear();
-            indices.clear();
-            for (i, &pos) in frontier.iter().enumerate() {
-                let slot = i * self.box_stride;
-                if overlaps(&boxes[slot..slot + self.record]) {
-                    survivors.push(pos);
-                    if self.interleaved {
-                        indices
-                            .extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
-                    }
-                }
-            }
-            if survivors.is_empty() {
-                return Ok(());
-            }
-
-            if !self.interleaved {
-                self.gather_async(
-                    &survivors,
-                    self.idx0,
-                    8,
-                    &self.dir_indices,
-                    &mut indices,
-                    &mut budget,
-                )
-                .await?;
-            }
-
-            if level == 0 {
-                self.gather_payload_prefixes_async(
-                    section,
-                    &survivors,
-                    &indices,
-                    prefix_len,
-                    &mut budget,
-                    &mut emit,
-                )
-                .await?;
-                return Ok(());
-            }
-
-            frontier = expand_frontier(
-                &self.level_bounds,
-                self.node_size,
-                level,
-                survivors.len(),
-                &indices,
-            )?;
-            level -= 1;
-        }
-    }
-
-    async fn gather_payload_prefixes_async<F>(
-        &self,
-        section: &PayloadSection,
-        leaf_positions: &[usize],
-        indices: &[u8],
-        prefix_len: usize,
-        budget: &mut Budget,
-        emit: &mut F,
-    ) -> Result<(), StreamError>
-    where
-        F: FnMut(PayloadPrefix<'_>),
-    {
-        let mut spans = Vec::with_capacity(leaf_positions.len());
-        if section.stride != 0 {
-            let stride = section.stride as usize;
-            for (i, &p) in leaf_positions.iter().enumerate() {
-                spans.push(AsyncPrefixSpan {
-                    run_index: i,
-                    leaf_rank: p,
-                    blob_start: (p * stride) as u64,
-                    payload_len: stride,
-                });
-            }
-        } else {
-            let mut runs: Vec<(usize, usize)> = Vec::new();
-            let mut j = 0;
-            while j < leaf_positions.len() {
-                let k = payload_run_end(leaf_positions, j, self.coalesce_gap());
-                runs.push((j, k));
-                j = k + 1;
-            }
-
-            let off_reads: Vec<(u64, usize)> = runs
-                .iter()
-                .map(|&(j, k)| {
-                    let lo = leaf_positions[j];
-                    (
-                        section.offsets_start + (lo * 8) as u64,
-                        (leaf_positions[k] + 2 - lo) * 8,
-                    )
-                })
-                .collect();
-            let off_bufs = self.read_batch_async(&off_reads, budget).await?;
-
-            for (&(j, k), off_buf) in runs.iter().zip(&off_bufs) {
-                let lo = leaf_positions[j];
-                for (offset, &p) in leaf_positions[j..=k].iter().enumerate() {
-                    let o0 = read_u64_le_unchecked(off_buf, (p - lo) * 8);
-                    let o1 = read_u64_le_unchecked(off_buf, (p + 1 - lo) * 8);
-                    if o1 < o0 || o1 > section.blob_total {
-                        return Err(StreamError::Format(LoadError::InvalidTree));
-                    }
-                    spans.push(AsyncPrefixSpan {
-                        run_index: j + offset,
-                        leaf_rank: p,
-                        blob_start: o0,
-                        payload_len: (o1 - o0) as usize,
-                    });
-                }
-            }
-        }
-
-        if prefix_len == 0 {
-            for span in &spans {
-                let id = read_index(indices, span.run_index)?;
-                if id >= self.num_items {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                budget.charge_item()?;
-                emit(PayloadPrefix {
-                    id,
-                    leaf_rank: span.leaf_rank,
-                    prefix: &[],
-                    payload_len: span.payload_len,
-                });
-            }
+        let Some((survivors, indices)) = self.traverse_leaves_async(overlaps, &mut budget).await?
+        else {
             return Ok(());
-        }
-
-        // With a prefix section the same bytes sit in a dense array, so the scan
-        // reads rank runs instead of one strided range per match. The ordinary
-        // record gap applies: what lies between two prefixes here is other
-        // prefixes, not bodies, so over-reading is cheap.
-        if let Some(pfix) = self.prefix.as_ref().filter(|p| prefix_len <= p.stride) {
-            let stride = pfix.stride;
-            let ranks: Vec<usize> = spans.iter().map(|s| s.leaf_rank).collect();
-            let mut runs: Vec<(usize, usize)> = Vec::new();
-            let mut j = 0;
-            while j < ranks.len() {
-                let k = payload_run_end_fixed(&ranks, j, stride, self.coalesce_gap());
-                runs.push((j, k));
-                j = k + 1;
-            }
-            let reads: Vec<(u64, usize)> = runs
-                .iter()
-                .map(|&(j, k)| {
-                    (
-                        pfix.start + (ranks[j] * stride) as u64,
-                        (ranks[k] + 1 - ranks[j]) * stride,
-                    )
-                })
-                .collect();
-            let bufs = self.read_batch_async(&reads, budget).await?;
-
-            for (&(j, k), read_buf) in runs.iter().zip(&bufs) {
-                let lo = ranks[j];
-                for span in &spans[j..=k] {
-                    let id = read_index(indices, span.run_index)?;
-                    if id >= self.num_items {
-                        return Err(StreamError::Format(LoadError::InvalidTree));
-                    }
-                    budget.charge_item()?;
-                    let at = (span.leaf_rank - lo) * stride;
-                    let take = span.payload_len.min(prefix_len);
-                    emit(PayloadPrefix {
-                        id,
-                        leaf_rank: span.leaf_rank,
-                        prefix: &read_buf[at..at + take],
-                        payload_len: span.payload_len,
-                    });
-                }
-            }
-            return Ok(());
-        }
-
-        let mut prefix_runs: Vec<(usize, usize, u64, u64)> = Vec::new();
-        let gap = self.prefix_coalesce_gap(prefix_len);
-        let mut j = 0;
-        while j < spans.len() {
-            let run_start = spans[j].blob_start;
-            let mut run_end = spans[j].prefix_end(prefix_len);
-            let mut k = j;
-            while k + 1 < spans.len() {
-                let next = &spans[k + 1];
-                if next.blob_start < run_start || next.blob_start.saturating_sub(run_end) > gap {
-                    break;
-                }
-                run_end = run_end.max(next.prefix_end(prefix_len));
-                k += 1;
-            }
-            prefix_runs.push((j, k, run_start, run_end));
-            j = k + 1;
-        }
-
-        let reads: Vec<(u64, usize)> = prefix_runs
-            .iter()
-            .map(|&(_, _, start, end)| (section.blobs_start + start, (end - start) as usize))
-            .collect();
-        let bufs = self.read_batch_async(&reads, budget).await?;
-
-        for (&(j, k, run_start, _), read_buf) in prefix_runs.iter().zip(&bufs) {
-            for span in &spans[j..=k] {
-                let id = read_index(indices, span.run_index)?;
-                if id >= self.num_items {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                budget.charge_item()?;
-                let at = (span.blob_start - run_start) as usize;
-                let take = span.payload_len.min(prefix_len);
-                emit(PayloadPrefix {
-                    id,
-                    leaf_rank: span.leaf_rank,
-                    prefix: &read_buf[at..at + take],
-                    payload_len: span.payload_len,
-                });
-            }
-        }
-        Ok(())
+        };
+        let machine = PrefixesMachine::new(
+            section,
+            self.prefix.as_ref(),
+            &survivors,
+            &indices,
+            prefix_len,
+            self.num_items,
+            self.coalesce_gap(),
+            self.prefix_coalesce_gap(prefix_len),
+        );
+        self.run_waves_async(machine, &mut budget, emit).await
     }
 
     async fn visit_payloads_at_ranks_async<F>(
         &self,
         leaf_ranks: &[usize],
-        mut emit: F,
+        emit: F,
     ) -> Result<(), StreamError>
     where
         F: FnMut(usize, &[u8]),
     {
         let section = self.payload.as_ref().ok_or(StreamError::NoPayload)?;
-        let mut ranks = leaf_ranks.to_vec();
-        ranks.sort_unstable();
-        ranks.dedup();
-        if ranks.last().is_some_and(|&max| max >= self.num_items) {
-            return Err(StreamError::InvalidRank);
-        }
+        let machine =
+            RankPayloadsMachine::new(section, leaf_ranks, self.num_items, self.coalesce_gap())?;
         let mut budget = Budget::new(self.limits);
-
-        if section.stride != 0 {
-            let stride = section.stride as usize;
-            let mut runs: Vec<(usize, usize)> = Vec::new();
-            let mut j = 0;
-            while j < ranks.len() {
-                let k = payload_run_end_fixed(&ranks, j, stride, self.coalesce_gap());
-                runs.push((j, k));
-                j = k + 1;
-            }
-            let reads: Vec<(u64, usize)> = runs
-                .iter()
-                .map(|&(j, k)| {
-                    (
-                        section.blobs_start + (ranks[j] * stride) as u64,
-                        (ranks[k] + 1 - ranks[j]) * stride,
-                    )
-                })
-                .collect();
-            let bufs = self.read_batch_async(&reads, &mut budget).await?;
-            for (&(j, k), buf) in runs.iter().zip(&bufs) {
-                let lo = ranks[j];
-                for &p in &ranks[j..=k] {
-                    budget.charge_item()?;
-                    let within = (p - lo) * stride;
-                    emit(p, &buf[within..within + stride]);
-                }
-            }
-            return Ok(());
-        }
-
-        let mut runs: Vec<(usize, usize)> = Vec::new();
-        let mut j = 0;
-        while j < ranks.len() {
-            let k = payload_run_end(&ranks, j, self.coalesce_gap());
-            runs.push((j, k));
-            j = k + 1;
-        }
-
-        let off_reads: Vec<(u64, usize)> = runs
-            .iter()
-            .map(|&(j, k)| {
-                (
-                    section.offsets_start + (ranks[j] * 8) as u64,
-                    (ranks[k] + 2 - ranks[j]) * 8,
-                )
-            })
-            .collect();
-        let off_bufs = self.read_batch_async(&off_reads, &mut budget).await?;
-
-        let mut blob_spans = Vec::with_capacity(ranks.len());
-        for (&(j, k), off_buf) in runs.iter().zip(&off_bufs) {
-            let lo = ranks[j];
-            for &rank in &ranks[j..=k] {
-                let o0 = read_u64_le_unchecked(off_buf, (rank - lo) * 8);
-                let o1 = read_u64_le_unchecked(off_buf, (rank + 1 - lo) * 8);
-                if o1 < o0 || o1 > section.blob_total {
-                    return Err(StreamError::Format(LoadError::InvalidTree));
-                }
-                blob_spans.push(AsyncRankBlobSpan {
-                    rank,
-                    blob_start: o0,
-                    blob_end: o1,
-                });
-            }
-        }
-
-        let mut blob_runs: Vec<(usize, usize, u64, u64)> = Vec::new();
-        let gap = self.coalesce_gap();
-        let mut j = 0;
-        while j < blob_spans.len() {
-            let run_start = blob_spans[j].blob_start;
-            let mut run_end = blob_spans[j].blob_end;
-            let mut k = j;
-            while k + 1 < blob_spans.len() {
-                let next = &blob_spans[k + 1];
-                if next.blob_start < run_start || next.blob_start.saturating_sub(run_end) > gap {
-                    break;
-                }
-                run_end = run_end.max(next.blob_end);
-                k += 1;
-            }
-            blob_runs.push((j, k, run_start, run_end));
-            j = k + 1;
-        }
-
-        let blob_reads: Vec<(u64, usize)> = blob_runs
-            .iter()
-            .map(|&(_, _, lo, hi)| (section.blobs_start + lo, (hi - lo) as usize))
-            .collect();
-        let blob_bufs = self.read_batch_async(&blob_reads, &mut budget).await?;
-
-        for (&(j, k, blob_lo, _blob_hi), blob_buf) in blob_runs.iter().zip(&blob_bufs) {
-            for span in &blob_spans[j..=k] {
-                budget.charge_item()?;
-                emit(
-                    span.rank,
-                    &blob_buf
-                        [(span.blob_start - blob_lo) as usize..(span.blob_end - blob_lo) as usize],
-                );
-            }
-        }
-        Ok(())
+        self.run_waves_async(machine, &mut budget, emit).await
     }
 
-    /// Async mirror of [`estimate`](StreamCore::estimate): the same level-by-level
-    /// bracket, stopping at `stop_level`, with each level below the directory
-    /// floor fetched as one concurrent gather. At or above the floor it awaits
-    /// nothing that reads.
+    /// Async counterpart of [`estimate`](StreamCore::estimate): drives the same
+    /// [`EstimateMachine`] with concurrent per-level gathers below the
+    /// directory floor.
     pub(crate) async fn estimate_async<O, C, Fr>(
         &self,
         stop_level: usize,
@@ -708,225 +310,14 @@ impl<R: AsyncRangeReader> StreamCore<R> {
         C: Fn(&[u8]) -> bool,
         Fr: Fn(&[u8]) -> f64,
     {
-        let mut out = Estimate {
-            lower: 0,
-            upper: 0,
-            estimate: 0.0,
-            nodes_tested: 0,
-        };
-        if self.num_items == 0 {
-            return Ok(out);
-        }
-
         let mut budget = Budget::new(self.limits);
-        let mut frontier = vec![self.num_nodes - 1];
-        let mut level = self.level_count - 1;
-        let mut boxes = Vec::new();
-        let mut indices = Vec::new();
-        let mut survivors: Vec<usize> = Vec::new();
-
+        let mut machine = EstimateMachine::new(self, stop_level, overlaps, contains, fraction);
         loop {
-            self.gather_async(
-                &frontier,
-                self.box0,
-                self.box_stride,
-                &self.dir_boxes,
-                &mut boxes,
-                &mut budget,
-            )
-            .await?;
-            let level_start = if level == 0 {
-                0
-            } else {
-                self.level_bounds[level - 1]
-            };
-            survivors.clear();
-            indices.clear();
-            for (i, &pos) in frontier.iter().enumerate() {
-                let slot = i * self.box_stride;
-                let record = &boxes[slot..slot + self.record];
-                out.nodes_tested += 1;
-                if !overlaps(record) {
-                    continue;
-                }
-                let (start, end) =
-                    subtree_leaf_range(pos, level, level_start, self.node_size, self.num_items);
-                let size = end - start;
-                if level == 0 || contains(record) {
-                    out.lower += size;
-                    out.upper += size;
-                    out.estimate += size as f64;
-                    continue;
-                }
-                if level <= stop_level {
-                    out.upper += size;
-                    out.estimate += size as f64 * fraction(record);
-                    continue;
-                }
-                survivors.push(pos);
-                if self.interleaved {
-                    indices.extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
-                }
+            match machine.step()? {
+                EstimateStep::Gather(batch) => self.run_gather_async(batch, &mut budget).await?,
+                EstimateStep::Done(out) => return Ok(out),
             }
-            if survivors.is_empty() {
-                break;
-            }
-            if !self.interleaved {
-                self.gather_async(
-                    &survivors,
-                    self.idx0,
-                    8,
-                    &self.dir_indices,
-                    &mut indices,
-                    &mut budget,
-                )
-                .await?;
-            }
-            frontier = expand_frontier(
-                &self.level_bounds,
-                self.node_size,
-                level,
-                survivors.len(),
-                &indices,
-            )?;
-            level -= 1;
         }
-        out.estimate = out.estimate.clamp(out.lower as f64, out.upper as f64);
-        Ok(out)
-    }
-
-    /// Async mirror of the synchronous traversal, parameterized by `want` (ids or
-    /// id+payload). `overlaps` and `sink` are synchronous; only reads are awaited.
-    async fn traverse_async<O, F>(
-        &self,
-        overlaps: O,
-        want: Want,
-        mut sink: F,
-    ) -> Result<(), StreamError>
-    where
-        O: Fn(&[u8]) -> bool,
-        F: FnMut(usize, &[u8]),
-    {
-        let section = if want == Want::Payloads {
-            Some(self.payload.as_ref().ok_or(StreamError::NoPayload)?)
-        } else {
-            None
-        };
-        if self.num_items == 0 {
-            return Ok(());
-        }
-
-        let mut budget = Budget::new(self.limits);
-        let mut frontier = vec![self.num_nodes - 1];
-        let mut level = self.level_count - 1;
-        let mut boxes = Vec::new();
-        let mut indices = Vec::new();
-        let mut survivors: Vec<usize> = Vec::new();
-
-        loop {
-            // One gather per level fetches each frontier node's box (interleaved:
-            // box + index together; SoA: box only).
-            self.gather_async(
-                &frontier,
-                self.box0,
-                self.box_stride,
-                &self.dir_boxes,
-                &mut boxes,
-                &mut budget,
-            )
-            .await?;
-            survivors.clear();
-            indices.clear();
-            for (i, &pos) in frontier.iter().enumerate() {
-                let slot = i * self.box_stride;
-                if overlaps(&boxes[slot..slot + self.record]) {
-                    survivors.push(pos);
-                    if self.interleaved {
-                        indices
-                            .extend_from_slice(&boxes[slot + self.record..slot + self.record + 8]);
-                    }
-                }
-            }
-            if survivors.is_empty() {
-                return Ok(());
-            }
-
-            if !self.interleaved {
-                self.gather_async(
-                    &survivors,
-                    self.idx0,
-                    8,
-                    &self.dir_indices,
-                    &mut indices,
-                    &mut budget,
-                )
-                .await?;
-            }
-
-            if level == 0 {
-                match section {
-                    Some(section) if section.stride != 0 => {
-                        self.gather_payloads_fixed_async(
-                            section,
-                            &survivors,
-                            &indices,
-                            &mut budget,
-                            &mut sink,
-                        )
-                        .await?;
-                    }
-                    Some(section) => {
-                        self.gather_payloads_async(
-                            section,
-                            &survivors,
-                            &indices,
-                            &mut budget,
-                            &mut sink,
-                        )
-                        .await?;
-                    }
-                    None => {
-                        for i in 0..survivors.len() {
-                            let id = read_index(&indices, i)?;
-                            if id >= self.num_items {
-                                return Err(StreamError::Format(LoadError::InvalidTree));
-                            }
-                            budget.charge_item()?;
-                            sink(id, &[]);
-                        }
-                    }
-                }
-                return Ok(());
-            }
-
-            frontier = expand_frontier(
-                &self.level_bounds,
-                self.node_size,
-                level,
-                survivors.len(),
-                &indices,
-            )?;
-            level -= 1;
-        }
-    }
-}
-
-struct AsyncPrefixSpan {
-    run_index: usize,
-    leaf_rank: usize,
-    blob_start: u64,
-    payload_len: usize,
-}
-
-struct AsyncRankBlobSpan {
-    rank: usize,
-    blob_start: u64,
-    blob_end: u64,
-}
-
-impl AsyncPrefixSpan {
-    fn prefix_end(&self, prefix_len: usize) -> u64 {
-        self.blob_start + self.payload_len.min(prefix_len) as u64
     }
 }
 
@@ -955,11 +346,7 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
     pub async fn search_async(&self, query: Box2D) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
         self.core
-            .traverse_async(
-                |r| parse_box2d(r).overlaps(query),
-                Want::Ids,
-                |id, _| out.push(id),
-            )
+            .visit_ids_async(|r| parse_box2d(r).overlaps(query), |id| out.push(id))
             .await?;
         Ok(out)
     }
@@ -996,9 +383,8 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
     ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
         self.core
-            .traverse_async(
+            .search_payloads_each_async(
                 |r| parse_box2d(r).overlaps(query),
-                Want::Payloads,
                 |id, blob| out.push((id, blob.to_vec())),
             )
             .await?;
@@ -1007,21 +393,13 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
 
     /// Stream the indices of every item whose box overlaps the region `query` —
     /// any [`Overlaps2D`] shape, not just a box.
-    pub async fn visit_region_async<Q, F>(
-        &self,
-        query: &Q,
-        mut visitor: F,
-    ) -> Result<(), StreamError>
+    pub async fn visit_region_async<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps2D,
         F: FnMut(usize),
     {
         self.core
-            .traverse_async(
-                |r| query.overlaps_box(parse_box2d(r)),
-                Want::Ids,
-                |id, _| visitor(id),
-            )
+            .visit_ids_async(|r| query.overlaps_box(parse_box2d(r)), visitor)
             .await
     }
 
@@ -1055,11 +433,7 @@ impl<R: AsyncRangeReader> StreamIndex2D<R> {
         F: FnMut(usize, &[u8]),
     {
         self.core
-            .traverse_async(
-                |r| query.overlaps_box(parse_box2d(r)),
-                Want::Payloads,
-                visitor,
-            )
+            .search_payloads_each_async(|r| query.overlaps_box(parse_box2d(r)), visitor)
             .await
     }
 
@@ -1151,11 +525,7 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
     pub async fn search_async(&self, query: Box3D) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
         self.core
-            .traverse_async(
-                |r| parse_box3d(r).overlaps(query),
-                Want::Ids,
-                |id, _| out.push(id),
-            )
+            .visit_ids_async(|r| parse_box3d(r).overlaps(query), |id| out.push(id))
             .await?;
         Ok(out)
     }
@@ -1192,9 +562,8 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
     ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
         self.core
-            .traverse_async(
+            .search_payloads_each_async(
                 |r| parse_box3d(r).overlaps(query),
-                Want::Payloads,
                 |id, blob| out.push((id, blob.to_vec())),
             )
             .await?;
@@ -1203,21 +572,13 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
 
     /// Stream the indices of every item whose box overlaps the region `query` —
     /// any [`Overlaps3D`] shape, not just a box.
-    pub async fn visit_region_async<Q, F>(
-        &self,
-        query: &Q,
-        mut visitor: F,
-    ) -> Result<(), StreamError>
+    pub async fn visit_region_async<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps3D,
         F: FnMut(usize),
     {
         self.core
-            .traverse_async(
-                |r| query.overlaps_box(parse_box3d(r)),
-                Want::Ids,
-                |id, _| visitor(id),
-            )
+            .visit_ids_async(|r| query.overlaps_box(parse_box3d(r)), visitor)
             .await
     }
 
@@ -1251,11 +612,7 @@ impl<R: AsyncRangeReader> StreamIndex3D<R> {
         F: FnMut(usize, &[u8]),
     {
         self.core
-            .traverse_async(
-                |r| query.overlaps_box(parse_box3d(r)),
-                Want::Payloads,
-                visitor,
-            )
+            .search_payloads_each_async(|r| query.overlaps_box(parse_box3d(r)), visitor)
             .await
     }
 
@@ -1347,11 +704,7 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
     pub async fn search_async(&self, query: Box2D) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
         self.core
-            .traverse_async(
-                |r| parse_box2d_f32(r).overlaps(query),
-                Want::Ids,
-                |id, _| out.push(id),
-            )
+            .visit_ids_async(|r| parse_box2d_f32(r).overlaps(query), |id| out.push(id))
             .await?;
         Ok(out)
     }
@@ -1388,9 +741,8 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
     ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
         self.core
-            .traverse_async(
+            .search_payloads_each_async(
                 |r| parse_box2d_f32(r).overlaps(query),
-                Want::Payloads,
                 |id, blob| out.push((id, blob.to_vec())),
             )
             .await?;
@@ -1399,21 +751,13 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
 
     /// Stream the indices of every item whose (rounded) box overlaps the region
     /// `query` — any [`Overlaps2D`] shape.
-    pub async fn visit_region_async<Q, F>(
-        &self,
-        query: &Q,
-        mut visitor: F,
-    ) -> Result<(), StreamError>
+    pub async fn visit_region_async<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps2D,
         F: FnMut(usize),
     {
         self.core
-            .traverse_async(
-                |r| query.overlaps_box(parse_box2d_f32(r)),
-                Want::Ids,
-                |id, _| visitor(id),
-            )
+            .visit_ids_async(|r| query.overlaps_box(parse_box2d_f32(r)), visitor)
             .await
     }
 
@@ -1447,11 +791,7 @@ impl<R: AsyncRangeReader> StreamIndex2DF32<R> {
         F: FnMut(usize, &[u8]),
     {
         self.core
-            .traverse_async(
-                |r| query.overlaps_box(parse_box2d_f32(r)),
-                Want::Payloads,
-                visitor,
-            )
+            .search_payloads_each_async(|r| query.overlaps_box(parse_box2d_f32(r)), visitor)
             .await
     }
 
@@ -1543,11 +883,7 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
     pub async fn search_async(&self, query: Box3D) -> Result<Vec<usize>, StreamError> {
         let mut out = Vec::new();
         self.core
-            .traverse_async(
-                |r| parse_box3d_f32(r).overlaps(query),
-                Want::Ids,
-                |id, _| out.push(id),
-            )
+            .visit_ids_async(|r| parse_box3d_f32(r).overlaps(query), |id| out.push(id))
             .await?;
         Ok(out)
     }
@@ -1584,9 +920,8 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
     ) -> Result<Vec<(usize, Vec<u8>)>, StreamError> {
         let mut out = Vec::new();
         self.core
-            .traverse_async(
+            .search_payloads_each_async(
                 |r| parse_box3d_f32(r).overlaps(query),
-                Want::Payloads,
                 |id, blob| out.push((id, blob.to_vec())),
             )
             .await?;
@@ -1595,21 +930,13 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
 
     /// Stream the indices of every item whose (rounded) box overlaps the region
     /// `query` — any [`Overlaps3D`] shape.
-    pub async fn visit_region_async<Q, F>(
-        &self,
-        query: &Q,
-        mut visitor: F,
-    ) -> Result<(), StreamError>
+    pub async fn visit_region_async<Q, F>(&self, query: &Q, visitor: F) -> Result<(), StreamError>
     where
         Q: Overlaps3D,
         F: FnMut(usize),
     {
         self.core
-            .traverse_async(
-                |r| query.overlaps_box(parse_box3d_f32(r)),
-                Want::Ids,
-                |id, _| visitor(id),
-            )
+            .visit_ids_async(|r| query.overlaps_box(parse_box3d_f32(r)), visitor)
             .await
     }
 
@@ -1643,11 +970,7 @@ impl<R: AsyncRangeReader> StreamIndex3DF32<R> {
         F: FnMut(usize, &[u8]),
     {
         self.core
-            .traverse_async(
-                |r| query.overlaps_box(parse_box3d_f32(r)),
-                Want::Payloads,
-                visitor,
-            )
+            .search_payloads_each_async(|r| query.overlaps_box(parse_box3d_f32(r)), visitor)
             .await
     }
 

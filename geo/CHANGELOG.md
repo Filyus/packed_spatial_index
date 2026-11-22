@@ -4,6 +4,13 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.31.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.30.0...psi-geo-v0.31.0) - 2026-11-22
+
+### API
+
+- **Requires `packed_spatial_index` 0.34.** The geo API is unchanged; projects
+  that depend on both crates should upgrade them together to share core types.
+
 ## [0.30.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.29.0...psi-geo-v0.30.0) - 2026-09-25
 
 ### API

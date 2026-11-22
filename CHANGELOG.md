@@ -4,37 +4,26 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.34.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.33.0...psi-v0.34.0) - 2026-11-22
+
 ### Search
 
-- **The *k* closest pairs.** `closest_pairs(k)` within one index and
-  `closest_pairs_to(&other, k)` between two return the `k` nearest pairs as
-  `(i, j, distance)`, nearest first, plus `closest_pairs_within` /
-  `closest_pairs_to_within` with a distance cap. The same best-first traversal
-  over node pairs as `closest_pair`, stopping once the frontier is farther
-  than the `k`-th pair. Ties follow the kNN rule: ordered by item ids, so the
-  answer for `k` is a prefix of the answer for `k + 1`. Within one index an
-  item is never paired with itself and each pair appears once, with `i < j`.
-  Owned and view, 2D and 3D, `SimdIndex2D` / `SimdIndex3D` included. On
-  100 000 non-overlapping points `k = 1000` costs 1.26–1.39× `closest_pair`.
-  Where the `k`-th pair overlaps, every overlapping pair has to be seen to
-  settle the ties, which costs about 1.15–1.35× `pairs()` / `join()`.
+- **The *k* closest pairs.** `closest_pairs(k)` and `closest_pairs_to(&other,
+  k)` return pairs nearest first; `closest_pairs_within` and
+  `closest_pairs_to_within` add a distance cap. Available on owned and view
+  indexes in 2D and 3D, including SIMD. Ties sort by item ids; within one index,
+  each pair appears once with `i < j`. On 100 000 non-overlapping points,
+  `k = 1000` takes 1.26–1.39× `closest_pair`. If the *k*th pair overlaps, all
+  overlapping pairs must be checked to resolve ties (about 1.15–1.35× `pairs()`
+  / `join()`).
 - **`search_heaviest(region, k)`: the `k` heaviest items of a region.**
-  "The ten largest objects in view", by the per-item
-  `aggregate_scalar` value, heaviest first. A best-first descent over the max
-  every node of the `AGGR` chunk already stores, so the format is unchanged and
-  the cost follows `k` rather than the number of items in the window.
-  `search_heaviest_each` hands the visitor the weight too, so a threshold can
-  stop it. Equal weights come out in ascending item index, so the first `k` are
-  a prefix of the first `k + 1`; NaN weights are never returned. On `Index2D` /
-  `Index3D`, their views and the SIMD indexes and views; `None` without a
-  scalar column. `search_ordered` could not express it: its key sees a node's
-  box, never its summary. Below a line in the expected hits (from 2 up to
-  `10 + 50 * (k - 1)`, read off the region's bounding box) the descent loses
-  to a plain sweep, so there `search_heaviest` collects the window and selects
-  the `k` instead; same items, same order. `search_heaviest_each` always
-  descends, since its visitor may stop at the first item. On 1M boxes with
-  random weights, time against `search_into` + `select_nth_unstable` with
-  reused buffers, Zen 3 (EPYC 7763):
+  Returns by `aggregate_scalar`, heaviest first; ties sort by item id and NaNs
+  are skipped. `search_heaviest_each` also passes each weight to its visitor.
+  Available on owned, view and SIMD indexes; returns `None` without a scalar
+  column. It descends using `AGGR` node maxima, then sweeps and selects when
+  expected hits fall below a threshold from `2` to `10 + 50 * (k - 1)`.
+  On 1M boxes with random weights, relative time versus `search_into` +
+  `select_nth_unstable` with reused buffers on Zen 3 (EPYC 7763; lower is faster):
 
   | Window (hits) | k = 1 | k = 10 | k = 100 | k = 1000 |
   |---|---|---|---|---|
@@ -44,28 +33,19 @@ All notable changes to this crate are documented here.
   | ~10 000 | 0.02 | 0.14 | 0.86 | 1.07 |
   | ~30 000 | 0.01 | 0.05 | 0.38 | 0.91 |
 
-  Where it collects, it takes from 0.25 of the descent's time (large `k`) to
-  about the same (the edges of the band) on Zen 3, Zen 4 (EPYC 9V74),
-  Neoverse N2 and a Xeon (Emerald Rapids). On a window of ~100 hits with
-  `k = 10` the descent alone ran 1.4–1.8× the select on those four; now it
-  runs 0.82–0.92×. Windows expecting under one hit still cost 1.04× (Xeon) to
-  1.34× (Zen 4) of the reused-buffer select: the result `Vec` and the
-  traversal state are allocated per call.
+  The sweep path ranges from 0.25× the descent time to parity across Zen 3,
+  Zen 4, Neoverse N2 and Xeon. At ~100 hits and `k = 10`, the old descent took
+  1.4–1.8× selection; the adaptive query takes 0.82–0.92×. Below one expected
+  hit it takes 1.04–1.34×, partly because each call allocates its result and
+  traversal state.
 
-- **`any` and `first` descend depth first and stop testing at the first
-  hit.** Owned and view, 2D and 3D. They tested every child of each node on the
-  way down and pushed every overlapping one onto a scratch stack before
-  descending. On a large window almost every child overlaps, so every node on
-  the path cost a full scan: 63 child tests per `first` on 100 000 boxes, where
-  `static_aabb2d_index` spent 52 and ran 1.22–1.35× faster. The descent now
-  enters a node's first overlapping child as soon as the test finds it and keeps
-  the node's rest as the resume point of its level, in a fixed array, so no
-  scratch stack is taken either (37 tests). A window that expects under 2 hits
-  in 2D or 100 in 3D (from its share of the root box) tests a node's children
-  into a mask instead, which costs a query that finds nothing less; aarch64
-  keeps one branch per child. `Index2D::first` now takes 0.64–0.75 of
-  `static_aabb2d_index`'s time on every window class and machine measured.
-  Against the old traversal, small, mid and large windows:
+- **`any` and `first` stop at the first hit.** Owned and view indexes in 2D and
+  3D now descend into the first overlapping child immediately, keeping the
+  remaining children in a fixed array instead of a scratch stack. On 100 000
+  boxes, a large-window `first` drops from 63 child tests to 37.
+  Small windows (under 2 expected hits in 2D or 100 in 3D) test child masks;
+  aarch64 keeps the branch-per-child path. Ratios versus the old traversal
+  (lower is faster):
 
   | Path | Zen 3 (EPYC 7763) | Zen 4 (EPYC 9V74) | Neoverse N2 |
   |---|---|---|---|
@@ -78,17 +58,13 @@ All notable changes to this crate are documented here.
 
 ### Persistence
 
-- **A cold stream open is two round trips.** `open` read the superblock, the
-  chunk directory, each chunk descriptor and the cached upper levels one after
-  another, so a cold open over a remote source cost 4–8 dependent round trips
-  before the first query. It now reads a speculative 16 KiB head first
-  (`StreamLimits::open_head_bytes`), which holds the superblock, the chunk
-  directory and the `TREE` descriptor of an ordinary file and all of a small
-  one. What the head misses goes out as one batch: the async reader issues the
-  payload descriptors and the directory together, with the variable-width
-  payload's total length fetched speculatively beside them. No format change.
-  Async open waves, then sync open reads, before and after (2D, 1 000 000
-  items; up to 16 KiB more bytes read):
+- **A cold stream open takes two round trips.** `open` now reads a speculative
+  16 KiB head (`StreamLimits::open_head_bytes`) containing the superblock, the
+  directory and the `TREE` descriptor for typical files. Missed descriptors
+  are fetched in one batch; async open also fetches variable-payload length in
+  parallel.
+  On 1M 2D items, async open drops from 4–8 waves to 2; sync drops from 4–8
+  reads to 2–5, reading up to 16 KiB more:
 
   | Layout | Async waves | Sync reads |
   |---|---|---|
@@ -98,16 +74,12 @@ All notable changes to this crate are documented here.
   | fixed-width payload | 6 → 2 | 6 → 3 |
   | variable payload + prefix section | 8 → 2 | 8 → 5 |
 
-  A file smaller than the head opens in one read. A source that hides its
-  length and is shorter than the head falls back to the superblock read.
+  Files smaller than the head open in one read. If a short source hides its
+  length, open falls back to reading the superblock first.
 
-- **`StreamLimits::align_bytes` rounds query reads out to whole blocks.** A
-  caching proxy in front of the source (a CDN, nginx `slice`) keys on the exact
-  range, so two queries reading `1000-2000` and `1500-2500` never share an entry.
-  With a block size set, every query read starts and ends on a block boundary
-  (the last one on the data end) and reads that share a block merge into one.
-  Off by default: it buys cache hits with bytes. On 1 000 000 items (2D, sync
-  reads and bytes; exact, then 16 KiB, then 64 KiB):
+- **`StreamLimits::align_bytes` aligns query reads to blocks.** This lets range
+  caches reuse overlapping reads; off by default because it trades extra bytes
+  for cache hits. On 1M 2D items (sync reads and bytes; exact, 16 KiB, 64 KiB):
 
   | Query | Hits | Reads | Bytes |
   |---|---:|---|---|
@@ -117,23 +89,21 @@ All notable changes to this crate are documented here.
   | 250 x 250 window | 62 943 | 49 / 45 / 35 | 2.8 MB / 3.4 MB / 4.5 MB |
   | 250 x 250 with payloads | 62 943 | 87 / 83 / 73 | 5.4 MB / 6.6 MB / 9.4 MB |
 
-  The async reader merges a whole batch, so it saves more reads on wide
-  windows (29 and 51 at 64 KiB for the last two rows) for the same bytes.
+  Async batching saves 29 and 51 reads at 64 KiB on the two widest queries,
+  with the same bytes read.
+  A prefix length of zero also skips prefix reads in the synchronous query
+  path, matching async.
 
 ### SIMD
 
-- **`SimdIndex2D` / `SimdIndex3D` `raycast_any` descends depth-first.** It
-  stopped `raycast_each` at its first hit, keeping a priority queue and testing
-  children one at a time for an order `any` never promised. It now returns at
-  the first leaf box the segment enters, testing children with the vector slab
-  test of `raycast` (AVX-512, AVX2 or `wide`; axis-parallel rays take `wide`).
-  On uniform 3D scenes it takes 0.16–0.25 of the old time for oblique rays
-  and 0.27–0.39 for axis-parallel ones on a Zen 3, a Zen 4 and a cloud Xeon;
-  a Neoverse N2 measured 0.34–0.41 and 0.42–0.55. Against the `bvh` crate's
-  occlusion test it went from 1.2–3.3× the time to 0.40–0.71×; on a clustered
-  scene `bvh` stays ahead by 1.15–1.7×. The views (`SimdIndex2DView` /
-  `SimdIndex3DView`) run the scalar depth-first descent of `Index2DView` /
-  `Index3DView`: 0.51–0.85 of their old time.
+- **SIMD `raycast_any` descends depth first.** `SimdIndex2D` and `SimdIndex3D`
+  now stop at the first leaf hit and test children with the vector slab test.
+  On uniform 3D scenes, query time falls to 0.16–0.25× of the old path for
+  oblique rays and 0.27–0.39× for axis-parallel rays on Zen 3, Zen 4 and Xeon;
+  Neoverse N2 measures 0.34–0.41× and 0.42–0.55×. SIMD views use scalar depth
+  first and take 0.51–0.85× their old time. Against `bvh` occlusion, SIMD goes
+  from 1.2–3.3× `bvh`'s time to 0.40–0.71×; on clustered data, `bvh` remains
+  1.15–1.7× faster.
 
 ## [0.33.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.32.0...psi-v0.33.0) - 2026-09-25
 

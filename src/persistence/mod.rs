@@ -615,8 +615,7 @@ mod tests {
             let parsed = payload.expect("payload present");
             // The payload is leaf-ordered: slot `r` holds the blob of the item at
             // leaf rank `r`, whose insertion id is `index.indices[r]`.
-            for r in 0..n {
-                let insertion_id = index.indices[r];
+            for (r, &insertion_id) in index.indices.iter().enumerate().take(n) {
                 assert_eq!(payload_slice(&parsed, r), payloads[insertion_id].as_slice());
             }
         }
@@ -654,11 +653,8 @@ mod tests {
         let bytes = index.to_bytes_with_payloads(&payloads).unwrap();
         let (_parsed, payload) = parse_index(&bytes, 2, 8).unwrap();
         let parsed = payload.expect("payload present");
-        for r in 0..20 {
-            assert_eq!(
-                payload_slice(&parsed, r),
-                payloads[index.indices[r]].as_slice()
-            );
+        for (r, &insertion_id) in index.indices.iter().enumerate().take(20) {
+            assert_eq!(payload_slice(&parsed, r), payloads[insertion_id].as_slice());
         }
     }
 
@@ -693,8 +689,7 @@ mod tests {
         let parsed = payload.expect("payload present");
         assert_eq!(parsed.stride, STRIDE);
         assert!(parsed.offsets.is_empty());
-        for r in 0..n {
-            let id = index.indices[r];
+        for (r, &id) in index.indices.iter().enumerate().take(n) {
             assert_eq!(
                 payload_slice(&parsed, r),
                 &flat[id * STRIDE..(id + 1) * STRIDE]
@@ -719,8 +714,7 @@ mod tests {
             parsed.stride_inferred,
             "the width was deduced, not declared"
         );
-        for r in 0..n {
-            let id = index.indices[r];
+        for (r, &id) in index.indices.iter().enumerate().take(n) {
             assert_eq!(payload_slice(&parsed, r), payloads[id].as_slice());
         }
     }
@@ -755,8 +749,7 @@ mod tests {
         let parsed = payload.expect("payload present");
         assert_eq!(parsed.stride, 0);
         assert!(!parsed.stride_inferred);
-        for r in 0..n {
-            let id = index.indices[r];
+        for (r, &id) in index.indices.iter().enumerate().take(n) {
             assert_eq!(payload_slice(&parsed, r), payloads[id].as_slice());
         }
     }

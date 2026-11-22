@@ -289,8 +289,8 @@ pub(crate) fn build_aggregates(
             }
             if out.has_mask() {
                 let mut mask = 0u64;
-                for child in first_child..first_child + children {
-                    mask |= out.masks[child];
+                for &child_mask in &out.masks[first_child..first_child + children] {
+                    mask |= child_mask;
                 }
                 out.masks[pos] = mask;
             }

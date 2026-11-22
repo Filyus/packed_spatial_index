@@ -188,9 +188,7 @@ const fn build_lut() -> LutTables {
                 b ^= 1;
             }
             if swap == 1 {
-                let tmp = a;
-                a = b;
-                b = tmp;
+                std::mem::swap(&mut a, &mut b);
             }
             let (rx, ry) = (a as u32, b as u32);
             f_emit[state][q] = ((3 * rx) ^ ry) as u8;

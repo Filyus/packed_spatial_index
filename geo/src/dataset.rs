@@ -401,7 +401,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
 
         let wkb = scan::binary_column(&rows.batch, "geometry_wkb")?;
         let mut exact = Vec::new();
-        for row in 0..rows.features.len() {
+        for (row, feature) in rows.features.iter().enumerate() {
             if wkb.is_null(row) {
                 continue;
             }
@@ -409,7 +409,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                 filter::exact_wkb_predicate_matches(wkb.value(row), &query, req.predicate)?
             {
                 if matched {
-                    exact.push(rows.features[row].clone());
+                    exact.push(feature.clone());
                 }
                 continue;
             }
@@ -417,7 +417,7 @@ impl<R: ChunkReader + 'static> GeoDataset<R> {
                 continue;
             };
             if filter::exact_predicate_matches(&geometry, &query, req.predicate)? {
-                exact.push(rows.features[row].clone());
+                exact.push(feature.clone());
             }
         }
         Ok(exact)

@@ -4,6 +4,48 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.35.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.34.0...psi-v0.35.0) - 2026-11-26
+
+### Search
+
+- **Conservative `f64` rounding bounds in `Capsule2D` and `Capsule3D`.**
+  `segment_box_gap_squared`, `overlaps_box`, `contains_box`, and
+  `bounding_box_hint` now apply derived coordinate-scale rounding margins
+  (`8ε · scale`) and sum-of-squares bounds (`1 ± 2ε`), preventing false misses
+  on tangent boxes at micro-radii or large coordinates while keeping subtree
+  containment sound.
+
+### kNN
+
+- **Workspace-reusing `*_each_with` traversals.** Added `neighbors_each_with`,
+  `raycast_each_with`, and `search_ordered_each_with` taking
+  `&mut NeighborWorkspace` across all frontends (owned, view, SIMD, and `f32`),
+  eliminating per-query `BinaryHeap` allocations (−4.8% to −8.1% on 1M 3D
+  surface-cloud kNN at `k = 24..40`).
+
+### Raycast
+
+- **Conservative ray-AABB slab bounds (Ize 2013).** `Ray2D` and `Ray3D`
+  `intersects_box` and `enter_t` (scalar and SIMD) now scale `t_max` by
+  `1 + 4ε` and `enter_t` by `1 - 2ε`, preventing false misses on grazing
+  faces/edges and guaranteeing `enter_t` is a lower bound for early-exit
+  narrow-phase pruning. `Ray3D::distance_squared_to_missed_box` drops the
+  `1e-12` relative axis threshold and evaluates `dist_at(t_star)` directly.
+- **Watertight ray-triangle intersection.** Added `TriangleHitDetail` and
+  `Ray3D::closest_triangle_watertight(triangles, min_t, backface_cull)`
+  implementing Woop, Benthin, Wald (2013) in `f64` with `min_t` filtering,
+  barycentrics `[u, v]`, and `front_face` orientation for both `Triangle3D`
+  and `Triangle3DF32`. `Ray3D::closest_triangle` on `Triangle3D` now uses the
+  same watertight kernel.
+
+### Documentation
+
+- Updated `docs/internals/knn.md` to match deterministic `(d², index)`
+  tie-breaking and `nearest_one` behavior at `d² = 0`.
+- Added exact shadow-ray (`Overlaps3D` + `visit` / `search_region_each` with
+  `ControlFlow::Break`) and exact-geometry kNN (`neighbors_each` + `Break`)
+  recipes to `docs/guide.md`.
+
 ## [0.34.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.33.0...psi-v0.34.0) - 2026-11-22
 
 ### Search

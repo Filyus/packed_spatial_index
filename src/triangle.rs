@@ -30,6 +30,22 @@ pub struct TriangleHit {
     pub t: f64,
 }
 
+/// Detailed watertight ray-triangle intersection returned by
+/// [`crate::Ray3D::closest_triangle_watertight`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TriangleHitDetail {
+    /// Index of the hit triangle in the slice passed to the query.
+    pub index: usize,
+    /// Ray parameter at the hit, in direction-length units.
+    pub t: f64,
+    /// Barycentric coordinates `[u, v]` for vertices `b` and `c`
+    /// (vertex `a` has weight `1.0 - u - v`).
+    pub uv: [f64; 2],
+    /// `true` when the ray hits the front face (`dot((b - a) x (c - a), dir) < 0`
+    /// for counter-clockwise winding viewed from the ray origin).
+    pub front_face: bool,
+}
+
 /// A 2D triangle record (`f64` or `f32` vertices). Implemented by [`Triangle2D`]
 /// and [`Triangle2DF32`]; sealed, so the set of record types is fixed.
 pub trait Triangle2: Copy + sealed::Sealed {
@@ -55,6 +71,21 @@ pub trait Triangle3: Copy + sealed::Sealed {
     /// feature). Crate-internal; drive it through [`crate::Ray3D::closest_triangle`].
     #[doc(hidden)]
     fn closest_hit(o: [f64; 3], d: [f64; 3], max_t: f64, tris: &[Self]) -> Option<TriangleHit>
+    where
+        Self: Sized;
+    /// Watertight closest hit (Woop, Benthin, Wald 2013) in `f64` over `tris`
+    /// with `t in [min_t, max_t]`, optional backface culling, barycentrics, and
+    /// face orientation. Crate-internal; drive through
+    /// [`crate::Ray3D::closest_triangle_watertight`].
+    #[doc(hidden)]
+    fn closest_hit_watertight(
+        o: [f64; 3],
+        d: [f64; 3],
+        min_t: f64,
+        max_t: f64,
+        backface_cull: bool,
+        tris: &[Self],
+    ) -> Option<TriangleHitDetail>
     where
         Self: Sized;
 }
@@ -270,6 +301,23 @@ macro_rules! tri3 {
             ) -> Option<TriangleHit> {
                 $closest(o, d, max_t, tris)
             }
+            #[inline]
+            fn closest_hit_watertight(
+                o: [f64; 3],
+                d: [f64; 3],
+                min_t: f64,
+                max_t: f64,
+                backface_cull: bool,
+                tris: &[Self],
+            ) -> Option<TriangleHitDetail> {
+                watertight_closest_f64(o, d, min_t, max_t, backface_cull, tris, |tri| {
+                    (
+                        [tri.a[0] as f64, tri.a[1] as f64, tri.a[2] as f64],
+                        [tri.b[0] as f64, tri.b[1] as f64, tri.b[2] as f64],
+                        [tri.c[0] as f64, tri.c[1] as f64, tri.c[2] as f64],
+                    )
+                })
+            }
         }
     };
 }
@@ -332,60 +380,131 @@ pub(crate) fn blobs_as_records<T: Copy>(blobs: &[u8]) -> Option<&[T]> {
 
 // ---- ray-triangle closest hit ----
 
-/// Branchless Moller-Trumbore in `f64`: ray parameter `t`, or `+inf` on a miss.
-#[inline(always)]
-#[allow(clippy::manual_range_contains)] // branchless miss mask, kept for autovec
-fn mt_f64(t: &Triangle3D, o: [f64; 3], d: [f64; 3], max_t: f64) -> f64 {
-    let e1 = [t.b[0] - t.a[0], t.b[1] - t.a[1], t.b[2] - t.a[2]];
-    let e2 = [t.c[0] - t.a[0], t.c[1] - t.a[1], t.c[2] - t.a[2]];
-    let p = [
-        d[1] * e2[2] - d[2] * e2[1],
-        d[2] * e2[0] - d[0] * e2[2],
-        d[0] * e2[1] - d[1] * e2[0],
-    ];
-    let det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2];
-    let det_eps = scaled_det_epsilon_f64(d, e1, e2);
-    let inv = 1.0 / det;
-    let s = [o[0] - t.a[0], o[1] - t.a[1], o[2] - t.a[2]];
-    let u = (s[0] * p[0] + s[1] * p[1] + s[2] * p[2]) * inv;
-    let q = [
-        s[1] * e1[2] - s[2] * e1[1],
-        s[2] * e1[0] - s[0] * e1[2],
-        s[0] * e1[1] - s[1] * e1[0],
-    ];
-    let v = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inv;
-    let t = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv;
-    let miss = (det.abs() <= det_eps)
-        | (u < 0.0)
-        | (u > 1.0)
-        | (v < 0.0)
-        | (u + v > 1.0)
-        | (t < 0.0)
-        | (t > max_t);
-    if miss { f64::INFINITY } else { t }
-}
+/// Watertight ray-triangle closest hit in `f64` (Woop, Benthin, Wald 2013,
+/// *Watertight Ray/Triangle Intersection*, JCGT 2(1)).
+///
+/// Transforms each triangle into the ray's sheared coordinate frame where the
+/// dominant ray axis is `kz` (with `kx, ky` swapped when `d[kz] < 0` so the
+/// frame stays right-handed and `det > 0` matches `dot((b-a)x(c-a), d) < 0`).
+/// Shared edges `(P, Q)` and `(Q, P)` of adjacent triangles evaluate to exact
+/// IEEE-754 negations, so a ray hitting an interior shared edge cannot slip
+/// between them.
+fn watertight_closest_f64<T>(
+    o: [f64; 3],
+    d: [f64; 3],
+    min_t: f64,
+    max_t: f64,
+    backface_cull: bool,
+    tris: &[T],
+    verts: impl Fn(&T) -> ([f64; 3], [f64; 3], [f64; 3]),
+) -> Option<TriangleHitDetail> {
+    if tris.is_empty()
+        || !min_t.is_finite()
+        || min_t < 0.0
+        || max_t.is_nan()
+        || max_t < min_t
+        || !o[0].is_finite()
+        || !o[1].is_finite()
+        || !o[2].is_finite()
+        || !d[0].is_finite()
+        || !d[1].is_finite()
+        || !d[2].is_finite()
+    {
+        return None;
+    }
 
-#[inline(always)]
-fn scaled_det_epsilon_f64(d: [f64; 3], e1: [f64; 3], e2: [f64; 3]) -> f64 {
-    let d_scale = d[0].abs() + d[1].abs() + d[2].abs();
-    let e1_scale = e1[0].abs() + e1[1].abs() + e1[2].abs();
-    let e2_scale = e2[0].abs() + e2[1].abs() + e2[2].abs();
-    64.0 * f64::EPSILON * d_scale * e1_scale * e2_scale
+    // Dominant axis `kz`; zero direction hits nothing.
+    let (ax, ay, az) = (d[0].abs(), d[1].abs(), d[2].abs());
+    let kz = if ax >= ay && ax >= az {
+        0
+    } else if ay >= az {
+        1
+    } else {
+        2
+    };
+    if d[kz] == 0.0 {
+        return None;
+    }
+
+    let mut kx = (kz + 1) % 3;
+    let mut ky = (kx + 1) % 3;
+    if d[kz] < 0.0 {
+        core::mem::swap(&mut kx, &mut ky);
+    }
+    let sz = 1.0 / d[kz];
+    let sx = d[kx] * sz;
+    let sy = d[ky] * sz;
+
+    let mut best_t = max_t;
+    let mut best: Option<TriangleHitDetail> = None;
+
+    for (i, tri) in tris.iter().enumerate() {
+        let (va, vb, vc) = verts(tri);
+        let a = [va[0] - o[0], va[1] - o[1], va[2] - o[2]];
+        let b = [vb[0] - o[0], vb[1] - o[1], vb[2] - o[2]];
+        let c = [vc[0] - o[0], vc[1] - o[1], vc[2] - o[2]];
+
+        let ax_s = a[kx] - sx * a[kz];
+        let ay_s = a[ky] - sy * a[kz];
+        let bx_s = b[kx] - sx * b[kz];
+        let by_s = b[ky] - sy * b[kz];
+        let cx_s = c[kx] - sx * c[kz];
+        let cy_s = c[ky] - sy * c[kz];
+
+        // Scaled barycentric edge functions: U -> weight(a), V -> weight(b), W -> weight(c).
+        let u_e = cx_s * by_s - cy_s * bx_s;
+        let v_e = ax_s * cy_s - ay_s * cx_s;
+        let w_e = bx_s * ay_s - by_s * ax_s;
+
+        if backface_cull {
+            if u_e < 0.0 || v_e < 0.0 || w_e < 0.0 {
+                continue;
+            }
+        } else if (u_e < 0.0 || v_e < 0.0 || w_e < 0.0) && (u_e > 0.0 || v_e > 0.0 || w_e > 0.0) {
+            continue;
+        }
+
+        let det = u_e + v_e + w_e;
+        if det == 0.0 {
+            continue;
+        }
+
+        let az_s = sz * a[kz];
+        let bz_s = sz * b[kz];
+        let cz_s = sz * c[kz];
+        let t_scaled = u_e * az_s + v_e * bz_s + w_e * cz_s;
+
+        if det > 0.0 {
+            if t_scaled < min_t * det || t_scaled > best_t * det {
+                continue;
+            }
+        } else if t_scaled > min_t * det || t_scaled < best_t * det {
+            continue;
+        }
+
+        let inv_det = 1.0 / det;
+        let t = t_scaled * inv_det;
+        if t < min_t || t > best_t || (best.is_some() && t >= best_t) {
+            continue;
+        }
+        best_t = t;
+        best = Some(TriangleHitDetail {
+            index: i,
+            t,
+            uv: [v_e * inv_det, w_e * inv_det],
+            front_face: det > 0.0,
+        });
+    }
+
+    best
 }
 
 fn closest_f64(o: [f64; 3], d: [f64; 3], max_t: f64, tris: &[Triangle3D]) -> Option<TriangleHit> {
-    let mut best_t = f64::INFINITY;
-    let mut best_i = usize::MAX;
-    for (i, tri) in tris.iter().enumerate() {
-        let t = mt_f64(tri, o, d, max_t);
-        if t < best_t {
-            best_t = t;
-            best_i = i;
+    watertight_closest_f64(o, d, 0.0, max_t, false, tris, |tri| (tri.a, tri.b, tri.c)).map(|hit| {
+        TriangleHit {
+            index: hit.index,
+            t: hit.t,
         }
-    }
-    (best_i != usize::MAX).then_some(TriangleHit {
-        index: best_i,
-        t: best_t,
     })
 }
 

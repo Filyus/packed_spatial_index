@@ -8,7 +8,7 @@
 //! hits.
 
 use crate::geometry::{Box2D, Box3D, Point2D, Point3D};
-use crate::triangle::{Triangle3, TriangleHit};
+use crate::triangle::{Triangle3, TriangleHit, TriangleHitDetail};
 
 /// Conservative multiplier on `t_max` in the ray-AABB slab test (Ize 2013,
 /// *Robust BVH Ray Traversal*, JCGT 2(2)).
@@ -476,19 +476,41 @@ impl Ray3D {
 
     /// The closest triangle in `triangles` hit by this ray segment, as a
     /// [`TriangleHit`] (`index` into the slice and `t` in direction-length
-    /// units), or `None` if the ray misses them all, by the Moller-Trumbore test.
+    /// units), or `None` if the ray misses them all.
     ///
-    /// Works over either record type: [`Triangle3D`](crate::Triangle3D) tests in
-    /// `f64`, [`Triangle3DF32`](crate::Triangle3DF32) in `f32` (8 at a time with
-    /// the `simd` feature). Pair this with a query that yields candidate triangles
-    /// — an [`Index3DView`](crate::Index3DView)'s
-    /// [`triangles`](crate::Index3DView::triangles) payload, or the items a
-    /// `raycast` / `search` returns — for exact ray-mesh intersection.
+    /// Works over either record type: [`Triangle3D`](crate::Triangle3D) uses the
+    /// watertight Woop-Benthin-Wald (2013) test in `f64`, while
+    /// [`Triangle3DF32`](crate::Triangle3DF32) uses the fast 8-wide SIMD
+    /// Moller-Trumbore kernel in `f32` (with the `simd` feature). For watertight
+    /// hits with `min_t`, barycentrics, and face orientation on either record
+    /// type, use [`Self::closest_triangle_watertight`].
     #[inline]
     pub fn closest_triangle<T: Triangle3>(&self, triangles: &[T]) -> Option<TriangleHit> {
         let o = [self.origin.x, self.origin.y, self.origin.z];
         let d = [self.dir_x, self.dir_y, self.dir_z];
         T::closest_hit(o, d, self.max_distance, triangles)
+    }
+
+    /// Watertight closest triangle hit (Woop, Benthin, Wald 2013) in `f64` over
+    /// `triangles` for `t in [min_t, self.max_distance]`, returning the hit
+    /// index, `t`, barycentrics `[u, v]`, and front/back face sign.
+    ///
+    /// Shared edges between adjacent triangles never leak due to rounding.
+    /// Set `backface_cull = true` to ignore triangles with
+    /// `dot((b - a) x (c - a), dir) >= 0`. Works over both
+    /// [`Triangle3D`](crate::Triangle3D) and
+    /// [`Triangle3DF32`](crate::Triangle3DF32) (promoting `f32` vertices to
+    /// `f64`).
+    #[inline]
+    pub fn closest_triangle_watertight<T: Triangle3>(
+        &self,
+        triangles: &[T],
+        min_t: f64,
+        backface_cull: bool,
+    ) -> Option<TriangleHitDetail> {
+        let o = [self.origin.x, self.origin.y, self.origin.z];
+        let d = [self.dir_x, self.dir_y, self.dir_z];
+        T::closest_hit_watertight(o, d, min_t, self.max_distance, backface_cull, triangles)
     }
 }
 
@@ -673,5 +695,86 @@ mod triangle_tests {
             .unwrap();
         assert_eq!(hit.index, 1);
         assert!((hit.t - 2.0).abs() < 1e-4, "t={}", hit.t);
+    }
+
+    #[test]
+    fn watertight_shared_edge_never_leaks() {
+        // Two adjacent triangles sharing the diagonal edge (p0 -> p2) in
+        // non-power-of-two tilted coordinates.
+        let p0 = [0.1, 0.2, 3.3];
+        let p1 = [2.7, 0.4, 3.1];
+        let p2 = [2.9, 2.8, 3.9];
+        let p3 = [0.3, 2.6, 4.1];
+        let tris = [Triangle3D::new(p0, p1, p2), Triangle3D::new(p0, p2, p3)];
+
+        for step in 1..1000 {
+            let s = step as f64 / 1000.0;
+            let target = [
+                p0[0] + s * (p2[0] - p0[0]),
+                p0[1] + s * (p2[1] - p0[1]),
+                p0[2] + s * (p2[2] - p0[2]),
+            ];
+            // Vary ray origin across multiple octants so dominant axis and sign vary.
+            let o = [
+                -1.3 + (step % 7) as f64 * 0.7,
+                -0.9 + (step % 11) as f64 * 0.5,
+                -2.1 - (step % 5) as f64 * 0.3,
+            ];
+            let d = [target[0] - o[0], target[1] - o[1], target[2] - o[2]];
+            let r = Ray3D::new(Point3D::new(o[0], o[1], o[2]), d[0], d[1], d[2], 10.0);
+            let hit = r
+                .closest_triangle_watertight(&tris, 0.0, false)
+                .expect("ray aimed at shared edge must hit one of the two triangles");
+            assert!(
+                (hit.t - 1.0).abs() < 1e-12,
+                "step={step}: expected t~1.0, got {}",
+                hit.t
+            );
+        }
+    }
+
+    #[test]
+    fn watertight_min_t_backface_cull_and_barycentrics() {
+        use crate::Triangle3DF32;
+        // Ray goes along +z from z=0.
+        // `back` at z=2 has normal (0, 0, +4) -> dot(n, d) > 0 (back face).
+        let back = Triangle3D::new([0.0, 0.0, 2.0], [2.0, 0.0, 2.0], [0.0, 2.0, 2.0]);
+        // `front` at z=5 has normal (0, 0, -4) -> dot(n, d) < 0 (front face).
+        let front = Triangle3D::new([0.0, 0.0, 5.0], [0.0, 2.0, 5.0], [2.0, 0.0, 5.0]);
+        let tris = [back, front];
+        let r = ray([0.25, 0.5, 0.0], [0.0, 0.0, 1.0]);
+
+        // Without backface culling, hits `back` at t=2 with front_face=false.
+        let h0 = r.closest_triangle_watertight(&tris, 0.0, false).unwrap();
+        assert_eq!(h0.index, 0);
+        assert!(!h0.front_face);
+        assert!((h0.t - 2.0).abs() < 1e-12);
+        // Reconstruct point from barycentrics: a*(1-u-v) + b*u + c*v.
+        let [u, v] = h0.uv;
+        let w = 1.0 - u - v;
+        let px = w * back.a[0] + u * back.b[0] + v * back.c[0];
+        let py = w * back.a[1] + u * back.b[1] + v * back.c[1];
+        assert!((px - 0.25).abs() < 1e-12 && (py - 0.5).abs() < 1e-12);
+
+        // With backface culling, skips `back` and hits `front` at t=5.
+        let h1 = r.closest_triangle_watertight(&tris, 0.0, true).unwrap();
+        assert_eq!(h1.index, 1);
+        assert!(h1.front_face);
+        assert!((h1.t - 5.0).abs() < 1e-12);
+
+        // With min_t = 3.0 and backface_cull = false, skips `back` (t=2) and hits `front` (t=5).
+        let h2 = r.closest_triangle_watertight(&tris, 3.0, false).unwrap();
+        assert_eq!(h2.index, 1);
+        assert!((h2.t - 5.0).abs() < 1e-12);
+
+        // Also works on f32 triangle records.
+        let f32_tris = [
+            Triangle3DF32::new([0.0, 0.0, 2.0], [2.0, 0.0, 2.0], [0.0, 2.0, 2.0]),
+            Triangle3DF32::new([0.0, 0.0, 5.0], [0.0, 2.0, 5.0], [2.0, 0.0, 5.0]),
+        ];
+        let h3 = r.closest_triangle_watertight(&f32_tris, 0.0, true).unwrap();
+        assert_eq!(h3.index, 1);
+        assert!(h3.front_face);
+        assert!((h3.t - 5.0).abs() < 1e-6);
     }
 }

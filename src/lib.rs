@@ -204,6 +204,7 @@ pub use stream::{
 pub use traversal::SearchWorkspace;
 pub use triangle::{
     Triangle2, Triangle2D, Triangle2DF32, Triangle3, Triangle3D, Triangle3DF32, TriangleHit,
+    TriangleHitDetail,
 };
 
 /// Internal helpers exposed only for crate benchmarks and local performance tools.

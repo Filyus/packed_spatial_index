@@ -205,3 +205,9 @@ required-features = ["simd"]
 [[bench]]
 name = "paired_raycast_prune"
 harness = false
+
+# 3D kNN and radius queries on a 2D-manifold surface point cloud (1-5M points, k=24-40).
+[[bench]]
+name = "surface_cloud3d_bench"
+harness = false
+required-features = ["simd", "f32-storage"]

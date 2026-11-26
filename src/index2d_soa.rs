@@ -337,6 +337,31 @@ impl SimdIndex2D {
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
+    }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
     /// or a [`Box2D`].
@@ -735,16 +760,31 @@ impl SimdIndex2D {
         &self,
         point: Point2D,
         max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_each_with(point, max_distance, &mut workspace, visitor)
+    }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point2D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(
+        self.visit_neighbors_with_queues(
             NeighborQuery2D::Point(point),
             max_distance,
-            &mut queue,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
     }
@@ -1300,7 +1340,22 @@ impl SimdIndex2D {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        best_first::neighbors_each(
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.visit_neighbors_with_queues(query, max_distance, queue, &mut node_queue, visitor)
+    }
+
+    fn visit_neighbors_with_queues<B, F>(
+        &self,
+        query: NeighborQuery2D,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        best_first::visit_neighbors_two_queue(
             self.min_xs.len(),
             self.num_items,
             self.node_size,
@@ -1309,6 +1364,7 @@ impl SimdIndex2D {
             max_distance,
             |pos| self.distance_squared_at(pos, query),
             queue,
+            node_queue,
             visitor,
         )
     }
@@ -2522,6 +2578,31 @@ impl<'a> SimdIndex2DView<'a> {
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
+    }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
     /// or a [`Box2D`].
@@ -2965,16 +3046,31 @@ impl<'a> SimdIndex2DView<'a> {
         &self,
         point: Point2D,
         max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_each_with(point, max_distance, &mut workspace, visitor)
+    }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point2D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(
+        self.visit_neighbors_with_queues(
             NeighborQuery2D::Point(point),
             max_distance,
-            &mut queue,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
     }
@@ -3406,7 +3502,22 @@ impl<'a> SimdIndex2DView<'a> {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        best_first::neighbors_each(
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.visit_neighbors_with_queues(query, max_distance, queue, &mut node_queue, visitor)
+    }
+
+    fn visit_neighbors_with_queues<B, F>(
+        &self,
+        query: NeighborQuery2D,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        best_first::visit_neighbors_two_queue(
             self.num_nodes,
             self.num_items,
             self.node_size,
@@ -3415,6 +3526,7 @@ impl<'a> SimdIndex2DView<'a> {
             max_distance,
             |pos| self.distance_squared_at(pos, query),
             queue,
+            node_queue,
             visitor,
         )
     }
@@ -3668,11 +3780,26 @@ impl SimdIndex2DView<'_> {
     /// The visitor receives `(item index, entry t)`. Return
     /// [`ControlFlow::Break`] to stop early - for example after the first N
     /// occluders. `t` is `0.0` when the ray origin starts inside a box.
-    pub fn raycast_each<B, F>(&self, ray: Ray2D, mut visitor: F) -> ControlFlow<B>
+    pub fn raycast_each<B, F>(&self, ray: Ray2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.raycast_each_with(ray, &mut workspace, visitor)
+    }
+
+    /// [`raycast_each`](Self::raycast_each) reusing a [`NeighborWorkspace`].
+    pub fn raycast_each_with<B, F>(
+        &self,
+        ray: Ray2D,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let queue = &mut workspace.queue;
+        queue.clear();
         if self.num_items == 0 {
             return ControlFlow::Continue(());
         }

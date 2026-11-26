@@ -152,8 +152,11 @@ fn main() {
 
     for &k in &[24usize, 32, 40] {
         let mut ws_f64 = NeighborWorkspace::new();
+        let mut ws_f64_each = NeighborWorkspace::new();
         let mut ws_simd = NeighborWorkspace::new();
+        let mut ws_simd_each = NeighborWorkspace::new();
         let mut ws_f32 = NeighborWorkspace::new();
+        let mut ws_f32_each = NeighborWorkspace::new();
 
         let title = format!("surface_cloud3d kNN (n={n}, q={q}, k={k})");
         let mut arms = [
@@ -181,6 +184,27 @@ fn main() {
                 }
                 black_box(acc)
             }),
+            paired::arm("Index3D::neighbors_each_with", || {
+                let mut acc = 0usize;
+                for &pt in &queries {
+                    let mut count = 0usize;
+                    let _ = idx_f64.neighbors_each_with(
+                        pt,
+                        f64::INFINITY,
+                        &mut ws_f64_each,
+                        |id, _d2| {
+                            acc = acc.wrapping_add(id);
+                            count += 1;
+                            if count >= k {
+                                ControlFlow::Break(())
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        },
+                    );
+                }
+                black_box(acc)
+            }),
             paired::arm("SimdIndex3D::neighbors_with", || {
                 let mut acc = 0usize;
                 for &pt in &queries {
@@ -205,6 +229,27 @@ fn main() {
                 }
                 black_box(acc)
             }),
+            paired::arm("SimdIndex3D::neighbors_each_with", || {
+                let mut acc = 0usize;
+                for &pt in &queries {
+                    let mut count = 0usize;
+                    let _ = idx_simd.neighbors_each_with(
+                        pt,
+                        f64::INFINITY,
+                        &mut ws_simd_each,
+                        |id, _d2| {
+                            acc = acc.wrapping_add(id);
+                            count += 1;
+                            if count >= k {
+                                ControlFlow::Break(())
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        },
+                    );
+                }
+                black_box(acc)
+            }),
             paired::arm("SimdIndex3DF32::neighbors_with", || {
                 let mut acc = 0usize;
                 for &pt in &queries {
@@ -226,6 +271,27 @@ fn main() {
                             ControlFlow::Continue(())
                         }
                     });
+                }
+                black_box(acc)
+            }),
+            paired::arm("SimdIndex3DF32::neighbors_each_with", || {
+                let mut acc = 0usize;
+                for &pt in &queries {
+                    let mut count = 0usize;
+                    let _ = idx_f32.neighbors_each_with(
+                        pt,
+                        f64::INFINITY,
+                        &mut ws_f32_each,
+                        |id, _d2| {
+                            acc = acc.wrapping_add(id);
+                            count += 1;
+                            if count >= k {
+                                ControlFlow::Break(())
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        },
+                    );
                 }
                 black_box(acc)
             }),

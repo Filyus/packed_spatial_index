@@ -547,16 +547,32 @@ impl Index3D {
         &self,
         point: Point3D,
         max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_each_with(point, max_distance, &mut workspace, visitor)
+    }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`]
+    /// so repeated queries allocate no priority-queue memory.
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point3D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(
+        self.visit_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_distance,
-            &mut queue,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
     }
@@ -734,6 +750,32 @@ impl Index3D {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`] so repeated queries allocate no priority-queue
+    /// memory.
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
     }
     /// Up to `max_results` items overlapping `region`, ordered for picking: by
     /// squared perpendicular distance from `ray` to the item's box first, then
@@ -1727,11 +1769,27 @@ impl Index3D {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.visit_neighbors_with_queues(query, max_distance, queue, &mut node_queue, visitor)
+    }
+
+    fn visit_neighbors_with_queues<B, F>(
+        &self,
+        query: NeighborQuery3D,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
         if !query.is_valid() {
             queue.clear();
+            node_queue.clear();
             return ControlFlow::Continue(());
         }
-        best_first::neighbors_each(
+        best_first::visit_neighbors_two_queue(
             self.entries.len(),
             self.num_items,
             self.node_size,
@@ -1740,6 +1798,7 @@ impl Index3D {
             max_distance,
             |pos| query.distance_squared_to(self.entries[pos]),
             queue,
+            node_queue,
             visitor,
         )
     }
@@ -2401,16 +2460,31 @@ impl<'a> Index3DView<'a> {
         &self,
         point: Point3D,
         max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_each_with(point, max_distance, &mut workspace, visitor)
+    }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point3D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(
+        self.visit_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_distance,
-            &mut queue,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
     }
@@ -2539,6 +2613,31 @@ impl<'a> Index3DView<'a> {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
     }
     /// Up to `max_results` items overlapping `region`, ordered for picking: by
     /// squared perpendicular distance from `ray` to the item's box first, then
@@ -3275,11 +3374,27 @@ impl<'a> Index3DView<'a> {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.visit_neighbors_with_queues(query, max_distance, queue, &mut node_queue, visitor)
+    }
+
+    fn visit_neighbors_with_queues<B, F>(
+        &self,
+        query: NeighborQuery3D,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
         if !query.is_valid() {
             queue.clear();
+            node_queue.clear();
             return ControlFlow::Continue(());
         }
-        best_first::neighbors_each(
+        best_first::visit_neighbors_two_queue(
             self.num_nodes,
             self.num_items,
             self.node_size,
@@ -3288,6 +3403,7 @@ impl<'a> Index3DView<'a> {
             max_distance,
             |pos| query.distance_squared_to(self.entry_at_unchecked(pos)),
             queue,
+            node_queue,
             visitor,
         )
     }

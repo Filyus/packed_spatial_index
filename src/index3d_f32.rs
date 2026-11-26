@@ -410,6 +410,26 @@ impl Index3DF32 {
     {
         crate::neighbors::visit_point_neighbors(self, point, max_distance, &mut visitor)
     }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point3D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::neighbors::visit_point_neighbors_with(
+            self,
+            point,
+            max_distance,
+            workspace,
+            &mut visitor,
+        )
+    }
 }
 
 impl crate::neighbors::PointKnn for Index3DF32 {
@@ -591,6 +611,26 @@ impl SimdIndex3DF32 {
     {
         crate::neighbors::visit_point_neighbors(self, point, max_distance, &mut visitor)
     }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point3D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::neighbors::visit_point_neighbors_with(
+            self,
+            point,
+            max_distance,
+            workspace,
+            &mut visitor,
+        )
+    }
 }
 
 #[cfg(feature = "simd")]
@@ -710,6 +750,31 @@ impl SimdIndex3DF32 {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
     }
     /// Items overlapping the region `region` — any [`Overlaps3D`] shape, such as
     /// [`Frustum3D`](crate::Frustum3D) or a [`Box3D`].
@@ -1928,6 +1993,31 @@ impl<'a> SimdIndex3DF32View<'a> {
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
+    }
     /// Items overlapping the region `region` — any [`Overlaps3D`] shape, such as
     /// [`Frustum3D`](crate::Frustum3D) or a [`Box3D`].
     ///
@@ -2521,6 +2611,26 @@ impl<'a> SimdIndex3DF32View<'a> {
     {
         crate::neighbors::visit_point_neighbors(self, point, max_distance, &mut visitor)
     }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point3D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::neighbors::visit_point_neighbors_with(
+            self,
+            point,
+            max_distance,
+            workspace,
+            &mut visitor,
+        )
+    }
 }
 
 #[cfg(feature = "simd")]
@@ -2655,6 +2765,31 @@ impl Index3DF32 {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps3D,
+        K: Fn(Box3D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
     }
     /// Items overlapping the region `region` — any [`Overlaps3D`] shape, such as
     /// [`Frustum3D`](crate::Frustum3D) or a [`Box3D`].

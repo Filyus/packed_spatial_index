@@ -1,6 +1,7 @@
 //! Layout-agnostic best-first nearest-neighbor traversal.
 
 use super::{NeighborNodeState, NeighborState, max_distance_squared};
+#[cfg(any(feature = "simd", feature = "f32-storage"))]
 use crate::config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY;
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
@@ -183,39 +184,6 @@ pub(crate) fn nearest_one(
             _ => return best_index,
         }
     }
-}
-
-/// Visit items in nondecreasing squared-distance order; `visitor` may break
-/// early. A convenience over [`visit_neighbors_two_queue`] for callers holding
-/// only the item queue: allocates a small pre-sized scratch node queue and
-/// delegates, so `visit` emits in the SAME order as the two-queue `neighbors`
-/// collect (they must agree on ties — a contract the tests check).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn neighbors_each<B>(
-    num_nodes: usize,
-    num_items: usize,
-    node_size: usize,
-    level_end: impl Fn(usize) -> usize,
-    index_at: impl Fn(usize) -> usize,
-    max_distance: f64,
-    dist: impl Fn(usize) -> f64,
-    queue: &mut BinaryHeap<NeighborState>,
-    visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
-) -> ControlFlow<B> {
-    let mut node_queue: BinaryHeap<NeighborNodeState> =
-        BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-    visit_neighbors_two_queue(
-        num_nodes,
-        num_items,
-        node_size,
-        level_end,
-        index_at,
-        max_distance,
-        dist,
-        queue,
-        &mut node_queue,
-        visitor,
-    )
 }
 
 /// Two-queue distance-browsing visit: emits items in nondecreasing squared

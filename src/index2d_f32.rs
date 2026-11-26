@@ -410,6 +410,26 @@ impl Index2DF32 {
     {
         crate::neighbors::visit_point_neighbors(self, point, max_distance, &mut visitor)
     }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point2D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::neighbors::visit_point_neighbors_with(
+            self,
+            point,
+            max_distance,
+            workspace,
+            &mut visitor,
+        )
+    }
 }
 
 impl crate::neighbors::PointKnn for Index2DF32 {
@@ -590,6 +610,26 @@ impl SimdIndex2DF32 {
     {
         crate::neighbors::visit_point_neighbors(self, point, max_distance, &mut visitor)
     }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point2D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::neighbors::visit_point_neighbors_with(
+            self,
+            point,
+            max_distance,
+            workspace,
+            &mut visitor,
+        )
+    }
 }
 
 #[cfg(feature = "simd")]
@@ -708,6 +748,31 @@ impl SimdIndex2DF32 {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
     }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
@@ -1897,6 +1962,31 @@ impl<'a> SimdIndex2DF32View<'a> {
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
     }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
+    }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)
     /// or a [`Box2D`].
@@ -2491,6 +2581,26 @@ impl<'a> SimdIndex2DF32View<'a> {
     {
         crate::neighbors::visit_point_neighbors(self, point, max_distance, &mut visitor)
     }
+
+    /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
+    pub fn neighbors_each_with<B, F>(
+        &self,
+        point: Point2D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::neighbors::visit_point_neighbors_with(
+            self,
+            point,
+            max_distance,
+            workspace,
+            &mut visitor,
+        )
+    }
 }
 
 #[cfg(feature = "simd")]
@@ -2622,6 +2732,31 @@ impl Index2DF32 {
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
         search_ordered_each(self, |b| region.overlaps_box(b), key, max_key, &mut visitor)
+    }
+
+    /// [`search_ordered_each`](Self::search_ordered_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn search_ordered_each_with<Q, K, B, F>(
+        &self,
+        region: Q,
+        key: K,
+        max_key: f64,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        Q: Overlaps2D,
+        K: Fn(Box2D) -> f64,
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        crate::ordered::search_ordered_each_with(
+            self,
+            |b| region.overlaps_box(b),
+            key,
+            max_key,
+            &mut workspace.queue,
+            &mut visitor,
+        )
     }
     /// Items overlapping the region `region` — any [`Overlaps2D`] shape, such as
     /// [`Triangle2D`](crate::Triangle2D), [`ConvexPolygon2D`](crate::ConvexPolygon2D)

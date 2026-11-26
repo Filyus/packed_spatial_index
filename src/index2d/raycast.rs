@@ -1,4 +1,4 @@
-use std::{collections::BinaryHeap, ops::ControlFlow};
+use std::ops::ControlFlow;
 
 use crate::{
     config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
@@ -147,11 +147,25 @@ impl Index2D {
     /// The visitor receives `(item index, entry t)`. Return
     /// [`ControlFlow::Break`] to stop early - for example after the first N
     /// occluders. `t` is `0.0` when the ray origin starts inside a box.
-    pub fn raycast_each<B, F>(&self, ray: Ray2D, mut visitor: F) -> ControlFlow<B>
+    pub fn raycast_each<B, F>(&self, ray: Ray2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.raycast_each_with(ray, &mut workspace, visitor)
+    }
+
+    /// [`raycast_each`](Self::raycast_each) reusing a [`NeighborWorkspace`] so
+    /// repeated raycasts allocate no priority-queue memory.
+    pub fn raycast_each_with<B, F>(
+        &self,
+        ray: Ray2D,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
         scalar_raycast::visit_hits(
             self.entries.len(),
             self.num_items,
@@ -159,7 +173,7 @@ impl Index2D {
             |node| self.level_bounds[upper_bound_level(&self.level_bounds, node)],
             |pos| self.indices[pos],
             |pos| ray.enter_t(self.entries[pos]),
-            &mut queue,
+            &mut workspace.queue,
             &mut visitor,
         )
     }
@@ -260,11 +274,24 @@ impl Index2DView<'_> {
     /// The visitor receives `(item index, entry t)`. Return
     /// [`ControlFlow::Break`] to stop early - for example after the first N
     /// occluders. `t` is `0.0` when the ray origin starts inside a box.
-    pub fn raycast_each<B, F>(&self, ray: Ray2D, mut visitor: F) -> ControlFlow<B>
+    pub fn raycast_each<B, F>(&self, ray: Ray2D, visitor: F) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.raycast_each_with(ray, &mut workspace, visitor)
+    }
+
+    /// [`raycast_each`](Self::raycast_each) reusing a [`NeighborWorkspace`].
+    pub fn raycast_each_with<B, F>(
+        &self,
+        ray: Ray2D,
+        workspace: &mut NeighborWorkspace,
+        mut visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
         scalar_raycast::visit_hits(
             self.num_nodes,
             self.num_items,
@@ -272,7 +299,7 @@ impl Index2DView<'_> {
             |node| self.level_bound_unchecked(self.upper_bound_level(node)),
             |pos| self.index_at_unchecked(pos),
             |pos| ray.enter_t(self.entry_at_unchecked(pos)),
-            &mut queue,
+            &mut workspace.queue,
             &mut visitor,
         )
     }

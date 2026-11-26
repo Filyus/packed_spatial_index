@@ -78,10 +78,23 @@ pub(crate) fn search_ordered_each<T: TreeAccess, B>(
     max_key: f64,
     visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
+    let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    search_ordered_each_with(tree, overlaps, key, max_key, &mut queue, visitor)
+}
+
+/// [`search_ordered_each`] reusing a caller-supplied priority queue.
+pub(crate) fn search_ordered_each_with<T: TreeAccess, B>(
+    tree: &T,
+    overlaps: impl Fn(T::Bounds) -> bool,
+    key: impl Fn(T::Bounds) -> f64,
+    max_key: f64,
+    queue: &mut BinaryHeap<crate::neighbors::NeighborState>,
+    visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
+) -> ControlFlow<B> {
     if tree.tree_num_items() == 0 {
+        queue.clear();
         return ControlFlow::Continue(());
     }
-    let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
     metric_knn::neighbors_each(
         tree.tree_num_nodes(),
         tree.tree_num_items(),
@@ -93,7 +106,7 @@ pub(crate) fn search_ordered_each<T: TreeAccess, B>(
             let bounds = tree.tree_bounds(pos);
             overlaps(bounds).then(|| key(bounds))
         },
-        &mut queue,
+        queue,
         visitor,
     )
 }

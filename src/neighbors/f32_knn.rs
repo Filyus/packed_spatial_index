@@ -10,7 +10,7 @@ use super::{
     ExactNeighborState, NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared,
 };
 use crate::config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY;
-use crate::neighbors::best_first::{collect_neighbors, nearest_one, neighbors_each};
+use crate::neighbors::best_first::{collect_neighbors, nearest_one};
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
@@ -232,11 +232,37 @@ pub(crate) fn visit_point_neighbors<T, B>(
 where
     T: PointKnn + ?Sized,
 {
+    let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    visit_point_neighbors_with(tree, point, max_distance, &mut workspace, visitor)
+}
+
+pub(crate) fn visit_point_neighbors_with<T, B>(
+    tree: &T,
+    point: T::Point,
+    max_distance: f64,
+    workspace: &mut NeighborWorkspace,
+    visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
+) -> ControlFlow<B>
+where
+    T: PointKnn + ?Sized,
+{
     if !T::knn_point_is_valid(point) {
+        workspace.queue.clear();
+        workspace.node_queue.clear();
         return ControlFlow::Continue(());
     }
-    let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-    visit_point_neighbors_with_queue(tree, point, max_distance, &mut queue, visitor)
+    super::best_first::visit_neighbors_two_queue(
+        tree.knn_num_nodes(),
+        tree.knn_num_items(),
+        tree.knn_node_size(),
+        |n| tree.knn_level_end(n),
+        |p| tree.knn_index_at(p),
+        max_distance,
+        |pos| tree.knn_distance_squared_to(pos, point),
+        &mut workspace.queue,
+        &mut workspace.node_queue,
+        visitor,
+    )
 }
 
 fn collect_point_neighbors_with_queue<T: PointKnn + ?Sized>(
@@ -306,29 +332,6 @@ fn point_nearest_one<T: PointKnn + ?Sized>(
         max_distance,
         |pos| tree.knn_distance_squared_to(pos, point),
         queue,
-    )
-}
-
-fn visit_point_neighbors_with_queue<T, B>(
-    tree: &T,
-    point: T::Point,
-    max_distance: f64,
-    queue: &mut BinaryHeap<NeighborState>,
-    visitor: &mut impl FnMut(usize, f64) -> ControlFlow<B>,
-) -> ControlFlow<B>
-where
-    T: PointKnn + ?Sized,
-{
-    neighbors_each(
-        tree.knn_num_nodes(),
-        tree.knn_num_items(),
-        tree.knn_node_size(),
-        |n| tree.knn_level_end(n),
-        |p| tree.knn_index_at(p),
-        max_distance,
-        |pos| tree.knn_distance_squared_to(pos, point),
-        queue,
-        visitor,
     )
 }
 

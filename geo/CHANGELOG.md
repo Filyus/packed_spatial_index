@@ -4,6 +4,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.32.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.31.0...psi-geo-v0.32.0) - 2026-11-26
+
+### API
+
+- **Requires `packed_spatial_index` 0.35.** The geo API is unchanged; projects
+  that depend on both crates should upgrade them together to share core types
+  and pick up the conservative ray-AABB slab bounds, watertight ray-triangle
+  intersection, conservative capsules, and workspace-reusing `*_each_with`
+  traversals from core 0.35.
+
 ## [0.31.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.30.0...psi-geo-v0.31.0) - 2026-11-22
 
 ### API

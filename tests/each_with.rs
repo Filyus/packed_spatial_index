@@ -53,6 +53,37 @@ fn each_with_matches_each_2d_across_reused_workspace() {
         assert_eq!(a, b_owned);
         assert_eq!(a, b_view);
 
+        let qbox = Box2D::new(pt.x - 1.0, pt.y - 1.0, pt.x + 1.0, pt.y + 1.0);
+        let mut ba = Vec::new();
+        let _ = idx.neighbors_of_box_each(qbox, f64::INFINITY, |id, d2| {
+            ba.push((id, d2));
+            if ba.len() == 12 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        let mut bb_owned = Vec::new();
+        let _ = idx.neighbors_of_box_each_with(qbox, f64::INFINITY, &mut ws, |id, d2| {
+            bb_owned.push((id, d2));
+            if bb_owned.len() == 12 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        let mut bb_view = Vec::new();
+        let _ = view.neighbors_of_box_each_with(qbox, f64::INFINITY, &mut ws, |id, d2| {
+            bb_view.push((id, d2));
+            if bb_view.len() == 12 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        assert_eq!(ba, bb_owned);
+        assert_eq!(ba, bb_view);
+
         let ray = Ray2D::new(pt, 1.0, 0.3, 100.0);
         let mut ra = Vec::new();
         let _ = idx.raycast_each(ray, |id, t| {
@@ -152,6 +183,44 @@ fn each_with_matches_each_3d_across_reused_workspace() {
         });
         assert_eq!(a, b_owned);
         assert_eq!(a, b_view);
+
+        let qbox = Box3D::new(
+            pt.x - 1.0,
+            pt.y - 1.0,
+            pt.z - 1.0,
+            pt.x + 1.0,
+            pt.y + 1.0,
+            pt.z + 1.0,
+        );
+        let mut ba = Vec::new();
+        let _ = idx.neighbors_of_box_each(qbox, f64::INFINITY, |id, d2| {
+            ba.push((id, d2));
+            if ba.len() == 15 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        let mut bb_owned = Vec::new();
+        let _ = idx.neighbors_of_box_each_with(qbox, f64::INFINITY, &mut ws, |id, d2| {
+            bb_owned.push((id, d2));
+            if bb_owned.len() == 15 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        let mut bb_view = Vec::new();
+        let _ = view.neighbors_of_box_each_with(qbox, f64::INFINITY, &mut ws, |id, d2| {
+            bb_view.push((id, d2));
+            if bb_view.len() == 15 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        assert_eq!(ba, bb_owned);
+        assert_eq!(ba, bb_view);
 
         let ray = Ray3D::new(pt, 1.0, 0.2, -0.3, 100.0);
         let mut ra = Vec::new();

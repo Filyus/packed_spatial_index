@@ -1016,16 +1016,33 @@ impl Index3D {
         &self,
         query: Box3D,
         max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_of_box_each_with(query, max_distance, &mut workspace, visitor)
+    }
+
+    /// [`neighbors_of_box_each`](Self::neighbors_of_box_each) reusing a
+    /// [`NeighborWorkspace`] so repeated queries allocate no priority-queue
+    /// memory.
+    pub fn neighbors_of_box_each_with<B, F>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(
+        self.visit_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_distance,
-            &mut queue,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
     }
@@ -1757,20 +1774,6 @@ impl Index3D {
             |pos| query.distance_squared_to(self.entries[pos]),
             queue,
         )
-    }
-
-    fn visit_neighbors_with_queue<B, F>(
-        &self,
-        query: NeighborQuery3D,
-        max_distance: f64,
-        queue: &mut BinaryHeap<NeighborState>,
-        visitor: &mut F,
-    ) -> ControlFlow<B>
-    where
-        F: FnMut(usize, f64) -> ControlFlow<B>,
-    {
-        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queues(query, max_distance, queue, &mut node_queue, visitor)
     }
 
     fn visit_neighbors_with_queues<B, F>(
@@ -2878,16 +2881,33 @@ impl<'a> Index3DView<'a> {
         &self,
         query: Box3D,
         max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_of_box_each_with(query, max_distance, &mut workspace, visitor)
+    }
+
+    /// [`neighbors_of_box_each`](Self::neighbors_of_box_each) reusing a
+    /// [`NeighborWorkspace`] so repeated queries allocate no priority-queue
+    /// memory.
+    pub fn neighbors_of_box_each_with<B, F>(
+        &self,
+        query: Box3D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(
+        self.visit_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_distance,
-            &mut queue,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
     }
@@ -3362,20 +3382,6 @@ impl<'a> Index3DView<'a> {
             |_| false,
             visitor,
         )
-    }
-
-    fn visit_neighbors_with_queue<B, F>(
-        &self,
-        query: NeighborQuery3D,
-        max_distance: f64,
-        queue: &mut BinaryHeap<NeighborState>,
-        visitor: &mut F,
-    ) -> ControlFlow<B>
-    where
-        F: FnMut(usize, f64) -> ControlFlow<B>,
-    {
-        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queues(query, max_distance, queue, &mut node_queue, visitor)
     }
 
     fn visit_neighbors_with_queues<B, F>(

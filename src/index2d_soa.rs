@@ -884,16 +884,32 @@ impl SimdIndex2D {
         &self,
         query: Box2D,
         max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_of_box_each_with(query, max_distance, &mut workspace, visitor)
+    }
+
+    /// [`neighbors_of_box_each`](Self::neighbors_of_box_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn neighbors_of_box_each_with<B, F>(
+        &self,
+        query: Box2D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(
+        self.visit_neighbors_with_queues(
             NeighborQuery2D::Box(query),
             max_distance,
-            &mut queue,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
     }
@@ -1328,20 +1344,6 @@ impl SimdIndex2D {
             |pos| self.distance_squared_at(pos, query),
             queue,
         )
-    }
-
-    fn visit_neighbors_with_queue<B, F>(
-        &self,
-        query: NeighborQuery2D,
-        max_distance: f64,
-        queue: &mut BinaryHeap<NeighborState>,
-        visitor: &mut F,
-    ) -> ControlFlow<B>
-    where
-        F: FnMut(usize, f64) -> ControlFlow<B>,
-    {
-        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queues(query, max_distance, queue, &mut node_queue, visitor)
     }
 
     fn visit_neighbors_with_queues<B, F>(
@@ -3170,16 +3172,32 @@ impl<'a> SimdIndex2DView<'a> {
         &self,
         query: Box2D,
         max_distance: f64,
+        visitor: F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_of_box_each_with(query, max_distance, &mut workspace, visitor)
+    }
+
+    /// [`neighbors_of_box_each`](Self::neighbors_of_box_each) reusing a
+    /// [`NeighborWorkspace`].
+    pub fn neighbors_of_box_each_with<B, F>(
+        &self,
+        query: Box2D,
+        max_distance: f64,
+        workspace: &mut NeighborWorkspace,
         mut visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queue(
+        self.visit_neighbors_with_queues(
             NeighborQuery2D::Box(query),
             max_distance,
-            &mut queue,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
     }
@@ -3490,20 +3508,6 @@ impl<'a> SimdIndex2DView<'a> {
             results,
             queue,
         );
-    }
-
-    fn visit_neighbors_with_queue<B, F>(
-        &self,
-        query: NeighborQuery2D,
-        max_distance: f64,
-        queue: &mut BinaryHeap<NeighborState>,
-        visitor: &mut F,
-    ) -> ControlFlow<B>
-    where
-        F: FnMut(usize, f64) -> ControlFlow<B>,
-    {
-        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.visit_neighbors_with_queues(query, max_distance, queue, &mut node_queue, visitor)
     }
 
     fn visit_neighbors_with_queues<B, F>(

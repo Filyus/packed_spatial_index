@@ -75,18 +75,18 @@ fn pick_orders_on_ray_first_near_to_far_and_limit_truncates() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 4, "{stdout}");
     // The three points on the ray, near-to-far, then the graze 10 units off.
-    assert!(
-        lines[0].starts_with(r#"{"entry":0,"distanceSquared":0,"entryT":100}"#),
-        "{stdout}"
-    );
-    assert!(
-        lines[1].starts_with(r#"{"entry":1,"distanceSquared":0,"entryT":110}"#),
-        "{stdout}"
-    );
-    assert!(
-        lines[2].starts_with(r#"{"entry":2,"distanceSquared":0,"entryT":120}"#),
-        "{stdout}"
-    );
+    // `entryT` is a conservative lower bound on the exact entry parameter.
+    for (idx, expected_t) in [(0usize, 100.0_f64), (1, 110.0), (2, 120.0)] {
+        let v: serde_json::Value = serde_json::from_str(lines[idx])
+            .unwrap_or_else(|e| panic!("invalid JSON on line {idx}: {e}\n{stdout}"));
+        assert_eq!(v["entry"].as_u64(), Some(idx as u64), "{stdout}");
+        assert_eq!(v["distanceSquared"].as_f64(), Some(0.0), "{stdout}");
+        let entry_t = v["entryT"].as_f64().expect("finite entryT");
+        assert!(
+            entry_t <= expected_t && (expected_t - entry_t) <= 4.0 * expected_t * f64::EPSILON,
+            "entry {idx}: entryT={entry_t} not a tight lower bound on {expected_t}\n{stdout}"
+        );
+    }
     assert!(
         lines[3].starts_with(r#"{"entry":3,"distanceSquared":100,"entryT":inf}"#),
         "{stdout}"

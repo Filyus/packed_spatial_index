@@ -4,6 +4,14 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.33.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.32.0...psi-geo-v0.33.0) - 2026-11-27
+
+### API
+
+- **Requires `packed_spatial_index` 0.36.** The geo API is unchanged; projects
+  that depend on both crates should upgrade them together to share core types
+  and pick up `neighbors_of_box_each_with` from core 0.36.
+
 ## [0.32.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.31.0...psi-geo-v0.32.0) - 2026-11-26
 
 ### API

@@ -2,19 +2,25 @@
 //! with a tolerance in world units instead of the pixel frustum.
 //!
 //! The capsule is the set of points within `radius` of a segment, so the
-//! broad-phase question "could the box touch the capsule?" is an exact
+//! broad-phase question "could the box touch the capsule?" is a
 //! **segment-to-box distance**: zero when the segment enters the box, else the
-//! true clearance. The distance is computed exactly, by the convexity of
-//! `dist(P(t), box)` along the segment: the point `P(t)` is affine in `t`, the
-//! distance to an axis-aligned box is convex, so the minimum over `t` in
-//! `[0, 1]` is found by splitting the parameter at the (few) slab crossings
-//! and minimizing the resulting quadratic piece analytically. No iteration,
-//! no tolerance.
+//! clearance. Analytically, `dist(P(t), box)` is convex along the affine
+//! segment `P(t)`, so the minimum over `t` in `[0, 1]` is found in closed form
+//! by splitting the parameter at the (few) slab crossings and minimizing each
+//! quadratic piece at its vertex — no iteration.
 //!
-//! The containment test is the exact mirror: the farthest point of an
+//! To remain **conservative** under `f64` rounding (so a box tangent to the
+//! capsule at a small radius or in large coordinates never suffers a false
+//! miss), each per-axis gap is bounded using a derived coordinate-scale
+//! rounding margin (`8 * f64::EPSILON * scale_i`) and the squared-sum
+//! comparison is padded by `1 ± 2 * f64::EPSILON`. Monotonicity is preserved
+//! because a parent box's coordinate scale is always at least its child's.
+//!
+//! The containment test is the conservative mirror: the farthest point of an
 //! axis-aligned box from the segment lies at a corner (distance to the segment
-//! is convex, so its max over a box is at a vertex), which is what lets a
-//! subtree fully inside the capsule be accepted whole.
+//! is convex, so its max over a box is at a vertex), and each corner distance
+//! is rounded *up* by the same derived margin so a subtree is accepted whole
+//! only when it is guaranteed inside the capsule.
 
 use crate::geometry::{Box2D, Box3D, Overlaps2D, Overlaps3D};
 
@@ -36,9 +42,28 @@ fn point_box_gap_squared_3d(px: f64, py: f64, pz: f64, bx: Box3D) -> f64 {
     dx * dx + dy * dy + dz * dz
 }
 
-/// Squared distance from point `p` to segment `ab`.
+/// Derived per-axis coordinate rounding margin for `a + t * (b - a)` evaluated
+/// against a box bound at coordinate magnitude `scale`:
+///
+/// - `w = b - a` incurs `<= u * 2 * scale` (`u = f64::EPSILON / 2`),
+/// - `t * w` incurs `<= u * 2 * scale`,
+/// - `a + t * w` incurs `<= u * scale`,
+/// - a slab crossing `t = (bound - a) / w` incurs relative error `<= gamma_2`,
+///   shifting `p(t)` by `<= 4.2 * u * scale`,
+/// - subtracting `bound - p` incurs `<= 2 * u * scale`.
+///
+/// Total per-axis error is `< 12 * u * scale = 6 * f64::EPSILON * scale`; we
+/// use `8 * f64::EPSILON * scale` as a clean conservative bound.
+const AXIS_ROUND_EPS: f64 = 8.0 * f64::EPSILON;
+
+/// Conservative scale for squaring and summing up to 3 axis gaps (`1 ± 2*eps`,
+/// covering `gamma_3 = 3u / (1 - 3u) < 2 * f64::EPSILON`).
+const SUM_SQ_LOWER: f64 = 1.0 - 2.0 * f64::EPSILON;
+const SUM_SQ_UPPER: f64 = 1.0 + 2.0 * f64::EPSILON;
+
+/// Conservative upper bound on the squared distance from point `p` to segment `ab`.
 #[inline]
-fn point_segment_gap_squared_2d(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+fn point_segment_gap_squared_upper_2d(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let (dx, dy) = (bx - ax, by - ay);
     let len2 = dx * dx + dy * dy;
     let t = if len2 > 0.0 {
@@ -47,12 +72,16 @@ fn point_segment_gap_squared_2d(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by:
         0.0
     };
     let (qx, qy) = (ax + t * dx, ay + t * dy);
-    (px - qx) * (px - qx) + (py - qy) * (py - qy)
+    let sx = px.abs().max(ax.abs()).max(bx.abs());
+    let sy = py.abs().max(ay.abs()).max(by.abs());
+    let gx = (px - qx).abs() + AXIS_ROUND_EPS * sx;
+    let gy = (py - qy).abs() + AXIS_ROUND_EPS * sy;
+    (gx * gx + gy * gy) * SUM_SQ_UPPER
 }
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn point_segment_gap_squared_3d(
+fn point_segment_gap_squared_upper_3d(
     px: f64,
     py: f64,
     pz: f64,
@@ -71,15 +100,22 @@ fn point_segment_gap_squared_3d(
         0.0
     };
     let (qx, qy, qz) = (ax + t * dx, ay + t * dy, az + t * dz);
-    (px - qx) * (px - qx) + (py - qy) * (py - qy) + (pz - qz) * (pz - qz)
+    let sx = px.abs().max(ax.abs()).max(bx.abs());
+    let sy = py.abs().max(ay.abs()).max(by.abs());
+    let sz = pz.abs().max(az.abs()).max(bz.abs());
+    let gx = (px - qx).abs() + AXIS_ROUND_EPS * sx;
+    let gy = (py - qy).abs() + AXIS_ROUND_EPS * sy;
+    let gz = (pz - qz).abs() + AXIS_ROUND_EPS * sz;
+    (gx * gx + gy * gy + gz * gz) * SUM_SQ_UPPER
 }
 
-/// Exact minimum of `gap(P(t), box)²` for `t` in `[t0, t1]`, where `P(t)` is
-/// the affine segment. Per axis the gap is convex piecewise linear with one
-/// kink where the segment crosses a slab boundary, so splitting at the kinks
-/// leaves pieces on which every axis gap is a fixed-sign affine form and the
-/// squared distance is a plain quadratic — minimized analytically at its
-/// vertex, clamped to the piece.
+/// Conservative lower bound on `min_{t in [t0, t1]} gap(P(t), box)²`, where
+/// `P(t)` is the affine segment. Per axis the gap is convex piecewise linear
+/// with one kink where the segment crosses a slab boundary, so splitting at
+/// the kinks leaves pieces on which every axis gap is a fixed-sign affine form
+/// and the squared distance is a plain quadratic — minimized analytically at
+/// its vertex, clamped to the piece, then reduced by the derived per-axis
+/// `f64` rounding margin so the returned value never exceeds the true minimum.
 pub(crate) fn min_segment_box_gap_squared(
     a: &[f64; 3],
     b: &[f64; 3],
@@ -89,6 +125,12 @@ pub(crate) fn min_segment_box_gap_squared(
     t0: f64,
     t1: f64,
 ) -> f64 {
+    let mut delta = [0.0f64; 3];
+    for i in 0..dims {
+        let scale = a[i].abs().max(b[i].abs()).max(lo[i].abs()).max(hi[i].abs());
+        delta[i] = AXIS_ROUND_EPS * scale;
+    }
+
     let mut cuts = [t0, t1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let mut cut_len = 2;
     for i in 0..dims {
@@ -146,12 +188,13 @@ pub(crate) fn min_segment_box_gap_squared(
             let mut f = 0.0;
             for i in 0..dims {
                 let p = a[i] + t * (b[i] - a[i]);
-                f += (lo[i] - p).max(p - hi[i]).max(0.0).powi(2);
+                let g = ((lo[i] - p).max(p - hi[i]) - delta[i]).max(0.0);
+                f += g * g;
             }
             best = best.min(f);
         }
     }
-    best
+    best * SUM_SQ_LOWER
 }
 
 /// A thick segment in 2D: every point within `radius` of `ab`.
@@ -186,7 +229,8 @@ impl Capsule2D {
         Self { a, b, radius }
     }
 
-    /// Exact segment-to-box distance, squared; zero when they intersect.
+    /// Conservative lower bound on the squared segment-to-box distance; zero
+    /// when they intersect (or lie within `f64` rounding of intersection).
     pub fn segment_box_gap_squared(&self, bx: Box2D) -> f64 {
         min_segment_box_gap_squared(
             &[self.a[0], self.a[1], 0.0],
@@ -199,15 +243,21 @@ impl Capsule2D {
         )
     }
 
-    /// Whether any part of `bx` lies within `radius` of the segment.
+    /// Whether any part of `bx` lies within `radius` of the segment
+    /// (conservative against `f64` rounding).
     pub fn overlaps_box(&self, bx: Box2D) -> bool {
-        self.segment_box_gap_squared(bx) <= self.radius * self.radius
+        self.radius >= 0.0
+            && self.segment_box_gap_squared(bx) <= (self.radius * self.radius) * SUM_SQ_UPPER
     }
 
-    /// Whether all of `bx` lies within `radius` of the segment: the farthest
-    /// box point from the segment is a corner.
+    /// Whether all of `bx` is guaranteed to lie within `radius` of the segment:
+    /// the farthest box point from the segment is a corner, tested with an
+    /// upper-bounded distance so no protruding box is accepted whole.
     pub fn contains_box(&self, bx: Box2D) -> bool {
-        let r2 = self.radius * self.radius;
+        if self.radius < 0.0 || self.radius.is_nan() {
+            return false;
+        }
+        let r2 = (self.radius * self.radius) * SUM_SQ_LOWER;
         let (ax, ay, bxx, by) = (self.a[0], self.a[1], self.b[0], self.b[1]);
         [
             [bx.min_x, bx.min_y],
@@ -216,7 +266,7 @@ impl Capsule2D {
             [bx.max_x, bx.max_y],
         ]
         .into_iter()
-        .all(|[x, y]| point_segment_gap_squared_2d(x, y, ax, ay, bxx, by) <= r2)
+        .all(|[x, y]| point_segment_gap_squared_upper_2d(x, y, ax, ay, bxx, by) <= r2)
     }
 }
 
@@ -233,12 +283,16 @@ impl Overlaps2D for Capsule2D {
 
     #[inline]
     fn bounding_box_hint(&self) -> Option<Box2D> {
-        let r = self.radius;
+        let r = self.radius.max(0.0);
+        let sx = self.a[0].abs().max(self.b[0].abs()).max(r);
+        let sy = self.a[1].abs().max(self.b[1].abs()).max(r);
+        let pad_x = r + AXIS_ROUND_EPS * sx;
+        let pad_y = r + AXIS_ROUND_EPS * sy;
         Some(Box2D::new(
-            self.a[0].min(self.b[0]) - r,
-            self.a[1].min(self.b[1]) - r,
-            self.a[0].max(self.b[0]) + r,
-            self.a[1].max(self.b[1]) + r,
+            self.a[0].min(self.b[0]) - pad_x,
+            self.a[1].min(self.b[1]) - pad_y,
+            self.a[0].max(self.b[0]) + pad_x,
+            self.a[1].max(self.b[1]) + pad_y,
         ))
     }
 }
@@ -274,7 +328,8 @@ impl Capsule3D {
         Self { a, b, radius }
     }
 
-    /// Exact segment-to-box distance, squared; zero when they intersect.
+    /// Conservative lower bound on the squared segment-to-box distance; zero
+    /// when they intersect (or lie within `f64` rounding of intersection).
     pub fn segment_box_gap_squared(&self, bx: Box3D) -> f64 {
         min_segment_box_gap_squared(
             &self.a,
@@ -287,14 +342,19 @@ impl Capsule3D {
         )
     }
 
-    /// Whether any part of `bx` lies within `radius` of the segment.
+    /// Whether any part of `bx` lies within `radius` of the segment
+    /// (conservative against `f64` rounding).
     pub fn overlaps_box(&self, bx: Box3D) -> bool {
-        self.segment_box_gap_squared(bx) <= self.radius * self.radius
+        self.radius >= 0.0
+            && self.segment_box_gap_squared(bx) <= (self.radius * self.radius) * SUM_SQ_UPPER
     }
 
-    /// Whether all of `bx` lies within `radius` of the segment.
+    /// Whether all of `bx` is guaranteed to lie within `radius` of the segment.
     pub fn contains_box(&self, bx: Box3D) -> bool {
-        let r2 = self.radius * self.radius;
+        if self.radius < 0.0 || self.radius.is_nan() {
+            return false;
+        }
+        let r2 = (self.radius * self.radius) * SUM_SQ_LOWER;
         let [ax, ay, az] = self.a;
         let [bxx, by, bz] = self.b;
         [
@@ -308,7 +368,7 @@ impl Capsule3D {
             [bx.max_x, bx.max_y, bx.max_z],
         ]
         .into_iter()
-        .all(|[x, y, z]| point_segment_gap_squared_3d(x, y, z, ax, ay, az, bxx, by, bz) <= r2)
+        .all(|[x, y, z]| point_segment_gap_squared_upper_3d(x, y, z, ax, ay, az, bxx, by, bz) <= r2)
     }
 }
 
@@ -325,14 +385,20 @@ impl Overlaps3D for Capsule3D {
 
     #[inline]
     fn bounding_box_hint(&self) -> Option<Box3D> {
-        let r = self.radius;
+        let r = self.radius.max(0.0);
+        let sx = self.a[0].abs().max(self.b[0].abs()).max(r);
+        let sy = self.a[1].abs().max(self.b[1].abs()).max(r);
+        let sz = self.a[2].abs().max(self.b[2].abs()).max(r);
+        let pad_x = r + AXIS_ROUND_EPS * sx;
+        let pad_y = r + AXIS_ROUND_EPS * sy;
+        let pad_z = r + AXIS_ROUND_EPS * sz;
         Some(Box3D::new(
-            self.a[0].min(self.b[0]) - r,
-            self.a[1].min(self.b[1]) - r,
-            self.a[2].min(self.b[2]) - r,
-            self.a[0].max(self.b[0]) + r,
-            self.a[1].max(self.b[1]) + r,
-            self.a[2].max(self.b[2]) + r,
+            self.a[0].min(self.b[0]) - pad_x,
+            self.a[1].min(self.b[1]) - pad_y,
+            self.a[2].min(self.b[2]) - pad_z,
+            self.a[0].max(self.b[0]) + pad_x,
+            self.a[1].max(self.b[1]) + pad_y,
+            self.a[2].max(self.b[2]) + pad_z,
         ))
     }
 }
@@ -508,5 +574,40 @@ mod tests {
         assert!(cap.overlaps_box(Box2D::new(5.0, 5.0, 6.0, 6.0)));
         assert!(cap.overlaps_box(Box2D::new(4.0, 4.0, 5.0, 5.0)));
         assert!(!cap.overlaps_box(Box2D::new(5.1, 5.0, 6.0, 6.0)));
+    }
+
+    #[test]
+    fn conservative_micro_radius_tangent_in_large_coordinates_never_misses() {
+        // Segment tilted by non-power-of-two ratios in large coordinates, with
+        // a box corner placed at exact distance `radius = 1e-6` from `P(1/3)`.
+        let a = [10_000.1, 20_000.2, 30_000.3];
+        let b = [10_003.1, 20_007.2, 30_011.3];
+        let r = 1e-6;
+        let t = 1.0 / 3.0;
+        let p = [
+            a[0] + t * (b[0] - a[0]),
+            a[1] + t * (b[1] - a[1]),
+            a[2] + t * (b[2] - a[2]),
+        ];
+        // Offset along +x by `r`: the box's min_x face is at distance <= r.
+        let bx = Box3D::new(p[0] + r, p[1], p[2], p[0] + r + 1.0, p[1] + 1.0, p[2] + 1.0);
+        let cap = Capsule3D::new(a, b, r);
+        assert!(cap.overlaps_box(bx));
+
+        let mut builder = Index3DBuilder::new(1);
+        builder.add(bx);
+        let index = builder.finish().unwrap();
+        assert_eq!(index.search(&cap), vec![0]);
+    }
+
+    #[test]
+    fn negative_radius_never_overlaps_or_contains() {
+        let cap2 = Capsule2D::new([0.0, 0.0], [1.0, 0.0], -1.0);
+        assert!(!cap2.overlaps_box(Box2D::new(0.0, 0.0, 1.0, 1.0)));
+        assert!(!cap2.contains_box(Box2D::new(0.0, 0.0, 0.1, 0.1)));
+
+        let cap3 = Capsule3D::new([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], -1.0);
+        assert!(!cap3.overlaps_box(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)));
+        assert!(!cap3.contains_box(Box3D::new(0.0, 0.0, 0.0, 0.1, 0.1, 0.1)));
     }
 }

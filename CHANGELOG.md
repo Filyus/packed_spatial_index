@@ -4,6 +4,15 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.36.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.35.0...psi-v0.36.0) - 2026-11-27
+
+### kNN
+
+- **`neighbors_of_box_each_with`.** Added the workspace-reusing twin of
+  `neighbors_of_box_each` taking `&mut NeighborWorkspace` across all 2D/3D
+  owned, view, and SIMD frontends, completing the `_each_with` symmetry with
+  `neighbors_each_with`.
+
 ## [0.35.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.34.0...psi-v0.35.0) - 2026-11-26
 
 ### Search

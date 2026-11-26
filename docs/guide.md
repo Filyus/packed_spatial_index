@@ -18,13 +18,13 @@ the method for each need; the notes after it explain the reasoning.
 | Every hit in a hot loop, no reallocation | `search_into(query, &mut vec)` (your `Vec`, cleared per call) or `search_with(query, &mut workspace)` (a reusable `SearchWorkspace`, returns a `&[usize]`) | `search`, which allocates a fresh `Vec` per query |
 | To stop part-way through the hits | `search_iter(query)` on the owned `f64` indexes — a lazy iterator, so `.take(k)` / `.find(..)` end the traversal — or `visit` returning `ControlFlow::Break` | collecting everything and then breaking |
 | To fold or aggregate hits (sum, min, push elsewhere) | `visit(query, ..)` | `search` followed by a loop |
-| The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `neighbors_each` — same alloc-vs-buffer choice as above. `neighbors_within` adds a distance cap to the *k*; when there is no *k*, use `search_within` below, which skips the heap and the sort | sorting search results by distance |
+| The *k* nearest to a point | `neighbors` / `neighbors_within` / `neighbors_into` / `neighbors_with` / `neighbors_each` / `neighbors_each_with` — same alloc-vs-buffer choice as above. `neighbors_within` adds a distance cap to the *k*; when there is no *k*, use `search_within` below, which skips the heap and the sort | sorting search results by distance |
 | The *k* nearest under my own distance (lon/lat, weighted, …) | `neighbors_metric(..)` with a `\|box\| -> f64` lower bound — `haversine_distance_2d` ships for geographic data | — |
-| Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `search_ordered_each` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
+| Every hit near-to-far, or just the nearest *N* in a frustum | `search_ordered(region, key, max_results, max_key)` / `search_ordered_each` / `search_ordered_each_with` with `view_depth_3d` as the key — the traversal ends at the budget | `search(region)` and then sorting the hits |
 | The object under a click, in "on the ray first, near-to-far" order | `search_pick(region, ray, max_results)` / `search_pick_each` — a lexicographic (perpendicular distance², entry `t`) key that a single scalar cannot express; `search_pick_into` / `search_pick_with` reuse the buffers | `search(region)` plus a manual sort, or `search_ordered` whose flat key ties every box the ray passes through |
 | The *k* heaviest (largest, most important) items in a window | `search_heaviest(region, k)` / `search_heaviest_each` over the `aggregate_scalar` column — best-first on the per-node max (a sweep and a select on small windows), ties by item index; see [The heaviest *k* in a region](#the-heaviest-k-in-a-region) | `search(region)` and then sorting the hits by weight, or `search_ordered`, whose key never sees the stored max |
-| The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `_each` forms | — |
-| Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `raycast_each`, and `raycast_closest` when only the nearest *box* matters | — |
+| The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `_each` / `_each_with` forms | — |
+| Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `raycast_each` / `raycast_each_with`, and `raycast_closest` when only the nearest *box* matters | — |
 | Whether a ray is blocked at all (shadow ray, line of sight) | `raycast_any(ray)` for a box-level test (stops at the first box the segment enters, no priority queue), or a custom `Overlaps3D` ray region + `visit` / `search_region_each` returning `ControlFlow::Break` on the first exact hit (see [Exact shadow rays](#exact-shadow-rays)) | `!raycast(ray).is_empty()`, which collects every hit, or `raycast_each`, which pays for ordering that a shadow ray does not need |
 | All overlapping pairs between two indexes | `join` / `join_each` (`pairs` within one index) | a query per item |
 | Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `search_within_each` / `search_within_any` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
@@ -313,9 +313,10 @@ SIMD and `f32` frontends.
 
 The index stores boxes, so `raycast_closest` answers with the nearest **box**
 the ray enters, not the nearest triangle. For a mesh the exact test is yours —
-`Ray3D::closest_triangle` over the candidates, with the triangles carried as a
-fixed-width payload (see [Keep payloads outside the
-index](#keep-payloads-outside-the-index)).
+`Ray3D::closest_triangle` (or `Ray3D::closest_triangle_watertight` when you
+need watertight shared edges, `min_t`, barycentrics, or backface culling) over
+the candidates, with the triangles carried as a fixed-width payload (see [Keep
+payloads outside the index](#keep-payloads-outside-the-index)).
 
 The obvious way to spend those candidates is the expensive one: collect every
 box the ray crosses over the whole segment, then test them all. Instead, walk

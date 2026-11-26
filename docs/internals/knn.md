@@ -89,10 +89,13 @@ index type. See [performance.md](../performance.md) for how to reproduce.
 ## The k = 1 fast path
 
 For a single nearest neighbor there is nothing to browse: keep one node queue and
-a single `best` slot, descend the closest node, shrink `best` whenever a
-leaf box is closer. A box distance of `0` (the query is inside the box) is the
-global minimum, so it returns immediately. That is
-`best_first::nearest_one`, which `neighbors(p, 1)` calls directly.
+a single `best` slot, descend the closest node, and shrink `best` whenever a
+leaf box is closer — breaking distance ties in favor of the smaller item index.
+Because of that tie-break, finding a box at distance `0` does **not** return
+immediately: another subtree at distance `0` may hold an item with a smaller
+index, so the loop finishes descending every node whose distance ties
+`best_dist`. That is `best_first::nearest_one`, which `neighbors(p, 1)` calls
+directly so `neighbors(q, 1)` is always the prefix of `neighbors(q, k)`.
 
 ## Correctness, ties, cutoffs
 
@@ -100,10 +103,11 @@ global minimum, so it returns immediately. That is
   exceeds the distance to any item inside it, because the box encloses the
   subtree), so the browse never emits an item before a closer one. The result is
   the true `k` nearest by box distance.
-- **Order on ties.** Items at equal distance may come out in any order — the API
-  does not promise a tie-break. The two-queue collect and the two-queue visit use
-  the *same* browse, so they agree with each other (a contract the tests check);
-  do not assume a particular order across distinct query methods otherwise.
+- **Order on ties.** Items at equal distance are emitted in ascending item-index
+  order `(d², index)` for any `k` (`NeighborState` orders by distance, then leaf
+  before internal node, then smallest index). Both the two-queue collect,
+  `neighbors_each`, and the `k = 1` `nearest_one` fast path enforce the same
+  order, so `neighbors(q, 1)` agrees with the first element of `neighbors(q, k)`.
 - **`max_distance`.** A finite cutoff drops nodes and items beyond it as they are
   reached, so a bounded query touches only the local neighborhood.
 

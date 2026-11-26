@@ -10,6 +10,31 @@
 use crate::geometry::{Box2D, Box3D, Point2D, Point3D};
 use crate::triangle::{Triangle3, TriangleHit};
 
+/// Conservative multiplier on `t_max` in the ray-AABB slab test (Ize 2013,
+/// *Robust BVH Ray Traversal*, JCGT 2(2)).
+///
+/// Each slab bound `(bound - origin) * (1.0 / dir)` incurs three `f64`
+/// roundings (`1/d`, `bound - o`, product), so its relative error is bounded by
+/// `gamma_3 = 3u / (1 - 3u)` where `u = f64::EPSILON / 2 = 2^-53`. For any true
+/// intersection (`t_near_exact <= t_far_exact`, both `>= 0`):
+///
+/// `t_near_comp <= t_near_exact * (1 + gamma_3) <= t_far_comp * (1 + gamma_3) / (1 - gamma_3)`.
+///
+/// Because `(1 + gamma_3) / (1 - gamma_3) = 1 + 6u / (1 - 3u) < 1 + 8u = 1 + 4 * f64::EPSILON`,
+/// comparing `t_min <= t_max * SLAB_FAR_SCALE` never drops a true hit (including
+/// grazing faces/edges and hits at `t == max_distance`). When `t_max < 0`,
+/// `t_max * SLAB_FAR_SCALE < 0 <= t_min`, so behind-origin misses stay misses.
+pub(crate) const SLAB_FAR_SCALE: f64 = 1.0 + 4.0 * f64::EPSILON;
+
+/// Conservative multiplier on `t_min` returned by `enter_t`.
+///
+/// Since `t_near_comp <= t_near_exact * (1 + gamma_3)` and
+/// `1 / (1 + gamma_3) > 1 - 4u = 1 - 2 * f64::EPSILON`, scaling the positive
+/// entry parameter by `SLAB_NEAR_SCALE` guarantees a lower bound on the true
+/// entry parameter `t_near_exact` (and keeps it `<= max_distance` even when
+/// `t_min` overshoots `max_distance` by up to `gamma_3`).
+pub(crate) const SLAB_NEAR_SCALE: f64 = 1.0 - 2.0 * f64::EPSILON;
+
 #[inline]
 pub(crate) fn inclusive_ray_cutoff(max_distance: f64) -> f64 {
     if !max_distance.is_finite() {
@@ -32,7 +57,8 @@ pub(crate) fn inclusive_ray_cutoff(max_distance: f64) -> f64 {
 ///
 /// let ray = Ray2D::new(Point2D::new(-1.0, 0.5), 1.0, 0.0, 10.0);
 /// assert!(ray.intersects_box(Box2D::new(0.0, 0.0, 1.0, 1.0)));
-/// assert_eq!(ray.enter_t(Box2D::new(0.0, 0.0, 1.0, 1.0)), Some(1.0));
+/// let t = ray.enter_t(Box2D::new(0.0, 0.0, 1.0, 1.0)).unwrap();
+/// assert!(t <= 1.0 && (1.0 - t) <= 4.0 * f64::EPSILON);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ray2D {
@@ -93,7 +119,8 @@ impl Ray2D {
             || !self.dir_y.is_finite()
     }
 
-    /// `true` when the ray segment touches `bounds` (edges inclusive).
+    /// `true` when the ray segment touches `bounds` (edges inclusive, conservative
+    /// against `f64` slab rounding).
     #[inline]
     pub fn intersects_box(self, bounds: Box2D) -> bool {
         if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
@@ -118,12 +145,12 @@ impl Ray2D {
             bounds.max_y,
             &mut t_min,
             &mut t_max,
-        )
+        ) && t_min <= t_max * SLAB_FAR_SCALE
     }
 
-    /// Entry parameter `t` where the ray segment first touches `bounds` (`0.0` if the
-    /// origin is inside), or `None` if the segment misses. Used by ordered closest-hit
-    /// traversal.
+    /// Conservative lower bound on the entry parameter `t` where the ray segment
+    /// first touches `bounds` (`0.0` if the origin is inside), or `None` if the
+    /// segment misses. Used by ordered closest-hit traversal.
     #[inline]
     pub fn enter_t(self, bounds: Box2D) -> Option<f64> {
         if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
@@ -148,8 +175,8 @@ impl Ray2D {
             bounds.max_y,
             &mut t_min,
             &mut t_max,
-        );
-        hit.then_some(t_min)
+        ) && t_min <= t_max * SLAB_FAR_SCALE;
+        hit.then_some(t_min * SLAB_NEAR_SCALE)
     }
 }
 
@@ -239,7 +266,8 @@ impl Ray3D {
             || !self.dir_z.is_finite()
     }
 
-    /// `true` when the ray segment touches `bounds` (faces inclusive).
+    /// `true` when the ray segment touches `bounds` (faces inclusive, conservative
+    /// against `f64` slab rounding).
     #[inline]
     pub fn intersects_box(self, bounds: Box3D) -> bool {
         if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
@@ -272,12 +300,12 @@ impl Ray3D {
             bounds.max_z,
             &mut t_min,
             &mut t_max,
-        )
+        ) && t_min <= t_max * SLAB_FAR_SCALE
     }
 
-    /// Entry parameter `t` where the ray segment first touches `bounds` (`0.0` if the
-    /// origin is inside), or `None` if the segment misses. Used by ordered closest-hit
-    /// traversal.
+    /// Conservative lower bound on the entry parameter `t` where the ray segment
+    /// first touches `bounds` (`0.0` if the origin is inside), or `None` if the
+    /// segment misses. Used by ordered closest-hit traversal.
     #[inline]
     pub fn enter_t(self, bounds: Box3D) -> Option<f64> {
         if self.max_distance < 0.0 || self.max_distance.is_nan() || self.has_non_finite_component()
@@ -310,8 +338,8 @@ impl Ray3D {
             bounds.max_z,
             &mut t_min,
             &mut t_max,
-        );
-        hit.then_some(t_min)
+        ) && t_min <= t_max * SLAB_FAR_SCALE;
+        hit.then_some(t_min * SLAB_NEAR_SCALE)
     }
 
     /// Exact squared Euclidean distance from this ray segment to `bounds`,
@@ -354,17 +382,16 @@ impl Ray3D {
         let mut ts = [0.0f64; 8];
         let mut nt = 2usize;
         ts[1] = self.max_distance;
-        // An axis is "moving" relative to the direction's own magnitude: the
-        // direction need not be a unit vector, so an absolute floor would call
-        // every axis of a uniformly small direction stationary and merge the
-        // pieces its crossings separate.
-        let eps = 1e-12 * dir[0].abs().max(dir[1].abs()).max(dir[2].abs());
+        // Every non-zero direction axis can cross a slab boundary; finite
+        // crossings strictly inside `(0, max_distance)` split the quadratic
+        // pieces. Overflowing divisions (tiny `dir[a]`) yield non-finite `t`
+        // and are skipped without an arbitrary threshold.
         for a in 0..3 {
-            if dir[a].abs() > eps {
+            if dir[a] != 0.0 {
                 let t0 = (lo[a] - org[a]) / dir[a];
                 let t1 = (hi[a] - org[a]) / dir[a];
                 for t in [t0, t1] {
-                    if t > 0.0 && t < self.max_distance {
+                    if t.is_finite() && t > 0.0 && t < self.max_distance {
                         let mut i = nt;
                         ts[nt] = t;
                         nt += 1;
@@ -427,18 +454,19 @@ impl Ray3D {
             }
             let mut a2 = 0.0;
             let mut a1 = 0.0;
-            let mut a0 = 0.0;
             for a in 0..3 {
                 a2 += m[a] * m[a];
                 a1 += 2.0 * c[a] * m[a];
-                a0 += c[a] * c[a];
             }
             let t_star = if a2 > 0.0 {
                 (-a1 / (2.0 * a2)).clamp(t0, t1)
             } else {
                 t0
             };
-            best = best.min((a2 * t_star * t_star + a1 * t_star + a0).max(0.0));
+            // Evaluate the sum of squared axis gaps directly at `t_star` rather
+            // than the expanded `a2*t² + a1*t + a0`, which cancels when `|c|`
+            // is large relative to the residual gap.
+            best = best.min(dist_at(t_star));
         }
         for t in &ts[..nt] {
             best = best.min(dist_at(*t));
@@ -486,7 +514,7 @@ fn slab(
 
     *t_min = (*t_min).max(near);
     *t_max = (*t_max).min(far);
-    *t_min <= *t_max
+    true
 }
 
 #[cfg(test)]
@@ -552,6 +580,51 @@ mod distance_tests {
         let behind = Box3D::new(-12.0, -1.0, -1.0, -10.0, 1.0, 1.0);
         let d2 = ray.distance_squared_to_box(behind);
         assert!((d2 - 100.0).abs() < 1e-9, "{d2}"); // origin (0,0,0), dx gap 10
+    }
+
+    #[test]
+    fn conservative_slab_hits_grazing_corner_and_lower_bounds_enter_t() {
+        // Non-power-of-two direction where `1.0 / dir` rounds; aim directly at
+        // a box corner `origin + t_true * dir` so a non-conservative slab can
+        // miss on ULP mismatch between axes.
+        let origin = Point3D::new(0.1, 0.2, 0.3);
+        let dir = [3.0, 7.0, 11.0];
+        let t_true = 1.0 / 3.0;
+        let corner = [
+            origin.x + t_true * dir[0],
+            origin.y + t_true * dir[1],
+            origin.z + t_true * dir[2],
+        ];
+        let bx = Box3D::new(
+            corner[0],
+            corner[1],
+            corner[2],
+            corner[0] + 1.0,
+            corner[1] + 1.0,
+            corner[2] + 1.0,
+        );
+        let ray = Ray3D::new(origin, dir[0], dir[1], dir[2], t_true);
+        assert!(ray.intersects_box(bx));
+        let t_enter = ray
+            .enter_t(bx)
+            .expect("grazing corner at max_distance must hit");
+        assert!(
+            t_enter <= t_true,
+            "enter_t {t_enter} exceeded true t {t_true}"
+        );
+    }
+
+    #[test]
+    fn distance_to_missed_box_tracks_tiny_nonzero_axis_crossing() {
+        // Direction has a tiny nonzero y component (`1e-14`), smaller than the
+        // old `1e-12` relative cutoff, yet over `max_distance = 1e16` it
+        // crosses the box's y slab completely.
+        let ray = Ray3D::new(Point3D::new(0.0, 0.0, 0.0), 1.0, 1e-14, 0.0, 1e16);
+        let bx = Box3D::new(1e15, 10.0, 1.0, 1e15 + 1.0, 11.0, 2.0);
+        // At t = 1e15: p = (1e15, 10.0, 0.0), which is inside x and y slabs
+        // and only 1.0 away in z -> d² = 1.0.
+        let d2 = ray.distance_squared_to_box(bx);
+        assert!((d2 - 1.0).abs() < 1e-9, "expected ~1.0, got {d2}");
     }
 }
 

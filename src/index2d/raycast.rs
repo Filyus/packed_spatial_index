@@ -25,7 +25,9 @@ impl Index2D {
     ///
     /// let ray = Ray2D::new(Point2D::new(-1.0, 0.5), 1.0, 0.0, 10.0);
     /// assert_eq!(index.raycast(ray), vec![0]);
-    /// assert_eq!(index.raycast_closest(ray), Some((0, 1.0)));
+    /// let (id, t) = index.raycast_closest(ray).unwrap();
+    /// assert_eq!(id, 0);
+    /// assert!(t <= 1.0 && (1.0 - t) <= 4.0 * f64::EPSILON);
     /// ```
     pub fn raycast(&self, ray: Ray2D) -> Vec<usize> {
         let mut results = Vec::new();

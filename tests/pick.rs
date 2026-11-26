@@ -202,7 +202,11 @@ fn on_ray_boxes_order_by_depth() {
     for h in &hits {
         assert_eq!(h.distance_squared, 0.0);
     }
-    assert_eq!(hits[0].entry_t, 3.0);
+    assert!(
+        hits[0].entry_t <= 3.0 && (3.0 - hits[0].entry_t) <= 4.0 * 3.0 * f64::EPSILON,
+        "entry_t={} should be a tight conservative lower bound on 3.0",
+        hits[0].entry_t
+    );
 }
 
 /// THE invariant that forces the two-component key: an off-ray box that the

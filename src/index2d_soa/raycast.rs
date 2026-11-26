@@ -9,7 +9,7 @@ use crate::{
     geometry::Box2D,
     index2d::frame,
     neighbors::{NeighborNodeState, NeighborState, NeighborWorkspace},
-    ray::{Ray2D, inclusive_ray_cutoff},
+    ray::{Ray2D, SLAB_FAR_SCALE, SLAB_NEAR_SCALE, inclusive_ray_cutoff},
     traversal::{SearchWorkspace, upper_bound_level},
 };
 
@@ -81,6 +81,8 @@ impl SimdIndex2D {
         let iy = f64x4::splat(ray.inv_dir_y);
         let zero = f64x4::splat(0.0);
         let maxd = f64x4::splat(ray.max_distance);
+        let far_scale = f64x4::splat(SLAB_FAR_SCALE);
+        let near_scale = f64x4::splat(SLAB_NEAR_SCALE);
         let pos_inf = f64x4::splat(f64::INFINITY);
         let neg_inf = f64x4::splat(f64::NEG_INFINITY);
         // See the 3D `raycast_closest_wide`: a zero-direction axis is handled with
@@ -125,10 +127,10 @@ impl SimdIndex2D {
                     zy,
                 );
                 let near = nx.fast_max(ny).fast_max(zero);
-                let far = fx.fast_min(fy).fast_min(maxd);
+                let far = fx.fast_min(fy).fast_min(maxd) * far_scale;
                 let bits = near.simd_le(far).to_bitmask();
                 if bits != 0 {
-                    let tn = near.to_array();
+                    let tn = (near * near_scale).to_array();
                     // `k` indexes `tn` and selects the mask bit, so a range loop is clearest.
                     #[allow(clippy::needless_range_loop)]
                     for k in 0..4 {
@@ -193,6 +195,8 @@ impl SimdIndex2D {
         let iy = _mm512_set1_pd(ray.inv_dir_y);
         let zero = _mm512_setzero_pd();
         let maxd = _mm512_set1_pd(ray.max_distance);
+        let far_scale = _mm512_set1_pd(SLAB_FAR_SCALE);
+        let near_scale = _mm512_set1_pd(SLAB_NEAR_SCALE);
 
         while let Some(node) = queue.pop() {
             if node.dist >= best_t {
@@ -221,15 +225,18 @@ impl SimdIndex2D {
                     _mm512_max_pd(_mm512_min_pd(t1x, t2x), _mm512_min_pd(t1y, t2y)),
                     zero,
                 );
-                let far = _mm512_min_pd(
-                    _mm512_min_pd(_mm512_max_pd(t1x, t2x), _mm512_max_pd(t1y, t2y)),
-                    maxd,
+                let far = _mm512_mul_pd(
+                    _mm512_min_pd(
+                        _mm512_min_pd(_mm512_max_pd(t1x, t2x), _mm512_max_pd(t1y, t2y)),
+                        maxd,
+                    ),
+                    far_scale,
                 );
                 let mut bits: u8 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(near, far);
                 if bits != 0 {
                     let mut tn = [0.0f64; 8];
                     // SAFETY: `tn` holds eight `f64`, matching the 512-bit store.
-                    unsafe { _mm512_storeu_pd(tn.as_mut_ptr(), near) };
+                    unsafe { _mm512_storeu_pd(tn.as_mut_ptr(), _mm512_mul_pd(near, near_scale)) };
                     while bits != 0 {
                         let k = bits.trailing_zeros() as usize;
                         bits &= bits - 1;
@@ -296,6 +303,8 @@ impl SimdIndex2D {
         let iy = _mm512_set1_pd(ray.inv_dir_y);
         let zero = _mm512_setzero_pd();
         let maxd = _mm512_set1_pd(ray.max_distance);
+        let far_scale = _mm512_set1_pd(SLAB_FAR_SCALE);
+        let near_scale = _mm512_set1_pd(SLAB_NEAR_SCALE);
         let pos_inf = _mm512_set1_pd(f64::INFINITY);
         let neg_inf = _mm512_set1_pd(f64::NEG_INFINITY);
         let (zx, zy) = (ray.dir_x == 0.0, ray.dir_y == 0.0);
@@ -338,12 +347,12 @@ impl SimdIndex2D {
                     (nx, fx, ny, fy)
                 };
                 let near = _mm512_max_pd(_mm512_max_pd(nx, ny), zero);
-                let far = _mm512_min_pd(_mm512_min_pd(fx, fy), maxd);
+                let far = _mm512_mul_pd(_mm512_min_pd(_mm512_min_pd(fx, fy), maxd), far_scale);
                 let mut bits: u8 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(near, far);
                 if bits != 0 {
                     let mut tn = [0.0f64; 8];
                     // SAFETY: `tn` holds eight `f64`, matching the 512-bit store.
-                    unsafe { _mm512_storeu_pd(tn.as_mut_ptr(), near) };
+                    unsafe { _mm512_storeu_pd(tn.as_mut_ptr(), _mm512_mul_pd(near, near_scale)) };
                     while bits != 0 {
                         let k = bits.trailing_zeros() as usize;
                         bits &= bits - 1;
@@ -493,6 +502,7 @@ impl SimdIndex2D {
         let iy = f64x4::splat(ray.inv_dir_y);
         let zero = f64x4::splat(0.0);
         let maxd = f64x4::splat(ray.max_distance);
+        let far_scale = f64x4::splat(SLAB_FAR_SCALE);
         let pos_inf = f64x4::splat(f64::INFINITY);
         let neg_inf = f64x4::splat(f64::NEG_INFINITY);
         // A zero-direction axis imposes no `t` bound when the origin is inside
@@ -538,7 +548,7 @@ impl SimdIndex2D {
                     zy,
                 );
                 let near = nx.fast_max(ny).fast_max(zero);
-                let far = fx.fast_min(fy).fast_min(maxd);
+                let far = fx.fast_min(fy).fast_min(maxd) * far_scale;
                 let mut bits = near.simd_le(far).to_bitmask();
                 while bits != 0 {
                     let k = bits.trailing_zeros() as usize;
@@ -604,6 +614,7 @@ impl SimdIndex2D {
         let iy = _mm512_set1_pd(ray.inv_dir_y);
         let zero = _mm512_setzero_pd();
         let maxd = _mm512_set1_pd(ray.max_distance);
+        let far_scale = _mm512_set1_pd(SLAB_FAR_SCALE);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -634,9 +645,12 @@ impl SimdIndex2D {
                     _mm512_max_pd(_mm512_min_pd(t1x, t2x), _mm512_min_pd(t1y, t2y)),
                     zero,
                 );
-                let far = _mm512_min_pd(
-                    _mm512_min_pd(_mm512_max_pd(t1x, t2x), _mm512_max_pd(t1y, t2y)),
-                    maxd,
+                let far = _mm512_mul_pd(
+                    _mm512_min_pd(
+                        _mm512_min_pd(_mm512_max_pd(t1x, t2x), _mm512_max_pd(t1y, t2y)),
+                        maxd,
+                    ),
+                    far_scale,
                 );
                 let mut bits: u8 = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(near, far);
                 if is_leaf {
@@ -710,6 +724,7 @@ impl SimdIndex2D {
         let iy = _mm256_set1_pd(ray.inv_dir_y);
         let zero = _mm256_setzero_pd();
         let maxd = _mm256_set1_pd(ray.max_distance);
+        let far_scale = _mm256_set1_pd(SLAB_FAR_SCALE);
 
         let mut node_index = self.min_xs.len() - 1;
         let mut level = self.level_bounds.len() - 1;
@@ -740,9 +755,12 @@ impl SimdIndex2D {
                     _mm256_max_pd(_mm256_min_pd(t1x, t2x), _mm256_min_pd(t1y, t2y)),
                     zero,
                 );
-                let far = _mm256_min_pd(
-                    _mm256_min_pd(_mm256_max_pd(t1x, t2x), _mm256_max_pd(t1y, t2y)),
-                    maxd,
+                let far = _mm256_mul_pd(
+                    _mm256_min_pd(
+                        _mm256_min_pd(_mm256_max_pd(t1x, t2x), _mm256_max_pd(t1y, t2y)),
+                        maxd,
+                    ),
+                    far_scale,
                 );
                 let mut bits = _mm256_movemask_pd(_mm256_cmp_pd::<_CMP_LE_OQ>(near, far)) as usize;
                 if is_leaf {
@@ -909,6 +927,7 @@ impl SimdIndex2D {
         let iy = f64x4::splat(ray.inv_dir_y);
         let zero = f64x4::splat(0.0);
         let maxd = f64x4::splat(ray.max_distance);
+        let far_scale = f64x4::splat(SLAB_FAR_SCALE);
         let pos_inf = f64x4::splat(f64::INFINITY);
         let neg_inf = f64x4::splat(f64::NEG_INFINITY);
         // The zero-direction `select` of `raycast_collect_wide`.
@@ -942,7 +961,7 @@ impl SimdIndex2D {
                 zy,
             );
             let near = nx.fast_max(ny).fast_max(zero);
-            let far = fx.fast_min(fy).fast_min(maxd);
+            let far = fx.fast_min(fy).fast_min(maxd) * far_scale;
             near.simd_le(far).to_bitmask()
         })
     }
@@ -960,6 +979,7 @@ impl SimdIndex2D {
         let iy = _mm256_set1_pd(ray.inv_dir_y);
         let zero = _mm256_setzero_pd();
         let maxd = _mm256_set1_pd(ray.max_distance);
+        let far_scale = _mm256_set1_pd(SLAB_FAR_SCALE);
         self.any_hit_lanes::<4>(ray, stack, |pos| {
             let columns = [
                 &self.min_xs[pos..pos + 4],
@@ -977,9 +997,12 @@ impl SimdIndex2D {
                 _mm256_max_pd(_mm256_min_pd(t1x, t2x), _mm256_min_pd(t1y, t2y)),
                 zero,
             );
-            let far = _mm256_min_pd(
-                _mm256_min_pd(_mm256_max_pd(t1x, t2x), _mm256_max_pd(t1y, t2y)),
-                maxd,
+            let far = _mm256_mul_pd(
+                _mm256_min_pd(
+                    _mm256_min_pd(_mm256_max_pd(t1x, t2x), _mm256_max_pd(t1y, t2y)),
+                    maxd,
+                ),
+                far_scale,
             );
             _mm256_movemask_pd(_mm256_cmp_pd::<_CMP_LE_OQ>(near, far)) as u32
         })
@@ -998,6 +1021,7 @@ impl SimdIndex2D {
         let iy = _mm512_set1_pd(ray.inv_dir_y);
         let zero = _mm512_setzero_pd();
         let maxd = _mm512_set1_pd(ray.max_distance);
+        let far_scale = _mm512_set1_pd(SLAB_FAR_SCALE);
         self.any_hit_lanes::<8>(ray, stack, |pos| {
             // The descent calls this only with `pos + 8 <= end <= len`.
             let columns = [
@@ -1016,9 +1040,12 @@ impl SimdIndex2D {
                 _mm512_max_pd(_mm512_min_pd(t1x, t2x), _mm512_min_pd(t1y, t2y)),
                 zero,
             );
-            let far = _mm512_min_pd(
-                _mm512_min_pd(_mm512_max_pd(t1x, t2x), _mm512_max_pd(t1y, t2y)),
-                maxd,
+            let far = _mm512_mul_pd(
+                _mm512_min_pd(
+                    _mm512_min_pd(_mm512_max_pd(t1x, t2x), _mm512_max_pd(t1y, t2y)),
+                    maxd,
+                ),
+                far_scale,
             );
             u32::from(_mm512_cmp_pd_mask::<_CMP_LE_OQ>(near, far))
         })

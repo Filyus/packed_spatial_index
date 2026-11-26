@@ -108,7 +108,14 @@ fn raycast_closest_2d_includes_exact_max_distance_hit_and_rejects_invalid_rays()
     let index = builder.finish().unwrap();
 
     let boundary = Ray2D::new(Point2D::new(0.0, 0.5), 1.0, 0.0, 10.0);
-    assert_eq!(index.raycast_closest(boundary), Some((0, 10.0)));
+    let (hit_id, hit_t) = index
+        .raycast_closest(boundary)
+        .expect("boundary hit at max_distance");
+    assert_eq!(hit_id, 0);
+    assert!(
+        hit_t <= 10.0 && (10.0 - hit_t) <= 4.0 * 10.0 * f64::EPSILON,
+        "hit_t={hit_t} should be a tight conservative lower bound on 10.0"
+    );
 
     let nan_origin = Ray2D::new(Point2D::new(f64::NAN, 0.5), 1.0, 0.0, 20.0);
     assert!(index.raycast(nan_origin).is_empty());

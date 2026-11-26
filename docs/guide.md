@@ -25,7 +25,7 @@ the method for each need; the notes after it explain the reasoning.
 | The *k* heaviest (largest, most important) items in a window | `search_heaviest(region, k)` / `search_heaviest_each` over the `aggregate_scalar` column — best-first on the per-node max (a sweep and a select on small windows), ties by item index; see [The heaviest *k* in a region](#the-heaviest-k-in-a-region) | `search(region)` and then sorting the hits by weight, or `search_ordered`, whose key never sees the stored max |
 | The *k* nearest to a **box**, not a point | `neighbors_of_box` and its `_within` / `_into` / `_with` / `_each` forms | — |
 | Hits along a ray, or the closest one | `raycast` / `raycast_into` / `raycast_with` / `raycast_each`, and `raycast_closest` when only the nearest *box* matters | — |
-| Whether a ray is blocked at all (shadow ray, line of sight) | `raycast_any(ray)` — stops at the first box the segment enters, in no order, with no priority queue | `!raycast(ray).is_empty()`, which collects every hit, or `raycast_closest`, which pays for the order |
+| Whether a ray is blocked at all (shadow ray, line of sight) | `raycast_any(ray)` for a box-level test (stops at the first box the segment enters, no priority queue), or a custom `Overlaps3D` ray region + `visit` / `search_region_each` returning `ControlFlow::Break` on the first exact hit (see [Exact shadow rays](#exact-shadow-rays)) | `!raycast(ray).is_empty()`, which collects every hit, or `raycast_each`, which pays for ordering that a shadow ray does not need |
 | All overlapping pairs between two indexes | `join` / `join_each` (`pairs` within one index) | a query per item |
 | Everything within a distance of one place, no *k* | `search_within(query, max_distance)` / `search_within_into` / `search_within_each` / `search_within_any` / `count_within` — unordered, unlike `neighbors_within` | `search` on a `max_distance`-inflated box and then filtering the hits, or `neighbors_within` with a huge `k` |
 | The single closest pair, with no distance to guess | `closest_pair()` within one index, `closest_pair_to(&other)` between two | `join_within` with a guessed `max_distance`, widened until it is non-empty |
@@ -354,6 +354,67 @@ walked, growing with density. Below roughly **five candidates per ray** that tax
 is larger than the narrow phase it saves and collecting everything is the right
 shape. `examples/raycast_mesh.rs` runs the ordered form end to end;
 `benches/paired_raycast_prune.rs` is where the numbers come from.
+
+### Exact shadow rays
+
+`raycast_any(ray)` descends depth-first with no priority queue, but it stops at
+the first **box** the segment enters rather than testing the geometry inside.
+When you need an exact occlusion test (shadow ray, line of sight against
+triangles), ordering does not matter either — you want depth-first traversal
+with early exit on the first exact hit.
+
+Wrap the ray segment in a type implementing `Overlaps3D` (or `Overlaps2D`) and
+pass it to `visit` (or `search_region_each` on SIMD / `f32` frontends),
+returning `ControlFlow::Break(())` on the first narrow-phase hit:
+
+```rust,ignore
+struct ShadowRay(Ray3D);
+
+impl Overlaps3D for ShadowRay {
+    fn overlaps_box(&self, b: Box3D) -> bool {
+        self.0.intersects_box(b)
+    }
+}
+
+let occluded = index
+    .visit(&ShadowRay(ray), |id| {
+        if exact_hit(id, ray) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .is_break();
+```
+
+This keeps the depth-first stack speed of `raycast_any` while running your
+exact predicate on each candidate leaf.
+
+### Exact kNN over triangles or segments
+
+The same lower-bound rule applies to nearest-neighbor queries over arbitrary
+geometry (triangles, segments, curves) whose bounding boxes live in the index.
+`neighbors_each` yields `(id, box_d2)` in nondecreasing squared box distance,
+which never exceeds the squared distance to the geometry inside the box:
+
+```rust,ignore
+// Nearest single primitive (k = 1):
+let mut best: Option<(usize, f64)> = None;
+index.neighbors_each(query, |id, box_d2| {
+    if best.is_some_and(|(_, d2)| box_d2 > d2) {
+        return ControlFlow::Break(());
+    }
+    let d2 = exact_distance_squared(id, query);
+    if best.is_none_or(|(_, b)| d2 < b) {
+        best = Some((id, d2));
+    }
+    ControlFlow::Continue(())
+});
+```
+
+For `k > 1`, hold the best `k` exact `(d2, id)` pairs in a small max-heap and
+return `ControlFlow::Break(())` once the heap has `k` entries and `box_d2`
+exceeds its top distance.
 
 ## Frustum culling (3D)
 

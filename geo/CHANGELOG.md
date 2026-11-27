@@ -4,6 +4,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.33.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.33.0...psi-geo-v0.33.1) - 2026-11-27
+
+### Geo
+
+- **Well-conditioned `atan2` in `haversine_metres`.** Spherical-radius point
+  filtering now computes the central angle with `atan2(sqrt(a), sqrt(1 - a))`
+  instead of `asin(sqrt(a))`, keeping antipodal distances well-conditioned.
+- **Requires `packed_spatial_index` 0.36.1.** Picks up the core 0.36.1 math and
+  SIMD fixes.
+
 ## [0.33.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.32.0...psi-geo-v0.33.0) - 2026-11-27
 
 ### API

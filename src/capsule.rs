@@ -109,14 +109,14 @@ fn point_segment_gap_squared_upper_3d(
     (gx * gx + gy * gy + gz * gz) * SUM_SQ_UPPER
 }
 
-/// Conservative lower bound on `min_{t in [t0, t1]} gap(P(t), box)²`, where
-/// `P(t)` is the affine segment. Per axis the gap is convex piecewise linear
-/// with one kink where the segment crosses a slab boundary, so splitting at
-/// the kinks leaves pieces on which every axis gap is a fixed-sign affine form
-/// and the squared distance is a plain quadratic — minimized analytically at
-/// its vertex, clamped to the piece, then reduced by the derived per-axis
-/// `f64` rounding margin so the returned value never exceeds the true minimum.
-pub(crate) fn min_segment_box_gap_squared(
+/// Shared piecewise-quadratic segment-to-box squared distance kernel.
+///
+/// Always computes the conservative lower bound `lower <= d_exact²`; when
+/// `WITH_UPPER` is `true`, also computes a conservative upper bound
+/// `upper >= d_exact²` over the same candidate parameters `t in [t0, t1]`,
+/// giving the unconditional nested-box invariant `lower(parent) <= upper(child)`
+/// for every `child ⊆ parent`.
+fn min_segment_box_gap_squared_impl<const WITH_UPPER: bool>(
     a: &[f64; 3],
     b: &[f64; 3],
     lo: &[f64; 3],
@@ -124,7 +124,7 @@ pub(crate) fn min_segment_box_gap_squared(
     dims: usize,
     t0: f64,
     t1: f64,
-) -> f64 {
+) -> (f64, f64) {
     let mut delta = [0.0f64; 3];
     for i in 0..dims {
         let scale = a[i].abs().max(b[i].abs()).max(lo[i].abs()).max(hi[i].abs());
@@ -147,7 +147,8 @@ pub(crate) fn min_segment_box_gap_squared(
     }
     cuts[..cut_len].sort_by(|x, y| x.total_cmp(y));
 
-    let mut best = f64::INFINITY;
+    let mut best_lo = f64::INFINITY;
+    let mut best_hi = f64::INFINITY;
     for piece in cuts[..cut_len].windows(2) {
         let (t_a, t_b) = (piece[0], piece[1]);
         // On this piece each axis gap is `g0 + g1*t` with a fixed sign:
@@ -174,8 +175,15 @@ pub(crate) fn min_segment_box_gap_squared(
         }
         if inside_axes == dims {
             // Every axis inside its slab on this piece: the segment passes
-            // through the box.
-            return 0.0;
+            // through the box (up to `delta[i]` per axis).
+            if !WITH_UPPER {
+                return (0.0, 0.0);
+            }
+            let mut d2 = 0.0;
+            for &d in &delta[..dims] {
+                d2 += d * d;
+            }
+            return (0.0, best_hi.min(d2) * SUM_SQ_UPPER);
         }
         // Minimize `q*t² + l*t + c` on `[t_a, t_b]`. `q` is zero only when
         // every outside axis has a stationary segment (a degenerate point
@@ -185,16 +193,38 @@ pub(crate) fn min_segment_box_gap_squared(
             candidates[1] = (-l / (2.0 * q)).clamp(t_a, t_b);
         }
         for &t in &candidates {
-            let mut f = 0.0;
+            let mut f_lo = 0.0;
+            let mut f_hi = 0.0;
             for i in 0..dims {
                 let p = a[i] + t * (b[i] - a[i]);
-                let g = ((lo[i] - p).max(p - hi[i]) - delta[i]).max(0.0);
-                f += g * g;
+                let raw = (lo[i] - p).max(p - hi[i]).max(0.0);
+                let g_lo = (raw - delta[i]).max(0.0);
+                f_lo += g_lo * g_lo;
+                if WITH_UPPER {
+                    let g_hi = raw + delta[i];
+                    f_hi += g_hi * g_hi;
+                }
             }
-            best = best.min(f);
+            best_lo = best_lo.min(f_lo);
+            if WITH_UPPER {
+                best_hi = best_hi.min(f_hi);
+            }
         }
     }
-    best * SUM_SQ_LOWER
+    (best_lo * SUM_SQ_LOWER, best_hi * SUM_SQ_UPPER)
+}
+
+/// Conservative lower bound on `min_{t in [t0, t1]} gap(P(t), box)²`.
+pub(crate) fn min_segment_box_gap_squared(
+    a: &[f64; 3],
+    b: &[f64; 3],
+    lo: &[f64; 3],
+    hi: &[f64; 3],
+    dims: usize,
+    t0: f64,
+    t1: f64,
+) -> f64 {
+    min_segment_box_gap_squared_impl::<false>(a, b, lo, hi, dims, t0, t1).0
 }
 
 /// A thick segment in 2D: every point within `radius` of `ab`.
@@ -233,6 +263,27 @@ impl Capsule2D {
     /// when they intersect (or lie within `f64` rounding of intersection).
     pub fn segment_box_gap_squared(&self, bx: Box2D) -> f64 {
         min_segment_box_gap_squared(
+            &[self.a[0], self.a[1], 0.0],
+            &[self.b[0], self.b[1], 0.0],
+            &[bx.min_x, bx.min_y, 0.0],
+            &[bx.max_x, bx.max_y, 0.0],
+            2,
+            0.0,
+            1.0,
+        )
+    }
+
+    /// Two-sided conservative bounds `(lower, upper)` on the exact squared
+    /// segment-to-box distance, satisfying `0.0 <= lower <= d_exact² <= upper`.
+    ///
+    /// Because `lower(parent) <= d_exact²(parent) <= d_exact²(child) <= upper(child)`
+    /// holds unconditionally for every `child ⊆ parent`, callers that use a
+    /// box-level gatekeeper can either gate on `upper <= r²` (against an
+    /// `overlaps_box` traversal) or traverse with radius
+    /// `r * (1.0 + 4.0 * f64::EPSILON) + 16.0 * 2.0_f64.sqrt() * f64::EPSILON * max_coord`
+    /// to guarantee a superset of `overlaps_box` at radius `r`.
+    pub fn segment_box_gap_squared_bounds(&self, bx: Box2D) -> (f64, f64) {
+        min_segment_box_gap_squared_impl::<true>(
             &[self.a[0], self.a[1], 0.0],
             &[self.b[0], self.b[1], 0.0],
             &[bx.min_x, bx.min_y, 0.0],
@@ -332,6 +383,27 @@ impl Capsule3D {
     /// when they intersect (or lie within `f64` rounding of intersection).
     pub fn segment_box_gap_squared(&self, bx: Box3D) -> f64 {
         min_segment_box_gap_squared(
+            &self.a,
+            &self.b,
+            &[bx.min_x, bx.min_y, bx.min_z],
+            &[bx.max_x, bx.max_y, bx.max_z],
+            3,
+            0.0,
+            1.0,
+        )
+    }
+
+    /// Two-sided conservative bounds `(lower, upper)` on the exact squared
+    /// segment-to-box distance, satisfying `0.0 <= lower <= d_exact² <= upper`.
+    ///
+    /// Because `lower(parent) <= d_exact²(parent) <= d_exact²(child) <= upper(child)`
+    /// holds unconditionally for every `child ⊆ parent`, callers that use a
+    /// box-level gatekeeper can either gate on `upper <= r²` (against an
+    /// `overlaps_box` traversal) or traverse with radius
+    /// `r * (1.0 + 4.0 * f64::EPSILON) + 16.0 * 3.0_f64.sqrt() * f64::EPSILON * max_coord`
+    /// to guarantee a superset of `overlaps_box` at radius `r`.
+    pub fn segment_box_gap_squared_bounds(&self, bx: Box3D) -> (f64, f64) {
+        min_segment_box_gap_squared_impl::<true>(
             &self.a,
             &self.b,
             &[bx.min_x, bx.min_y, bx.min_z],
@@ -609,5 +681,51 @@ mod tests {
         let cap3 = Capsule3D::new([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], -1.0);
         assert!(!cap3.overlaps_box(Box3D::new(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)));
         assert!(!cap3.contains_box(Box3D::new(0.0, 0.0, 0.0, 0.1, 0.1, 0.1)));
+    }
+
+    #[test]
+    fn two_sided_bounds_bracket_exact_and_preserve_parent_child_inclusion() {
+        let mut rng = StdRng::seed_from_u64(0xCA95_0012);
+        for _ in 0..2000 {
+            let a = [
+                rng.random_range(-500.0..500.0),
+                rng.random_range(-500.0..500.0),
+                rng.random_range(-500.0..500.0),
+            ];
+            let b = [
+                rng.random_range(-500.0..500.0),
+                rng.random_range(-500.0..500.0),
+                rng.random_range(-500.0..500.0),
+            ];
+            let cap3 = Capsule3D::new(a, b, 1.0);
+            let px = rng.random_range(-500.0..500.0);
+            let py = rng.random_range(-500.0..500.0);
+            let pz = rng.random_range(-500.0..500.0);
+            let parent = Box3D::new(px, py, pz, px + 40.0, py + 40.0, pz + 40.0);
+            let cx = px + rng.random_range(0.0..30.0);
+            let cy = py + rng.random_range(0.0..30.0);
+            let cz = pz + rng.random_range(0.0..30.0);
+            let child = Box3D::new(cx, cy, cz, cx + 10.0, cy + 10.0, cz + 10.0);
+
+            let (p_lo, p_hi) = cap3.segment_box_gap_squared_bounds(parent);
+            let (c_lo, c_hi) = cap3.segment_box_gap_squared_bounds(child);
+            assert_eq!(p_lo, cap3.segment_box_gap_squared(parent));
+            assert_eq!(c_lo, cap3.segment_box_gap_squared(child));
+            assert!(p_lo <= p_hi && c_lo <= c_hi);
+            // Unconditional nested-box theorem: `lower(parent) <= upper(child)`.
+            assert!(
+                p_lo <= c_hi,
+                "parent lower {p_lo} exceeded child upper {c_hi}"
+            );
+
+            // 2D counterpart on the XY projection.
+            let cap2 = Capsule2D::new([a[0], a[1]], [b[0], b[1]], 1.0);
+            let p2 = Box2D::new(parent.min_x, parent.min_y, parent.max_x, parent.max_y);
+            let c2 = Box2D::new(child.min_x, child.min_y, child.max_x, child.max_y);
+            let (p2_lo, p2_hi) = cap2.segment_box_gap_squared_bounds(p2);
+            let (c2_lo, c2_hi) = cap2.segment_box_gap_squared_bounds(c2);
+            assert_eq!(p2_lo, cap2.segment_box_gap_squared(p2));
+            assert!(p2_lo <= p2_hi && c2_lo <= c2_hi && p2_lo <= c2_hi);
+        }
     }
 }

@@ -296,14 +296,13 @@ Three more region shapes ride the same `search(&shape)` machinery:
   `search(bbox) + filter` at radii from 0.5 to 50 units on 1M boxes.
 - [`Cone3D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Cone3D.html)
   — a solid sensor-FOV / spotlight cone (`try_new` validates the axis, the
-  half-angle and the height). The box test is exact up to floating point: it
-  minimizes, over the height, the clearance between the axis and the box's
-  slice at that height against the cone's radius there — a convex function of
-  the height, so a bracketing search settles it, after cheap early outs (a
-  corner inside, the axis through the box, the axis too far for the radius at
-  the box's top), and the search itself stops as soon as convexity proves the
-  minimum positive. ~51x faster than the bounding-box workaround at a 5.7°
-  aperture and ~12x at 34° on 1M boxes (0.1 ms and 0.35 ms per query).
+  half-angle and the height). The box test is exact up to floating point: after
+  cheap early outs (a corner inside, the axis through the box, the axis too far
+  for the radius at the box's top), it solves the KKT curve
+  `q_i(s) = clamp(apex_i + s·axis_i, lo_i, hi_i)` in closed form over its ≤ 6
+  piecewise-quadratic intervals — no iteration. ~61x faster than the
+  bounding-box workaround at a 5.7° aperture and ~15.5x at 34° on 1M boxes
+  (0.094 ms and 0.27 ms per query).
 
 All three answer the full region family — `search` / `count` / `any` / `first`
 / `visit` on the owned `f64` indexes and views, the `*_region` spellings on the

@@ -958,7 +958,10 @@ Criterion view with `cargo bench --bench raycast3d_bench --features simd`.
 
 A triangle payload plus the index over each triangle's bounding box is a
 streamable mesh BVH: `raycast` returns candidate boxes, then
-`Ray3D::closest_triangle` runs the exact Moller-Trumbore test only on those. The
+`Ray3D::closest_triangle` runs the exact hit test only on those — watertight
+Woop-Benthin-Wald (2013) in `f64` for [`Triangle3D`] (no shared-edge leaks),
+and the fast 8-wide SIMD Moller-Trumbore kernel (`wide::f32x8`) in `f32` for
+[`Triangle3DF32`]. The
 records are fixed-width, so the payload drops its offset table (smaller file, one
 fewer streamed read) and a view borrows them as a zero-copy typed slice. Any
 payload whose blobs are all the same size gets the first two of those without
@@ -967,17 +970,19 @@ borrowed as typed records, since a stride alone does not identify a type. The
 `f32` records (`Triangle3DF32`, 36 bytes) are half the size of `f64`
 (`Triangle3D`, 72 bytes) and test 8 at a time through `wide::f32x8`; the `f64`
 path is scalar. Workload: 4,096 rays against 4,096 candidate triangles (the
-narrow-phase test). Lower is better.
+narrow-phase test), pinned to one core. Lower is better.
 
 | `closest_triangle` | per batch | per ray x triangle |
 | --- | ---: | ---: |
-| `f64` `Triangle3D` (scalar) | 121.6 ms | 7.2 ns |
-| `f32` `Triangle3DF32` (SIMD) | 47.8 ms | 2.8 ns |
+| `f64` `Triangle3D` (scalar, watertight) | 204.0 ms | 12.2 ns |
+| `f32` `Triangle3DF32` (SIMD, Moller-Trumbore) | 33.2 ms | 2.0 ns |
 
-The `f32` SIMD kernel runs ~2.5x faster than scalar `f64` here. Most of that is
-the kernel: in pure scalar (no `simd` feature) `f32` is only modestly ahead of
-`f64`, since both autovectorize and the win is mainly the 8-wide test. f32's
-other benefit is size — half the payload bytes on disk and over the wire.
+The `f32` SIMD kernel runs ~6.1x faster than scalar watertight `f64` here (1.98
+ns vs 12.2 ns per ray-triangle test), skipping all-miss 8-triangle chunks and
+tightening `max_t` as hits land. `f32`'s other benefit is size — half the
+payload bytes on disk and over the wire. Use
+`Ray3D::closest_triangle_watertight` when you need watertight edges, `min_t`,
+barycentrics, or backface culling over `Triangle3DF32` as well.
 Reproduce with `cargo bench --bench raytriangle3d_bench --features simd`.
 
 ## The four range-search frontends, by CPU

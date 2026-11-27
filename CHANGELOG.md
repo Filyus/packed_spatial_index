@@ -4,6 +4,38 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.37.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.36.1...psi-v0.37.0) - 2026-11-27
+
+### Search
+
+- **Two-sided `Capsule2D` / `Capsule3D` gap bounds.** Added
+  `Capsule2D::segment_box_gap_squared_bounds` and
+  `Capsule3D::segment_box_gap_squared_bounds` returning `(lower, upper)` with
+  `0 <= lower <= d_exact² <= upper` and the unconditional nested-box invariant
+  `lower(parent) <= upper(child)` for every `child ⊆ parent`, enabling sound
+  box-level gatekeepers alongside capsule traversal.
+
+### kNN
+
+- **Zero-allocation `neighbors_with` on SIMD and `f32` frontends.** Forwarded
+  `NeighborWorkspace::node_queue` directly into `collect_neighbors_two_queue`
+  across `SimdIndex2D`/`SimdIndex3D` (owned and view) and all `f32` frontends,
+  eliminating the per-call scratch `BinaryHeap` allocation.
+
+### Performance
+
+- **4-wide `f64x4` SIMD watertight ray-triangle intersection.** Under the
+  `simd` feature, `Ray3D::closest_triangle` (over `Triangle3D`) and
+  `Ray3D::closest_triangle_watertight` now evaluate four triangles at a time
+  with `wide::f64x4` and skip all-miss chunks via `miss.all()` while preserving
+  bit-identical Woop–Benthin–Wald math (−81.6% / 5.4× faster in paired
+  interleaved A/B, 2.24 ns/ray×triangle).
+- **4-wide `f64x4` SIMD box distances in `SimdIndex2D` and `SimdIndex3D` kNN.**
+  Vectorized box-distance computation across `neighbors*`, `nearest_one`, and
+  `neighbors_each*` on the SoA indexes (−14.9% to −16.5% on 1M 3D surface-cloud
+  kNN at `k = 24..40`, bringing `SimdIndex3D` from 1.23× down to 1.02–1.05× of
+  `Index3D`).
+
 ## [0.36.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.36.0...psi-v0.36.1) - 2026-11-27
 
 ### Search

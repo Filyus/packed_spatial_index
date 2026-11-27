@@ -10,8 +10,11 @@ Operational notes for an AI agent (Codex/Claude) working in this repo.
   `docs:`, `bench:`, `lint:`). The prefix decides the changelog group.
 - Put benchmark tables and perf numbers in the commit **body**, never the
   subject — only the subject reaches release notes.
-- Measure before committing a perf change: A/B with `git stash` on a quiet
-  machine, keep it only on a stable win, revert dead ends.
+- Measure before committing a perf change: A/B on a quiet, pinned core
+  (`BENCH_PIN_CORE=0`, interleaved/rotated with an untouched control or
+  `git stash`), keep it only on a stable win, revert dead ends, and update any
+  affected figures or prose in [`docs/performance.md`](docs/performance.md) in
+  the **same commit** (with full numbers in the commit body).
 
 ## Workflow
 
@@ -23,11 +26,18 @@ Operational notes for an AI agent (Codex/Claude) working in this repo.
   muddy). Run `cargo fmt --check` + `cargo clippy` + `cargo test` for the
   touched crate(s) before committing; the `geo/` companion crate is formatted
   separately (`cargo fmt --all --manifest-path geo/Cargo.toml`).
+- **Update documentation and benchmark numbers together with the code.**
+  Whenever a change adds or alters public API, behavior, traversal/architecture
+  details, or measured performance, update all affected docs (`README.md`,
+  `docs/*.md`, `docs/internals/*.md`, [`docs/performance.md`](docs/performance.md),
+  rustdoc) and re-measure affected benchmarks in that **same commit** — never
+  defer doc or benchmark updates to separate follow-up commits.
 - Never bump the version or touch `Cargo.lock` outside a `release:` commit.
-  Feature/fix commits carry code only; a user-facing note may go under that
-  crate's `## [Unreleased]`. The version bump (and the semver decision: minor
-  for new public API, patch for a fix, major for a breaking change) happens in
-  the release commit alone — see [`RELEASING-AGENT.md`](RELEASING-AGENT.md).
+  Feature/fix commits carry the code, tests, docs, and updated benchmark figures
+  for that task (plus an optional user-facing note under that crate's
+  `## [Unreleased]`). The version bump (and the semver decision: minor for new
+  public API, patch for a fix, major for a breaking change) happens in the
+  release commit alone — see [`RELEASING-AGENT.md`](RELEASING-AGENT.md).
 - Push only when the maintainer asks, or when preparing a release.
 
 ## Architecture discipline

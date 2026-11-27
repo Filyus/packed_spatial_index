@@ -448,7 +448,105 @@ fn watertight_closest_f64<T>(
     let mut best_t = max_t;
     let mut best: Option<TriangleHitDetail> = None;
 
-    for (i, tri) in tris.iter().enumerate() {
+    #[cfg(feature = "simd")]
+    let (chunks, rem) = tris.as_chunks::<4>();
+    #[cfg(feature = "simd")]
+    {
+        use wide::f64x4;
+        let ox = f64x4::splat(o[kx]);
+        let oy = f64x4::splat(o[ky]);
+        let oz = f64x4::splat(o[kz]);
+        let vsx = f64x4::splat(sx);
+        let vsy = f64x4::splat(sy);
+        let zero = f64x4::splat(0.0);
+
+        for (chunk_i, chunk) in chunks.iter().enumerate() {
+            let (va0, vb0, vc0) = verts(&chunk[0]);
+            let (va1, vb1, vc1) = verts(&chunk[1]);
+            let (va2, vb2, vc2) = verts(&chunk[2]);
+            let (va3, vb3, vc3) = verts(&chunk[3]);
+
+            let ax = f64x4::from([va0[kx], va1[kx], va2[kx], va3[kx]]) - ox;
+            let ay = f64x4::from([va0[ky], va1[ky], va2[ky], va3[ky]]) - oy;
+            let az = f64x4::from([va0[kz], va1[kz], va2[kz], va3[kz]]) - oz;
+            let bx = f64x4::from([vb0[kx], vb1[kx], vb2[kx], vb3[kx]]) - ox;
+            let by = f64x4::from([vb0[ky], vb1[ky], vb2[ky], vb3[ky]]) - oy;
+            let bz = f64x4::from([vb0[kz], vb1[kz], vb2[kz], vb3[kz]]) - oz;
+            let cx = f64x4::from([vc0[kx], vc1[kx], vc2[kx], vc3[kx]]) - ox;
+            let cy = f64x4::from([vc0[ky], vc1[ky], vc2[ky], vc3[ky]]) - oy;
+            let cz = f64x4::from([vc0[kz], vc1[kz], vc2[kz], vc3[kz]]) - oz;
+
+            let ax_s = ax - vsx * az;
+            let ay_s = ay - vsy * az;
+            let bx_s = bx - vsx * bz;
+            let by_s = by - vsy * bz;
+            let cx_s = cx - vsx * cz;
+            let cy_s = cy - vsy * cz;
+
+            let u_e = cx_s * by_s - cy_s * bx_s;
+            let v_e = ax_s * cy_s - ay_s * cx_s;
+            let w_e = bx_s * ay_s - by_s * ax_s;
+
+            let miss = if backface_cull {
+                u_e.simd_lt(zero) | v_e.simd_lt(zero) | w_e.simd_lt(zero)
+            } else {
+                let any_neg = u_e.simd_lt(zero) | v_e.simd_lt(zero) | w_e.simd_lt(zero);
+                let any_pos = u_e.simd_gt(zero) | v_e.simd_gt(zero) | w_e.simd_gt(zero);
+                any_neg & any_pos
+            };
+            let det = u_e + v_e + w_e;
+            let miss = miss | det.simd_eq(zero);
+            if miss.all() {
+                continue;
+            }
+
+            let mut bits = (!miss).to_bitmask();
+            let u_a = u_e.to_array();
+            let v_a = v_e.to_array();
+            let w_a = w_e.to_array();
+            let det_a = det.to_array();
+            let az_a = az.to_array();
+            let bz_a = bz.to_array();
+            let cz_a = cz.to_array();
+            let base = chunk_i * 4;
+            while bits != 0 {
+                let l = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let u_l = u_a[l];
+                let v_l = v_a[l];
+                let w_l = w_a[l];
+                let det_l = det_a[l];
+                let t_scaled = u_l * (sz * az_a[l]) + v_l * (sz * bz_a[l]) + w_l * (sz * cz_a[l]);
+                if det_l > 0.0 {
+                    if t_scaled < min_t * det_l || t_scaled > best_t * det_l {
+                        continue;
+                    }
+                } else if t_scaled > min_t * det_l || t_scaled < best_t * det_l {
+                    continue;
+                }
+                let inv_det = 1.0 / det_l;
+                let t = t_scaled * inv_det;
+                if t < min_t || t > best_t || (best.is_some() && t >= best_t) {
+                    continue;
+                }
+                best_t = t;
+                best = Some(TriangleHitDetail {
+                    index: base + l,
+                    t,
+                    uv: [v_l * inv_det, w_l * inv_det],
+                    front_face: det_l > 0.0,
+                });
+            }
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    let (tail_base, tail_tris) = (tris.len() - rem.len(), rem);
+    #[cfg(not(feature = "simd"))]
+    let (tail_base, tail_tris) = (0usize, tris);
+
+    for (j, tri) in tail_tris.iter().enumerate() {
+        let i = tail_base + j;
         let (va, vb, vc) = verts(tri);
         let a = [va[0] - o[0], va[1] - o[1], va[2] - o[2]];
         let b = [vb[0] - o[0], vb[1] - o[1], vb[2] - o[2]];

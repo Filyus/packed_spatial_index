@@ -175,29 +175,35 @@ impl Frustum3D {
         if !(near >= 0.0 && near.is_finite() && near < ray.max_distance) {
             return Err(FrustumRayError::Near(near));
         }
-        let u = cross3(dir, [0.0, 0.0, 1.0]);
+        let u_dir = [dir[0] / mag, dir[1] / mag, dir[2] / mag];
+        let u = cross3(u_dir, [0.0, 0.0, 1.0]);
         // A ray parallel to +z: the z-up reference gives no right vector, so
         // fall back to x — any frame perpendicular to the direction is fine.
         let u = if u[0] * u[0] + u[1] * u[1] + u[2] * u[2] > 0.0 {
             u
         } else {
-            cross3(dir, [1.0, 0.0, 0.0])
+            cross3(u_dir, [1.0, 0.0, 0.0])
         };
         let u = norm3(u);
-        let v = norm3(cross3(u, dir));
+        let v = norm3(cross3(u, u_dir));
         let o = [ray.origin.x, ray.origin.y, ray.origin.z];
         let dot = |p: [f64; 3], q: [f64; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
-        let (sa, ca) = (half_angle.sin(), half_angle.cos());
+        let (sa, ca) = half_angle.sin_cos();
         let side = |e: [f64; 3]| -> [f64; 4] {
             let n = norm3([
-                sa * dir[0] - ca * e[0],
-                sa * dir[1] - ca * e[1],
-                sa * dir[2] - ca * e[2],
+                sa * u_dir[0] - ca * e[0],
+                sa * u_dir[1] - ca * e[1],
+                sa * u_dir[2] - ca * e[2],
             ]);
             [n[0], n[1], n[2], -dot(n, o)]
         };
-        let near_plane = [dir[0], dir[1], dir[2], -dot(dir, o) - near];
-        let far_plane = [-dir[0], -dir[1], -dir[2], dot(dir, o) + ray.max_distance];
+        // `near` and `ray.max_distance` are in ray-parameter `t` units
+        // (`q = o + t * dir`), so world-unit depths along `u_dir` are
+        // `near * mag` and `ray.max_distance * mag`.
+        let near_world = near * mag;
+        let far_world = ray.max_distance * mag;
+        let near_plane = [u_dir[0], u_dir[1], u_dir[2], -dot(u_dir, o) - near_world];
+        let far_plane = [-u_dir[0], -u_dir[1], -u_dir[2], dot(u_dir, o) + far_world];
         Ok(Self {
             planes: [
                 side(u),
@@ -288,12 +294,14 @@ impl Frustum3D {
     /// [`from_planes`]: Self::from_planes
     /// [`from_view_projection`]: Self::from_view_projection
     pub fn bounding_box(&self) -> Option<Box3D> {
-        // Relative threshold: `det` is the scalar triple product of the three
-        // plane normals, which scales with the product of their magnitudes.
-        // Comparing `|det|` against `EPS * |n0| * |n1| * |n2|` tests the triple
-        // product of the *unit* normals (|sin| of the solid angle they span), so
-        // it is invariant to how the planes are scaled.
-        const EPS: f64 = 1e-9;
+        // Conditioning guard: `det` is the scalar triple product of the three
+        // plane normals, which scales with `|n0| * |n1| * |n2|`. Dividing by
+        // `det` amplifies rounding in the plane equations by `1 / |det_unit|`;
+        // rejecting `|det_unit| < sqrt(f64::EPSILON) ≈ 1.49e-8` (we use `1e-9`
+        // as a conservative singularity guard that fails safe with `None`) keeps
+        // corner coordinates within ~1e-7 relative error rather than silently
+        // exploding on near-parallel planes.
+        const MIN_NORMALIZED_TRIPLE_PRODUCT: f64 = 1e-9;
 
         let cross = |a: [f64; 3], b: [f64; 3]| {
             [
@@ -322,7 +330,7 @@ impl Frustum3D {
                     let n1xn2 = cross(n1, n2);
                     let det = dot(n0, n1xn2);
                     let scale = norm(n0) * norm(n1) * norm(n2);
-                    if scale == 0.0 || det.abs() < EPS * scale {
+                    if scale == 0.0 || det.abs() < MIN_NORMALIZED_TRIPLE_PRODUCT * scale {
                         return None;
                     }
 
@@ -529,5 +537,29 @@ mod ray_ctor_tests {
         );
         let fr = Frustum3D::try_from_ray(ray, 0.2_f64.to_radians(), 1.0).unwrap();
         assert!(fr.overlaps_box(Box3D::new(-1.0, -1.0, 49.0, 1.0, 1.0, 51.0)));
+    }
+
+    #[test]
+    fn non_unit_direction_matches_unit_direction_frustum() {
+        let origin = Point3D::new(-1.0, 2.0, 3.0);
+        let half_angle = 0.15;
+        let unit_ray = Ray3D::new(origin, 0.0, 1.0, 0.0, 100.0);
+        let unit_fr = Frustum3D::try_from_ray(unit_ray, half_angle, 2.0).unwrap();
+
+        for scale in [0.25_f64, 5.0, 100.0] {
+            let scaled_ray = Ray3D::new(origin, 0.0, scale, 0.0, 100.0 / scale);
+            let scaled_fr = Frustum3D::try_from_ray(scaled_ray, half_angle, 2.0 / scale).unwrap();
+            for (p_ref, p_got) in unit_fr.planes().iter().zip(scaled_fr.planes().iter()) {
+                for axis in 0..4 {
+                    assert!(
+                        (p_ref[axis] - p_got[axis]).abs()
+                            <= 16.0 * f64::EPSILON * p_ref[axis].abs().max(1.0),
+                        "scale={scale} axis={axis}: ref={} got={}",
+                        p_ref[axis],
+                        p_got[axis]
+                    );
+                }
+            }
+        }
     }
 }

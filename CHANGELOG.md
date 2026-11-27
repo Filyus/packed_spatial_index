@@ -4,6 +4,23 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.37.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.37.0...psi-v0.37.1) - 2026-11-27
+
+### Performance
+
+- **4-wide `f64x4` SIMD kNN for `f32` SIMD indexes.** `SimdIndex2DF32` and
+  `SimdIndex3DF32` rounded-box nearest-neighbor queries (`neighbors*`,
+  `neighbors_each*`) now evaluate four widened `f32` boxes per step with
+  `wide::f64x4` instead of delegating to the scalar `PointKnn` loop, preserving
+  bit-identical distances and tie-breaking while taking advantage of half the
+  coordinate memory bandwidth.
+- **Dynamic `k`-th distance cutoff in fixed-`k` kNN.** Fixed-`k` nearest-neighbor
+  collection (`neighbors*`, `neighbors_of_box*`) across all 2D/3D, SIMD, `f32`,
+  and view indexes now maintains a bounded `top-k` max-heap (reusing
+  `NeighborWorkspace`) and tightens the pruning cutoff as soon as `k` candidates
+  are found, pruning farther child nodes and leaves before pushing to the queue
+  while preserving deterministic `(distance, index)` ordering.
+
 ## [0.37.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.36.1...psi-v0.37.0) - 2026-11-27
 
 ### Search

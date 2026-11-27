@@ -157,7 +157,7 @@ fn haversine_metres(a_lon: f64, a_lat: f64, b_lon: f64, b_lat: f64) -> f64 {
     let dlat = (b_lat - a_lat).to_radians();
     let dlon = (b_lon - a_lon).to_radians();
     let inner = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
-    EARTH_RADIUS_METRES * 2.0 * inner.sqrt().min(1.0).asin()
+    EARTH_RADIUS_METRES * 2.0 * inner.sqrt().atan2((1.0 - inner).max(0.0).sqrt())
 }
 
 #[cfg(test)]

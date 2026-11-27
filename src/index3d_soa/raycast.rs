@@ -86,17 +86,21 @@ impl SimdIndex3D {
         let iy = f64x4::splat(ray.inv_dir_y);
         let iz = f64x4::splat(ray.inv_dir_z);
         let zero = f64x4::splat(0.0);
-        let maxd = f64x4::splat(ray.max_distance);
+        let mut maxd = f64x4::splat(ray.max_distance);
         let far_scale = f64x4::splat(SLAB_FAR_SCALE);
         let near_scale = f64x4::splat(SLAB_NEAR_SCALE);
         let pos_inf = f64x4::splat(f64::INFINITY);
         let neg_inf = f64x4::splat(f64::NEG_INFINITY);
         // Direction is constant for the whole ray, so degeneracy is a per-axis flag,
-        // not per-lane. For a zero-direction axis the slab imposes no `t` bound when the
-        // origin is inside (inclusive, so a ray exactly on a face still hits) and an
-        // empty interval otherwise — computed with `select` to avoid the `0 * inf = NaN`
-        // that the multiply path would hit.
-        let (zx, zy, zz) = (ray.dir_x == 0.0, ray.dir_y == 0.0, ray.dir_z == 0.0);
+        // not per-lane. For a zero or subnormal direction axis (non-finite
+        // reciprocal), the slab imposes no `t` bound when the origin is inside
+        // (inclusive, so a ray exactly on a face still hits) and an empty interval
+        // otherwise — computed with `select` to avoid `0 * inf = NaN`.
+        let (zx, zy, zz) = (
+            !ray.inv_dir_x.is_finite(),
+            !ray.inv_dir_y.is_finite(),
+            !ray.inv_dir_z.is_finite(),
+        );
         let axis = |mn: f64x4, mx: f64x4, o: f64x4, inv: f64x4, degenerate: bool| {
             if degenerate {
                 let inside = mn.simd_le(o) & o.simd_le(mx);
@@ -154,6 +158,7 @@ impl SimdIndex3D {
                             if is_leaf {
                                 best_t = tn[k];
                                 best_index = Some(self.indices[pos + k]);
+                                maxd = f64x4::splat(best_t);
                             } else {
                                 queue.push(NeighborNodeState::new(self.indices[pos + k], tn[k]));
                             }
@@ -169,6 +174,7 @@ impl SimdIndex3D {
                     if is_leaf {
                         best_t = t;
                         best_index = Some(self.indices[pos]);
+                        maxd = f64x4::splat(best_t);
                     } else {
                         queue.push(NeighborNodeState::new(self.indices[pos], t));
                     }
@@ -213,7 +219,7 @@ impl SimdIndex3D {
         let iy = _mm512_set1_pd(ray.inv_dir_y);
         let iz = _mm512_set1_pd(ray.inv_dir_z);
         let zero = _mm512_setzero_pd();
-        let maxd = _mm512_set1_pd(ray.max_distance);
+        let mut maxd = _mm512_set1_pd(ray.max_distance);
         let far_scale = _mm512_set1_pd(SLAB_FAR_SCALE);
         let near_scale = _mm512_set1_pd(SLAB_NEAR_SCALE);
 
@@ -272,6 +278,7 @@ impl SimdIndex3D {
                             if is_leaf {
                                 best_t = tn[k];
                                 best_index = Some(self.indices[pos + k]);
+                                maxd = _mm512_set1_pd(best_t);
                             } else {
                                 queue.push(NeighborNodeState::new(self.indices[pos + k], tn[k]));
                             }
@@ -287,6 +294,7 @@ impl SimdIndex3D {
                     if is_leaf {
                         best_t = t;
                         best_index = Some(self.indices[pos]);
+                        maxd = _mm512_set1_pd(best_t);
                     } else {
                         queue.push(NeighborNodeState::new(self.indices[pos], t));
                     }
@@ -332,12 +340,16 @@ impl SimdIndex3D {
         let iy = _mm512_set1_pd(ray.inv_dir_y);
         let iz = _mm512_set1_pd(ray.inv_dir_z);
         let zero = _mm512_setzero_pd();
-        let maxd = _mm512_set1_pd(ray.max_distance);
+        let mut maxd = _mm512_set1_pd(ray.max_distance);
         let far_scale = _mm512_set1_pd(SLAB_FAR_SCALE);
         let near_scale = _mm512_set1_pd(SLAB_NEAR_SCALE);
         let pos_inf = _mm512_set1_pd(f64::INFINITY);
         let neg_inf = _mm512_set1_pd(f64::NEG_INFINITY);
-        let (zx, zy, zz) = (ray.dir_x == 0.0, ray.dir_y == 0.0, ray.dir_z == 0.0);
+        let (zx, zy, zz) = (
+            !ray.inv_dir_x.is_finite(),
+            !ray.inv_dir_y.is_finite(),
+            !ray.inv_dir_z.is_finite(),
+        );
 
         // `(near, far)` interval for one axis across eight children.
         let axis = |mn, mx, o, inv, degenerate: bool| {
@@ -397,6 +409,7 @@ impl SimdIndex3D {
                             if is_leaf {
                                 best_t = tn[k];
                                 best_index = Some(self.indices[pos + k]);
+                                maxd = _mm512_set1_pd(best_t);
                             } else {
                                 queue.push(NeighborNodeState::new(self.indices[pos + k], tn[k]));
                             }
@@ -412,6 +425,7 @@ impl SimdIndex3D {
                     if is_leaf {
                         best_t = t;
                         best_index = Some(self.indices[pos]);
+                        maxd = _mm512_set1_pd(best_t);
                     } else {
                         queue.push(NeighborNodeState::new(self.indices[pos], t));
                     }
@@ -549,7 +563,11 @@ impl SimdIndex3D {
         // (inclusive, so a ray on a face still hits) and an empty interval
         // otherwise, computed with `select` to dodge the `0 * inf = NaN` of the
         // multiply path.
-        let (zx, zy, zz) = (ray.dir_x == 0.0, ray.dir_y == 0.0, ray.dir_z == 0.0);
+        let (zx, zy, zz) = (
+            !ray.inv_dir_x.is_finite(),
+            !ray.inv_dir_y.is_finite(),
+            !ray.inv_dir_z.is_finite(),
+        );
         let axis = |mn: f64x4, mx: f64x4, o: f64x4, inv: f64x4, degenerate: bool| {
             if degenerate {
                 let inside = mn.simd_le(o) & o.simd_le(mx);
@@ -1004,7 +1022,11 @@ impl SimdIndex3D {
         let pos_inf = f64x4::splat(f64::INFINITY);
         let neg_inf = f64x4::splat(f64::NEG_INFINITY);
         // The zero-direction `select` of `raycast_collect_wide`.
-        let (zx, zy, zz) = (ray.dir_x == 0.0, ray.dir_y == 0.0, ray.dir_z == 0.0);
+        let (zx, zy, zz) = (
+            !ray.inv_dir_x.is_finite(),
+            !ray.inv_dir_y.is_finite(),
+            !ray.inv_dir_z.is_finite(),
+        );
         let axis = |mn: f64x4, mx: f64x4, o: f64x4, inv: f64x4, degenerate: bool| {
             if degenerate {
                 let inside = mn.simd_le(o) & o.simd_le(mx);

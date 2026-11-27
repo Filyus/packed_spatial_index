@@ -407,4 +407,32 @@ mod ordered_and_views {
             assert_eq!(simd_ts, view_ts);
         }
     }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn simd_raycast_subnormal_direction_on_box_face_hits() {
+        let mut builder = Index3DBuilder::new(8);
+        for i in 0..8 {
+            let x = i as f64 * 2.0;
+            builder.add(Box3D::new(x, 0.0, 0.0, x + 1.0, 1.0, 1.0));
+        }
+        let simd = builder.finish_simd().unwrap();
+        // Subnormal `dir_y` produces `inv_dir_y = inf`; origin `y = 0.0` sits on
+        // the `min_y` face of every box, which previously produced `0 * inf = NaN`
+        // in `wide::f64x4` and dropped the hits.
+        let ray = Ray3D::new(
+            Point3D::new(-1.0, 0.0, 0.5),
+            1.0,
+            f64::from_bits(1),
+            0.0,
+            20.0,
+        );
+        let mut hits = simd.raycast(ray);
+        hits.sort_unstable();
+        assert_eq!(hits, (0..8).collect::<Vec<_>>());
+        assert!(simd.raycast_any(ray));
+        let (idx, t) = simd.raycast_closest(ray).expect("expected closest hit");
+        assert_eq!(idx, 0);
+        assert!(t <= 1.0 && (1.0 - t) <= 4.0 * f64::EPSILON);
+    }
 }

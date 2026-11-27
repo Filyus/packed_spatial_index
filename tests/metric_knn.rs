@@ -248,3 +248,32 @@ fn haversine_knn_picks_nearest_city() {
     assert_eq!(got, exp);
     assert_eq!(got[0], 1, "nearest must be Berlin");
 }
+
+#[test]
+fn haversine_antipodes_antimeridian_and_polar_admissibility() {
+    // Antipodes must stay finite and close to pi * R (never NaN).
+    let anti = haversine_distance_2d((0.0, 0.0), bp(180.0, 0.0), EARTH_RADIUS_M);
+    assert!(anti.is_finite());
+    assert!((anti - std::f64::consts::PI * EARTH_RADIUS_M).abs() < 1e-6);
+
+    // Antimeridian wrapping: -179 deg is 2 deg away from +179 deg.
+    let wrap = haversine_distance_2d((-179.0, 0.0), bp(179.0, 0.0), EARTH_RADIUS_M);
+    let direct = haversine_distance_2d((0.0, 0.0), bp(2.0, 0.0), EARTH_RADIUS_M);
+    assert!((wrap - direct).abs() < 1e-6);
+
+    // Near-polar meridian admissibility: the true closest point on meridian
+    // lon = 60° from (0°, 60°) lies at lat = atan(tan(60°) / cos(60°)) ≈ 73.9°,
+    // strictly closer than the naive per-axis clamp (60°, 60°).
+    let box_meridian = Box2D::new(60.0, 50.0, 80.0, 85.0);
+    let d_box = haversine_distance_2d((0.0, 60.0), box_meridian, EARTH_RADIUS_M);
+    let d_opt_point = haversine_distance_2d((0.0, 60.0), bp(60.0, 73.897886), EARTH_RADIUS_M);
+    let d_clamped = haversine_distance_2d((0.0, 60.0), bp(60.0, 60.0), EARTH_RADIUS_M);
+    assert!(
+        d_box <= d_opt_point + 1e-3,
+        "box distance {d_box} must not exceed interior meridian point {d_opt_point}"
+    );
+    assert!(
+        d_box < d_clamped - 10_000.0,
+        "exact meridian optimum {d_box} should be substantially below naive clamp {d_clamped}"
+    );
+}

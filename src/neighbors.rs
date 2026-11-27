@@ -6,28 +6,60 @@ use crate::geometry::{Box2D, Box3D, Point2D, Point3D};
 /// [`haversine_distance_2d`].
 pub const EARTH_RADIUS_M: f64 = 6_371_008.8;
 
-/// Great-circle (haversine) distance in meters from a `(lon, lat)` query point
-/// (degrees) to the closest point of `bounds`, a lon/lat AABB in degrees.
+/// Exact great-circle (haversine) distance in meters from a `(lon, lat)` query
+/// point (degrees) to the closest point of `bounds`, a lon/lat AABB in degrees.
 ///
 /// Drop this into a [`neighbors_metric`](crate::Index2D::neighbors_metric)
 /// closure for geographic nearest-neighbor queries (`x` = longitude,
 /// `y` = latitude). `earth_radius_m` is usually [`EARTH_RADIUS_M`].
 ///
-/// The closest point is the per-axis clamp of the query onto the box — exact for
-/// the small boxes typical of feature data. For a very large or near-polar box it
-/// is a slight *over*-estimate of the true geodesic minimum, so a marginally
-/// closer item in such a box could be missed; inflate the boxes there if you need
-/// a strict bound.
+/// Uses the exact closed-form minimum over the lon/lat box on the sphere
+/// (accounting for 360° longitude periodicity and the true meridian optimum
+/// `atan2(sin(lat1), cos(lat1) * cos(dlon))`, evaluated with `atan2` so
+/// antipodal points stay well-conditioned and never produce `NaN`), so it is
+/// a strictly admissible lower bound for best-first `neighbors_metric`
+/// traversal even on large or near-polar boxes.
 pub fn haversine_distance_2d(query_lon_lat: (f64, f64), bounds: Box2D, earth_radius_m: f64) -> f64 {
     let (lon, lat) = query_lon_lat;
-    let clamped_lon = lon.clamp(bounds.min_x, bounds.max_x);
-    let clamped_lat = lat.clamp(bounds.min_y, bounds.max_y);
+    let span = bounds.max_x - bounds.min_x;
+    let dlon_deg = if span >= 360.0 {
+        0.0
+    } else {
+        let wrapped = (lon - bounds.min_x).rem_euclid(360.0);
+        if wrapped <= span {
+            0.0
+        } else {
+            (360.0 - wrapped).min(wrapped - span)
+        }
+    };
+
     let lat1 = lat.to_radians();
-    let lat2 = clamped_lat.to_radians();
-    let half_dlat = (clamped_lat - lat).to_radians() * 0.5;
-    let half_dlon = (clamped_lon - lon).to_radians() * 0.5;
-    let a = half_dlat.sin().powi(2) + lat1.cos() * lat2.cos() * half_dlon.sin().powi(2);
-    2.0 * earth_radius_m * a.sqrt().asin()
+    let min_lat = bounds.min_y.to_radians();
+    let max_lat = bounds.max_y.to_radians();
+    let dlon = dlon_deg.to_radians();
+
+    if dlon == 0.0 {
+        let clamped_lat = lat1.clamp(min_lat, max_lat);
+        return earth_radius_m * (clamped_lat - lat1).abs();
+    }
+
+    let (sin_lat1, cos_lat1) = lat1.sin_cos();
+    let sin_half_dlon_sq = (dlon * 0.5).sin().powi(2);
+    let central_angle = |lat2: f64| -> f64 {
+        let half_dlat = (lat2 - lat1) * 0.5;
+        let a = half_dlat.sin().powi(2) + cos_lat1 * lat2.cos() * sin_half_dlon_sq;
+        2.0 * a.sqrt().atan2((1.0 - a).max(0.0).sqrt())
+    };
+
+    let mut best = central_angle(min_lat).min(central_angle(max_lat));
+    let cos_dlon = dlon.cos();
+    if cos_dlon > 0.0 {
+        let phi_opt = sin_lat1.atan2(cos_lat1 * cos_dlon);
+        if phi_opt > min_lat && phi_opt < max_lat {
+            best = best.min(central_angle(phi_opt));
+        }
+    }
+    earth_radius_m * best
 }
 
 /// Depth of the closest point of `bounds` along a view axis: the smallest
@@ -80,7 +112,9 @@ impl NeighborQuery2D {
     pub(crate) fn is_valid(self) -> bool {
         match self {
             NeighborQuery2D::Point(point) => point.x.is_finite() && point.y.is_finite(),
-            NeighborQuery2D::Box(_) => true,
+            NeighborQuery2D::Box(bx) => {
+                !bx.min_x.is_nan() && !bx.min_y.is_nan() && !bx.max_x.is_nan() && !bx.max_y.is_nan()
+            }
         }
     }
 
@@ -107,7 +141,14 @@ impl NeighborQuery3D {
             NeighborQuery3D::Point(point) => {
                 point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
             }
-            NeighborQuery3D::Box(_) => true,
+            NeighborQuery3D::Box(bx) => {
+                !bx.min_x.is_nan()
+                    && !bx.min_y.is_nan()
+                    && !bx.min_z.is_nan()
+                    && !bx.max_x.is_nan()
+                    && !bx.max_y.is_nan()
+                    && !bx.max_z.is_nan()
+            }
         }
     }
 

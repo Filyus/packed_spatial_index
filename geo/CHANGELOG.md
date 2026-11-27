@@ -4,6 +4,15 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.34.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.34.0...psi-geo-v0.34.1) - 2026-11-27
+
+### Performance
+
+- **Requires `packed_spatial_index` 0.37.1.** Picks up the 4-wide `f64x4` SIMD
+  kNN distances for `SimdIndex2DF32` / `SimdIndex3DF32` and dynamic `k`-th
+  distance cutoff tightening across fixed-`k` nearest-neighbor queries from core
+  0.37.1.
+
 ## [0.34.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.33.1...psi-geo-v0.34.0) - 2026-11-27
 
 ### API

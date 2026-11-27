@@ -79,7 +79,7 @@ The [API map](docs/api.md) lists every family and type on one page; the
 - **[When to use it](docs/when-to-use.md)** — where this fits, and where a spatial database fits better.
 - **[Persistence](docs/persistence.md)** — serialize, load, zero-copy views, mmap, payloads and metadata, streaming over a `RangeReader`.
 - **[Performance](docs/performance.md)** — benchmarks against `static_aabb2d_index`, FlatGeobuf and the `bvh` crate, plus the build flags that matter.
-- **[Internals](docs/internals/)** — SIMD kernels, two-queue kNN, traversal prefetch.
+- **[Internals](docs/internals/)** — SIMD kernels, bounded top-k & two-queue kNN, traversal prefetch.
 - **[Binary format](FORMAT.md)** — the `PSINDEX` on-disk layout.
 - **[API reference](https://docs.rs/packed_spatial_index)** — per-method docs.
 

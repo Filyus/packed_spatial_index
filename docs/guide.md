@@ -1238,14 +1238,17 @@ The closure must return an **admissible lower bound**: the distance to a box may
 never exceed the distance to any item inside it. Every "distance to the closest
 point of the box" metric satisfies this (a child box sits inside its parent), so
 Euclidean, Manhattan, Chebyshev, weighted axes, and the provided
-`haversine_distance_2d` all work. The haversine helper clamps the query onto the
-box per axis — exact for small boxes, a slight over-estimate for very large or
-near-polar ones. `neighbors_metric` is generic, so the default `neighbors` stays
-the faster path when plain Euclidean is what you want.
+`haversine_distance_2d` all work. The haversine helper computes the exact
+closed-form minimum great-circle distance over the box on the sphere (handling
+360° longitude wraparound and the meridian optimum cleanly via `atan2`), so it is
+strictly admissible even on large or near-polar boxes. `neighbors_metric` is
+generic, so the default `neighbors` stays the faster path when plain Euclidean
+is what you want.
 
-All of these — default, box and custom-metric kNN — run on the same best-first
-**distance-browsing** traversal; [docs/knn.md](internals/knn.md) explains the two-queue
-technique and why it is the one collect kernel.
+All of these — default, box and custom-metric kNN — run on best-first
+branch-and-bound traversal; [docs/internals/knn.md](internals/knn.md) explains
+the bounded `top-k` cutoff kernel for fixed `k` and the two-queue
+distance-browsing kernel for `*_each`.
 
 ## The leaf order as a resource
 

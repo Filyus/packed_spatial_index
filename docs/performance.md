@@ -235,10 +235,10 @@ with `node_size = 16`; search and KNN use 1,000 query boxes or points.
 
 | KNN batch | Dataset / mode | `Index2D` | `Index3D` | 3D speed |
 | --- | --- | ---: | ---: | ---: |
-| Top-1 | planar XY | 1.0084 ms | 1.2634 ms | 0.80x |
-| Top-10 | planar XY | 1.9223 ms | 2.6466 ms | 0.73x |
-| Top-1 | uniform XYZ | 1.0070 ms | 1.7472 ms | 0.58x |
-| Top-10 | uniform XYZ | 1.9427 ms | 4.1653 ms | 0.47x |
+| Top-1 | planar XY | 1.09 ms | 1.43 ms | 0.76x |
+| Top-10 | planar XY | 1.69 ms | 2.27 ms | 0.75x |
+| Top-1 | uniform XYZ | 1.10 ms | 1.85 ms | 0.59x |
+| Top-10 | uniform XYZ | 1.70 ms | 3.36 ms | 0.51x |
 
 | Persistence | `Index2D` | `Index3D` | 3D speed |
 | --- | ---: | ---: | ---: |
@@ -1084,17 +1084,22 @@ boxes cover 5%. KNN rows use 200 query points with top-8 results.
 
 Quick selector:
 
-- **Exact answers, most hits, fastest KNN** — `SimdIndex2D`. 32-byte `f64`
-  boxes; nothing else is faster on an exact range query with many hits.
-- **Fastest range search, and the smallest** — `SimdIndex2DF32::search`.
+- **Exact answers, most hits, fast SIMD kNN** — `SimdIndex2D`. 32-byte `f64`
+  boxes; nothing else is faster on an exact range query with many hits. On
+  fixed-`k` kNN its 4-wide `f64x4` distance loop and dynamic `top-k` cutoff match
+  `SimdIndex2DF32` closely and give exact `f64` distances with zero callback
+  overhead.
+- **Fastest range search, compact & fast rounded kNN** — `SimdIndex2DF32`.
   16-byte outward-rounded `f32` boxes, 16 to a SIMD chunk against `f64`'s 8, so
-  on AVX-512 it beats even `SimdIndex2D` on the range rows above. It wins on
-  speed *and* memory rather than trading one for the other; the price is a few
-  near-boundary false positives. Its hits match the scalar `Index2DF32`
-  exactly — both round the query inward onto the same grid.
+  on AVX-512 it beats even `SimdIndex2D` on the range rows above, and for
+  rounded kNN its 4-wide `f64x4` distance loop widens four `f32` entries per
+  step for bit-identical distances at half the coordinate bandwidth (leading at
+  100k+ items). It wins on speed *and* memory rather than trading one for the
+  other; the price is a few near-boundary false positives. Its hits match the
+  scalar `Index2DF32` exactly — both round the query inward onto the same grid.
 - **Compact storage, exact answers, few hits** — `SimdIndex2DF32::*_exact`, the
-  `f32` index plus your own `f64` boxes. Exact KNN works here too, but plain
-  `f64` is faster at it in these runs.
+  `f32` index plus your own `f64` boxes. Exact KNN works here too, though plain
+  `f64` or rounded `f32` stays faster without the per-item callback lookup.
 - **Half the memory without a SIMD dependency** — `Index2DF32` / `Index3DF32`,
   the same 16/24-byte boxes with no `simd` feature, and the file that
   `StreamIndex2DF32` / `StreamIndex3DF32` streams at half the box bytes over the
@@ -1124,8 +1129,52 @@ AVX-512, which roughly halves the large-window rows versus the scalar collection
 
 | KNN workload | `f64` exact | `f32` rounded | `f32` exact |
 | --- | ---: | ---: | ---: |
-| 10k items | 218 us | 233 us | 374 us |
-| 100k items | 337 us | 349 us | 493 us |
+| 10k items | 82.3 us | 85.4 us | 327 us |
+| 100k items | 122.7 us | 117.0 us | 438 us |
+
+(`f64 exact` and `f32 rounded` both use 4-wide `f64x4` SIMD box distances plus
+the bounded `top-k` dynamic cutoff tightening; `f32 exact` refines candidates
+through the caller's `box_at` callback.)
+
+## 3D surface cloud kNN and radius search
+
+Uniform volumetric boxes (`index3d_bench`) have very different density and
+Hilbert locality from a 2D manifold embedded in 3D (LiDAR scans, room meshes,
+surface point clouds). `benches/surface_cloud3d_bench.rs` builds 1,000,000 points
+distributed over the floor, ceiling, walls, partitions, and four spheres of a
+10 × 8 × 3 m room (total area 316.6 m², mean spacing 0.0178 m) and runs 2,000
+on-surface queries (`BENCH_PIN_CORE=0`, 15 interleaved rotated rounds × 5 reps,
+min per round). Lower is better.
+
+| kNN arm (`n=1,000,000`, `q=2,000`) | `k=24` | `k=32` | `k=40` |
+| --- | ---: | ---: | ---: |
+| `Index3D::neighbors_with` | 9.80 ms (1.000×) | 10.79 ms (1.000×) | 12.60 ms (1.000×) |
+| `Index3D::neighbors_each_with` | 10.21 ms (1.039×) | 11.57 ms (1.075×) | 12.93 ms (1.022×) |
+| `SimdIndex3D::neighbors_with` | 8.59 ms (0.874×) | 9.96 ms (0.913×) | 11.83 ms (0.942×) |
+| `SimdIndex3D::neighbors_each_with` | 10.74 ms (1.098×) | 12.46 ms (1.146×) | 13.85 ms (1.113×) |
+| `SimdIndex3DF32::neighbors_with` | 7.51 ms (0.761×) | 8.70 ms (0.799×) | 10.38 ms (0.820×) |
+| `SimdIndex3DF32::neighbors_each_with` | 8.92 ms (0.907×) | 10.52 ms (0.961×) | 11.88 ms (0.941×) |
+
+- Fixed-`k` `neighbors_with` beats the unbounded `neighbors_each_with` control by
+  14–20% on the SIMD frontends because the bounded `top-k` heap tightens the
+  SIMD distance cutoff dynamically once `k` candidates are collected, skipping
+  heap pushes for farther children and leaves.
+- `SimdIndex3DF32::neighbors_with` is the fastest 3D kNN path here (`0.76–0.82×`
+  of `Index3D`), combining 4-wide `f64x4` distance math (bit-identical to `f64`
+  widening) with half the coordinate memory traffic of `SimdIndex3D`.
+
+For radius searches on the same cloud (`search_within_into` at `r = 3×` spacing
+returning 58,775 total hits, and `r = 6×` spacing returning 231,285 hits):
+
+| Radius search (`n=1,000,000`, `q=2,000`) | `r = 3×` spacing | `r = 6×` spacing |
+| --- | ---: | ---: |
+| `Index3D::search_within_into` | 2.62 ms (1.000×) | 5.37 ms (1.000×) |
+| `SimdIndex3D::search_within_into` | 3.46 ms (1.289×) | 6.17 ms (1.139×) |
+
+Scalar AoS `Index3D` leads on `search_within` on a 1M-point tree because a range
+descent streams one contiguous AoS slice per node instead of touching six
+separate SoA coordinate arrays. Reproduce with
+`BENCH_PIN_CORE=0 cargo bench --bench surface_cloud3d_bench --features "simd f32-storage"`.
 
 ## Summary
 
@@ -1206,7 +1255,10 @@ Benchmark coverage:
   against the priority-queue form it replaced, owned and view, 2D and 3D,
   with the scalar indexes as the control;
 - `raytriangle3d_bench` compares `closest_triangle` over `f64` vs compact `f32`
-  triangle records.
+  triangle records;
+- `surface_cloud3d_bench` times 3D kNN (`k=24/32/40`) and radius queries
+  (`search_within_into`) interleaved across `Index3D`, `SimdIndex3D`, and
+  `SimdIndex3DF32` on a 1M-point 2D-manifold surface cloud.
 
 ## Build flags
 
@@ -1276,6 +1328,7 @@ cargo bench --bench coord_precision --no-default-features --features f32-storage
 cargo bench --bench raycast3d_bench --features simd
 taskset -c 1 cargo bench --bench paired_competitors --features simd
 cargo bench --bench raytriangle3d_bench --features simd
+cargo bench --bench surface_cloud3d_bench --features "simd f32-storage"
 ```
 
 For low-noise numbers, set `BENCH_PIN_CORE=<n>` to pin the measuring thread to one

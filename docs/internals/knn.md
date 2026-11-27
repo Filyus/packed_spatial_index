@@ -1,9 +1,9 @@
-# Nearest-neighbor traversal: two-queue distance browsing
+# Nearest-neighbor traversal: bounded top-k cutoff & two-queue distance browsing
 
 How `neighbors` finds the *k* nearest boxes to a query point (or box) over the
-packed Hilbert R-tree — and why it uses two priority queues, not one. The
-technique is Hjaltason & Samet's *distance browsing* (1999). This is how it maps
-onto a static packed tree, what the alternatives cost, and the measured win.
+packed Hilbert R-tree — comparing unbounded **two-queue distance browsing**
+(Hjaltason & Samet, 1999) used by `neighbors_each`, the **bounded `top-k`
+branch-and-bound** used by fixed-`k` `neighbors`, and the **k = 1** fast path.
 
 The running example: `index.neighbors(point, k)` returns the `k` item boxes whose
 distance to `point` is smallest, nearest first.
@@ -69,22 +69,40 @@ loop:
     stop once k items are emitted
 ```
 
-(`src/neighbors/best_first.rs::collect_neighbors_two_queue` is the kernel;
-`visit_neighbors_two_queue` is the same browse calling a visitor instead of
-collecting, so `neighbors` and `neighbors_each` emit in the *same* order.)
+(`src/neighbors/best_first.rs::visit_neighbors_two_queue` is the unbounded
+distance-browsing kernel behind `neighbors_each` and `neighbors_of_box_each`,
+while `collect_neighbors_two_queue` — plus the 4-wide `f64x4` SIMD paths on
+`SimdIndex2D`/`SimdIndex3D` and `SimdIndex2DF32`/`SimdIndex3DF32` — uses the
+bounded `top-k` branch-and-bound refinement described below.)
 
-Why it is faster than the single queue: a leaf's items are materialized **only
-when that leaf is the closest pending node**; node expansion stops the moment
-a held item beats the nearest node. So you push fewer items, the two heaps
-each stay smaller than the combined one — and `log(a) + log(b)` beats
-`log(a + b)`. It is the same `O(visited · log)` work in the worst case, just with
-a smaller constant on the realistic case where the answer is found before the
-tree is fully opened.
+## Fixed-k branch-and-bound: tightening the cutoff dynamically
 
-Measured, switching the collect from one queue to two was ~5% faster for scalar
-f64 `neighbors` and ~6–11% for the f32 / SIMD frontends (k=10, 200k boxes, on a
-quiet pinned core); it never regressed, so it is the one collect kernel for every
-index type. See [performance.md](../performance.md) for how to reproduce.
+When `k` (`max_results`) is known upfront (`neighbors`, `neighbors_into`,
+`neighbors_with`, and their `*_of_box` twins), keeping every touched candidate
+item within the initial `max_distance` in an unbounded min-heap wastes pushes and
+never tightens the pruning radius before items are popped.
+
+Instead, fixed-`k` collection keeps:
+
+- `node_queue`: a min-heap of unopened internal nodes ordered by lower-bound box
+  distance (popping when the closest node already exceeds `cutoff`);
+- `top_k`: a bounded **max-heap** of capacity `k` (`ExactNeighborState`, storing
+  up to `k` best `(dist, index)` candidates seen so far).
+
+Once `top_k.len() == k`, its root holds the `k`-th worst distance, which
+dynamically replaces `cutoff` (and refreshes the `f64x4` SIMD `cutoff` vector on
+SoA/`f32` frontends). Every subsequent child node and leaf box farther than
+`cutoff` is rejected *before* a heap push; closer items overwrite the root in
+place via `peek_mut()`. At the end, popping `top_k` in reverse fills `results` in
+ascending `(d², index)` order, matching `neighbors_each().take(k)` identically.
+
+Measured on `surface_cloud3d_bench` (`n = 1,000,000`, `k = 24..40`, `BENCH_PIN_CORE=0`):
+replacing the unbounded item min-heap with the bounded `top-k` cutoff sped up
+`SimdIndex3D::neighbors_with` by 15–21% against the untouched
+`neighbors_each_with` control (`0.87–0.94×` of `Index3D`), and combined with
+4-wide `f64x4` widened box distances made `SimdIndex3DF32::neighbors_with`
+`0.76–0.82×` of `Index3D` (`7.51–10.38 ms` vs `9.80–12.60 ms`). See
+[performance.md](../performance.md) for full tables.
 
 ## The k = 1 fast path
 
@@ -104,33 +122,41 @@ directly so `neighbors(q, 1)` is always the prefix of `neighbors(q, k)`.
   subtree), so the browse never emits an item before a closer one. The result is
   the true `k` nearest by box distance.
 - **Order on ties.** Items at equal distance are emitted in ascending item-index
-  order `(d², index)` for any `k` (`NeighborState` orders by distance, then leaf
-  before internal node, then smallest index). Both the two-queue collect,
-  `neighbors_each`, and the `k = 1` `nearest_one` fast path enforce the same
-  order, so `neighbors(q, 1)` agrees with the first element of `neighbors(q, k)`.
-- **`max_distance`.** A finite cutoff drops nodes and items beyond it as they are
-  reached, so a bounded query touches only the local neighborhood.
+  order `(d², index)` for any `k` (`NeighborState` and `ExactNeighborState`
+  order equal distances by smallest index). The bounded `top-k` collect,
+  the two-queue `neighbors_each`, and the `k = 1` `nearest_one` fast path all
+  enforce the exact same order, so `neighbors(q, 1)` agrees with the first
+  element of `neighbors(q, k)`.
+- **`max_distance`.** The caller's `max_distance²` seeds the initial `cutoff`
+  (and for fixed `k`, tightens further once `k` candidates are held), dropping
+  nodes and items beyond it before heap insertion.
 
 ## What layers on top
 
-The kernel is generic over a `dist(pos)` closure that reads the caller's own box
-storage, so every frontend reuses it:
+The kernel pattern adapts across all index frontends:
 
+- **SIMD f64 and widened f32.** `SimdIndex2D`/`SimdIndex3D` evaluate four SoA
+  child or leaf boxes per step using `wide::f64x4` and extract hits via
+  bitmask. `SimdIndex2DF32`/`SimdIndex3DF32` load four `f32` column entries per
+  step and widen each lane to `f64` inside `f64x4` — arithmetic is bit-identical
+  to scalar `PointKnn` widening at half the coordinate memory bandwidth.
 - **Custom metrics.** [`neighbors_metric`](../../README.md) passes a closure that
   returns any admissible lower-bound distance — Euclidean, Manhattan, weighted, or
-  great-circle via `haversine_distance_2d`. The same browse drives geographic kNN;
-  the only rule is that the closure must never over-estimate (see
+  great-circle via `haversine_distance_2d`. The same best-first idea drives
+  geographic kNN; the only rule is that the closure must never over-estimate (see
   [guide.md](../guide.md)).
-- **Compact f32.** The f32 indexes browse on the rounded f32 box distance, then
-  refine the candidates against the original boxes for an exact result — the
-  browse finds the candidate set, the refinement re-ranks it.
+- **Compact f32 exact.** The `f32` `neighbors_exact*` methods browse on the
+  rounded `f32` lower-bound distance, then refine candidates against the
+  caller's original `f64` boxes for an exact result — the browse finds the
+  candidate set, the refinement re-ranks it.
 - **Box queries.** `neighbors_of_box` swaps the point-to-box distance for a
   box-to-box gap distance (`0` on overlap); the traversal is unchanged.
 
-## A note on the scratch queue
+## Workspace reuse
 
-The browse needs both queues. The reusable-workspace methods
-(`neighbors_with`) hand it the workspace's two heaps; the allocation-free callers
-that hold only the item heap get a small pre-sized scratch node queue per call —
-measured no worse than a reused one, since a pre-sized `BinaryHeap` is a single
-allocation, the same cost as the item queue already paid.
+`NeighborWorkspace` holds reusable buffers for allocation-free calls across all
+owned (`Index*`, `SimdIndex*`, `Index*F32`, `SimdIndex*F32`) and zero-copy view
+frontends: `node_queue` (reused by fixed-`k`, `k = 1`, and `neighbors_each_with`),
+`exact_queue` (reused as the bounded `top-k` heap for fixed-`k` queries and as
+the exact refinement heap), and `queue` (reused as the unbounded item min-heap in
+`neighbors_each_with`).

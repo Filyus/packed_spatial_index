@@ -8,10 +8,10 @@ does and when to use it, see the [guide](../guide.md). For the numbers, see
 - **[simd.md](simd.md)** — runtime-dispatched SIMD range search, visit and raycast
   (AVX-512 `VPCOMPRESSQ`, the AVX2 left-pack that emulates the missing compress,
   the SSE2 fallback). The "path to the black belt" of the box-test kernels.
-- **[knn.md](knn.md)** — nearest-neighbor traversal as two-queue *distance
-  browsing* (Hjaltason & Samet): why kNN keeps a node queue and an item queue
-  separate, the k=1 fast path, and how custom metrics and f32 refinement reuse the
-  one collect kernel.
+- **[knn.md](knn.md)** — nearest-neighbor traversal: bounded `top-k`
+  branch-and-bound for fixed `k`, two-queue *distance browsing* (Hjaltason &
+  Samet) for `*_each`, the `k=1` fast path, SIMD `f64x4` (including widened
+  `f32`), and `NeighborWorkspace` buffer reuse.
 - **[prefetch.md](prefetch.md)** — hiding the cold cache miss on every tree node by
   prefetching the next node's box while the current one is hit-tested. A free
   latency hint on range search and all-hits raycast.

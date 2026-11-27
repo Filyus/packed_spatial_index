@@ -19,8 +19,8 @@ use crate::{
         join_core, pairs_components_core, pairs_core, within_core,
     },
     neighbors::{
-        NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first,
-        metric_knn,
+        ExactNeighborState, NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace,
+        best_first, metric_knn,
     },
     ordered::{
         PickHit3D, PickWorkspace, collect_ordered, collect_pick, pick_key, search_ordered_each,
@@ -490,14 +490,14 @@ impl Index3D {
             return;
         }
 
-        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut top_k = BinaryHeap::with_capacity(max_results.min(self.num_items));
         let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             results,
-            &mut item_queue,
+            &mut top_k,
             &mut node_queue,
         );
     }
@@ -533,7 +533,7 @@ impl Index3D {
             max_results,
             max_distance,
             &mut workspace.results,
-            &mut workspace.queue,
+            &mut workspace.exact_queue,
             &mut workspace.node_queue,
         );
         &workspace.results
@@ -958,14 +958,14 @@ impl Index3D {
             return;
         }
 
-        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut top_k = BinaryHeap::with_capacity(max_results.min(self.num_items));
         let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_results,
             max_distance,
             results,
-            &mut item_queue,
+            &mut top_k,
             &mut node_queue,
         );
     }
@@ -1002,7 +1002,7 @@ impl Index3D {
             max_results,
             max_distance,
             &mut workspace.results,
-            &mut workspace.queue,
+            &mut workspace.exact_queue,
             &mut workspace.node_queue,
         );
         &workspace.results
@@ -1730,12 +1730,12 @@ impl Index3D {
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
-        item_queue: &mut BinaryHeap<NeighborState>,
+        top_k: &mut BinaryHeap<ExactNeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
         if !query.is_valid() {
             results.clear();
-            item_queue.clear();
+            top_k.clear();
             node_queue.clear();
             return;
         }
@@ -1749,7 +1749,7 @@ impl Index3D {
             max_distance,
             |pos| query.distance_squared_to(self.entries[pos]),
             results,
-            item_queue,
+            top_k,
             node_queue,
         );
     }
@@ -2409,14 +2409,14 @@ impl<'a> Index3DView<'a> {
             return;
         }
 
-        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut top_k = BinaryHeap::with_capacity(max_results.min(self.num_items));
         let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             results,
-            &mut item_queue,
+            &mut top_k,
             &mut node_queue,
         );
     }
@@ -2452,7 +2452,7 @@ impl<'a> Index3DView<'a> {
             max_results,
             max_distance,
             &mut workspace.results,
-            &mut workspace.queue,
+            &mut workspace.exact_queue,
             &mut workspace.node_queue,
         );
         &workspace.results
@@ -2823,14 +2823,14 @@ impl<'a> Index3DView<'a> {
             return;
         }
 
-        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut top_k = BinaryHeap::with_capacity(max_results.min(self.num_items));
         let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_results,
             max_distance,
             results,
-            &mut item_queue,
+            &mut top_k,
             &mut node_queue,
         );
     }
@@ -2867,7 +2867,7 @@ impl<'a> Index3DView<'a> {
             max_results,
             max_distance,
             &mut workspace.results,
-            &mut workspace.queue,
+            &mut workspace.exact_queue,
             &mut workspace.node_queue,
         );
         &workspace.results
@@ -3205,12 +3205,12 @@ impl<'a> Index3DView<'a> {
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
-        item_queue: &mut BinaryHeap<NeighborState>,
+        top_k: &mut BinaryHeap<ExactNeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
         if !query.is_valid() {
             results.clear();
-            item_queue.clear();
+            top_k.clear();
             node_queue.clear();
             return;
         }
@@ -3224,7 +3224,7 @@ impl<'a> Index3DView<'a> {
             max_distance,
             |pos| query.distance_squared_to(self.entry_at_unchecked(pos)),
             results,
-            item_queue,
+            top_k,
             node_queue,
         );
     }

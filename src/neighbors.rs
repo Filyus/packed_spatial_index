@@ -183,7 +183,6 @@ pub struct NeighborWorkspace {
     pub(crate) results: Vec<usize>,
     pub(crate) queue: BinaryHeap<NeighborState>,
     pub(crate) node_queue: BinaryHeap<NeighborNodeState>,
-    #[cfg(feature = "f32-storage")]
     pub(crate) exact_queue: BinaryHeap<ExactNeighborState>,
 }
 
@@ -199,7 +198,6 @@ impl NeighborWorkspace {
             results: Vec::with_capacity(results),
             queue: BinaryHeap::with_capacity(queue),
             node_queue: BinaryHeap::with_capacity(queue),
-            #[cfg(feature = "f32-storage")]
             exact_queue: BinaryHeap::with_capacity(results),
         }
     }
@@ -280,14 +278,12 @@ impl PartialOrd for NeighborNodeState {
     }
 }
 
-#[cfg(feature = "f32-storage")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ExactNeighborState {
     pub(crate) index: usize,
     pub(crate) dist: f64,
 }
 
-#[cfg(feature = "f32-storage")]
 impl ExactNeighborState {
     #[inline]
     pub(crate) fn new(index: usize, dist: f64) -> Self {
@@ -295,10 +291,8 @@ impl ExactNeighborState {
     }
 }
 
-#[cfg(feature = "f32-storage")]
 impl Eq for ExactNeighborState {}
 
-#[cfg(feature = "f32-storage")]
 impl Ord for ExactNeighborState {
     #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -308,11 +302,40 @@ impl Ord for ExactNeighborState {
     }
 }
 
-#[cfg(feature = "f32-storage")]
 impl PartialOrd for ExactNeighborState {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+/// Insert `(index, dist)` into a bounded max-heap of size `max_results`,
+/// tightening `cutoff` whenever the k-th worst distance decreases.
+/// Returns `true` if `cutoff` was updated.
+#[inline]
+pub(crate) fn push_top_k(
+    top_k: &mut BinaryHeap<ExactNeighborState>,
+    max_results: usize,
+    index: usize,
+    dist: f64,
+    cutoff: &mut f64,
+) -> bool {
+    if top_k.len() < max_results {
+        top_k.push(ExactNeighborState::new(index, dist));
+        if top_k.len() == max_results {
+            *cutoff = top_k.peek().unwrap().dist;
+            return true;
+        }
+        false
+    } else {
+        let worst = top_k.peek().unwrap();
+        if dist < worst.dist || (dist == worst.dist && index < worst.index) {
+            *top_k.peek_mut().unwrap() = ExactNeighborState::new(index, dist);
+            *cutoff = top_k.peek().unwrap().dist;
+            true
+        } else {
+            false
+        }
     }
 }
 

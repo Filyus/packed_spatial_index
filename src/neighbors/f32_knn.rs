@@ -96,7 +96,7 @@ pub(crate) fn point_neighbors_into<T: PointKnn + ?Sized>(
         return;
     }
 
-    let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    let mut top_k = BinaryHeap::with_capacity(max_results.min(tree.knn_num_items()));
     let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
     collect_point_neighbors_with_queues(
         tree,
@@ -104,7 +104,7 @@ pub(crate) fn point_neighbors_into<T: PointKnn + ?Sized>(
         max_results,
         max_distance,
         results,
-        &mut item_queue,
+        &mut top_k,
         &mut node_queue,
     );
 }
@@ -118,12 +118,12 @@ pub(crate) fn point_neighbors_with<'a, T: PointKnn + ?Sized>(
 ) -> &'a [usize] {
     workspace.results.clear();
     if max_results == 0 || !T::knn_point_is_valid(point) {
-        workspace.queue.clear();
+        workspace.exact_queue.clear();
         workspace.node_queue.clear();
         return &workspace.results;
     }
     if max_results == 1 {
-        workspace.queue.clear();
+        workspace.exact_queue.clear();
         if let Some(index) = point_nearest_one(tree, point, max_distance, &mut workspace.node_queue)
         {
             workspace.results.push(index);
@@ -137,7 +137,7 @@ pub(crate) fn point_neighbors_with<'a, T: PointKnn + ?Sized>(
         max_results,
         max_distance,
         &mut workspace.results,
-        &mut workspace.queue,
+        &mut workspace.exact_queue,
         &mut workspace.node_queue,
     );
     &workspace.results
@@ -280,7 +280,7 @@ fn collect_point_neighbors_with_queues<T: PointKnn + ?Sized>(
     max_results: usize,
     max_distance: f64,
     results: &mut Vec<usize>,
-    item_queue: &mut BinaryHeap<NeighborState>,
+    top_k: &mut BinaryHeap<ExactNeighborState>,
     node_queue: &mut BinaryHeap<NeighborNodeState>,
 ) {
     collect_neighbors_two_queue(
@@ -293,7 +293,7 @@ fn collect_point_neighbors_with_queues<T: PointKnn + ?Sized>(
         max_distance,
         |pos| tree.knn_distance_squared_to(pos, point),
         results,
-        item_queue,
+        top_k,
         node_queue,
     );
 }

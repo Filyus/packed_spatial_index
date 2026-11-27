@@ -28,8 +28,8 @@ use crate::{
         join_core, pairs_components_core, pairs_core, within_core,
     },
     neighbors::{
-        NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace, best_first,
-        max_distance_squared,
+        ExactNeighborState, NeighborNodeState, NeighborQuery3D, NeighborState, NeighborWorkspace,
+        best_first, max_distance_squared, push_top_k,
     },
     ordered::{collect_ordered, search_ordered_each},
     persistence::{
@@ -757,14 +757,14 @@ impl SimdIndex3D {
             return;
         }
 
-        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut top_k = BinaryHeap::with_capacity(max_results.min(self.num_items));
         let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             results,
-            &mut item_queue,
+            &mut top_k,
             &mut node_queue,
         );
     }
@@ -800,7 +800,7 @@ impl SimdIndex3D {
             max_results,
             max_distance,
             &mut workspace.results,
-            &mut workspace.queue,
+            &mut workspace.exact_queue,
             &mut workspace.node_queue,
         );
         &workspace.results
@@ -881,14 +881,14 @@ impl SimdIndex3D {
             return;
         }
 
-        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut top_k = BinaryHeap::with_capacity(max_results.min(self.num_items));
         let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_results,
             max_distance,
             results,
-            &mut item_queue,
+            &mut top_k,
             &mut node_queue,
         );
     }
@@ -925,7 +925,7 @@ impl SimdIndex3D {
             max_results,
             max_distance,
             &mut workspace.results,
-            &mut workspace.queue,
+            &mut workspace.exact_queue,
             &mut workspace.node_queue,
         );
         &workspace.results
@@ -1365,95 +1365,98 @@ impl SimdIndex3D {
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
-        item_queue: &mut BinaryHeap<NeighborState>,
+        top_k: &mut BinaryHeap<ExactNeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
-        item_queue.clear();
+        top_k.clear();
         node_queue.clear();
-        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+        let Some(mut cutoff) = max_distance_squared(max_distance) else {
             return;
         };
-        if self.num_items == 0 || !query.is_valid() {
+        if self.num_items == 0 || max_results == 0 || !query.is_valid() {
             return;
         }
         let root_index = self.min_xs.len() - 1;
-        let root_dist = self.distance_squared_at(root_index, query);
-        if root_dist > max_dist_sq {
+        if cutoff.is_finite() && self.distance_squared_at(root_index, query) > cutoff {
             return;
         }
-        node_queue.push(NeighborNodeState::new(root_index, root_dist));
 
         let (q_min_x, q_min_y, q_min_z, q_max_x, q_max_y, q_max_z) = query_splats_3d(query);
         let zero = f64x4::splat(0.0);
-        let cutoff = f64x4::splat(max_dist_sq);
+        let mut cutoff_v = f64x4::splat(cutoff);
+        let mut node_index = root_index;
 
-        while results.len() < max_results {
-            while let Some(&node) = node_queue.peek() {
-                if node.dist > max_dist_sq {
-                    break;
-                }
-                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
-                    break;
-                }
+        loop {
+            let upper = upper_bound_level(&self.level_bounds, node_index);
+            let end = (node_index + self.node_size).min(self.level_bounds[upper]);
+            let is_leaf = node_index < self.num_items;
 
-                let node = node_queue.pop().unwrap();
-                let upper = upper_bound_level(&self.level_bounds, node.index);
-                let end = (node.index + self.node_size).min(self.level_bounds[upper]);
-                let is_leaf = node.index < self.num_items;
-
-                let mut pos = node.index;
-                while pos + 4 <= end {
-                    let dx = (load4(&self.min_xs, pos) - q_max_x)
-                        .fast_max(q_min_x - load4(&self.max_xs, pos))
-                        .fast_max(zero);
-                    let dy = (load4(&self.min_ys, pos) - q_max_y)
-                        .fast_max(q_min_y - load4(&self.max_ys, pos))
-                        .fast_max(zero);
-                    let dz = (load4(&self.min_zs, pos) - q_max_z)
-                        .fast_max(q_min_z - load4(&self.max_zs, pos))
-                        .fast_max(zero);
-                    let d2 = dx * dx + dy * dy + dz * dz;
-                    let mut bits = d2.simd_le(cutoff).to_bitmask();
-                    if bits != 0 {
-                        let da = d2.to_array();
-                        if is_leaf {
-                            while bits != 0 {
-                                let k = bits.trailing_zeros() as usize;
-                                bits &= bits - 1;
-                                item_queue.push(NeighborState::new(
+            let mut pos = node_index;
+            while pos + 4 <= end {
+                let dx = (load4(&self.min_xs, pos) - q_max_x)
+                    .fast_max(q_min_x - load4(&self.max_xs, pos))
+                    .fast_max(zero);
+                let dy = (load4(&self.min_ys, pos) - q_max_y)
+                    .fast_max(q_min_y - load4(&self.max_ys, pos))
+                    .fast_max(zero);
+                let dz = (load4(&self.min_zs, pos) - q_max_z)
+                    .fast_max(q_min_z - load4(&self.max_zs, pos))
+                    .fast_max(zero);
+                let d2 = dx * dx + dy * dy + dz * dz;
+                let mut bits = d2.simd_le(cutoff_v).to_bitmask();
+                if bits != 0 {
+                    let da = d2.to_array();
+                    if is_leaf {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            bits &= bits - 1;
+                            let d = da[k];
+                            if d <= cutoff
+                                && push_top_k(
+                                    top_k,
+                                    max_results,
                                     self.indices[pos + k],
-                                    true,
-                                    da[k],
-                                ));
-                            }
-                        } else {
-                            while bits != 0 {
-                                let k = bits.trailing_zeros() as usize;
-                                bits &= bits - 1;
-                                node_queue
-                                    .push(NeighborNodeState::new(self.indices[pos + k], da[k]));
+                                    d,
+                                    &mut cutoff,
+                                )
+                            {
+                                cutoff_v = f64x4::splat(cutoff);
                             }
                         }
-                    }
-                    pos += 4;
-                }
-                while pos < end {
-                    let d = self.distance_squared_at(pos, query);
-                    if d <= max_dist_sq {
-                        if is_leaf {
-                            item_queue.push(NeighborState::new(self.indices[pos], true, d));
-                        } else {
-                            node_queue.push(NeighborNodeState::new(self.indices[pos], d));
+                    } else {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            bits &= bits - 1;
+                            node_queue.push(NeighborNodeState::new(self.indices[pos + k], da[k]));
                         }
                     }
-                    pos += 1;
                 }
+                pos += 4;
+            }
+            while pos < end {
+                let d = self.distance_squared_at(pos, query);
+                if d <= cutoff {
+                    if is_leaf {
+                        if push_top_k(top_k, max_results, self.indices[pos], d, &mut cutoff) {
+                            cutoff_v = f64x4::splat(cutoff);
+                        }
+                    } else {
+                        node_queue.push(NeighborNodeState::new(self.indices[pos], d));
+                    }
+                }
+                pos += 1;
             }
 
-            match item_queue.pop() {
-                Some(state) if state.dist <= max_dist_sq => results.push(state.index),
-                _ => return,
+            match node_queue.pop() {
+                Some(node) if node.dist <= cutoff => node_index = node.index,
+                _ => break,
             }
+        }
+
+        let n = top_k.len();
+        results.resize(n, 0);
+        for slot in results.iter_mut().rev() {
+            *slot = top_k.pop().unwrap().index;
         }
     }
 
@@ -3558,14 +3561,14 @@ impl<'a> SimdIndex3DView<'a> {
             }
             return;
         }
-        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut top_k = BinaryHeap::with_capacity(max_results.min(self.num_items));
         let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             results,
-            &mut item_queue,
+            &mut top_k,
             &mut node_queue,
         );
     }
@@ -3600,7 +3603,7 @@ impl<'a> SimdIndex3DView<'a> {
             max_results,
             max_distance,
             &mut workspace.results,
-            &mut workspace.queue,
+            &mut workspace.exact_queue,
             &mut workspace.node_queue,
         );
         &workspace.results
@@ -3681,14 +3684,14 @@ impl<'a> SimdIndex3DView<'a> {
             return;
         }
 
-        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut top_k = BinaryHeap::with_capacity(max_results.min(self.num_items));
         let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
         self.collect_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_results,
             max_distance,
             results,
-            &mut item_queue,
+            &mut top_k,
             &mut node_queue,
         );
     }
@@ -3725,7 +3728,7 @@ impl<'a> SimdIndex3DView<'a> {
             max_results,
             max_distance,
             &mut workspace.results,
-            &mut workspace.queue,
+            &mut workspace.exact_queue,
             &mut workspace.node_queue,
         );
         &workspace.results
@@ -3773,7 +3776,7 @@ impl<'a> SimdIndex3DView<'a> {
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
-        item_queue: &mut BinaryHeap<NeighborState>,
+        top_k: &mut BinaryHeap<ExactNeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
         best_first::collect_neighbors_two_queue(
@@ -3786,7 +3789,7 @@ impl<'a> SimdIndex3DView<'a> {
             max_distance,
             |pos| self.distance_squared_at(pos, query),
             results,
-            item_queue,
+            top_k,
             node_queue,
         );
     }

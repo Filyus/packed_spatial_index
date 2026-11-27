@@ -1,6 +1,8 @@
 //! Layout-agnostic best-first nearest-neighbor traversal.
 
-use super::{NeighborNodeState, NeighborState, max_distance_squared};
+use super::{
+    ExactNeighborState, NeighborNodeState, NeighborState, max_distance_squared, push_top_k,
+};
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
@@ -12,11 +14,12 @@ pub(crate) fn level_end_of(level_bounds: &[usize], node: usize) -> usize {
     level_bounds[level_bounds.partition_point(|&end| end <= node)]
 }
 
-/// Best-first descent with separate node and item priority queues — the
-/// distance-browsing variant the scalar f64 indexes use. It expands nodes in
-/// distance order and only emits an item once it is closer than the next pending
-/// node, so it avoids pushing every candidate leaf into one heap. `dist(pos)` is
-/// the squared distance to the box at node `pos`.
+/// Best-first branch-and-bound kNN with a min-heap of pending nodes and a
+/// bounded max-heap of the `max_results` best items found so far. Once `k`
+/// candidates have been seen, the `k`-th worst distance tightens `cutoff`
+/// dynamically so farther children and leaves are pruned before heap pushes.
+/// Ties break by smallest item index, matching [`visit_neighbors_two_queue`].
+/// `dist(pos)` is the squared distance to the box at node `pos`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_neighbors_two_queue(
     num_nodes: usize,
@@ -28,58 +31,53 @@ pub(crate) fn collect_neighbors_two_queue(
     max_distance: f64,
     dist: impl Fn(usize) -> f64,
     results: &mut Vec<usize>,
-    item_queue: &mut BinaryHeap<NeighborState>,
+    top_k: &mut BinaryHeap<ExactNeighborState>,
     node_queue: &mut BinaryHeap<NeighborNodeState>,
 ) {
-    item_queue.clear();
+    top_k.clear();
     node_queue.clear();
-    let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+    let Some(mut cutoff) = max_distance_squared(max_distance) else {
         return;
     };
-    if num_items == 0 {
+    if num_items == 0 || max_results == 0 {
         return;
     }
     let root_index = num_nodes - 1;
-    let root_dist = dist(root_index);
-    if root_dist > max_dist_sq {
+    if cutoff.is_finite() && dist(root_index) > cutoff {
         return;
     }
-    node_queue.push(NeighborNodeState::new(root_index, root_dist));
 
-    while results.len() < max_results {
-        while let Some(&node) = node_queue.peek() {
-            if node.dist > max_dist_sq {
-                break;
-            }
-            if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
-                break;
-            }
+    let mut node_index = root_index;
+    loop {
+        let end = (node_index + node_size).min(level_end(node_index));
+        let is_leaf = node_index < num_items;
 
-            let node = node_queue.pop().unwrap();
-            let end = (node.index + node_size).min(level_end(node.index));
-            let is_leaf = node.index < num_items;
-
-            if is_leaf {
-                for pos in node.index..end {
-                    let d = dist(pos);
-                    if d <= max_dist_sq {
-                        item_queue.push(NeighborState::new(index_at(pos), true, d));
-                    }
+        if is_leaf {
+            for pos in node_index..end {
+                let d = dist(pos);
+                if d <= cutoff {
+                    push_top_k(top_k, max_results, index_at(pos), d, &mut cutoff);
                 }
-            } else {
-                for pos in node.index..end {
-                    let d = dist(pos);
-                    if d <= max_dist_sq {
-                        node_queue.push(NeighborNodeState::new(index_at(pos), d));
-                    }
+            }
+        } else {
+            for pos in node_index..end {
+                let d = dist(pos);
+                if d <= cutoff {
+                    node_queue.push(NeighborNodeState::new(index_at(pos), d));
                 }
             }
         }
 
-        match item_queue.pop() {
-            Some(state) if state.dist <= max_dist_sq => results.push(state.index),
-            _ => return,
+        match node_queue.pop() {
+            Some(node) if node.dist <= cutoff => node_index = node.index,
+            _ => break,
         }
+    }
+
+    let n = top_k.len();
+    results.resize(n, 0);
+    for slot in results.iter_mut().rev() {
+        *slot = top_k.pop().unwrap().index;
     }
 }
 

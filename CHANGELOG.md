@@ -4,6 +4,49 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+## [0.36.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.36.0...psi-v0.36.1) - 2026-11-27
+
+### Search
+
+- **Normalize non-unit ray directions in `Frustum3D::try_from_ray`.** Side
+  planes and `near`/`max_distance` planes now scale properly when the ray
+  direction is not unit length, matching the documented contract.
+- **Closed-form `Cone3D::overlaps_box`.** Replaced the 70-step golden-section
+  loop with an exact piecewise-quadratic solver over the KKT curve (≤ 6 kinks,
+  zero iterations, with a derived `1 + 4ε` tangent rounding margin) and handled
+  flat boxes perpendicular to the cone axis (−15% to −21% on `cone_3d` region
+  queries).
+- **O(N) `ConvexPolygon2D` SAT and conservative `f64` margins.**
+  `ConvexPolygon2D::overlaps_box` now uses O(N) oriented edge half-plane tests
+  with O(1) p-vertex box projection; `Triangle2D::overlaps_box` also uses O(1)
+  p/n-vertex projection, and both apply a derived `8ε · (sx|nx| + sy|ny|)`
+  rounding margin. `Triangle3DF32` Moller-Trumbore uses a derived
+  `8 · f32::EPSILON` determinant bound.
+
+### kNN
+
+- **Exact spherical box distance in `haversine_distance_2d`.** Replaced the
+  per-axis clamp and `asin` with the exact closed-form spherical box minimum
+  (360° longitude periodicity, interior meridian optimum, and `atan2` for
+  antipode conditioning without `NaN`), keeping `neighbors_metric` strictly
+  admissible on large and near-polar boxes.
+- **Reject `NaN` query boxes in `neighbors_of_box*`.** `NeighborQuery2D::Box`
+  and `NeighborQuery3D::Box` now check for `NaN` bounds in `is_valid()`.
+
+### Raycast
+
+- **Subnormal direction guard in SIMD slab paths.** All `wide::f64x4` and
+  masked AVX-512 raycast paths now test `!inv_dir.is_finite()` instead of
+  `dir == 0.0`, avoiding `0 * inf = NaN` drops on box faces; `raycast_closest`
+  also tightens its vector `max_distance` bound to `best_t`.
+
+### Performance
+
+- **Faster `f32` SIMD ray-triangle intersection.** `Ray3D::closest_triangle`
+  over `Triangle3DF32` skips all-miss 8-triangle chunks via `miss.all()`,
+  tightens `max_t` as hits land, and uses `as_chunks::<8>()` (−30.9% in paired
+  interleaved A/B, 1.98 ns/ray×triangle).
+
 ## [0.36.0](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.35.0...psi-v0.36.0) - 2026-11-27
 
 ### kNN

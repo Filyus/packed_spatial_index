@@ -290,10 +290,11 @@ Three more region shapes ride the same `search(&shape)` machinery:
 - [`Capsule2D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Capsule2D.html)
   / [`Capsule3D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Capsule3D.html)
   — a segment thickened by a radius: a thick ray, or world-unit picking
-  tolerance. The box test is an exact segment-to-box distance (convex
-  one-dimensional minimization along the segment, no tolerance), which prunes
-  where the grown-bounding-box workaround cannot: measured ~28-49x faster than
-  `search(bbox) + filter` at radii from 0.5 to 50 units on 1M boxes.
+  tolerance. The box test is a closed-form segment-to-box distance with derived
+  conservative `f64` rounding bounds (`segment_box_gap_squared_bounds` returns
+  both `(lower, upper)` with `lower(parent) <= upper(child)` for nested boxes),
+  which prunes where the grown-bounding-box workaround cannot: measured ~28-49x
+  faster than `search(bbox) + filter` at radii from 0.5 to 50 units on 1M boxes.
 - [`Cone3D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Cone3D.html)
   — a solid sensor-FOV / spotlight cone (`try_new` validates the axis, the
   half-angle and the height). The box test is exact up to floating point: after

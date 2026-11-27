@@ -1,8 +1,6 @@
 //! Layout-agnostic best-first nearest-neighbor traversal.
 
 use super::{NeighborNodeState, NeighborState, max_distance_squared};
-#[cfg(any(feature = "simd", feature = "f32-storage"))]
-use crate::config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY;
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
@@ -12,49 +10,6 @@ use std::ops::ControlFlow;
 #[inline]
 pub(crate) fn level_end_of(level_bounds: &[usize], node: usize) -> usize {
     level_bounds[level_bounds.partition_point(|&end| end <= node)]
-}
-
-/// Best-first descent collecting up to `max_results` nearest items, for callers
-/// that hold only the item queue (the SIMD and f32 frontends). A convenience over
-/// [`collect_neighbors_two_queue`]: it allocates a small pre-sized scratch node
-/// queue and delegates. The scalar f64 indexes call the two-queue kernel directly
-/// with their workspace's node queue.
-///
-/// The two-queue distance-browsing algorithm measured faster than a single-queue
-/// collect across every frontend — ~5% scalar f64, ~6% `SimdIndex2D`, ~11%
-/// `Index2DF32`, ~7% `Index3DF32`, flat on `SimdIndex3D` (k=10, 200k boxes,
-/// pinned) — so it is the one kNN collect kernel everywhere. The per-call scratch
-/// alloc is one pre-sized `BinaryHeap` (the same cost as the item queue) and
-/// measured no worse than a reused buffer.
-#[cfg(any(feature = "simd", feature = "f32-storage"))]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn collect_neighbors(
-    num_nodes: usize,
-    num_items: usize,
-    node_size: usize,
-    level_end: impl Fn(usize) -> usize,
-    index_at: impl Fn(usize) -> usize,
-    max_results: usize,
-    max_distance: f64,
-    dist: impl Fn(usize) -> f64,
-    results: &mut Vec<usize>,
-    queue: &mut BinaryHeap<NeighborState>,
-) {
-    let mut node_queue: BinaryHeap<NeighborNodeState> =
-        BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-    collect_neighbors_two_queue(
-        num_nodes,
-        num_items,
-        node_size,
-        level_end,
-        index_at,
-        max_results,
-        max_distance,
-        dist,
-        results,
-        queue,
-        &mut node_queue,
-    );
 }
 
 /// Best-first descent with separate node and item priority queues — the

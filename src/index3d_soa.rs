@@ -734,13 +734,15 @@ impl SimdIndex3D {
             return;
         }
 
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(
+        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             results,
-            &mut queue,
+            &mut item_queue,
+            &mut node_queue,
         );
     }
 
@@ -770,13 +772,13 @@ impl SimdIndex3D {
             return &workspace.results;
         }
 
-        workspace.node_queue.clear();
-        self.collect_neighbors_with_queue(
+        self.collect_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             &mut workspace.results,
             &mut workspace.queue,
+            &mut workspace.node_queue,
         );
         &workspace.results
     }
@@ -856,13 +858,15 @@ impl SimdIndex3D {
             return;
         }
 
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(
+        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_results,
             max_distance,
             results,
-            &mut queue,
+            &mut item_queue,
+            &mut node_queue,
         );
     }
 
@@ -893,13 +897,13 @@ impl SimdIndex3D {
             return &workspace.results;
         }
 
-        workspace.node_queue.clear();
-        self.collect_neighbors_with_queue(
+        self.collect_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_results,
             max_distance,
             &mut workspace.results,
             &mut workspace.queue,
+            &mut workspace.node_queue,
         );
         &workspace.results
     }
@@ -1332,15 +1336,16 @@ impl SimdIndex3D {
         closest_pairs_to_core(self, other, k, max_distance)
     }
 
-    fn collect_neighbors_with_queue(
+    fn collect_neighbors_with_queues(
         &self,
         query: NeighborQuery3D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
-        queue: &mut BinaryHeap<NeighborState>,
+        item_queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
-        best_first::collect_neighbors(
+        best_first::collect_neighbors_two_queue(
             self.min_xs.len(),
             self.num_items,
             self.node_size,
@@ -1350,7 +1355,8 @@ impl SimdIndex3D {
             max_distance,
             |pos| self.distance_squared_at(pos, query),
             results,
-            queue,
+            item_queue,
+            node_queue,
         );
     }
 
@@ -3312,13 +3318,15 @@ impl<'a> SimdIndex3DView<'a> {
             }
             return;
         }
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(
+        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             results,
-            &mut queue,
+            &mut item_queue,
+            &mut node_queue,
         );
     }
 
@@ -3347,13 +3355,13 @@ impl<'a> SimdIndex3DView<'a> {
             }
             return &workspace.results;
         }
-        workspace.node_queue.clear();
-        self.collect_neighbors_with_queue(
+        self.collect_neighbors_with_queues(
             NeighborQuery3D::Point(point),
             max_results,
             max_distance,
             &mut workspace.results,
             &mut workspace.queue,
+            &mut workspace.node_queue,
         );
         &workspace.results
     }
@@ -3433,13 +3441,15 @@ impl<'a> SimdIndex3DView<'a> {
             return;
         }
 
-        let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-        self.collect_neighbors_with_queue(
+        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_results,
             max_distance,
             results,
-            &mut queue,
+            &mut item_queue,
+            &mut node_queue,
         );
     }
 
@@ -3470,13 +3480,13 @@ impl<'a> SimdIndex3DView<'a> {
             return &workspace.results;
         }
 
-        workspace.node_queue.clear();
-        self.collect_neighbors_with_queue(
+        self.collect_neighbors_with_queues(
             NeighborQuery3D::Box(query),
             max_results,
             max_distance,
             &mut workspace.results,
             &mut workspace.queue,
+            &mut workspace.node_queue,
         );
         &workspace.results
     }
@@ -3517,15 +3527,16 @@ impl<'a> SimdIndex3DView<'a> {
         )
     }
 
-    fn collect_neighbors_with_queue(
+    fn collect_neighbors_with_queues(
         &self,
         query: NeighborQuery3D,
         max_results: usize,
         max_distance: f64,
         results: &mut Vec<usize>,
-        queue: &mut BinaryHeap<NeighborState>,
+        item_queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
-        best_first::collect_neighbors(
+        best_first::collect_neighbors_two_queue(
             self.num_nodes,
             self.num_items,
             self.node_size,
@@ -3535,7 +3546,8 @@ impl<'a> SimdIndex3DView<'a> {
             max_distance,
             |pos| self.distance_squared_at(pos, query),
             results,
-            queue,
+            item_queue,
+            node_queue,
         );
     }
 

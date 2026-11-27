@@ -10,7 +10,7 @@ use super::{
     ExactNeighborState, NeighborNodeState, NeighborState, NeighborWorkspace, max_distance_squared,
 };
 use crate::config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY;
-use crate::neighbors::best_first::{collect_neighbors, nearest_one};
+use crate::neighbors::best_first::{collect_neighbors_two_queue, nearest_one};
 use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 
@@ -96,8 +96,17 @@ pub(crate) fn point_neighbors_into<T: PointKnn + ?Sized>(
         return;
     }
 
-    let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
-    collect_point_neighbors_with_queue(tree, point, max_results, max_distance, results, &mut queue);
+    let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+    collect_point_neighbors_with_queues(
+        tree,
+        point,
+        max_results,
+        max_distance,
+        results,
+        &mut item_queue,
+        &mut node_queue,
+    );
 }
 
 pub(crate) fn point_neighbors_with<'a, T: PointKnn + ?Sized>(
@@ -122,14 +131,14 @@ pub(crate) fn point_neighbors_with<'a, T: PointKnn + ?Sized>(
         return &workspace.results;
     }
 
-    workspace.node_queue.clear();
-    collect_point_neighbors_with_queue(
+    collect_point_neighbors_with_queues(
         tree,
         point,
         max_results,
         max_distance,
         &mut workspace.results,
         &mut workspace.queue,
+        &mut workspace.node_queue,
     );
     &workspace.results
 }
@@ -265,15 +274,16 @@ where
     )
 }
 
-fn collect_point_neighbors_with_queue<T: PointKnn + ?Sized>(
+fn collect_point_neighbors_with_queues<T: PointKnn + ?Sized>(
     tree: &T,
     point: T::Point,
     max_results: usize,
     max_distance: f64,
     results: &mut Vec<usize>,
-    queue: &mut BinaryHeap<NeighborState>,
+    item_queue: &mut BinaryHeap<NeighborState>,
+    node_queue: &mut BinaryHeap<NeighborNodeState>,
 ) {
-    collect_neighbors(
+    collect_neighbors_two_queue(
         tree.knn_num_nodes(),
         tree.knn_num_items(),
         tree.knn_node_size(),
@@ -283,7 +293,8 @@ fn collect_point_neighbors_with_queue<T: PointKnn + ?Sized>(
         max_distance,
         |pos| tree.knn_distance_squared_to(pos, point),
         results,
-        queue,
+        item_queue,
+        node_queue,
     );
 }
 

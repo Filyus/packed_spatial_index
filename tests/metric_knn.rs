@@ -277,3 +277,29 @@ fn haversine_antipodes_antimeridian_and_polar_admissibility() {
         "exact meridian optimum {d_box} should be substantially below naive clamp {d_clamped}"
     );
 }
+
+#[test]
+fn haversine_preserves_resolution_at_the_antipode_and_meridian() {
+    let lon = 179.999999_f64;
+    let near_antipode = Box2D::new(lon, 0.0, lon, 0.0);
+    let expected = lon.to_radians() * EARTH_RADIUS_M;
+    let distance = |bx| haversine_distance_2d((0.0, 0.0), bx, EARTH_RADIUS_M);
+    assert!((distance(near_antipode) - expected).abs() <= expected.next_up() - expected);
+
+    let mut builder = Index2DBuilder::new(1);
+    builder.add(near_antipode);
+    let cutoff = (std::f64::consts::PI - 1e-8) * EARTH_RADIUS_M;
+    assert_eq!(
+        builder
+            .finish()
+            .unwrap()
+            .neighbors_metric(distance, 1, cutoff),
+        [0]
+    );
+
+    let lon = -1e-15_f64;
+    let greenwich = Box2D::new(0.0, 0.0, 0.0, 0.0);
+    let expected = lon.to_radians().abs() * EARTH_RADIUS_M;
+    let actual = haversine_distance_2d((lon, 0.0), greenwich, EARTH_RADIUS_M);
+    assert!((actual - expected).abs() <= expected.next_up() - expected);
+}

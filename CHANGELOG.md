@@ -4,6 +4,16 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve convex-polygon winding after large translations and keep valid
+  cone intersections when a slab breakpoint overflows.
+- Preserve the inclusive ray interval for watertight triangle hits and recover
+  from overflowing projected edge functions without returning non-finite hits.
+- Preserve great-circle distance resolution near the antimeridian and antipode.
+- Keep two-sided capsule distance bounds valid when unscaled quadratic
+  coefficients would overflow.
+
 ## [0.37.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.37.0...psi-v0.37.1) - 2026-11-27
 
 ### Performance

@@ -21,14 +21,15 @@ impl ConvexPolygon2D {
         &self.verts
     }
 
-    /// Twice the signed area (shoelace); zero ⇒ degenerate (collinear/empty).
+    /// Twice the signed area of the triangle fan about the first vertex.
     fn signed_area2(&self) -> f64 {
-        let v = &self.verts;
+        let Some((&[x, y], rest)) = self.verts.split_first() else {
+            return 0.0;
+        };
         let mut a = 0.0;
-        for i in 0..v.len() {
-            let p = v[i];
-            let q = v[(i + 1) % v.len()];
-            a += p[0] * q[1] - q[0] * p[1];
+        for pair in rest.windows(2) {
+            let [p, q] = [pair[0], pair[1]];
+            a += (p[0] - x) * (q[1] - y) - (q[0] - x) * (p[1] - y);
         }
         a
     }

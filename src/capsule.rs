@@ -126,9 +126,44 @@ fn min_segment_box_gap_squared_impl<const WITH_UPPER: bool>(
     t1: f64,
 ) -> (f64, f64) {
     let mut delta = [0.0f64; 3];
+    let mut max_coord = 0.0f64;
     for i in 0..dims {
         let scale = a[i].abs().max(b[i].abs()).max(lo[i].abs()).max(hi[i].abs());
         delta[i] = AXIS_ROUND_EPS * scale;
+        max_coord = max_coord.max(scale);
+    }
+    let exponent = ((max_coord.to_bits() >> 52) as i32) - 1023;
+    if exponent > 500 && max_coord.is_finite() {
+        // Keep differences, products, and their sums in range. Scaling by a
+        // power of two preserves the minimizer t and the relative error bounds.
+        let shift = exponent - 500;
+        let scale = f64::from_bits(((1023 - shift) as u64) << 52);
+        let inverse = f64::from_bits(((1023 + shift) as u64) << 52);
+        let (lower, upper) = min_segment_box_gap_squared_impl::<WITH_UPPER>(
+            &a.map(|x| x * scale),
+            &b.map(|x| x * scale),
+            &lo.map(|x| x * scale),
+            &hi.map(|x| x * scale),
+            dims,
+            t0,
+            t1,
+        );
+        // Up to three squared gaps can each round by half a subnormal ULP.
+        // Allow two ULPs before scaling back if the sum is in that range.
+        let rounding = |d| {
+            if d <= f64::MIN_POSITIVE {
+                f64::from_bits(2)
+            } else {
+                0.0
+            }
+        };
+        let lower = (((lower - rounding(lower)).max(0.0) * inverse) * inverse).min(f64::MAX);
+        let upper = if WITH_UPPER {
+            ((upper + rounding(upper)) * inverse) * inverse
+        } else {
+            0.0
+        };
+        return (lower, upper);
     }
 
     let mut cuts = [t0, t1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];

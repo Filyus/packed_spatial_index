@@ -152,17 +152,24 @@ fn normalize_lon(lon: f64) -> f64 {
 }
 
 fn haversine_metres(a_lon: f64, a_lat: f64, b_lon: f64, b_lat: f64) -> f64 {
-    let lat1 = a_lat.to_radians();
-    let lat2 = b_lat.to_radians();
-    let dlat = (b_lat - a_lat).to_radians();
-    let dlon = (b_lon - a_lon).to_radians();
-    let inner = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
-    EARTH_RADIUS_METRES * 2.0 * inner.sqrt().atan2((1.0 - inner).max(0.0).sqrt())
+    packed_spatial_index::haversine_distance_2d(
+        (a_lon, a_lat),
+        Box2D::new(b_lon, b_lat, b_lon, b_lat),
+        EARTH_RADIUS_METRES,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radius_filter_keeps_points_just_inside_near_the_antipode() {
+        let cutoff = (std::f64::consts::PI - 1e-8) * EARTH_RADIUS_METRES;
+        let query = SphericalRadius::new(0.0, 0.0, cutoff).unwrap();
+        assert!(query.contains_point(179.999999, 0.0));
+        assert!(!query.contains_point(180.0, 0.0));
+    }
 
     #[test]
     fn contains_point_accepts_longitudes_outside_the_principal_range() {

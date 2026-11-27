@@ -441,9 +441,17 @@ fn watertight_closest_f64<T>(
     if d[kz] < 0.0 {
         core::mem::swap(&mut kx, &mut ky);
     }
-    let sz = 1.0 / d[kz];
-    let sx = d[kx] * sz;
-    let sy = d[ky] * sz;
+    let dz = d[kz];
+    let sx = d[kx] / dz;
+    let sy = d[ky] / dz;
+
+    let project = |tri: &T| {
+        let (a, b, c) = verts(tri);
+        [a, b, c].map(|p| {
+            let z = p[kz] - o[kz];
+            [p[kx] - o[kx] - sx * z, p[ky] - o[ky] - sy * z, z]
+        })
+    };
 
     let mut best_t = max_t;
     let mut best: Option<TriangleHitDetail> = None;
@@ -495,6 +503,9 @@ fn watertight_closest_f64<T>(
                 any_neg & any_pos
             };
             let det = u_e + v_e + w_e;
+            // An overflowed difference has a reliable sign or compares
+            // unordered. Surviving lanes with non-finite determinants are
+            // recomputed below with scaled coordinates.
             let miss = miss | det.simd_eq(zero);
             if miss.all() {
                 continue;
@@ -512,30 +523,31 @@ fn watertight_closest_f64<T>(
             while bits != 0 {
                 let l = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                let u_l = u_a[l];
-                let v_l = v_a[l];
-                let w_l = w_a[l];
                 let det_l = det_a[l];
-                let t_scaled = u_l * (sz * az_a[l]) + v_l * (sz * bz_a[l]) + w_l * (sz * cz_a[l]);
-                if det_l > 0.0 {
-                    if t_scaled < min_t * det_l || t_scaled > best_t * det_l {
-                        continue;
-                    }
-                } else if t_scaled > min_t * det_l || t_scaled < best_t * det_l {
-                    continue;
+                let hit = if det_l.is_finite() {
+                    let z = [az_a[l], bz_a[l], cz_a[l]];
+                    let weights = [u_a[l], v_a[l], w_a[l]];
+                    triangle_hit_at_depth(z, weights, det_l, dz, min_t, best_t)
+                } else {
+                    scaled_projected_triangle_hit(
+                        project(&chunk[l]),
+                        dz,
+                        min_t,
+                        best_t,
+                        backface_cull,
+                    )
+                };
+                if let Some((t, uv, front_face)) = hit
+                    && (best.is_none() || t < best_t)
+                {
+                    best_t = t;
+                    best = Some(TriangleHitDetail {
+                        index: base + l,
+                        t,
+                        uv,
+                        front_face,
+                    });
                 }
-                let inv_det = 1.0 / det_l;
-                let t = t_scaled * inv_det;
-                if t < min_t || t > best_t || (best.is_some() && t >= best_t) {
-                    continue;
-                }
-                best_t = t;
-                best = Some(TriangleHitDetail {
-                    index: base + l,
-                    t,
-                    uv: [v_l * inv_det, w_l * inv_det],
-                    front_face: det_l > 0.0,
-                });
             }
         }
     }
@@ -547,64 +559,127 @@ fn watertight_closest_f64<T>(
 
     for (j, tri) in tail_tris.iter().enumerate() {
         let i = tail_base + j;
-        let (va, vb, vc) = verts(tri);
-        let a = [va[0] - o[0], va[1] - o[1], va[2] - o[2]];
-        let b = [vb[0] - o[0], vb[1] - o[1], vb[2] - o[2]];
-        let c = [vc[0] - o[0], vc[1] - o[1], vc[2] - o[2]];
-
-        let ax_s = a[kx] - sx * a[kz];
-        let ay_s = a[ky] - sy * a[kz];
-        let bx_s = b[kx] - sx * b[kz];
-        let by_s = b[ky] - sy * b[kz];
-        let cx_s = c[kx] - sx * c[kz];
-        let cy_s = c[ky] - sy * c[kz];
-
-        // Scaled barycentric edge functions: U -> weight(a), V -> weight(b), W -> weight(c).
-        let u_e = cx_s * by_s - cy_s * bx_s;
-        let v_e = ax_s * cy_s - ay_s * cx_s;
-        let w_e = bx_s * ay_s - by_s * ax_s;
-
-        if backface_cull {
-            if u_e < 0.0 || v_e < 0.0 || w_e < 0.0 {
-                continue;
-            }
-        } else if (u_e < 0.0 || v_e < 0.0 || w_e < 0.0) && (u_e > 0.0 || v_e > 0.0 || w_e > 0.0) {
-            continue;
+        if let Some((t, uv, front_face)) =
+            projected_triangle_hit(project(tri), dz, min_t, best_t, backface_cull)
+            && (best.is_none() || t < best_t)
+        {
+            best_t = t;
+            best = Some(TriangleHitDetail {
+                index: i,
+                t,
+                uv,
+                front_face,
+            });
         }
-
-        let det = u_e + v_e + w_e;
-        if det == 0.0 {
-            continue;
-        }
-
-        let az_s = sz * a[kz];
-        let bz_s = sz * b[kz];
-        let cz_s = sz * c[kz];
-        let t_scaled = u_e * az_s + v_e * bz_s + w_e * cz_s;
-
-        if det > 0.0 {
-            if t_scaled < min_t * det || t_scaled > best_t * det {
-                continue;
-            }
-        } else if t_scaled > min_t * det || t_scaled < best_t * det {
-            continue;
-        }
-
-        let inv_det = 1.0 / det;
-        let t = t_scaled * inv_det;
-        if t < min_t || t > best_t || (best.is_some() && t >= best_t) {
-            continue;
-        }
-        best_t = t;
-        best = Some(TriangleHitDetail {
-            index: i,
-            t,
-            uv: [v_e * inv_det, w_e * inv_det],
-            front_face: det > 0.0,
-        });
     }
 
     best
+}
+
+#[inline]
+fn projected_triangle_hit(
+    p: [[f64; 3]; 3],
+    dz: f64,
+    min_t: f64,
+    max_t: f64,
+    backface_cull: bool,
+) -> Option<(f64, [f64; 2], bool)> {
+    let edges = projected_edge_functions(p);
+    let det = edges[0] + edges[1] + edges[2];
+    if !det.is_finite() {
+        return scaled_projected_triangle_hit(p, dz, min_t, max_t, backface_cull);
+    }
+    triangle_hit_from_edges(
+        p.map(|point| point[2]),
+        edges,
+        dz,
+        min_t,
+        max_t,
+        backface_cull,
+    )
+}
+
+#[cold]
+#[inline(never)]
+fn scaled_projected_triangle_hit(
+    mut p: [[f64; 3]; 3],
+    dz: f64,
+    min_t: f64,
+    max_t: f64,
+    backface_cull: bool,
+) -> Option<(f64, [f64; 2], bool)> {
+    // Leave room for the six products in the determinant. The positive
+    // powers of two common to all edges cancel in the barycentric quotients.
+    const SAFE_EXPONENT: i32 = (f64::MAX_EXP - 6) / 2;
+    for axis in 0..2 {
+        let magnitude = p[0][axis].abs().max(p[1][axis].abs()).max(p[2][axis].abs());
+        let exponent = ((magnitude.to_bits() >> 52) as i32) - 1023;
+        if exponent > SAFE_EXPONENT && magnitude.is_finite() {
+            let scale = f64::from_bits(((1023 + SAFE_EXPONENT - exponent) as u64) << 52);
+            for point in &mut p {
+                point[axis] *= scale;
+            }
+        }
+    }
+    let edges = projected_edge_functions(p);
+    triangle_hit_from_edges(
+        p.map(|point| point[2]),
+        edges,
+        dz,
+        min_t,
+        max_t,
+        backface_cull,
+    )
+}
+
+#[inline]
+fn projected_edge_functions([[ax, ay, _], [bx, by, _], [cx, cy, _]]: [[f64; 3]; 3]) -> [f64; 3] {
+    [cx * by - cy * bx, ax * cy - ay * cx, bx * ay - by * ax]
+}
+
+#[inline]
+fn triangle_hit_from_edges(
+    z: [f64; 3],
+    [u, v, w]: [f64; 3],
+    dz: f64,
+    min_t: f64,
+    max_t: f64,
+    backface_cull: bool,
+) -> Option<(f64, [f64; 2], bool)> {
+    let det = u + v + w;
+    let any_negative = u < 0.0 || v < 0.0 || w < 0.0;
+    if !det.is_finite()
+        || det == 0.0
+        || (any_negative && (backface_cull || u > 0.0 || v > 0.0 || w > 0.0))
+    {
+        return None;
+    }
+    triangle_hit_at_depth(z, [u, v, w], det, dz, min_t, max_t)
+}
+
+#[inline]
+fn triangle_hit_at_depth(
+    [a, b, c]: [f64; 3],
+    [u, v, w]: [f64; 3],
+    det: f64,
+    dz: f64,
+    min_t: f64,
+    max_t: f64,
+) -> Option<(f64, [f64; 2], bool)> {
+    let depth = if a == b && a == c {
+        // Preserve the exact depth of a constant-depth face at either limit.
+        a
+    } else {
+        let weighted = u * a + v * b + w * c;
+        if weighted.is_finite() {
+            weighted / det
+        } else {
+            // Normalize first if a product or partial sum would overflow.
+            (u / det) * a + (v / det) * b + (w / det) * c
+        }
+    };
+    let t = depth / dz;
+    (t.is_finite() && (min_t..=max_t).contains(&t)).then(|| (t, [v / det, w / det], det > 0.0))
 }
 
 fn closest_f64(o: [f64; 3], d: [f64; 3], max_t: f64, tris: &[Triangle3D]) -> Option<TriangleHit> {

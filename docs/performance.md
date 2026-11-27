@@ -970,21 +970,45 @@ borrowed as typed records, since a stride alone does not identify a type. The
 `f32` records (`Triangle3DF32`, 36 bytes) are half the size of `f64`
 (`Triangle3D`, 72 bytes) and test 8 at a time through `wide::f32x8`, while `f64`
 tests 4 at a time through `wide::f64x4` (both fall back to scalar without the
-`simd` feature). Workload: 4,096 rays against 4,096 candidate triangles (the
-narrow-phase test), pinned to one core. Lower is better.
+`simd` feature). The narrow-phase workload tests 4,096 rays against 4,096
+candidate triangles. The table gives medians of three runs on a Ryzen AI 7 350
+with `BENCH_PIN_CORE=0` and alternated runs against the previous kernel.
 
 | `closest_triangle` | per batch | per ray x triangle |
 | --- | ---: | ---: |
-| `f64` `Triangle3D` (4-wide SIMD, watertight) | 37.6 ms | 2.2 ns |
-| `f32` `Triangle3DF32` (8-wide SIMD, Moller-Trumbore) | 33.2 ms | 2.0 ns |
+| `f64` `Triangle3D` (4-wide SIMD, watertight) | 37.26 ms | 2.22 ns |
+| `f32` `Triangle3DF32` (8-wide SIMD, Moller-Trumbore) | 33.05 ms | 1.97 ns |
 
 With `simd` enabled, both paths skip all-miss chunks (`miss.all()`) before the
-per-hit reduction, bringing watertight `f64` to 2.24 ns per ray-triangle test
-(5.4x faster than scalar `f64`) and `f32` Moller-Trumbore to 1.98 ns. `f32`'s
-main remaining benefit is size — half the payload bytes on disk and over the
-wire. Use `Ray3D::closest_triangle_watertight` when you need watertight edges,
+per-hit reduction. The `f64` kernel recomputes overflowing determinants only
+for candidate lanes. Its previous median was 37.45 ms per batch. `f32` uses
+half the payload bytes on disk and over the wire.
+Use `Ray3D::closest_triangle_watertight` when you need watertight edges,
 `min_t`, barycentrics, or backface culling over `Triangle3DF32` as well.
 Reproduce with `cargo bench --bench raytriangle3d_bench --features simd`.
+
+## Region and geographic distance kernels
+
+Against `a437d5e` on a Ryzen AI 7 350, Windows, pinned to logical core 0.
+`predicate_regions_bench` measures batches of 200 queries over an index of one
+million boxes. Times are medians of three alternated runs per version.
+
+| Region | Previous batch | Current batch | Change |
+| --- | ---: | ---: | ---: |
+| Capsule2D, radius 0.5 | 58.59 ms | 57.97 ms | −1.1% |
+| Capsule2D, radius 5 | 99.45 ms | 99.10 ms | −0.4% |
+| Capsule2D, radius 50 | 124.09 ms | 121.77 ms | −1.9% |
+| Cone3D, 5.7° aperture | 17.72 ms | 18.60 ms | +5.0% |
+| Cone3D, 34° aperture | 52.69 ms | 56.95 ms | +8.1% |
+
+The cone tests use slab crossings to classify active axes and include valid
+constant-height intervals. An additional scalar A/B microbenchmark used an
+octagon against 384 grid boxes and a geographic query against 384 point and
+one-degree boxes on a lon/lat grid. Across eight paired rounds after warm-up,
+the octagon took 32.73 → 32.91 ns per test and the geographic metric took
+49.62 → 49.52 ns per box.
+
+Reproduce the region timings with `cargo bench --bench predicate_regions_bench -- "capsule_2d_region|cone_3d_region"`.
 
 ## The four range-search frontends, by CPU
 

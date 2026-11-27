@@ -15,47 +15,64 @@ pub const EARTH_RADIUS_M: f64 = 6_371_008.8;
 ///
 /// Uses the exact closed-form minimum over the lon/lat box on the sphere
 /// (accounting for 360° longitude periodicity and the true meridian optimum
-/// `atan2(sin(lat1), cos(lat1) * cos(dlon))`, evaluated with `atan2` so
-/// antipodal points stay well-conditioned and never produce `NaN`), so it is
-/// a strictly admissible lower bound for best-first `neighbors_metric`
-/// traversal even on large or near-polar boxes.
+/// `atan2(sin(lat1), cos(lat1) * cos(dlon))`). Near the antipode the
+/// supplementary haversine is evaluated independently to preserve
+/// distance resolution.
 pub fn haversine_distance_2d(query_lon_lat: (f64, f64), bounds: Box2D, earth_radius_m: f64) -> f64 {
     let (lon, lat) = query_lon_lat;
     let span = bounds.max_x - bounds.min_x;
     let dlon_deg = if span >= 360.0 {
         0.0
     } else {
-        let wrapped = (lon - bounds.min_x).rem_euclid(360.0);
-        if wrapped <= span {
+        // A signed remainder preserves tiny negative offsets at the lower edge.
+        let offset = (lon - bounds.min_x) % 360.0;
+        if (0.0..=span).contains(&offset) || offset <= span - 360.0 {
             0.0
         } else {
-            (360.0 - wrapped).min(wrapped - span)
+            let start = offset.abs();
+            let end = ((lon - bounds.max_x) % 360.0).abs();
+            start.min(360.0 - start).min(end.min(360.0 - end))
         }
     };
 
     let lat1 = lat.to_radians();
-    let min_lat = bounds.min_y.to_radians();
-    let max_lat = bounds.max_y.to_radians();
     let dlon = dlon_deg.to_radians();
 
     if dlon == 0.0 {
-        let clamped_lat = lat1.clamp(min_lat, max_lat);
-        return earth_radius_m * (clamped_lat - lat1).abs();
+        let clamped_lat = lat.clamp(bounds.min_y, bounds.max_y);
+        return earth_radius_m * (clamped_lat - lat).abs().to_radians();
     }
 
     let (sin_lat1, cos_lat1) = lat1.sin_cos();
     let sin_half_dlon_sq = (dlon * 0.5).sin().powi(2);
     let central_angle = |lat2: f64| -> f64 {
-        let half_dlat = (lat2 - lat1) * 0.5;
-        let a = half_dlat.sin().powi(2) + cos_lat1 * lat2.cos() * sin_half_dlon_sq;
-        2.0 * a.sqrt().atan2((1.0 - a).max(0.0).sqrt())
+        let half_dlat = (lat2 - lat).to_radians() * 0.5;
+        let cos_lats = if lat.abs() == 90.0 || lat2.abs() == 90.0 {
+            0.0
+        } else {
+            cos_lat1 * lat2.to_radians().cos()
+        };
+        let hav = half_dlat.sin().powi(2) + cos_lats * sin_half_dlon_sq;
+        let complement = if hav <= 0.5 {
+            // Here the subtraction retains at least half the operand's scale.
+            1.0 - hav
+        } else {
+            let half_sum = (lat + lat2).to_radians() * 0.5;
+            let half_supplement = (180.0 - dlon_deg).to_radians() * 0.5;
+            half_sum.sin().powi(2) + cos_lats * half_supplement.sin().powi(2)
+        };
+        2.0 * hav.sqrt().atan2(complement.sqrt())
     };
 
-    let mut best = central_angle(min_lat).min(central_angle(max_lat));
+    let mut best = central_angle(bounds.min_y);
+    if bounds.min_y == bounds.max_y {
+        return earth_radius_m * best;
+    }
+    best = best.min(central_angle(bounds.max_y));
     let cos_dlon = dlon.cos();
     if cos_dlon > 0.0 {
-        let phi_opt = sin_lat1.atan2(cos_lat1 * cos_dlon);
-        if phi_opt > min_lat && phi_opt < max_lat {
+        let phi_opt = sin_lat1.atan2(cos_lat1 * cos_dlon).to_degrees();
+        if phi_opt > bounds.min_y && phi_opt < bounds.max_y {
             best = best.min(central_angle(phi_opt));
         }
     }

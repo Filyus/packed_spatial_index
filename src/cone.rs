@@ -109,13 +109,10 @@ impl Cone3D {
         })
     }
 
-    /// The box's extent along the axis, as heights above the apex:
-    /// `[min, max]` of `axis · (q - apex)` over the box.
+    /// The box's extent along the axis, given bounds relative to the apex.
     #[inline]
     fn height_range(&self, lo: &[f64; 3], hi: &[f64; 3]) -> (f64, f64) {
-        let base =
-            self.axis[0] * self.apex[0] + self.axis[1] * self.apex[1] + self.axis[2] * self.apex[2];
-        let (mut t_min, mut t_max) = (-base, -base);
+        let (mut t_min, mut t_max) = (0.0, 0.0);
         for i in 0..3 {
             let a = self.axis[i];
             if a >= 0.0 {
@@ -134,16 +131,11 @@ impl Cone3D {
     #[inline]
     fn kkt_point_in_cone(&self, s: f64, lo: &[f64; 3], hi: &[f64; 3]) -> bool {
         let a = self.axis;
-        let q = [
-            (self.apex[0] + s * a[0]).clamp(lo[0], hi[0]),
-            (self.apex[1] + s * a[1]).clamp(lo[1], hi[1]),
-            (self.apex[2] + s * a[2]).clamp(lo[2], hi[2]),
-        ];
-        let (dx, dy, dz) = (
-            q[0] - self.apex[0],
-            q[1] - self.apex[1],
-            q[2] - self.apex[2],
-        );
+        let project = |i: usize| {
+            let offset = if a[i] == 0.0 { 0.0 } else { s * a[i] };
+            offset.clamp(lo[i], hi[i])
+        };
+        let (dx, dy, dz) = (project(0), project(1), project(2));
         let along = dx * a[0] + dy * a[1] + dz * a[2];
         // `s` is already clipped to `t(s) in [lo_t, hi_t] ⊆ [0, height]`, so
         // clamp tiny f64 rounding overshoot at the caps rather than dropping a
@@ -163,7 +155,9 @@ impl Cone3D {
     pub fn overlaps_box(&self, bx: Box3D) -> bool {
         let lo = [bx.min_x, bx.min_y, bx.min_z];
         let hi = [bx.max_x, bx.max_y, bx.max_z];
-        let (t_min, t_max) = self.height_range(&lo, &hi);
+        let lo_rel = core::array::from_fn(|i| lo[i] - self.apex[i]);
+        let hi_rel = core::array::from_fn(|i| hi[i] - self.apex[i]);
+        let (t_min, t_max) = self.height_range(&lo_rel, &hi_rel);
         let (lo_t, hi_t) = (t_min.max(0.0), t_max.min(self.height));
         if lo_t > hi_t {
             // The box lies wholly behind the apex or beyond the base.
@@ -211,12 +205,17 @@ impl Cone3D {
         // coefficient `-2·alpha·beta`, minimized analytically at `s_lo`, `s_hi`,
         // or (when convex) `s* = beta / (cos²θ - alpha)`.
         let a = self.axis;
+        let (lo, hi) = (lo_rel, hi_rel);
+        let mut enter = [0.0; 3];
+        let mut exit = [0.0; 3];
         let mut kinks = [0.0f64; 6];
         let mut n = 0usize;
         for i in 0..3 {
             if a[i] != 0.0 {
-                kinks[n] = (lo[i] - self.apex[i]) / a[i];
-                kinks[n + 1] = (hi[i] - self.apex[i]) / a[i];
+                let (l, h) = (lo[i] / a[i], hi[i] / a[i]);
+                (enter[i], exit[i]) = if a[i] > 0.0 { (l, h) } else { (h, l) };
+                kinks[n] = enter[i];
+                kinks[n + 1] = exit[i];
                 n += 2;
             }
         }
@@ -235,27 +234,31 @@ impl Cone3D {
             if s_b <= s_a {
                 continue;
             }
-            let s_mid = 0.5 * (s_a + s_b);
             let mut alpha = 0.0;
             let mut beta = 0.0;
             for i in 0..3 {
                 if a[i] == 0.0 {
-                    let c = self.apex[i].clamp(lo[i], hi[i]);
-                    // `a[i] == 0` contributes 0 to both `alpha` and `beta`;
-                    // `kkt_point_in_cone` evaluates the exact perpendicular gap.
-                    let _ = c;
+                    continue;
+                }
+                // The slab crossings themselves identify the active piece,
+                // even when a crossing overflows and the interval is unbounded.
+                if s_b <= enter[i] {
+                    beta += a[i] * if a[i] > 0.0 { lo[i] } else { hi[i] };
+                } else if s_a >= exit[i] {
+                    beta += a[i] * if a[i] > 0.0 { hi[i] } else { lo[i] };
                 } else {
-                    let v = self.apex[i] + s_mid * a[i];
-                    if v < lo[i] {
-                        beta += a[i] * (lo[i] - self.apex[i]);
-                    } else if v > hi[i] {
-                        beta += a[i] * (hi[i] - self.apex[i]);
-                    } else {
-                        alpha += a[i] * a[i];
-                    }
+                    alpha += a[i] * a[i];
                 }
             }
             if alpha == 0.0 {
+                // A constant-height piece can be the only one in the clip
+                // range, including a box reduced to a slice through the cone.
+                if (lo_t..=hi_t).contains(&beta) {
+                    let s = 0.0f64.clamp(s_a, s_b);
+                    if self.kkt_point_in_cone(s, &lo, &hi) {
+                        return true;
+                    }
+                }
                 continue;
             }
             let s_lo = s_a.max((lo_t - beta) / alpha);

@@ -271,7 +271,9 @@ measured in a 200k-box field:
 
 For triangles, use `Triangle2D` with `search(&tri)` rather than
 representing the same shape as a three-vertex polygon. The same generic overlap
-methods are also on the zero-copy `Index2DView`.
+methods are also on the zero-copy `Index2DView`. Convex polygon winding is
+computed relative to the first vertex, so a large coordinate offset does not
+erase a small polygon's area.
 
 ## Slices, thick rays, and cones
 
@@ -292,18 +294,22 @@ Three more region shapes ride the same `search(&shape)` machinery:
   — a segment thickened by a radius: a thick ray, or world-unit picking
   tolerance. The box test is a closed-form segment-to-box distance with derived
   conservative `f64` rounding bounds (`segment_box_gap_squared_bounds` returns
-  both `(lower, upper)` with `lower(parent) <= upper(child)` for nested boxes),
-  which prunes where the grown-bounding-box workaround cannot: measured ~28-49x
-  faster than `search(bbox) + filter` at radii from 0.5 to 50 units on 1M boxes.
+  both `(lower, upper)` with `lower(parent) <= upper(child)` for nested boxes).
+  The calculation rescales large coordinates by a power of two before forming
+  the quadratic coefficients. Region search took 0.29–0.61 ms per query at
+  radii from 0.5 to 50 units on 1M boxes in the pinned benchmark.
 - [`Cone3D`](https://docs.rs/packed_spatial_index/latest/packed_spatial_index/struct.Cone3D.html)
   — a solid sensor-FOV / spotlight cone (`try_new` validates the axis, the
   half-angle and the height). The box test is exact up to floating point: after
   cheap early outs (a corner inside, the axis through the box, the axis too far
   for the radius at the box's top), it solves the KKT curve
   `q_i(s) = clamp(apex_i + s·axis_i, lo_i, hi_i)` in closed form over its ≤ 6
-  piecewise-quadratic intervals — no iteration. ~61x faster than the
-  bounding-box workaround at a 5.7° aperture and ~15.5x at 34° on 1M boxes
-  (0.094 ms and 0.27 ms per query).
+  piecewise-quadratic intervals. The slab crossings determine each interval's
+  active axes, including constant-height intervals at the caps. Region search
+  took 0.093 ms per query at a 5.7° aperture and 0.285 ms at 34° on 1M boxes.
+
+See [Region and geographic distance kernels](performance.md#region-and-geographic-distance-kernels)
+for the benchmark comparisons.
 
 All three answer the full region family — `search` / `count` / `any` / `first`
 / `visit` on the owned `f64` indexes and views, the `*_region` spellings on the
@@ -316,7 +322,9 @@ the ray enters, not the nearest triangle. For a mesh the exact test is yours —
 `Ray3D::closest_triangle` (or `Ray3D::closest_triangle_watertight` when you
 need watertight shared edges, `min_t`, barycentrics, or backface culling) over
 the candidates, with the triangles carried as a fixed-width payload (see [Keep
-payloads outside the index](#keep-payloads-outside-the-index)).
+payloads outside the index](#keep-payloads-outside-the-index)). The watertight
+kernel uses an inclusive ray interval and rescales overflowing projected edge
+functions before evaluating the hit.
 
 The obvious way to spend those candidates is the expensive one: collect every
 box the ray crosses over the whole segment, then test them all. Instead, walk
@@ -1238,10 +1246,10 @@ The closure must return an **admissible lower bound**: the distance to a box may
 never exceed the distance to any item inside it. Every "distance to the closest
 point of the box" metric satisfies this (a child box sits inside its parent), so
 Euclidean, Manhattan, Chebyshev, weighted axes, and the provided
-`haversine_distance_2d` all work. The haversine helper computes the exact
-closed-form minimum great-circle distance over the box on the sphere (handling
-360° longitude wraparound and the meridian optimum cleanly via `atan2`), so it is
-strictly admissible even on large or near-polar boxes. `neighbors_metric` is
+`haversine_distance_2d` all work. The haversine helper computes the closed-form
+minimum great-circle distance over the box, including 360° longitude wraparound
+and the meridian optimum. Near the antipode it evaluates the haversine of the
+supplement separately to preserve distance resolution. `neighbors_metric` is
 generic, so the default `neighbors` stays the faster path when plain Euclidean
 is what you want.
 

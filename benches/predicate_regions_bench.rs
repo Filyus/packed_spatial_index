@@ -9,7 +9,7 @@
 
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group};
 use packed_spatial_index::{
     Box2D, Box3D, Capsule2D, Cone3D, HalfSpace2D, Index2D, Index2DBuilder, Index3D, Index3DBuilder,
 };
@@ -249,5 +249,18 @@ fn bench_regions(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_regions);
-criterion_main!(benches);
+criterion_group! {
+    name = benches;
+    config = pin::criterion();
+    targets = bench_regions
+}
+#[path = "support/pin.rs"]
+mod pin;
+
+fn main() {
+    pin::pin_from_env();
+    benches();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

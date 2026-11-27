@@ -4,15 +4,24 @@ All notable changes to this crate are documented here.
 
 ## [Unreleased]
 
-### Fixed
+## [0.37.2](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.37.1...psi-v0.37.2) - 2026-11-27
 
-- Preserve convex-polygon winding after large translations and keep valid
-  cone intersections when a slab breakpoint overflows.
-- Preserve the inclusive ray interval for watertight triangle hits and recover
-  from overflowing projected edge functions without returning non-finite hits.
-- Preserve great-circle distance resolution near the antimeridian and antipode.
-- Keep two-sided capsule distance bounds valid when unscaled quadratic
-  coefficients would overflow.
+### Search
+
+- `ConvexPolygon2D::overlaps_box` and `contains_box` preserve polygon winding
+  at large coordinate offsets, keeping interior boxes in search results.
+- `Cone3D::overlaps_box` retains intersections when an axis component is
+  extremely small and a slab breakpoint overflows.
+- `Ray3D::closest_triangle` and `closest_triangle_watertight` include hits at
+  the ray interval endpoints and handle overflowing projected edge functions
+  without returning non-finite hits.
+- `Capsule2D::segment_box_gap_squared_bounds` and its `Capsule3D` counterpart
+  preserve conservative bounds when unscaled quadratic coefficients overflow.
+
+### Nearest Neighbors
+
+- Preserve great-circle distance resolution near the antimeridian and antipode
+  in `haversine_distance_2d`.
 
 ## [0.37.1](https://github.com/Filyus/packed_spatial_index/compare/psi-v0.37.0...psi-v0.37.1) - 2026-11-27
 

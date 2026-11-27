@@ -150,42 +150,52 @@ impl Triangle2D {
     pub fn overlaps_box(&self, bx: Box2D) -> bool {
         let v = [self.a, self.b, self.c];
         // Box axes.
-        let lo = v[0][0].min(v[1][0]).min(v[2][0]);
-        let hi = v[0][0].max(v[1][0]).max(v[2][0]);
-        if hi < bx.min_x || lo > bx.max_x {
+        let lo_x = v[0][0].min(v[1][0]).min(v[2][0]);
+        let hi_x = v[0][0].max(v[1][0]).max(v[2][0]);
+        if hi_x < bx.min_x || lo_x > bx.max_x {
             return false;
         }
-        let lo = v[0][1].min(v[1][1]).min(v[2][1]);
-        let hi = v[0][1].max(v[1][1]).max(v[2][1]);
-        if hi < bx.min_y || lo > bx.max_y {
+        let lo_y = v[0][1].min(v[1][1]).min(v[2][1]);
+        let hi_y = v[0][1].max(v[1][1]).max(v[2][1]);
+        if hi_y < bx.min_y || lo_y > bx.max_y {
             return false;
         }
-        // Triangle edge normals.
-        let corners = [
-            [bx.min_x, bx.min_y],
-            [bx.max_x, bx.min_y],
-            [bx.min_x, bx.max_y],
-            [bx.max_x, bx.max_y],
-        ];
+        // Triangle edge normals with O(1) p/n-vertex box projection and a
+        // derived f64 rounding margin (`8 * f64::EPSILON * (sx*|ax| + sy*|ay|)`)
+        // so oblique touching edges never suffer a false miss.
+        let sx = lo_x
+            .abs()
+            .max(hi_x.abs())
+            .max(bx.min_x.abs())
+            .max(bx.max_x.abs());
+        let sy = lo_y
+            .abs()
+            .max(hi_y.abs())
+            .max(bx.min_y.abs())
+            .max(bx.max_y.abs());
         for e in 0..3 {
             let p = v[e];
             let q = v[(e + 1) % 3];
             let (ax, ay) = (-(q[1] - p[1]), q[0] - p[0]);
-            let mut tlo = f64::INFINITY;
-            let mut thi = f64::NEG_INFINITY;
-            for w in &v {
-                let d = w[0] * ax + w[1] * ay;
-                tlo = tlo.min(d);
-                thi = thi.max(d);
-            }
-            let mut blo = f64::INFINITY;
-            let mut bhi = f64::NEG_INFINITY;
-            for c in &corners {
-                let d = c[0] * ax + c[1] * ay;
-                blo = blo.min(d);
-                bhi = bhi.max(d);
-            }
-            if thi < blo || tlo > bhi {
+            let d0 = v[0][0] * ax + v[0][1] * ay;
+            let d1 = v[1][0] * ax + v[1][1] * ay;
+            let d2 = v[2][0] * ax + v[2][1] * ay;
+            let tlo = d0.min(d1).min(d2);
+            let thi = d0.max(d1).max(d2);
+            let (bx_lo, bx_hi) = if ax >= 0.0 {
+                (bx.min_x, bx.max_x)
+            } else {
+                (bx.max_x, bx.min_x)
+            };
+            let (by_lo, by_hi) = if ay >= 0.0 {
+                (bx.min_y, bx.max_y)
+            } else {
+                (bx.max_y, bx.min_y)
+            };
+            let blo = bx_lo * ax + by_lo * ay;
+            let bhi = bx_hi * ax + by_hi * ay;
+            let pad = 8.0 * f64::EPSILON * (sx * ax.abs() + sy * ay.abs());
+            if thi + pad < blo || tlo - pad > bhi {
                 return false;
             }
         }
@@ -542,12 +552,21 @@ fn mt_f32(t: &Triangle3DF32, o: [f32; 3], d: [f32; 3], max_t: f32) -> f32 {
     if miss { f32::INFINITY } else { t }
 }
 
+/// Derived `f32` determinant rounding bound for `det = dot(e1, d x e2)`.
+///
+/// Each component of `p = d x e2` incurs `<= gamma_2` relative error, and the
+/// 3-term dot product `e1 · p` adds `<= gamma_3`, giving total rounding error
+/// `<= gamma_5 * |d|_1 * |e1|_1 * |e2|_1 < 4 * f32::EPSILON * scale`. We use
+/// `8 * f32::EPSILON * scale` so parallel rays are rejected before `1.0 / det`
+/// overflows or amplifies rounding noise.
+const DET_EPS_FACTOR_F32: f32 = 8.0 * f32::EPSILON;
+
 #[inline(always)]
 fn scaled_det_epsilon_f32(d: [f32; 3], e1: [f32; 3], e2: [f32; 3]) -> f32 {
     let d_scale = d[0].abs() + d[1].abs() + d[2].abs();
     let e1_scale = e1[0].abs() + e1[1].abs() + e1[2].abs();
     let e2_scale = e2[0].abs() + e2[1].abs() + e2[2].abs();
-    64.0 * f32::EPSILON * d_scale * e1_scale * e2_scale
+    DET_EPS_FACTOR_F32 * d_scale * e1_scale * e2_scale
 }
 
 fn closest_f32(
@@ -594,7 +613,7 @@ fn closest_f32_simd(
     let inf = f32x8::splat(f32::INFINITY);
     let zero = f32x8::splat(0.0);
     let one = f32x8::splat(1.0);
-    let eps_factor = f32x8::splat(64.0 * f32::EPSILON);
+    let eps_factor = f32x8::splat(DET_EPS_FACTOR_F32);
     let d_scale = f32x8::splat(d[0].abs() + d[1].abs() + d[2].abs());
     let maxv = f32x8::splat(max_t);
     let ox = f32x8::splat(o[0]);

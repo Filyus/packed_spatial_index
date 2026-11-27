@@ -52,34 +52,71 @@ impl ConvexPolygon2D {
         if hix < bx.min_x || lox > bx.max_x || hiy < bx.min_y || loy > bx.max_y {
             return false;
         }
-        // Polygon edge normals.
-        let corners = [
-            [bx.min_x, bx.min_y],
-            [bx.max_x, bx.min_y],
-            [bx.min_x, bx.max_y],
-            [bx.max_x, bx.max_y],
-        ];
+        // Derived f64 rounding margin for edge-normal dot products
+        // (`8 * f64::EPSILON * (sx*|nx| + sy*|ny|)`), preventing false misses
+        // on oblique touching edges.
+        let sx = lox
+            .abs()
+            .max(hix.abs())
+            .max(bx.min_x.abs())
+            .max(bx.max_x.abs());
+        let sy = loy
+            .abs()
+            .max(hiy.abs())
+            .max(bx.min_y.abs())
+            .max(bx.max_y.abs());
+
+        // For a non-degenerate convex polygon, each oriented edge defines a
+        // supporting half-plane containing the whole polygon, so SAT reduces to
+        // O(N) p-vertex half-plane tests (one per edge, no inner vertex loop).
+        let area2 = self.signed_area2();
+        if area2 != 0.0 {
+            let sign = if area2 > 0.0 { 1.0 } else { -1.0 };
+            for i in 0..v.len() {
+                let p = v[i];
+                let q = v[(i + 1) % v.len()];
+                // Outward normal: points away from the polygon interior.
+                let nx = sign * (q[1] - p[1]);
+                let ny = sign * (p[0] - q[0]);
+                let bx_lo = if nx >= 0.0 { bx.min_x } else { bx.max_x };
+                let by_lo = if ny >= 0.0 { bx.min_y } else { bx.max_y };
+                let blo = bx_lo * nx + by_lo * ny;
+                let edge_d = (p[0] * nx + p[1] * ny).max(q[0] * nx + q[1] * ny);
+                let pad = 8.0 * f64::EPSILON * (sx * nx.abs() + sy * ny.abs());
+                if blo > edge_d + pad {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Degenerate (zero-area / collinear) polygon: test the single line
+        // direction against the box in O(N).
         for i in 0..v.len() {
             let p = v[i];
             let q = v[(i + 1) % v.len()];
             let (ax, ay) = (-(q[1] - p[1]), q[0] - p[0]);
-            let mut tlo = f64::INFINITY;
-            let mut thi = f64::NEG_INFINITY;
-            for w in v {
-                let d = w[0] * ax + w[1] * ay;
-                tlo = tlo.min(d);
-                thi = thi.max(d);
+            if ax == 0.0 && ay == 0.0 {
+                continue;
             }
-            let mut blo = f64::INFINITY;
-            let mut bhi = f64::NEG_INFINITY;
-            for c in &corners {
-                let d = c[0] * ax + c[1] * ay;
-                blo = blo.min(d);
-                bhi = bhi.max(d);
-            }
-            if thi < blo || tlo > bhi {
+            let (bx_lo, bx_hi) = if ax >= 0.0 {
+                (bx.min_x, bx.max_x)
+            } else {
+                (bx.max_x, bx.min_x)
+            };
+            let (by_lo, by_hi) = if ay >= 0.0 {
+                (bx.min_y, bx.max_y)
+            } else {
+                (bx.max_y, bx.min_y)
+            };
+            let blo = bx_lo * ax + by_lo * ay;
+            let bhi = bx_hi * ax + by_hi * ay;
+            let line_d = p[0] * ax + p[1] * ay;
+            let pad = 8.0 * f64::EPSILON * (sx * ax.abs() + sy * ay.abs());
+            if line_d + pad < blo || line_d - pad > bhi {
                 return false;
             }
+            break;
         }
         true
     }

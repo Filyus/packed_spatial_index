@@ -4,10 +4,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
-### Fixed
+## [0.34.2](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.34.1...psi-geo-v0.34.2) - 2026-11-27
 
-- Preserve great-circle distance resolution near the antipode in spherical
-  point-radius filtering by using the core crate's geographic distance.
+### API
+
+- Require `packed_spatial_index` 0.37.2 to include its numerical fixes.
+
+### Geometry
+
+- `GeoQuery2D::spherical_radius` exact point filtering preserves great-circle
+  distance resolution near the antipode, retaining points inside the radius.
 
 ## [0.34.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.34.0...psi-geo-v0.34.1) - 2026-11-27
 

@@ -36,10 +36,19 @@ pub use serializer::Serializer3DF32;
 use crate::f32_storage::{CONTAINED_FLAG, LEVEL_MASK, encode_level};
 #[cfg(feature = "simd")]
 use crate::persistence::read_u64_le_unchecked;
+#[cfg(feature = "simd")]
+use crate::{
+    config::DEFAULT_NEIGHBOR_QUEUE_CAPACITY,
+    neighbors::{NeighborNodeState, NeighborState, level_end_of, max_distance_squared},
+};
 use crate::{
     geometry::{Point3D, fold_max, fold_min},
     neighbors::NeighborWorkspace,
 };
+#[cfg(feature = "simd")]
+use std::collections::BinaryHeap;
+#[cfg(feature = "simd")]
+use wide::f64x4;
 
 // Imports used only by the SIMD query frontend (SimdIndex3DF32 + its view).
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
@@ -480,7 +489,15 @@ impl crate::neighbors::PointKnn for Index3DF32 {
     }
 }
 
-// Same thin point-kNN adapter on the field-identical SIMD index (see above).
+#[cfg(feature = "simd")]
+#[inline]
+fn load4_f32_as_f64(slice: &[f32], pos: usize) -> f64x4 {
+    let s = &slice[pos..pos + 4];
+    f64x4::from([s[0] as f64, s[1] as f64, s[2] as f64, s[3] as f64])
+}
+
+// Point kNN on the SIMD f32 index: 4-wide f64x4 distance evaluation widened
+// directly from the f32 SoA columns (bit-identical to scalar `PointKnn`).
 #[cfg(feature = "simd")]
 impl SimdIndex3DF32 {
     /// Up to `max_results` item indices nearest to `point` by rounded f32 boxes.
@@ -489,7 +506,7 @@ impl SimdIndex3DF32 {
     /// f64 distances). Use [`neighbors_exact`](Self::neighbors_exact) when
     /// you need exact nearest neighbors over your original f64 boxes.
     pub fn neighbors(&self, point: Point3D, max_results: usize) -> Vec<usize> {
-        crate::neighbors::point_neighbors(self, point, max_results)
+        self.neighbors_within(point, max_results, f64::INFINITY)
     }
 
     /// Up to `max_results` rounded-box nearest items within `max_distance`.
@@ -499,7 +516,9 @@ impl SimdIndex3DF32 {
         max_results: usize,
         max_distance: f64,
     ) -> Vec<usize> {
-        crate::neighbors::point_neighbors_within(self, point, max_results, max_distance)
+        let mut results = Vec::with_capacity(max_results.min(self.num_items));
+        self.neighbors_into(point, max_results, max_distance, &mut results);
+        results
     }
 
     /// Rounded-box nearest-neighbor search with a reusable result buffer.
@@ -510,7 +529,28 @@ impl SimdIndex3DF32 {
         max_distance: f64,
         results: &mut Vec<usize>,
     ) {
-        crate::neighbors::point_neighbors_into(self, point, max_results, max_distance, results);
+        results.clear();
+        if max_results == 0 {
+            return;
+        }
+        if max_results == 1 {
+            let mut queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+            if let Some(index) = self.nearest_one_with_queue(point, max_distance, &mut queue) {
+                results.push(index);
+            }
+            return;
+        }
+
+        let mut item_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        let mut node_queue = BinaryHeap::with_capacity(DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.collect_neighbors_with_queues(
+            point,
+            max_results,
+            max_distance,
+            results,
+            &mut item_queue,
+            &mut node_queue,
+        );
     }
 
     /// Rounded-box nearest-neighbor search with reusable result and queue buffers.
@@ -521,7 +561,31 @@ impl SimdIndex3DF32 {
         max_distance: f64,
         workspace: &'a mut NeighborWorkspace,
     ) -> &'a [usize] {
-        crate::neighbors::point_neighbors_with(self, point, max_results, max_distance, workspace)
+        workspace.results.clear();
+        if max_results == 0 {
+            workspace.queue.clear();
+            workspace.node_queue.clear();
+            return &workspace.results;
+        }
+        if max_results == 1 {
+            workspace.queue.clear();
+            if let Some(index) =
+                self.nearest_one_with_queue(point, max_distance, &mut workspace.node_queue)
+            {
+                workspace.results.push(index);
+            }
+            return &workspace.results;
+        }
+
+        self.collect_neighbors_with_queues(
+            point,
+            max_results,
+            max_distance,
+            &mut workspace.results,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
+        );
+        &workspace.results
     }
 
     /// Exact nearest neighbors over caller-owned f64 boxes.
@@ -604,12 +668,13 @@ impl SimdIndex3DF32 {
         &self,
         point: Point3D,
         max_distance: f64,
-        mut visitor: F,
+        visitor: F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        crate::neighbors::visit_point_neighbors(self, point, max_distance, &mut visitor)
+        let mut workspace = NeighborWorkspace::with_capacity(0, DEFAULT_NEIGHBOR_QUEUE_CAPACITY);
+        self.neighbors_each_with(point, max_distance, &mut workspace, visitor)
     }
 
     /// [`neighbors_each`](Self::neighbors_each) reusing a [`NeighborWorkspace`].
@@ -623,13 +688,323 @@ impl SimdIndex3DF32 {
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        crate::neighbors::visit_point_neighbors_with(
-            self,
+        self.visit_neighbors_with_queues(
             point,
             max_distance,
-            workspace,
+            &mut workspace.queue,
+            &mut workspace.node_queue,
             &mut visitor,
         )
+    }
+
+    #[inline]
+    fn point_distance_squared_at(&self, pos: usize, point: Point3D) -> f64 {
+        let dx = axis_distance(point.x, self.min_xs[pos] as f64, self.max_xs[pos] as f64);
+        let dy = axis_distance(point.y, self.min_ys[pos] as f64, self.max_ys[pos] as f64);
+        let dz = axis_distance(point.z, self.min_zs[pos] as f64, self.max_zs[pos] as f64);
+        dx * dx + dy * dy + dz * dz
+    }
+
+    fn collect_neighbors_with_queues(
+        &self,
+        point: Point3D,
+        max_results: usize,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+        item_queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
+    ) {
+        item_queue.clear();
+        node_queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return;
+        };
+        if self.num_items == 0
+            || !point.x.is_finite()
+            || !point.y.is_finite()
+            || !point.z.is_finite()
+        {
+            return;
+        }
+        let root_index = self.min_xs.len() - 1;
+        let root_dist = self.point_distance_squared_at(root_index, point);
+        if root_dist > max_dist_sq {
+            return;
+        }
+        node_queue.push(NeighborNodeState::new(root_index, root_dist));
+
+        let qx = f64x4::splat(point.x);
+        let qy = f64x4::splat(point.y);
+        let qz = f64x4::splat(point.z);
+        let zero = f64x4::splat(0.0);
+        let cutoff = f64x4::splat(max_dist_sq);
+
+        while results.len() < max_results {
+            while let Some(&node) = node_queue.peek() {
+                if node.dist > max_dist_sq {
+                    break;
+                }
+                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
+                    break;
+                }
+
+                let node = node_queue.pop().unwrap();
+                let end =
+                    (node.index + self.node_size).min(level_end_of(&self.level_bounds, node.index));
+                let is_leaf = node.index < self.num_items;
+
+                let mut pos = node.index;
+                while pos + 4 <= end {
+                    let dx = (load4_f32_as_f64(&self.min_xs, pos) - qx)
+                        .fast_max(qx - load4_f32_as_f64(&self.max_xs, pos))
+                        .fast_max(zero);
+                    let dy = (load4_f32_as_f64(&self.min_ys, pos) - qy)
+                        .fast_max(qy - load4_f32_as_f64(&self.max_ys, pos))
+                        .fast_max(zero);
+                    let dz = (load4_f32_as_f64(&self.min_zs, pos) - qz)
+                        .fast_max(qz - load4_f32_as_f64(&self.max_zs, pos))
+                        .fast_max(zero);
+                    let d2 = dx * dx + dy * dy + dz * dz;
+                    let mut bits = d2.simd_le(cutoff).to_bitmask();
+                    if bits != 0 {
+                        let da = d2.to_array();
+                        if is_leaf {
+                            while bits != 0 {
+                                let k = bits.trailing_zeros() as usize;
+                                bits &= bits - 1;
+                                item_queue.push(NeighborState::new(
+                                    self.indices[pos + k],
+                                    true,
+                                    da[k],
+                                ));
+                            }
+                        } else {
+                            while bits != 0 {
+                                let k = bits.trailing_zeros() as usize;
+                                bits &= bits - 1;
+                                node_queue
+                                    .push(NeighborNodeState::new(self.indices[pos + k], da[k]));
+                            }
+                        }
+                    }
+                    pos += 4;
+                }
+                while pos < end {
+                    let d = self.point_distance_squared_at(pos, point);
+                    if d <= max_dist_sq {
+                        if is_leaf {
+                            item_queue.push(NeighborState::new(self.indices[pos], true, d));
+                        } else {
+                            node_queue.push(NeighborNodeState::new(self.indices[pos], d));
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+
+            match item_queue.pop() {
+                Some(state) if state.dist <= max_dist_sq => results.push(state.index),
+                _ => return,
+            }
+        }
+    }
+
+    fn nearest_one_with_queue(
+        &self,
+        point: Point3D,
+        max_distance: f64,
+        queue: &mut BinaryHeap<NeighborNodeState>,
+    ) -> Option<usize> {
+        queue.clear();
+        let mut best_dist = max_distance_squared(max_distance)?;
+        if self.num_items == 0
+            || !point.x.is_finite()
+            || !point.y.is_finite()
+            || !point.z.is_finite()
+        {
+            return None;
+        }
+        let qx = f64x4::splat(point.x);
+        let qy = f64x4::splat(point.y);
+        let qz = f64x4::splat(point.z);
+        let zero = f64x4::splat(0.0);
+        let mut cutoff = f64x4::splat(best_dist);
+        let mut best_index = None;
+        let mut node_index = self.min_xs.len() - 1;
+
+        loop {
+            let end =
+                (node_index + self.node_size).min(level_end_of(&self.level_bounds, node_index));
+            let is_leaf = node_index < self.num_items;
+
+            let mut pos = node_index;
+            while pos + 4 <= end {
+                let dx = (load4_f32_as_f64(&self.min_xs, pos) - qx)
+                    .fast_max(qx - load4_f32_as_f64(&self.max_xs, pos))
+                    .fast_max(zero);
+                let dy = (load4_f32_as_f64(&self.min_ys, pos) - qy)
+                    .fast_max(qy - load4_f32_as_f64(&self.max_ys, pos))
+                    .fast_max(zero);
+                let dz = (load4_f32_as_f64(&self.min_zs, pos) - qz)
+                    .fast_max(qz - load4_f32_as_f64(&self.max_zs, pos))
+                    .fast_max(zero);
+                let d2 = dx * dx + dy * dy + dz * dz;
+                let mut bits = d2.simd_le(cutoff).to_bitmask();
+                if bits != 0 {
+                    let da = d2.to_array();
+                    if is_leaf {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            bits &= bits - 1;
+                            let d = da[k];
+                            if d > best_dist {
+                                continue;
+                            }
+                            let item = self.indices[pos + k];
+                            if best_index.is_none_or(|best| d < best_dist || item < best) {
+                                best_dist = d;
+                                best_index = Some(item);
+                                cutoff = f64x4::splat(best_dist);
+                            }
+                        }
+                    } else {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            bits &= bits - 1;
+                            queue.push(NeighborNodeState::new(self.indices[pos + k], da[k]));
+                        }
+                    }
+                }
+                pos += 4;
+            }
+            while pos < end {
+                let d = self.point_distance_squared_at(pos, point);
+                if d <= best_dist {
+                    if is_leaf {
+                        let item = self.indices[pos];
+                        if best_index.is_none_or(|best| d < best_dist || item < best) {
+                            best_dist = d;
+                            best_index = Some(item);
+                            cutoff = f64x4::splat(best_dist);
+                        }
+                    } else {
+                        queue.push(NeighborNodeState::new(self.indices[pos], d));
+                    }
+                }
+                pos += 1;
+            }
+
+            match queue.pop() {
+                Some(state) if state.dist <= best_dist => node_index = state.index,
+                _ => return best_index,
+            }
+        }
+    }
+
+    fn visit_neighbors_with_queues<B, F>(
+        &self,
+        point: Point3D,
+        max_distance: f64,
+        item_queue: &mut BinaryHeap<NeighborState>,
+        node_queue: &mut BinaryHeap<NeighborNodeState>,
+        visitor: &mut F,
+    ) -> ControlFlow<B>
+    where
+        F: FnMut(usize, f64) -> ControlFlow<B>,
+    {
+        item_queue.clear();
+        node_queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return ControlFlow::Continue(());
+        };
+        if self.num_items == 0
+            || !point.x.is_finite()
+            || !point.y.is_finite()
+            || !point.z.is_finite()
+        {
+            return ControlFlow::Continue(());
+        }
+        let root_index = self.min_xs.len() - 1;
+        let root_dist = self.point_distance_squared_at(root_index, point);
+        if root_dist > max_dist_sq {
+            return ControlFlow::Continue(());
+        }
+        node_queue.push(NeighborNodeState::new(root_index, root_dist));
+
+        let qx = f64x4::splat(point.x);
+        let qy = f64x4::splat(point.y);
+        let qz = f64x4::splat(point.z);
+        let zero = f64x4::splat(0.0);
+        let cutoff = f64x4::splat(max_dist_sq);
+
+        loop {
+            while let Some(&node) = node_queue.peek() {
+                if node.dist > max_dist_sq {
+                    break;
+                }
+                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
+                    break;
+                }
+
+                let node = node_queue.pop().unwrap();
+                let end =
+                    (node.index + self.node_size).min(level_end_of(&self.level_bounds, node.index));
+                let is_leaf = node.index < self.num_items;
+
+                let mut pos = node.index;
+                while pos + 4 <= end {
+                    let dx = (load4_f32_as_f64(&self.min_xs, pos) - qx)
+                        .fast_max(qx - load4_f32_as_f64(&self.max_xs, pos))
+                        .fast_max(zero);
+                    let dy = (load4_f32_as_f64(&self.min_ys, pos) - qy)
+                        .fast_max(qy - load4_f32_as_f64(&self.max_ys, pos))
+                        .fast_max(zero);
+                    let dz = (load4_f32_as_f64(&self.min_zs, pos) - qz)
+                        .fast_max(qz - load4_f32_as_f64(&self.max_zs, pos))
+                        .fast_max(zero);
+                    let d2 = dx * dx + dy * dy + dz * dz;
+                    let mut bits = d2.simd_le(cutoff).to_bitmask();
+                    if bits != 0 {
+                        let da = d2.to_array();
+                        if is_leaf {
+                            while bits != 0 {
+                                let k = bits.trailing_zeros() as usize;
+                                bits &= bits - 1;
+                                item_queue.push(NeighborState::new(
+                                    self.indices[pos + k],
+                                    true,
+                                    da[k],
+                                ));
+                            }
+                        } else {
+                            while bits != 0 {
+                                let k = bits.trailing_zeros() as usize;
+                                bits &= bits - 1;
+                                node_queue
+                                    .push(NeighborNodeState::new(self.indices[pos + k], da[k]));
+                            }
+                        }
+                    }
+                    pos += 4;
+                }
+                while pos < end {
+                    let d = self.point_distance_squared_at(pos, point);
+                    if d <= max_dist_sq {
+                        if is_leaf {
+                            item_queue.push(NeighborState::new(self.indices[pos], true, d));
+                        } else {
+                            node_queue.push(NeighborNodeState::new(self.indices[pos], d));
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+
+            match item_queue.pop() {
+                Some(state) if state.dist <= max_dist_sq => visitor(state.index, state.dist)?,
+                _ => return ControlFlow::Continue(()),
+            }
+        }
     }
 }
 

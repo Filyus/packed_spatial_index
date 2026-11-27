@@ -4,6 +4,16 @@ All notable changes to `packed_spatial_index_geo` are documented here.
 
 ## [Unreleased]
 
+## [0.34.0](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.33.1...psi-geo-v0.34.0) - 2026-11-27
+
+### API
+
+- **Requires `packed_spatial_index` 0.37.** The geo API is unchanged; projects
+  that depend on both crates should upgrade them together to share core types
+  and pick up two-sided `Capsule` bounds, zero-allocation SIMD/`f32`
+  `neighbors_with`, 4-wide `f64x4` watertight ray-triangle intersection, and
+  SIMD kNN box distances from core 0.37.
+
 ## [0.33.1](https://github.com/Filyus/packed_spatial_index/compare/psi-geo-v0.33.0...psi-geo-v0.33.1) - 2026-11-27
 
 ### Geo

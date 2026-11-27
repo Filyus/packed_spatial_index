@@ -1,30 +1,15 @@
 //! A solid cone in 3D: apex, axis direction, half-angle and height — the
 //! sensor-FOV / spotlight query shape.
 //!
-//! The box-vs-cone overlap test reduces to a one-dimensional convex question
-//! along the axis. Slice the box by the plane at height `t` above the apex:
-//! the slice is a convex polygon, and the cone's cross-section there is a disk
-//! of radius `t * tan(half_angle)` centred on the axis. The box meets the cone
-//! iff for some `t` in `[0, height]`
-//!
-//! ```text
-//! dist(axis(t), box ∩ plane(t)) - t * tan(half_angle) <= 0
-//! ```
-//!
-//! The first term is the partial minimisation, over the box, of a function
-//! that is jointly convex in the point and `t`, so it is convex in `t`; the
-//! whole left-hand side is convex, and its minimum over the box's height range
-//! settles the question. Each evaluation is exact: the distance from the axis
-//! point to the slice is the projection of that point onto the box
-//! intersected with a plane, a three-variable quadratic knapsack with a
-//! closed form (clamp along the plane normal). The outer minimum is found by
-//! golden-section search on the convex function, cut short as soon as a probe
-//! lands inside the cone or convexity bounds the minimum above zero; the only
-//! inexactness is
-//! floating-point, so boxes within floating-point reach of the cone's surface
-//! may be reported either way. (The simpler "distance from the axis point to
-//! the box against the disk radius" test is *not* equivalent: that compares
-//! against a ball, whose union along the axis is a fatter cone.)
+//! The box-vs-cone overlap test reduces to a closed-form piecewise-quadratic
+//! problem along the axis. Slice the box by the plane at height `t` above the
+//! apex: the closest point of `box ∩ plane(t)` to `apex + t·axis` satisfies the
+//! KKT condition `q_i(s) = clamp(apex_i + s·axis_i, lo_i, hi_i)` for the unique
+//! scalar `s` where `t(s) = axis · (q(s) - apex) = t`. Because `q(s)` is
+//! piecewise linear with at most six kinks (where `apex_i + s·axis_i` crosses
+//! `lo_i` or `hi_i`), both `t(s)` and `‖q(s) - apex‖²` are explicit polynomials
+//! of degree ≤ 2 on each piece, and `‖q(s) - apex‖² · cos²(half_angle) - t(s)²
+//! <= 0` is minimized in closed form on each clipped piece — no iteration.
 //!
 //! Containment is exact by convexity: the solid cone contains a box iff it
 //! contains the box's eight corners.
@@ -91,14 +76,6 @@ pub struct Cone3D {
     cos_half: f64,
 }
 
-/// Golden-section steps for the convex minimisation in `overlaps_box`. Each
-/// step shrinks the bracket by the golden ratio; 70 of them take a bracket
-/// the size of the cone's height down to ~2e-15 of it, below the precision of
-/// any coordinate the bracket could have been computed from.
-const OVERLAP_STEPS: usize = 70;
-/// `1 / φ`: the golden-section split.
-const INV_PHI: f64 = 0.618_033_988_749_894_9;
-
 impl Cone3D {
     /// Build a cone, validating the pieces.
     ///
@@ -152,81 +129,34 @@ impl Cone3D {
         (t_min, t_max)
     }
 
-    /// Distance from the axis point at height `t` to the box's slice by the
-    /// plane at that height — the perpendicular clearance between the axis and
-    /// the box, measured in that plane. Requires `t` inside
-    /// [`height_range`](Self::height_range) so the slice is non-empty.
-    ///
-    /// This is the projection of `P = apex + t·axis` onto
-    /// `box ∩ { q : axis · (q - apex) = t }`. Its KKT conditions give
-    /// `q_i = clamp(P_i + λ·axis_i, lo_i, hi_i)` for the unique `λ` that puts
-    /// `q` back on the plane; `φ(λ) = axis · q(λ)` is nondecreasing and
-    /// piecewise linear with at most six kinks (each coordinate hits each of
-    /// its two bounds once), so `λ` is read off the piece where `φ` crosses
-    /// the target — no iteration.
-    fn slice_gap(&self, t: f64, lo: &[f64; 3], hi: &[f64; 3]) -> f64 {
-        let a = self.axis;
-        let p = [
-            self.apex[0] + t * a[0],
-            self.apex[1] + t * a[1],
-            self.apex[2] + t * a[2],
-        ];
-        // The plane through `P`: axis · q = axis · P.
-        let target = a[0] * p[0] + a[1] * p[1] + a[2] * p[2];
-        let q_at = |lambda: f64| {
-            [
-                (p[0] + lambda * a[0]).clamp(lo[0], hi[0]),
-                (p[1] + lambda * a[1]).clamp(lo[1], hi[1]),
-                (p[2] + lambda * a[2]).clamp(lo[2], hi[2]),
-            ]
-        };
-        let phi = |q: &[f64; 3]| a[0] * q[0] + a[1] * q[1] + a[2] * q[2];
-
-        // Kinks of φ, sorted.
-        let mut kinks = [0.0f64; 6];
-        let mut n = 0;
-        for i in 0..3 {
-            if a[i] != 0.0 {
-                kinks[n] = (lo[i] - p[i]) / a[i];
-                kinks[n + 1] = (hi[i] - p[i]) / a[i];
-                n += 2;
-            }
-        }
-        kinks[..n].sort_by(|x, y| x.total_cmp(y));
-
-        // Left of the smallest kink every coordinate is clamped at the end the
-        // axis points away from, right of the largest at the other end, so φ
-        // is flat on both outer pieces and its whole range is
-        // [φ(k_0), φ(k_{n-1})]; the caller keeps `t` inside the box's height
-        // range, which is exactly that interval. Between consecutive kinks φ
-        // is linear, so the crossing is read off by interpolation.
-        let mut values = [0.0f64; 6];
-        for k in 0..n {
-            values[k] = phi(&q_at(kinks[k]));
-        }
-        let lambda = if target <= values[0] {
-            kinks[0]
-        } else if target >= values[n - 1] {
-            kinks[n - 1]
-        } else {
-            let j = (1..n)
-                .find(|&j| target <= values[j])
-                .expect("target is below the last kink's value");
-            let (v0, v1) = (values[j - 1], values[j]);
-            // `v0 < target <= v1`, so the piece has positive slope.
-            kinks[j - 1] + (target - v0) / (v1 - v0) * (kinks[j] - kinks[j - 1])
-        };
-        let q = q_at(lambda);
-        let (dx, dy, dz) = (q[0] - p[0], q[1] - p[1], q[2] - p[2]);
-        (dx * dx + dy * dy + dz * dz).sqrt()
-    }
-
-    /// `dist(axis(t), box ∩ plane(t)) - t * tan(half_angle)`: negative where the
-    /// box's slice reaches inside the cone's disk at height `t`. Convex in `t`
-    /// over the box's height range.
+    /// Whether the KKT point `q(s) = clamp(apex + s·axis, lo, hi)` lies inside
+    /// the cone's disk at its height `t(s) = axis · (q(s) - apex)`.
     #[inline]
-    fn clearance(&self, t: f64, tan: f64, lo: &[f64; 3], hi: &[f64; 3]) -> f64 {
-        self.slice_gap(t, lo, hi) - t * tan
+    fn kkt_point_in_cone(&self, s: f64, lo: &[f64; 3], hi: &[f64; 3]) -> bool {
+        let a = self.axis;
+        let q = [
+            (self.apex[0] + s * a[0]).clamp(lo[0], hi[0]),
+            (self.apex[1] + s * a[1]).clamp(lo[1], hi[1]),
+            (self.apex[2] + s * a[2]).clamp(lo[2], hi[2]),
+        ];
+        let (dx, dy, dz) = (
+            q[0] - self.apex[0],
+            q[1] - self.apex[1],
+            q[2] - self.apex[2],
+        );
+        let along = dx * a[0] + dy * a[1] + dz * a[2];
+        // `s` is already clipped to `t(s) in [lo_t, hi_t] ⊆ [0, height]`, so
+        // clamp tiny f64 rounding overshoot at the caps rather than dropping a
+        // cap-tangent hit.
+        let t = along.clamp(0.0, self.height);
+        let (px, py, pz) = (dx - t * a[0], dy - t * a[1], dz - t * a[2]);
+        let perp2 = px * px + py * py + pz * pz;
+        let r = t * self.tan_half;
+        // Derived rounding margin (`8u = 4 * f64::EPSILON`): covers `tan(half_angle)`
+        // (1u), `t * tan` (2u), squaring (3u), and `perp2` (3u) so an exact
+        // tangent such as `half_angle = pi/4` is never dropped by 1 ULP.
+        const RADIUS_SQ_UPPER: f64 = 1.0 + 4.0 * f64::EPSILON;
+        perp2 <= (r * r) * RADIUS_SQ_UPPER
     }
 
     /// Whether any part of `bx` intersects the solid cone.
@@ -234,15 +164,14 @@ impl Cone3D {
         let lo = [bx.min_x, bx.min_y, bx.min_z];
         let hi = [bx.max_x, bx.max_y, bx.max_z];
         let (t_min, t_max) = self.height_range(&lo, &hi);
-        let (mut lo_t, mut hi_t) = (t_min.max(0.0), t_max.min(self.height));
+        let (lo_t, hi_t) = (t_min.max(0.0), t_max.min(self.height));
         if lo_t > hi_t {
             // The box lies wholly behind the apex or beyond the base.
             return false;
         }
         let tan = self.tan_half;
-        // Cheap decisions first; the search below is the expensive general
-        // case and most boxes a traversal tests are nowhere near the cone.
-        // A corner inside the cone settles it.
+        // Cheap decisions first; most boxes a traversal tests are nowhere near
+        // the cone. A corner inside the cone settles it.
         if self.contains_point(lo)
             || self.contains_point(hi)
             || self.contains_point([lo[0], lo[1], hi[2]])
@@ -272,45 +201,81 @@ impl Cone3D {
         if gap2 > top_radius * top_radius {
             return false;
         }
-        // Golden-section search on a convex function over [lo_t, hi_t]: one
-        // new evaluation per step. Any probe that reaches inside the cone is
-        // already a proof of overlap, and convexity gives a lower bound on the
-        // minimum from the four values in hand (secant slopes only grow left
-        // to right), so a box that stays clear is dismissed after a few steps
-        // instead of at full precision.
-        let mut flo = self.clearance(lo_t, tan, &lo, &hi);
-        let mut fhi = self.clearance(hi_t, tan, &lo, &hi);
-        if flo <= 0.0 || fhi <= 0.0 {
-            return true;
+
+        // Exact closed-form piecewise-quadratic solution along the KKT curve
+        // `q_i(s) = clamp(apex_i + s·a_i, lo_i, hi_i)`. Its kinks are sorted
+        // once per box; on each piece `(s_a, s_b)`, free axes contribute
+        // `alpha = sum a_i²` and clamped axes contribute `beta = sum a_i·(c_i - apex_i)`
+        // so `t(s) = alpha·s + beta`, and `‖q(s) - apex‖²·cos²θ - t(s)²` is a
+        // quadratic with leading coefficient `alpha·(cos²θ - alpha)` and linear
+        // coefficient `-2·alpha·beta`, minimized analytically at `s_lo`, `s_hi`,
+        // or (when convex) `s* = beta / (cos²θ - alpha)`.
+        let a = self.axis;
+        let mut kinks = [0.0f64; 6];
+        let mut n = 0usize;
+        for i in 0..3 {
+            if a[i] != 0.0 {
+                kinks[n] = (lo[i] - self.apex[i]) / a[i];
+                kinks[n + 1] = (hi[i] - self.apex[i]) / a[i];
+                n += 2;
+            }
         }
-        let mut c = hi_t - INV_PHI * (hi_t - lo_t);
-        let mut d = lo_t + INV_PHI * (hi_t - lo_t);
-        let mut fc = self.clearance(c, tan, &lo, &hi);
-        let mut fd = self.clearance(d, tan, &lo, &hi);
-        for _ in 0..OVERLAP_STEPS {
-            if fc <= 0.0 || fd <= 0.0 {
+        kinks[..n].sort_by(|x, y| x.total_cmp(y));
+
+        // Flat box perpendicular to the axis: every non-zero axis has
+        // `lo[i] == hi[i]`, so all kinks collapse to one `s` and the box lies
+        // wholly in the plane at height `lo_t == hi_t`.
+        if n > 0 && kinks[0] == kinks[n - 1] {
+            return self.kkt_point_in_cone(kinks[0], &lo, &hi);
+        }
+
+        let c2 = self.cos_half * self.cos_half;
+        for k in 0..n.saturating_sub(1) {
+            let (s_a, s_b) = (kinks[k], kinks[k + 1]);
+            if s_b <= s_a {
+                continue;
+            }
+            let s_mid = 0.5 * (s_a + s_b);
+            let mut alpha = 0.0;
+            let mut beta = 0.0;
+            for i in 0..3 {
+                if a[i] == 0.0 {
+                    let c = self.apex[i].clamp(lo[i], hi[i]);
+                    // `a[i] == 0` contributes 0 to both `alpha` and `beta`;
+                    // `kkt_point_in_cone` evaluates the exact perpendicular gap.
+                    let _ = c;
+                } else {
+                    let v = self.apex[i] + s_mid * a[i];
+                    if v < lo[i] {
+                        beta += a[i] * (lo[i] - self.apex[i]);
+                    } else if v > hi[i] {
+                        beta += a[i] * (hi[i] - self.apex[i]);
+                    } else {
+                        alpha += a[i] * a[i];
+                    }
+                }
+            }
+            if alpha == 0.0 {
+                continue;
+            }
+            let s_lo = s_a.max((lo_t - beta) / alpha);
+            let s_hi = s_b.min((hi_t - beta) / alpha);
+            if s_lo > s_hi {
+                continue;
+            }
+            if self.kkt_point_in_cone(s_lo, &lo, &hi) || self.kkt_point_in_cone(s_hi, &lo, &hi) {
                 return true;
             }
-            if convex_min_lower_bound(lo_t, flo, c, fc, d, fd, hi_t, fhi) > 0.0 {
-                return false;
-            }
-            if fc < fd {
-                hi_t = d;
-                fhi = fd;
-                d = c;
-                fd = fc;
-                c = hi_t - INV_PHI * (hi_t - lo_t);
-                fc = self.clearance(c, tan, &lo, &hi);
-            } else {
-                lo_t = c;
-                flo = fc;
-                c = d;
-                fc = fd;
-                d = lo_t + INV_PHI * (hi_t - lo_t);
-                fd = self.clearance(d, tan, &lo, &hi);
+            // When `c2 > alpha`, the quadratic is strictly convex in `s` with
+            // unique interior stationary point `s* = beta / (c2 - alpha)`.
+            if c2 > alpha {
+                let s_star = beta / (c2 - alpha);
+                if s_star > s_lo && s_star < s_hi && self.kkt_point_in_cone(s_star, &lo, &hi) {
+                    return true;
+                }
             }
         }
-        fc.min(fd) <= 0.0 || self.clearance((lo_t + hi_t) * 0.5, tan, &lo, &hi) <= 0.0
+        false
     }
 
     /// Whether all of `bx` lies inside the solid cone.
@@ -347,81 +312,6 @@ impl Cone3D {
         // apex itself is in the closed cone.
         len == 0.0 || along / len >= self.cos_half
     }
-}
-
-/// A lower bound on the minimum of a convex function over `[a, b]` from its
-/// values at `a < c < d < b` (degenerate equal points allowed).
-///
-/// Convexity means secant slopes are nondecreasing left to right, so on each
-/// of the three pieces the function lies above the line through its right
-/// (or left) neighbours' secant: on `[a, c]` above the `cd` secant continued
-/// leftwards, on `[d, b]` above it continued rightwards, and on `[c, d]` above
-/// both the `ac` secant continued right and the `db` secant continued left —
-/// their crossing is the bound there.
-#[allow(clippy::too_many_arguments)]
-fn convex_min_lower_bound(
-    a: f64,
-    fa: f64,
-    c: f64,
-    fc: f64,
-    d: f64,
-    fd: f64,
-    b: f64,
-    fb: f64,
-) -> f64 {
-    let s_cd = if d > c { (fd - fc) / (d - c) } else { 0.0 };
-    let lb_left = if c > a {
-        fc - s_cd.max(0.0) * (c - a)
-    } else {
-        fc
-    };
-    let lb_right = if b > d {
-        fd + s_cd.min(0.0) * (b - d)
-    } else {
-        fd
-    };
-    let lb_mid = if d > c {
-        let s_ac = if c > a {
-            (fc - fa) / (c - a)
-        } else {
-            f64::NEG_INFINITY
-        };
-        let s_db = if b > d {
-            (fb - fd) / (b - d)
-        } else {
-            f64::INFINITY
-        };
-        if s_ac >= 0.0 {
-            fc
-        } else if s_db <= 0.0 {
-            fd
-        } else {
-            // `fc + s_ac (t - c)` falls, `fd + s_db (t - d)` rises; the
-            // minimum of their maximum is at the crossing, clamped to the
-            // piece. An unknown outer slope drops its line.
-            let t = if s_ac.is_finite() && s_db.is_finite() {
-                ((fd - fc + s_ac * c - s_db * d) / (s_ac - s_db)).clamp(c, d)
-            } else if s_ac.is_finite() {
-                d
-            } else {
-                c
-            };
-            let l1 = if s_ac.is_finite() {
-                fc + s_ac * (t - c)
-            } else {
-                f64::NEG_INFINITY
-            };
-            let l2 = if s_db.is_finite() {
-                fd + s_db * (t - d)
-            } else {
-                f64::NEG_INFINITY
-            };
-            l1.max(l2)
-        }
-    } else {
-        fc.min(fd)
-    };
-    lb_left.min(lb_mid).min(lb_right)
 }
 
 impl Overlaps3D for Cone3D {
@@ -625,37 +515,39 @@ mod tests {
     }
 
     #[test]
-    fn convex_lower_bound_never_exceeds_the_sampled_minimum() {
-        // Random convex functions: sums of |t - k|·w and a quadratic, on random
-        // brackets with a golden-section split; the bound must sit at or
-        // below a dense sample minimum, and be tight when the function is
-        // linear (equal secants).
-        let mut rng = StdRng::seed_from_u64(21);
-        for _ in 0..5000 {
-            let q: f64 = rng.random_range(0.0..2.0);
-            let kinks: Vec<(f64, f64)> = (0..3)
-                .map(|_| (rng.random_range(-5.0..5.0), rng.random_range(0.0..3.0)))
-                .collect();
-            let lin: f64 = rng.random_range(-4.0..4.0);
-            let f = |t: f64| {
-                q * t * t + lin * t + kinks.iter().map(|&(k, w)| w * (t - k).abs()).sum::<f64>()
-            };
-            let a: f64 = rng.random_range(-6.0..4.0);
-            let b: f64 = a + rng.random_range(0.0..6.0);
-            let c = b - INV_PHI * (b - a);
-            let d = a + INV_PHI * (b - a);
-            let lb = convex_min_lower_bound(a, f(a), c, f(c), d, f(d), b, f(b));
-            let sampled = (0..=2000)
-                .map(|i| f(a + (b - a) * i as f64 / 2000.0))
-                .fold(f64::INFINITY, f64::min);
-            assert!(lb <= sampled + 1e-9, "lb {lb} above sampled {sampled}");
-        }
-        // Linear: the bound is exact.
-        let f = |t: f64| 3.0 * t + 1.0;
-        let (a, b) = (0.0, 1.0);
-        let (c, d) = (b - INV_PHI, INV_PHI);
-        let lb = convex_min_lower_bound(a, f(a), c, f(c), d, f(d), b, f(b));
-        assert!((lb - 1.0).abs() < 1e-12, "{lb}");
+    fn oblique_cone_tangent_edge_hit_without_corners_inside() {
+        // Box edge grazing the cone's lateral surface while all 8 corners lie
+        // outside the cone and the axis misses the box (exercises the interior
+        // quadratic vertex `s_star`).
+        let cone =
+            Cone3D::try_new([0.0; 3], [0.0, 0.0, 1.0], std::f64::consts::FRAC_PI_4, 10.0).unwrap();
+        // At z = 5, radius = 5. Line x = 5, y in [-10, 10], z = 5 grazes at (5, 0, 5),
+        // while corners at y = ±10 are at distance sqrt(125) > 5 (outside).
+        let grazing = Box3D::new(5.0, -10.0, 5.0, 6.0, 10.0, 5.0);
+        assert!(cone.overlaps_box(grazing));
+        let outside = Box3D::new(5.01, -10.0, 5.0, 6.0, 10.0, 5.0);
+        assert!(!cone.overlaps_box(outside));
+
+        // Oblique cone (all 3 axis components non-zero) grazing a box edge with
+        // all 8 corners outside and axis missing the box.
+        let oblique = Cone3D::try_new([0.0; 3], [1.0, 1.0, 1.0], 0.35, 20.0).unwrap();
+        // Unit axis a = (1,1,1)/sqrt(3). At t = 6, axis point is (2*sqrt(3)) * (1,1,1).
+        // Perpendicular unit vector u = (1,-1,0)/sqrt(2), radius = 6 * tan(0.35).
+        let s3 = 3.0_f64.sqrt();
+        let s2 = 2.0_f64.sqrt();
+        let r = 6.0 * 0.35_f64.tan();
+        let p = [6.0 / s3 + r / s2, 6.0 / s3 - r / s2, 6.0 / s3];
+        // A thin box along the third orthogonal direction v = (1,1,-2)/sqrt(6)
+        // centered just inside `p` (all corners far away along z).
+        let hit_box = Box3D::new(
+            p[0] - 0.05,
+            p[1] - 0.05,
+            p[2] - 4.0,
+            p[0] + 0.05,
+            p[1] + 0.05,
+            p[2] + 4.0,
+        );
+        assert!(oblique.overlaps_box(hit_box));
     }
 
     #[test]

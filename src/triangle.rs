@@ -610,12 +610,10 @@ fn closest_f32_simd(
     tris: &[Triangle3DF32],
 ) -> Option<TriangleHit> {
     use wide::f32x8;
-    let inf = f32x8::splat(f32::INFINITY);
     let zero = f32x8::splat(0.0);
     let one = f32x8::splat(1.0);
-    let eps_factor = f32x8::splat(DET_EPS_FACTOR_F32);
-    let d_scale = f32x8::splat(d[0].abs() + d[1].abs() + d[2].abs());
-    let maxv = f32x8::splat(max_t);
+    let eps_d = f32x8::splat(DET_EPS_FACTOR_F32 * (d[0].abs() + d[1].abs() + d[2].abs()));
+    let mut maxv = f32x8::splat(max_t);
     let ox = f32x8::splat(o[0]);
     let oy = f32x8::splat(o[1]);
     let oz = f32x8::splat(o[2]);
@@ -625,19 +623,8 @@ fn closest_f32_simd(
 
     let mut best_t = f32::INFINITY;
     let mut best_i = usize::MAX;
-    for (chunk_i, chunk) in tris.chunks(8).enumerate() {
-        let mut g = [[0.0f32; 8]; 9];
-        for (l, t) in chunk.iter().enumerate() {
-            g[0][l] = t.a[0];
-            g[1][l] = t.a[1];
-            g[2][l] = t.a[2];
-            g[3][l] = t.b[0];
-            g[4][l] = t.b[1];
-            g[5][l] = t.b[2];
-            g[6][l] = t.c[0];
-            g[7][l] = t.c[1];
-            g[8][l] = t.c[2];
-        }
+
+    let mut eval_block = |base: usize, g: [[f32; 8]; 9]| {
         let ax = f32x8::from(g[0]);
         let ay = f32x8::from(g[1]);
         let az = f32x8::from(g[2]);
@@ -654,7 +641,7 @@ fn closest_f32_simd(
         let det = e1x * px + e1y * py + e1z * pz;
         let e1_scale = e1x.abs() + e1y.abs() + e1z.abs();
         let e2_scale = e2x.abs() + e2y.abs() + e2z.abs();
-        let eps = eps_factor * d_scale * e1_scale * e2_scale;
+        let eps = eps_d * e1_scale * e2_scale;
         let inv = one / det;
         let sx = ox - ax;
         let sy = oy - ay;
@@ -666,23 +653,87 @@ fn closest_f32_simd(
         let v = (dx * qx + dy * qy + dz * qz) * inv;
         let t = (e2x * qx + e2y * qy + e2z * qz) * inv;
 
-        let miss = det.abs().simd_lt(eps)
-            | det.simd_eq(zero)
+        let miss = det.abs().simd_le(eps)
             | u.simd_lt(zero)
             | u.simd_gt(one)
             | v.simd_lt(zero)
             | (u + v).simd_gt(one)
             | t.simd_lt(zero)
             | t.simd_gt(maxv);
-        let t = miss.select(inf, t);
-
-        let base = chunk_i * 8;
-        for (l, &tl) in t.to_array().iter().enumerate() {
+        if miss.all() {
+            return;
+        }
+        let hit_mask = (!miss).to_bitmask();
+        let ta = t.to_array();
+        let mut bits = hit_mask;
+        while bits != 0 {
+            let l = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let tl = ta[l];
             if tl < best_t {
                 best_t = tl;
                 best_i = base + l;
+                maxv = f32x8::splat(best_t);
             }
         }
+    };
+
+    let (chunks, rem) = tris.as_chunks::<8>();
+    for (chunk_i, c) in chunks.iter().enumerate() {
+        let g = [
+            [
+                c[0].a[0], c[1].a[0], c[2].a[0], c[3].a[0], c[4].a[0], c[5].a[0], c[6].a[0],
+                c[7].a[0],
+            ],
+            [
+                c[0].a[1], c[1].a[1], c[2].a[1], c[3].a[1], c[4].a[1], c[5].a[1], c[6].a[1],
+                c[7].a[1],
+            ],
+            [
+                c[0].a[2], c[1].a[2], c[2].a[2], c[3].a[2], c[4].a[2], c[5].a[2], c[6].a[2],
+                c[7].a[2],
+            ],
+            [
+                c[0].b[0], c[1].b[0], c[2].b[0], c[3].b[0], c[4].b[0], c[5].b[0], c[6].b[0],
+                c[7].b[0],
+            ],
+            [
+                c[0].b[1], c[1].b[1], c[2].b[1], c[3].b[1], c[4].b[1], c[5].b[1], c[6].b[1],
+                c[7].b[1],
+            ],
+            [
+                c[0].b[2], c[1].b[2], c[2].b[2], c[3].b[2], c[4].b[2], c[5].b[2], c[6].b[2],
+                c[7].b[2],
+            ],
+            [
+                c[0].c[0], c[1].c[0], c[2].c[0], c[3].c[0], c[4].c[0], c[5].c[0], c[6].c[0],
+                c[7].c[0],
+            ],
+            [
+                c[0].c[1], c[1].c[1], c[2].c[1], c[3].c[1], c[4].c[1], c[5].c[1], c[6].c[1],
+                c[7].c[1],
+            ],
+            [
+                c[0].c[2], c[1].c[2], c[2].c[2], c[3].c[2], c[4].c[2], c[5].c[2], c[6].c[2],
+                c[7].c[2],
+            ],
+        ];
+        eval_block(chunk_i * 8, g);
+    }
+    if !rem.is_empty() {
+        let mut g = [[0.0f32; 8]; 9];
+        for (l, t) in rem.iter().enumerate() {
+            g[0][l] = t.a[0];
+            g[1][l] = t.a[1];
+            g[2][l] = t.a[2];
+            g[3][l] = t.b[0];
+            g[4][l] = t.b[1];
+            g[5][l] = t.b[2];
+            g[6][l] = t.c[0];
+            g[7][l] = t.c[1];
+            g[8][l] = t.c[2];
+        }
+        eval_block(tris.len() - rem.len(), g);
     }
     (best_i != usize::MAX).then_some(TriangleHit {
         index: best_i,

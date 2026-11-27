@@ -27,7 +27,10 @@ use crate::{
         closest_pair_to_core, closest_pairs_core, closest_pairs_to_core, collect_within_switched,
         join_core, pairs_components_core, pairs_core, within_core,
     },
-    neighbors::{NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first},
+    neighbors::{
+        NeighborNodeState, NeighborQuery2D, NeighborState, NeighborWorkspace, best_first,
+        max_distance_squared,
+    },
     ordered::{collect_ordered, search_ordered_each},
     persistence::{
         LoadError, parse_aggregates, parse_index, read_f64_le_unchecked, read_u64_le_unchecked,
@@ -41,6 +44,23 @@ use crate::{
 };
 
 type Num = f64;
+
+#[inline]
+fn query_splats_2d(query: NeighborQuery2D) -> (f64x4, f64x4, f64x4, f64x4) {
+    match query {
+        NeighborQuery2D::Point(p) => {
+            let x = f64x4::splat(p.x);
+            let y = f64x4::splat(p.y);
+            (x, y, x, y)
+        }
+        NeighborQuery2D::Box(b) => (
+            f64x4::splat(b.min_x),
+            f64x4::splat(b.min_y),
+            f64x4::splat(b.max_x),
+            f64x4::splat(b.max_y),
+        ),
+    }
+}
 
 pub(crate) fn build_simd_index(
     config: BuildConfig,
@@ -1319,19 +1339,90 @@ impl SimdIndex2D {
         item_queue: &mut BinaryHeap<NeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
     ) {
-        best_first::collect_neighbors_two_queue(
-            self.min_xs.len(),
-            self.num_items,
-            self.node_size,
-            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
-            |p| self.indices[p],
-            max_results,
-            max_distance,
-            |pos| self.distance_squared_at(pos, query),
-            results,
-            item_queue,
-            node_queue,
-        );
+        item_queue.clear();
+        node_queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return;
+        };
+        if self.num_items == 0 || !query.is_valid() {
+            return;
+        }
+        let root_index = self.min_xs.len() - 1;
+        let root_dist = self.distance_squared_at(root_index, query);
+        if root_dist > max_dist_sq {
+            return;
+        }
+        node_queue.push(NeighborNodeState::new(root_index, root_dist));
+
+        let (q_min_x, q_min_y, q_max_x, q_max_y) = query_splats_2d(query);
+        let zero = f64x4::splat(0.0);
+        let cutoff = f64x4::splat(max_dist_sq);
+
+        while results.len() < max_results {
+            while let Some(&node) = node_queue.peek() {
+                if node.dist > max_dist_sq {
+                    break;
+                }
+                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
+                    break;
+                }
+
+                let node = node_queue.pop().unwrap();
+                let upper = upper_bound_level(&self.level_bounds, node.index);
+                let end = (node.index + self.node_size).min(self.level_bounds[upper]);
+                let is_leaf = node.index < self.num_items;
+
+                let mut pos = node.index;
+                while pos + 4 <= end {
+                    let dx = (load4(&self.min_xs, pos) - q_max_x)
+                        .fast_max(q_min_x - load4(&self.max_xs, pos))
+                        .fast_max(zero);
+                    let dy = (load4(&self.min_ys, pos) - q_max_y)
+                        .fast_max(q_min_y - load4(&self.max_ys, pos))
+                        .fast_max(zero);
+                    let d2 = dx * dx + dy * dy;
+                    let mut bits = d2.simd_le(cutoff).to_bitmask();
+                    if bits != 0 {
+                        let da = d2.to_array();
+                        if is_leaf {
+                            while bits != 0 {
+                                let k = bits.trailing_zeros() as usize;
+                                bits &= bits - 1;
+                                item_queue.push(NeighborState::new(
+                                    self.indices[pos + k],
+                                    true,
+                                    da[k],
+                                ));
+                            }
+                        } else {
+                            while bits != 0 {
+                                let k = bits.trailing_zeros() as usize;
+                                bits &= bits - 1;
+                                node_queue
+                                    .push(NeighborNodeState::new(self.indices[pos + k], da[k]));
+                            }
+                        }
+                    }
+                    pos += 4;
+                }
+                while pos < end {
+                    let d = self.distance_squared_at(pos, query);
+                    if d <= max_dist_sq {
+                        if is_leaf {
+                            item_queue.push(NeighborState::new(self.indices[pos], true, d));
+                        } else {
+                            node_queue.push(NeighborNodeState::new(self.indices[pos], d));
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+
+            match item_queue.pop() {
+                Some(state) if state.dist <= max_dist_sq => results.push(state.index),
+                _ => return,
+            }
+        }
     }
 
     fn nearest_one_with_queue(
@@ -1340,41 +1431,178 @@ impl SimdIndex2D {
         max_distance: f64,
         queue: &mut BinaryHeap<NeighborNodeState>,
     ) -> Option<usize> {
-        best_first::nearest_one(
-            self.min_xs.len(),
-            self.num_items,
-            self.node_size,
-            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
-            |p| self.indices[p],
-            max_distance,
-            |pos| self.distance_squared_at(pos, query),
-            queue,
-        )
+        queue.clear();
+        let mut best_dist = max_distance_squared(max_distance)?;
+        if self.num_items == 0 || !query.is_valid() {
+            return None;
+        }
+        let (q_min_x, q_min_y, q_max_x, q_max_y) = query_splats_2d(query);
+        let zero = f64x4::splat(0.0);
+        let mut cutoff = f64x4::splat(best_dist);
+        let mut best_index = None;
+        let mut node_index = self.min_xs.len() - 1;
+
+        loop {
+            let upper = upper_bound_level(&self.level_bounds, node_index);
+            let end = (node_index + self.node_size).min(self.level_bounds[upper]);
+            let is_leaf = node_index < self.num_items;
+
+            let mut pos = node_index;
+            while pos + 4 <= end {
+                let dx = (load4(&self.min_xs, pos) - q_max_x)
+                    .fast_max(q_min_x - load4(&self.max_xs, pos))
+                    .fast_max(zero);
+                let dy = (load4(&self.min_ys, pos) - q_max_y)
+                    .fast_max(q_min_y - load4(&self.max_ys, pos))
+                    .fast_max(zero);
+                let d2 = dx * dx + dy * dy;
+                let mut bits = d2.simd_le(cutoff).to_bitmask();
+                if bits != 0 {
+                    let da = d2.to_array();
+                    if is_leaf {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            bits &= bits - 1;
+                            let d = da[k];
+                            if d > best_dist {
+                                continue;
+                            }
+                            let item = self.indices[pos + k];
+                            if best_index.is_none_or(|best| d < best_dist || item < best) {
+                                best_dist = d;
+                                best_index = Some(item);
+                                cutoff = f64x4::splat(best_dist);
+                            }
+                        }
+                    } else {
+                        while bits != 0 {
+                            let k = bits.trailing_zeros() as usize;
+                            bits &= bits - 1;
+                            queue.push(NeighborNodeState::new(self.indices[pos + k], da[k]));
+                        }
+                    }
+                }
+                pos += 4;
+            }
+            while pos < end {
+                let d = self.distance_squared_at(pos, query);
+                if d <= best_dist {
+                    if is_leaf {
+                        let item = self.indices[pos];
+                        if best_index.is_none_or(|best| d < best_dist || item < best) {
+                            best_dist = d;
+                            best_index = Some(item);
+                            cutoff = f64x4::splat(best_dist);
+                        }
+                    } else {
+                        queue.push(NeighborNodeState::new(self.indices[pos], d));
+                    }
+                }
+                pos += 1;
+            }
+
+            match queue.pop() {
+                Some(state) if state.dist <= best_dist => node_index = state.index,
+                _ => return best_index,
+            }
+        }
     }
 
     fn visit_neighbors_with_queues<B, F>(
         &self,
         query: NeighborQuery2D,
         max_distance: f64,
-        queue: &mut BinaryHeap<NeighborState>,
+        item_queue: &mut BinaryHeap<NeighborState>,
         node_queue: &mut BinaryHeap<NeighborNodeState>,
         visitor: &mut F,
     ) -> ControlFlow<B>
     where
         F: FnMut(usize, f64) -> ControlFlow<B>,
     {
-        best_first::visit_neighbors_two_queue(
-            self.min_xs.len(),
-            self.num_items,
-            self.node_size,
-            |n| self.level_bounds[upper_bound_level(&self.level_bounds, n)],
-            |p| self.indices[p],
-            max_distance,
-            |pos| self.distance_squared_at(pos, query),
-            queue,
-            node_queue,
-            visitor,
-        )
+        item_queue.clear();
+        node_queue.clear();
+        let Some(max_dist_sq) = max_distance_squared(max_distance) else {
+            return ControlFlow::Continue(());
+        };
+        if self.num_items == 0 || !query.is_valid() {
+            return ControlFlow::Continue(());
+        }
+        let root_index = self.min_xs.len() - 1;
+        let root_dist = self.distance_squared_at(root_index, query);
+        if root_dist > max_dist_sq {
+            return ControlFlow::Continue(());
+        }
+        node_queue.push(NeighborNodeState::new(root_index, root_dist));
+
+        let (q_min_x, q_min_y, q_max_x, q_max_y) = query_splats_2d(query);
+        let zero = f64x4::splat(0.0);
+        let cutoff = f64x4::splat(max_dist_sq);
+
+        loop {
+            while let Some(&node) = node_queue.peek() {
+                if node.dist > max_dist_sq {
+                    break;
+                }
+                if item_queue.peek().is_some_and(|item| item.dist < node.dist) {
+                    break;
+                }
+
+                let node = node_queue.pop().unwrap();
+                let upper = upper_bound_level(&self.level_bounds, node.index);
+                let end = (node.index + self.node_size).min(self.level_bounds[upper]);
+                let is_leaf = node.index < self.num_items;
+
+                let mut pos = node.index;
+                while pos + 4 <= end {
+                    let dx = (load4(&self.min_xs, pos) - q_max_x)
+                        .fast_max(q_min_x - load4(&self.max_xs, pos))
+                        .fast_max(zero);
+                    let dy = (load4(&self.min_ys, pos) - q_max_y)
+                        .fast_max(q_min_y - load4(&self.max_ys, pos))
+                        .fast_max(zero);
+                    let d2 = dx * dx + dy * dy;
+                    let mut bits = d2.simd_le(cutoff).to_bitmask();
+                    if bits != 0 {
+                        let da = d2.to_array();
+                        if is_leaf {
+                            while bits != 0 {
+                                let k = bits.trailing_zeros() as usize;
+                                bits &= bits - 1;
+                                item_queue.push(NeighborState::new(
+                                    self.indices[pos + k],
+                                    true,
+                                    da[k],
+                                ));
+                            }
+                        } else {
+                            while bits != 0 {
+                                let k = bits.trailing_zeros() as usize;
+                                bits &= bits - 1;
+                                node_queue
+                                    .push(NeighborNodeState::new(self.indices[pos + k], da[k]));
+                            }
+                        }
+                    }
+                    pos += 4;
+                }
+                while pos < end {
+                    let d = self.distance_squared_at(pos, query);
+                    if d <= max_dist_sq {
+                        if is_leaf {
+                            item_queue.push(NeighborState::new(self.indices[pos], true, d));
+                        } else {
+                            node_queue.push(NeighborNodeState::new(self.indices[pos], d));
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+
+            match item_queue.pop() {
+                Some(state) if state.dist <= max_dist_sq => visitor(state.index, state.dist)?,
+                _ => return ControlFlow::Continue(()),
+            }
+        }
     }
 
     #[inline]
